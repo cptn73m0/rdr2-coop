@@ -1,0 +1,3 @@
+E:/rdr2-coop/build-server/CMakeFiles/rdr2_coop_server.dir
+E:/rdr2-coop/build-server/CMakeFiles/ALL_BUILD.dir
+E:/rdr2-coop/build-server/CMakeFiles/ZERO_CHECK.dir

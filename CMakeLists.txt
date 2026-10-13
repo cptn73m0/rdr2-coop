@@ -13,7 +13,17 @@ add_library(rdr2_coop SHARED
     src/coop.cpp
     src/log.cpp
     src/persist.cpp
+    net/client.cpp
+    net/socket.cpp
+    net/frame.cpp
 )
+
+target_include_directories(rdr2_coop PRIVATE .)
+
+if(WIN32)
+    # Winsock для сетевого клиента
+    target_link_libraries(rdr2_coop PRIVATE ws2_32)
+endif()
 
 target_compile_definitions(rdr2_coop PRIVATE
     _CRT_SECURE_NO_WARNINGS
