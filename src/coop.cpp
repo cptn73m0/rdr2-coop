@@ -1,4 +1,5 @@
 ﻿#include "coop.h"
+#include "config.h"
 #include "ghost_frame.h"
 #include "log.h"
 #include "natives.h"
@@ -24,7 +25,7 @@ constexpr int   JOIN_DELAY_TICKS             = 60 * 60; // ~60s at 60 ticks/s
 
 unsigned int s_ghost = 0;
 unsigned int s_blip = 0;
-bool s_modelRequested = false;
+unsigned long long s_requestedModel = 0; // какая модель уже запрошена у движка
 bool s_modelLoadedLogged = false;
 bool s_playerJoinedNotified = false;
 unsigned int s_tickCount = 0;
@@ -166,11 +167,11 @@ void SetEntityHeading(unsigned int handle, float heading)
     Call();
 }
 
-unsigned int CreateGhostPed(const Vec3& at, float heading)
+unsigned int CreateGhostPed(unsigned long long model, const Vec3& at, float heading)
 {
     using namespace natives_api;
     Init(natives::CREATE_PED);
-    Push(GHOST_PED_MODEL);
+    Push(model);
     Push(at.x);
     Push(at.y);
     Push(at.z);
@@ -341,15 +342,12 @@ void DrawNameAt(const Vec3& worldPos, const char* name)
 netio::Client g_netClient;
 bool g_netStarted = false;
 
-// Конфигурация подключения (на этом этапе — захардкожено).
-const char* kServerHost = "127.0.0.1";
-const int   kServerPort = 7777;
-
 // Состояние для спавна от сервера (заполняется колбэком JoinOk).
 bool   s_pendingJoin = false;
 bool   s_pendingHasSaved = false;
 float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0, s_pendingHeading = 0;
 char   s_pendingName[64] = "";
+unsigned long long s_remoteModel = 0; // модель удалённого игрока (из PLAYER_JOINED)
 
 // Применение позиции из сетевого кадра к педу призрака.
 void ApplyRemoteFrame(const net::FramePayload& f)
@@ -377,13 +375,14 @@ void InitNetworkClient()
         }
     });
 
-    g_netClient.SetPlayerJoin([](const std::string& name) {
-        sh_log::Write("net: PLAYER_JOINED %s\n", name.c_str());
+    g_netClient.SetPlayerJoin([](const std::string& name, unsigned long long model) {
+        sh_log::Write("net: PLAYER_JOINED %s (model=0x%llX)\n", name.c_str(), model);
         std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s joined", name.c_str());
         s_playerJoinedNotified = true;
         s_subtitleTicksLeft = 8 * 60;
         std::snprintf(s_pedName, sizeof(s_pedName), "%s", name.c_str());
         std::snprintf(s_pendingName, sizeof(s_pendingName), "%s", name.c_str());
+        s_remoteModel = model;
     });
 
     g_netClient.SetFrame([](const net::FramePayload& f) {
@@ -396,7 +395,12 @@ void InitNetworkClient()
             SetEntityCoords(s_ghost, {0.f, 0.f, -100.f});
     });
 
-    g_netClient.Start(kServerHost, kServerPort, "Player");
+    // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
+    coopcfg::Config& cfg = coopcfg::Load();
+    sh_log::Write("net: connecting to %s:%d as '%s' (model=0x%llX)\n",
+                  cfg.serverHost.c_str(), cfg.serverPort,
+                  cfg.playerName.c_str(), cfg.pedModel);
+    g_netClient.Start(cfg.serverHost, cfg.serverPort, cfg.playerName, cfg.pedModel);
 }
 
 } // namespace
@@ -408,21 +412,24 @@ void Tick()
     if (!playerPed)
         return;
 
-    if (!s_modelRequested)
-    {
-        RequestModel(GHOST_PED_MODEL);
-        s_modelRequested = true;
-    }
-
     // Start the network client on first tick (replaces the old offline
     // emulation as the source of join events).
     InitNetworkClient();
 
-    if (!HasModelLoaded(GHOST_PED_MODEL))
+    // Модель для педа: чужая (из PLAYER_JOINED), иначе дефолтная.
+    unsigned long long wantModel = s_remoteModel ? s_remoteModel : GHOST_PED_MODEL;
+    if (s_requestedModel != wantModel)
+    {
+        RequestModel(wantModel);
+        s_requestedModel = wantModel;
+        s_modelLoadedLogged = false;
+    }
+
+    if (!HasModelLoaded(wantModel))
     {
         if (!s_modelLoadedLogged)
         {
-            sh_log::Write("coop: waiting for ped model 0x%llX to load\n", GHOST_PED_MODEL);
+            sh_log::Write("coop: waiting for ped model 0x%llX to load\n", wantModel);
             s_modelLoadedLogged = true;
         }
         return;
@@ -449,7 +456,7 @@ void Tick()
             spawn.z += 0.5f;
             sh_log::Write("coop: [SPAWN] %s next to host (first visit)\n", name);
         }
-        s_ghost = CreateGhostPed(spawn, heading);
+        s_ghost = CreateGhostPed(wantModel, spawn, heading);
         sh_log::Write(s_ghost ? "coop: ghost ped created (on join), handle=%u at (%.1f %.1f %.1f)\n"
                               : "coop: CREATE_PED returned 0\n",
                       s_ghost, spawn.x, spawn.y, spawn.z);

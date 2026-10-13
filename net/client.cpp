@@ -8,12 +8,15 @@
 namespace netio {
 
 namespace {
-// Локальный хелпер: собрать кадр Join (name) для отправки.
-std::vector<uint8_t> BuildJoinFrame(const std::string& name)
+// Локальный хелпер: собрать кадр Join (name + ped_model) для отправки.
+std::vector<uint8_t> BuildJoinFrame(const std::string& name, unsigned long long pedModel)
 {
     std::vector<uint8_t> pay;
     pay.push_back(static_cast<uint8_t>(name.size()));
     pay.insert(pay.end(), name.begin(), name.end());
+    // ped_model: u64 little-endian
+    for (int i = 0; i < 8; ++i)
+        pay.push_back(static_cast<uint8_t>((pedModel >> (8 * i)) & 0xFF));
     return MakeFrame((uint8_t)net::Msg::Join, pay.data(), (uint32_t)pay.size());
 }
 } // namespace
@@ -28,12 +31,14 @@ void Client::SetPlayerLeave(OnPlayerLeave cb) { onPlayerLeave_ = std::move(cb); 
 
 ClientState Client::State() const { return state_.load(); }
 
-void Client::Start(const std::string& host, int port, const std::string& name)
+void Client::Start(const std::string& host, int port, const std::string& name,
+                   unsigned long long pedModel)
 {
     Stop();
     host_ = host;
     port_ = port;
     name_ = name;
+    pedModel_ = pedModel;
     running_.store(true);
     state_.store(ClientState::Connecting);
     th_ = std::thread([this] { Run(); });
@@ -101,7 +106,7 @@ void Client::Run()
     state_.store(ClientState::JoinOk); // соединено; JOIN шлём дальше
 
     // Отправить JOIN.
-    SendRaw(BuildJoinFrame(name_));
+    SendRaw(BuildJoinFrame(name_, pedModel_));
 
     uint8_t buf[4096];
     while (running_.load())
@@ -144,8 +149,16 @@ void Client::Run()
             {
                 if (!p.empty())
                 {
-                    std::string nm(reinterpret_cast<char*>(p.data() + 1), p[0]);
-                    if (onPlayerJoin_) onPlayerJoin_(nm);
+                    uint8_t nl = p[0];
+                    std::string nm(reinterpret_cast<char*>(p.data() + 1), nl);
+                    unsigned long long model = 0;
+                    size_t off = 1u + nl;
+                    if (p.size() >= off + 8)
+                    {
+                        for (int i = 0; i < 8; ++i)
+                            model |= (unsigned long long)p[off + i] << (8 * i);
+                    }
+                    if (onPlayerJoin_) onPlayerJoin_(nm, model);
                 }
                 break;
             }

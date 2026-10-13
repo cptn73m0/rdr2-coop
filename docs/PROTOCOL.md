@@ -41,9 +41,10 @@
 
 ### 0x01 JOIN (клиент → сервер)
 ```
-payload: name_len:u8  name[name_len]
+payload: name_len:u8  name[name_len]  ped_model:u64
 ```
-Запрос клиента подключиться под именем `name`.
+Запрос клиента подключиться под именем `name` со своей моделью персонажа
+`ped_model` (хэш модели, чтобы другие игроки видели правильный скин).
 
 ### 0x02 JOIN_OK (сервер → клиент)
 ```
@@ -55,9 +56,9 @@ payload: session_id:u64  has_saved:u8  [x:f32 y:f32 z:f32 heading:f32]
 
 ### 0x03 PLAYER_JOINED (сервер → все остальные клиенты)
 ```
-payload: name_len:u8  name[name_len]
+payload: name_len:u8  name[name_len]  ped_model:u64
 ```
-Другой игрок подключился — клиент спавнит его педа.
+Другой игрок подключился — клиент спавнит его педа с указанной моделью.
 
 ### 0x04 FRAME (клиент → сервер → остальные клиенты)
 ```

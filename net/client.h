@@ -36,13 +36,14 @@ class Client {
 public:
     using OnFrame   = std::function<void(const net::FramePayload&)>;
     using OnJoinOk  = std::function<void(const JoinResult&)>;
-    using OnPlayerJoin = std::function<void(const std::string&)>;
+    using OnPlayerJoin = std::function<void(const std::string&, unsigned long long)>;
     using OnPlayerLeave= std::function<void(const std::string&)>;
 
     Client();
     ~Client();
 
-    void Start(const std::string& host, int port, const std::string& name);
+    void Start(const std::string& host, int port, const std::string& name,
+               unsigned long long pedModel);
     void Stop();
     void SendFrame(const net::FramePayload& f);
 
@@ -60,6 +61,7 @@ private:
     std::string host_;
     int         port_ = 0;
     std::string name_;
+    unsigned long long pedModel_ = 0;
 
     std::atomic<bool> running_{false};
     std::atomic<ClientState> state_{ClientState::Disconnected};

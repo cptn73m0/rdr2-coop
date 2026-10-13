@@ -13,6 +13,7 @@ add_library(rdr2_coop SHARED
     src/coop.cpp
     src/log.cpp
     src/persist.cpp
+    src/config.cpp
     net/client.cpp
     net/socket.cpp
     net/frame.cpp
