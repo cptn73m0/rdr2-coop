@@ -2,6 +2,7 @@
 #include "ghost_frame.h"
 #include "log.h"
 #include "natives.h"
+#include "persist.h"
 
 #include <cmath>
 #include <cstdio>
@@ -49,6 +50,14 @@ unsigned int GetPlayerPedFor(unsigned int player)
     Init(natives::GET_PLAYER_PED);
     Push(player);
     return static_cast<unsigned int>(Call());
+}
+
+float GetEntityHeading(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::GET_ENTITY_HEADING);
+    Push(handle);
+    return CallFloat();
 }
 
 Vec3 GetEntityCoords(unsigned int handle)
@@ -364,13 +373,29 @@ void Tick()
     }
 
     // Spawn the ghost ONLY on a join event (not at world entry).
+    // Persistence: a returning player spawns where they last were (their
+    // saved last-position); a first-time player spawns next to us.
     if (!s_ghost && s_playerJoinedNotified)
     {
-        Vec3 pc = GetEntityCoords(playerPed);
-        Vec3 spawn = pc;
-        spawn.x += SPAWN_DISTANCE;
-        spawn.z += 0.5f;
-        s_ghost = CreateGhostPed(spawn, 90.f);
+        Vec3 spawn;
+        float heading = 90.f;
+        float sx, sy, sz, shd;
+        if (persist::LoadLastPosition(name, sx, sy, sz, shd))
+        {
+            spawn = {sx, sy, sz};
+            heading = shd;
+            sh_log::Write("coop: [SPAWN] %s on saved position (%.1f %.1f %.1f)\n",
+                          name, sx, sy, sz);
+        }
+        else
+        {
+            Vec3 pc = GetEntityCoords(playerPed);
+            spawn = pc;
+            spawn.x += SPAWN_DISTANCE;
+            spawn.z += 0.5f;
+            sh_log::Write("coop: [SPAWN] %s next to host (first visit)\n", name);
+        }
+        s_ghost = CreateGhostPed(spawn, heading);
         sh_log::Write(s_ghost ? "coop: ghost ped created (on join), handle=%u at (%.1f %.1f %.1f)\n"
                               : "coop: CREATE_PED returned 0\n",
                       s_ghost, spawn.x, spawn.y, spawn.z);
@@ -409,6 +434,17 @@ void Tick()
     {
         Vec3 gp = GetEntityCoords(s_ghost);
         UpdateBlipCoords(s_blip, gp);
+    }
+
+    // Persist the ped's position regularly so a returning player spawns on
+    // their last known coords. Write at a low frequency to avoid hammering
+    // the file (every ~5s at 60 ticks/s).
+    if (s_ghost && s_pedName[0] && DoesEntityExist(s_ghost) &&
+        (s_tickCount % (5 * 60) == 1))
+    {
+        Vec3 gp = GetEntityCoords(s_ghost);
+        float hd = GetEntityHeading(s_ghost);
+        persist::SaveLastPosition(s_pedName, gp.x, gp.y, gp.z, hd);
     }
 
     // Small "Player X joined" subtitle on screen while a join happened

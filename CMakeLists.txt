@@ -12,6 +12,7 @@ add_library(rdr2_coop SHARED
     src/script_hook.cpp
     src/coop.cpp
     src/log.cpp
+    src/persist.cpp
 )
 
 target_compile_definitions(rdr2_coop PRIVATE
