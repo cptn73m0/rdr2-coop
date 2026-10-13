@@ -345,6 +345,9 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 LogLine("[-] " + name + " вышел");
                 sock->Close();
                 goto done;
+            case net::Msg::Died:
+                LogLine("[x] " + name + " умер (игрок погиб в мире, " + peerIp + ")");
+                break;
             default:
                 break;
             }

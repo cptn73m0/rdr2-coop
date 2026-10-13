@@ -66,6 +66,12 @@ void Client::SendFrame(const net::FramePayload& f)
     SendRaw(frame);
 }
 
+void Client::SendDied()
+{
+    // Сообщение без payload: сервер выводит лог о смерти игрока.
+    SendRaw(MakeFrame((uint8_t)net::Msg::Died, nullptr, 0));
+}
+
 void Client::Run()
 {
     if (!netio::Init())

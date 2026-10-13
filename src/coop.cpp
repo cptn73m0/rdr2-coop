@@ -25,6 +25,8 @@ constexpr int   JOIN_DELAY_TICKS             = 60 * 60; // ~60s at 60 ticks/s
 
 unsigned int s_ghost = 0;
 unsigned int s_blip = 0;
+bool s_ghostDead = false;
+bool s_localDiedNotified = false; // отправили ли серверу Died для своего педа
 unsigned long long s_requestedModel = 0; // какая модель уже запрошена у движка
 bool s_modelLoadedLogged = false;
 bool s_playerJoinedNotified = false;
@@ -94,6 +96,14 @@ bool DoesEntityExist(unsigned int handle)
 {
     using namespace natives_api;
     Init(natives::DOES_ENTITY_EXIST);
+    Push(handle);
+    return Call() != 0;
+}
+
+bool IsPedDeadOrDying(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_DEAD_OR_DYING);
     Push(handle);
     return Call() != 0;
 }
@@ -256,6 +266,23 @@ void UpdateBlipCoords(unsigned int blip, const Vec3& at)
     Push(at.x);
     Push(at.y);
     Push(at.z);
+    Call();
+}
+
+// Пометить метку как «труп»: добавить модификатор CULL_ON_DEATH (крестикуляция
+// при смерти) и модификатор трупа-животного (визуальный «крестик»).
+// Надёжность: модификаторы накладываются поверх базового FRIENDLY.
+void SetBlipAsDead(unsigned int blip)
+{
+    if (!blip) return;
+    using namespace natives_api;
+    Init(natives::MAP_BLIP_ADD_MODIFIER);
+    Push(blip);
+    Push(natives::BLIP_MODIFIER_CULL_ON_DEATH);
+    Call();
+    Init(natives::MAP_BLIP_ADD_MODIFIER);
+    Push(blip);
+    Push(natives::BLIP_ANIMAL_DEAD);
     Call();
 }
 
@@ -483,6 +510,30 @@ void Tick()
     {
         Vec3 gp = GetEntityCoords(s_ghost);
         UpdateBlipCoords(s_blip, gp);
+    }
+
+    // Смерть удалённого игрока: метка-крестик, скрыть имя и показать
+    // короткое оповещение (однократно).
+    if (s_ghost && DoesEntityExist(s_ghost) && IsPedDeadOrDying(s_ghost) && !s_ghostDead)
+    {
+        s_ghostDead = true;
+        sh_log::Write("coop: [DEAD] %s\n", s_pedName[0] ? s_pedName : "Player");
+        if (s_blip)
+            SetBlipAsDead(s_blip);
+        // короткое оповещение, как при подключении
+        std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s is dead",
+                      s_pedName[0] ? s_pedName : "Player");
+        s_playerJoinedNotified = true; // переиспользуем механизм таймера оповещения
+        s_subtitleTicksLeft = 8 * 60;
+        s_pedName[0] = '\0'; // имя над головой скрыто
+    }
+
+    // Смерть локального игрока: сообщить серверу (лог в консоли), однократно.
+    if (g_netStarted && !s_localDiedNotified &&
+        DoesEntityExist(playerPed) && IsPedDeadOrDying(playerPed))
+    {
+        s_localDiedNotified = true;
+        g_netClient.SendDied();
     }
 
     // Persist the ped's position regularly so a returning player spawns on

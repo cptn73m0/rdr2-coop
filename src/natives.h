@@ -57,4 +57,11 @@ constexpr unsigned long long GET_PED_BONE_COORDS          = 0x17C07FC640E86B4Eul
 constexpr unsigned long long GET_SCREEN_COORD_FROM_WORLD_COORD = 0xCB50D7AFCC8B0EC6ull;
 constexpr unsigned long long GET_DISTANCE_BETWEEN_COORDS  = 0x0BE7F4E3CDBAFB28ull;
 
+// Проверка смерти педа (для метки-крестика и скрытия имени трупа).
+constexpr unsigned long long IS_PED_DEAD_OR_DYING          = 0x3317DEDB88C95038ull;
+
+// Модификаторы метки: «скрыть при смерти» и «труп» (крестик на карте).
+constexpr unsigned long long BLIP_MODIFIER_CULL_ON_DEATH   = 0xAA235D8Bull;
+constexpr unsigned long long BLIP_ANIMAL_DEAD              = 0x4FE13DF7ull;
+
 } // namespace natives

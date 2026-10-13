@@ -46,6 +46,8 @@ public:
                unsigned long long pedModel);
     void Stop();
     void SendFrame(const net::FramePayload& f);
+    // Сообщить серверу, что локальный игрок умер (лог в консоли сервера).
+    void SendDied();
 
     void SetFrame(OnFrame cb);
     void SetJoinOk(OnJoinOk cb);
