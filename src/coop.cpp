@@ -344,8 +344,7 @@ bool g_netStarted = false;
 
 // Состояние для спавна от сервера (заполняется колбэком JoinOk).
 bool   s_pendingJoin = false;
-bool   s_pendingHasSaved = false;
-float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0, s_pendingHeading = 0;
+float  s_pendingHeading = 0;
 char   s_pendingName[64] = "";
 unsigned long long s_remoteModel = 0; // модель удалённого игрока (из PLAYER_JOINED)
 
@@ -367,12 +366,8 @@ void InitNetworkClient()
     g_netClient.SetJoinOk([](const netio::JoinResult& jr) {
         sh_log::Write("net: JOIN_OK (hasSaved=%d) from server\n", jr.hasSaved ? 1 : 0);
         s_pendingJoin = true;
-        s_pendingHasSaved = jr.hasSaved;
         if (jr.hasSaved)
-        {
-            s_pendingX = jr.x; s_pendingY = jr.y; s_pendingZ = jr.z;
             s_pendingHeading = jr.heading;
-        }
     });
 
     g_netClient.SetPlayerJoin([](const std::string& name, unsigned long long model) {
@@ -435,27 +430,20 @@ void Tick()
         return;
     }
 
-    // Spawn the remote player's ped on a real JOIN_OK event from the server.
-    // Persistence comes from the server's saved position (s_pendingHasSaved).
-    if (!s_ghost && (s_pendingJoin || s_playerJoinedNotified))
+    // Spawn the remote player's ped ONLY when another player joins
+    // (PLAYER_JOINED). Own JOIN_OK must NOT spawn a ped.
+    if (!s_ghost && s_playerJoinedNotified)
     {
         Vec3 spawn;
         float heading = s_pendingHeading;
         const char* name = s_pendingName[0] ? s_pendingName : "Player";
-        if (s_pendingHasSaved && !(s_pendingX == 0 && s_pendingY == 0 && s_pendingZ == 0))
-        {
-            spawn = {s_pendingX, s_pendingY, s_pendingZ};
-            sh_log::Write("coop: [SPAWN] %s on server saved position (%.1f %.1f %.1f)\n",
-                          name, spawn.x, spawn.y, spawn.z);
-        }
-        else
-        {
-            Vec3 pc = GetEntityCoords(playerPed);
-            spawn = pc;
-            spawn.x += SPAWN_DISTANCE;
-            spawn.z += 0.5f;
-            sh_log::Write("coop: [SPAWN] %s next to host (first visit)\n", name);
-        }
+        // Другой игрок не передаёт своей сохранённой позиции в этой версии
+        // протокола — спавним рядом с хостом (первый визит).
+        Vec3 pc = GetEntityCoords(playerPed);
+        spawn = pc;
+        spawn.x += SPAWN_DISTANCE;
+        spawn.z += 0.5f;
+        sh_log::Write("coop: [SPAWN] %s next to host (first visit)\n", name);
         s_ghost = CreateGhostPed(wantModel, spawn, heading);
         sh_log::Write(s_ghost ? "coop: ghost ped created (on join), handle=%u at (%.1f %.1f %.1f)\n"
                               : "coop: CREATE_PED returned 0\n",
@@ -506,6 +494,20 @@ void Tick()
         Vec3 gp = GetEntityCoords(s_ghost);
         float hd = GetEntityHeading(s_ghost);
         persist::SaveLastPosition(s_pedName, gp.x, gp.y, gp.z, hd);
+    }
+
+    // Отправка собственного GhostFrame на сервер (каждые ~4 тика, чтобы
+    // сервер видел координаты игрока в таблице состояния и ретранслировал
+    // их другим игрокам).
+    if (g_netStarted && (s_tickCount % 4 == 1))
+    {
+        Vec3 pc = GetEntityCoords(playerPed);
+        net::FramePayload fp{};
+        fp.x = pc.x; fp.y = pc.y; fp.z = pc.z;
+        fp.heading = GetEntityHeading(playerPed);
+        fp.move = 0;
+        fp.seq = s_tickCount;
+        g_netClient.SendFrame(fp);
     }
 
     // Small "Player X joined" subtitle on screen while a join happened

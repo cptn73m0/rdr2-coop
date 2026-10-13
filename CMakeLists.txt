@@ -32,6 +32,11 @@ target_compile_definitions(rdr2_coop PRIVATE
     NOMINMAX
 )
 
+# Русскоязычные строки в конфиге/логах: строковые литералы в UTF-8 (MSVC).
+if(MSVC)
+    target_compile_options(rdr2_coop PRIVATE /utf-8)
+endif()
+
 # The plugin resolves ScriptHookRDR2 exports at runtime, so no import lib
 # is required. Set output extension to .asi for the game's ASI loader.
 set_target_properties(rdr2_coop PROPERTIES

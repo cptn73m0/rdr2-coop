@@ -53,8 +53,11 @@ void WriteDefaultIni()
     fputs("server_port = 7777\n\n", f);
     fputs("# Ваш ник в игре (виден другим игрокам):\n", f);
     fputs("player_name = Player\n\n", f);
-    fputs("# Модель вашего персонажа (хэш). Примеры:\n", f);
-    fputs("#   a_m_m_armtownfolk_01 = 0xCF7E73BE (горожанин)\n", f);
+    fputs("# Модель, которой вас увидят другие игроки (хэш).\n", f);
+    fputs("# Примеры:\n", f);
+    fputs("#   a_m_m_armtownfolk_01  = 0xCF7E73BE (горожанин)\n", f);
+    fputs("#   a_f_m_armtownfolk_01  = 0x9854FB06 (горожанка)\n", f);
+    fputs("#   a_m_m_rancher_01      = 0x54D8BE8E (ранчер)\n", f);
     fputs("#   a_c_dogstreet_01      = 0x3B313FCE (собака)\n", f);
     fputs("ped_model = 0xCF7E73BE\n", f);
     fclose(f);

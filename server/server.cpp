@@ -27,6 +27,7 @@
 #ifdef _WIN32
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
+#  include <windows.h>
 #endif
 
 #include "net/frame.h"
@@ -367,7 +368,19 @@ done:
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    // UTF-8 в консоли: иначе русский текст отображается «кракозябрами».
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
     if (!netio::Init()) { std::cerr << "socket init failed\n"; return 1; }
+
+    // Русский вывод в консоли Windows (UTF-8 вместо крякозябров).
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
 
     int port = argc > 1 ? std::atoi(argv[1]) : 7777;
 

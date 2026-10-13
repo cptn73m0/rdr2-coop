@@ -19,6 +19,11 @@ target_compile_definitions(rdr2_coop_server PRIVATE
     NOMINMAX
 )
 
+# Русский текст в консоли: строковые литералы в UTF-8 (MSVC).
+if(MSVC)
+    target_compile_options(rdr2_coop_server PRIVATE /utf-8)
+endif()
+
 target_include_directories(rdr2_coop_server PRIVATE ..)
 
 if(WIN32)
