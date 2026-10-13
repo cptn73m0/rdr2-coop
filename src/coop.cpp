@@ -2,6 +2,7 @@
 #include "ghost_frame.h"
 #include "log.h"
 #include "natives.h"
+#include "net/client.h"
 #include "persist.h"
 
 #include <cmath>
@@ -30,7 +31,7 @@ unsigned int s_tickCount = 0;
 char s_joinedName[64] = "";
 unsigned int s_subtitleTicksLeft = 0;   // remaining ticks the subtitle is shown
 
-// --- Emulated join notification (replaced later by a real server event) ---
+// --- Emulated join notification (kept as offline fallback) ---
 bool CheckJoinEvent(char (&outName)[64])
 {
     // After the local player is in the world and ~60s passed, emulate a
@@ -336,6 +337,68 @@ void DrawNameAt(const Vec3& worldPos, const char* name)
     Call();
 }
 
+// --- Network client -----------------------------------------------------
+netio::Client g_netClient;
+bool g_netStarted = false;
+
+// Конфигурация подключения (на этом этапе — захардкожено).
+const char* kServerHost = "127.0.0.1";
+const int   kServerPort = 7777;
+
+// Состояние для спавна от сервера (заполняется колбэком JoinOk).
+bool   s_pendingJoin = false;
+bool   s_pendingHasSaved = false;
+float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0, s_pendingHeading = 0;
+char   s_pendingName[64] = "";
+
+// Применение позиции из сетевого кадра к педу призрака.
+void ApplyRemoteFrame(const net::FramePayload& f)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    Vec3 p{f.x, f.y, f.z};
+    SetEntityCoords(s_ghost, p);
+    SetEntityHeading(s_ghost, f.heading);
+}
+
+// Регистрация колбэков и запуск сетевого клиента.
+void InitNetworkClient()
+{
+    if (g_netStarted) return;
+    g_netStarted = true;
+
+    g_netClient.SetJoinOk([](const netio::JoinResult& jr) {
+        sh_log::Write("net: JOIN_OK (hasSaved=%d) from server\n", jr.hasSaved ? 1 : 0);
+        s_pendingJoin = true;
+        s_pendingHasSaved = jr.hasSaved;
+        if (jr.hasSaved)
+        {
+            s_pendingX = jr.x; s_pendingY = jr.y; s_pendingZ = jr.z;
+            s_pendingHeading = jr.heading;
+        }
+    });
+
+    g_netClient.SetPlayerJoin([](const std::string& name) {
+        sh_log::Write("net: PLAYER_JOINED %s\n", name.c_str());
+        std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s joined", name.c_str());
+        s_playerJoinedNotified = true;
+        s_subtitleTicksLeft = 8 * 60;
+        std::snprintf(s_pedName, sizeof(s_pedName), "%s", name.c_str());
+        std::snprintf(s_pendingName, sizeof(s_pendingName), "%s", name.c_str());
+    });
+
+    g_netClient.SetFrame([](const net::FramePayload& f) {
+        ApplyRemoteFrame(f);
+    });
+
+    g_netClient.SetPlayerLeave([](const std::string& name) {
+        sh_log::Write("net: PLAYER_LEFT %s\n", name.c_str());
+        if (s_ghost && DoesEntityExist(s_ghost))
+            SetEntityCoords(s_ghost, {0.f, 0.f, -100.f});
+    });
+
+    g_netClient.Start(kServerHost, kServerPort, "Player");
+}
+
 } // namespace
 
 void Tick()
@@ -351,16 +414,9 @@ void Tick()
         s_modelRequested = true;
     }
 
-    // Emulate: does a remote player "join" this tick?
-    char name[64];
-    if (CheckJoinEvent(name) && !s_ghost)
-    {
-        std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s joined", name);
-        sh_log::Write("coop: [JOIN] %s\n", s_joinedName);
-        s_playerJoinedNotified = true;
-        s_subtitleTicksLeft = 8 * 60; // show for ~8 seconds
-        // spawn triggered below once the model is loaded
-    }
+    // Start the network client on first tick (replaces the old offline
+    // emulation as the source of join events).
+    InitNetworkClient();
 
     if (!HasModelLoaded(GHOST_PED_MODEL))
     {
@@ -372,20 +428,18 @@ void Tick()
         return;
     }
 
-    // Spawn the ghost ONLY on a join event (not at world entry).
-    // Persistence: a returning player spawns where they last were (their
-    // saved last-position); a first-time player spawns next to us.
-    if (!s_ghost && s_playerJoinedNotified)
+    // Spawn the remote player's ped on a real JOIN_OK event from the server.
+    // Persistence comes from the server's saved position (s_pendingHasSaved).
+    if (!s_ghost && (s_pendingJoin || s_playerJoinedNotified))
     {
         Vec3 spawn;
-        float heading = 90.f;
-        float sx, sy, sz, shd;
-        if (persist::LoadLastPosition(name, sx, sy, sz, shd))
+        float heading = s_pendingHeading;
+        const char* name = s_pendingName[0] ? s_pendingName : "Player";
+        if (s_pendingHasSaved && !(s_pendingX == 0 && s_pendingY == 0 && s_pendingZ == 0))
         {
-            spawn = {sx, sy, sz};
-            heading = shd;
-            sh_log::Write("coop: [SPAWN] %s on saved position (%.1f %.1f %.1f)\n",
-                          name, sx, sy, sz);
+            spawn = {s_pendingX, s_pendingY, s_pendingZ};
+            sh_log::Write("coop: [SPAWN] %s on server saved position (%.1f %.1f %.1f)\n",
+                          name, spawn.x, spawn.y, spawn.z);
         }
         else
         {

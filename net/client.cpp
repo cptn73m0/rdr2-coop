@@ -21,6 +21,13 @@ std::vector<uint8_t> BuildJoinFrame(const std::string& name)
 Client::Client() = default;
 Client::~Client() { Stop(); }
 
+void Client::SetFrame(OnFrame cb)          { onFrame_ = std::move(cb); }
+void Client::SetJoinOk(OnJoinOk cb)        { onJoinOk_ = std::move(cb); }
+void Client::SetPlayerJoin(OnPlayerJoin cb){ onPlayerJoin_ = std::move(cb); }
+void Client::SetPlayerLeave(OnPlayerLeave cb) { onPlayerLeave_ = std::move(cb); }
+
+ClientState Client::State() const { return state_.load(); }
+
 void Client::Start(const std::string& host, int port, const std::string& name)
 {
     Stop();

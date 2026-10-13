@@ -6,6 +6,7 @@
 // колбэки). Работает в фоновом потоке, чтобы не блокировать игровой tick.
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -33,35 +34,27 @@ struct JoinResult {
 
 class Client {
 public:
-    // Колбэки из игрового слоя. Вызываются из фонового потока клиента.
     using OnFrame   = std::function<void(const net::FramePayload&)>;
     using OnJoinOk  = std::function<void(const JoinResult&)>;
-    using OnPlayerJoin = std::function<void(const std::string& name)>;
-    using OnPlayerLeave= std::function<void(const std::string& name)>;
+    using OnPlayerJoin = std::function<void(const std::string&)>;
+    using OnPlayerLeave= std::function<void(const std::string&)>;
 
     Client();
     ~Client();
 
-    // Запустить подключение к host:port с именем name.
     void Start(const std::string& host, int port, const std::string& name);
-
-    // Остановить (разорвать соединение).
     void Stop();
-
-    // Отправить свой кадр состояния (вызывается из игрового tick).
     void SendFrame(const net::FramePayload& f);
 
-    // Регистрация колбэков.
-    void SetFrame(OnFrame cb)        { onFrame_ = std::move(cb); }
-    void SetJoinOk(OnJoinOk cb)      { onJoinOk_ = std::move(cb); }
-    void SetPlayerJoin(OnPlayerJoin cb) { onPlayerJoin_ = std::move(cb); }
-    void SetPlayerLeave(OnPlayerLeave cb) { onPlayerLeave_ = std::move(cb); }
+    void SetFrame(OnFrame cb);
+    void SetJoinOk(OnJoinOk cb);
+    void SetPlayerJoin(OnPlayerJoin cb);
+    void SetPlayerLeave(OnPlayerLeave cb);
 
-    ClientState State() const { return state_.load(); }
+    ClientState State() const;
 
 private:
     void Run();
-    void ProcessIncoming();
     bool SendRaw(const std::vector<uint8_t>& frame);
 
     std::string host_;
@@ -73,7 +66,7 @@ private:
     std::thread th_;
 
     std::unique_ptr<Socket> sock_;
-    FrameReader reader_;
+    netio::FrameReader reader_;
 
     OnFrame onFrame_;
     OnJoinOk onJoinOk_;
