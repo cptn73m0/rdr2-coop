@@ -26,6 +26,10 @@ constexpr unsigned long long SET_ENTITY_COLLISION        = 0xF66F820909453B8Cull
 constexpr unsigned long long SET_ENTITY_COMPLETELY_DISABLE_COLLISION = 0xE0580EC84813875Aull;
 constexpr unsigned long long FREEZE_ENTITY_POSITION      = 0x7D9EFB7AD6B19754ull;
 constexpr unsigned long long DELETE_ENTITY               = 0x4CD38C78BD19A497ull;
+// DELETE_PED (0xCC0EF140F99365C5) принимает Ped* (указатель на handle,
+// зануляет его) — НЕ значение; иначе пед не удаляется (как REMOVE_BLIP).
+constexpr unsigned long long DELETE_PED                   = 0xCC0EF140F99365C5ull;
+constexpr unsigned long long SET_ENTITY_AS_NO_LONGER_NEEDED = 0x4971D2F8162B9674ull;
 constexpr unsigned long long CREATE_OBJECT               = 0x509D5878EB39E842ull;
 constexpr unsigned long long SET_OBJECT_AS_NO_LONGER_NEEDED = 0x3AE22DEB5BA5A3E6ull;
 constexpr unsigned long long SET_ENTITY_AS_MISSION_ENTITY = 0xDC19C288082E586Eull;

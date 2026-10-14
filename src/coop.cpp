@@ -453,9 +453,28 @@ void CleanupGhost()
     if (s_ghost && DoesEntityExist(s_ghost))
     {
         using namespace natives_api;
-        Init(natives::DELETE_ENTITY);
+        // 1) Снимаем mission-флаг: помеченные mission-entity педы движок
+        //    может не давать удалять.
+        Init(natives::SET_ENTITY_AS_MISSION_ENTITY);
         Push(s_ghost);
+        Push(false);
+        Push(false);
         Call();
+        // 2) DELETE_PED принимает Ped* (указатель на handle!) — как REMOVE_BLIP.
+        //    Передача handle значением молча НЕ удаляет педа.
+        int h = static_cast<int>(s_ghost);
+        Init(natives::DELETE_PED);
+        Push(reinterpret_cast<unsigned long long>(&h));
+        Call();
+        // 3) Если пед всё ещё существует — доп. попытка через no-longer-needed.
+        if (DoesEntityExist(s_ghost))
+        {
+            Init(natives::SET_ENTITY_AS_NO_LONGER_NEEDED);
+            Push(reinterpret_cast<unsigned long long>(&h));
+            Call();
+        }
+        sh_log::Write("coop: ped %d deleted, exists now=%d\n",
+                      s_ghost, DoesEntityExist(s_ghost) ? 1 : 0);
     }
     s_ghost = 0;
     s_ghostDead = false;
