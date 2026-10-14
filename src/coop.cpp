@@ -383,6 +383,7 @@ net::FramePayload s_lastFrame{};
 bool s_haveFrame = false;
 // Флаг «игрок вышел»: обработка (удаление педа) произойдёт в Tick().
 bool s_pendingLeave = false;
+char s_leaveName[64] = ""; // имя ушедшего игрока (для надписи «left»)
 // Последнее применённое к педу состояние движения (сброс при выходе).
 uint8_t s_lastMoveState = 0xFF;
 // Последняя цель задачи движения (чтобы не перезадавать задачу каждый кадр).
@@ -421,20 +422,31 @@ void ApplyRemoteFrame(const net::FramePayload& f)
     }
     else
     {
-        // Idle (и RideHorse пока что): интерполяция/телепорт как раньше.
+        // Idle (и RideHorse пока что): интерполяция/телепорт. Двигаем педа
+        // ТОЛЬКО если цель заметно сдвинулась (>0.4 м), иначе он будет
+        // «прыгать на месте» (падает на землю, следующий кадр возвращает
+        // его на прежнюю высоту). После перемещения прижимаем к земле.
         float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
         float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (dist > 0.001f)
         {
-            if (dist > TELEPORT_DIST)
-                SetEntityCoords(s_ghost, p); // большой скачок — телепорт
-            else
+            if (dist > TELEPORT_DIST || dist > 0.4f)
             {
-                Vec3 n;
-                n.x = cur.x + dx * LERP_FACTOR;
-                n.y = cur.y + dy * LERP_FACTOR;
-                n.z = cur.z + dz * LERP_FACTOR;
-                SetEntityCoords(s_ghost, n);
+                if (dist > TELEPORT_DIST)
+                    SetEntityCoords(s_ghost, p); // большой скачок — телепорт
+                else
+                {
+                    Vec3 n;
+                    n.x = cur.x + dx * LERP_FACTOR;
+                    n.y = cur.y + dy * LERP_FACTOR;
+                    n.z = cur.z + dz * LERP_FACTOR;
+                    SetEntityCoords(s_ghost, n);
+                }
+                // прижать к земле, чтобы пед не «парил» над поверхностью
+                using namespace natives_api;
+                Init(natives::PLACE_OBJECT_ON_GROUND_PROPERLY);
+                Push(s_ghost);
+                Call();
             }
         }
         ApplyMoveToGhost(s_ghost, move, p);
@@ -603,6 +615,7 @@ void InitNetworkClient()
 
     g_netClient.SetPlayerLeave([](const std::string& name) {
         sh_log::Write("net: PLAYER_LEFT %s\n", name.c_str());
+        std::snprintf(s_leaveName, sizeof(s_leaveName), "%s", name.c_str());
         s_pendingLeave = true; // физическое удаление сделает Tick()
     });
 
@@ -652,7 +665,16 @@ void Tick()
     if (s_pendingLeave)
     {
         s_pendingLeave = false;
+        // Надпись «Player X left» (как joined/dead). Имя сохраняем заранее,
+        // т.к. CleanupGhost() его затрёт.
+        char leaveText[96];
+        std::snprintf(leaveText, sizeof(leaveText), "Player %s left",
+                      s_leaveName[0] ? s_leaveName : "Player");
         CleanupGhost();
+        std::snprintf(s_joinedName, sizeof(s_joinedName), "%s", leaveText);
+        s_playerJoinedNotified = true;
+        s_subtitleTicksLeft = 8 * 60;
+        s_leaveName[0] = '\0';
     }
 
     // Спавн педа: только при PLAYER_JOINED (не при своём JOIN_OK).
