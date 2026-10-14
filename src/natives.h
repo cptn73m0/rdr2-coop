@@ -60,6 +60,12 @@ constexpr unsigned long long GET_DISTANCE_BETWEEN_COORDS  = 0x0BE7F4E3CDBAFB28ul
 // Проверка смерти педа (для метки-крестика и скрытия имени трупа).
 constexpr unsigned long long IS_PED_DEAD_OR_DYING          = 0x3317DEDB88C95038ull;
 
+// Определение/применение состояния движения (Фаза 4 — анимации).
+constexpr unsigned long long IS_PED_RUNNING                = 0xC5286FFC176F28A2ull;
+constexpr unsigned long long IS_PED_WALKING                = 0xDE4C184B2B9B071Aull;
+constexpr unsigned long long IS_PED_ON_MOUNT               = 0x460BC76A0E10655Eull;
+constexpr unsigned long long TASK_GO_STRAIGHT_TO_COORD     = 0xD76B57B44F1E6F8Bull;
+
 // Модификаторы метки: «скрыть при смерти» и «труп» (крестик на карте).
 constexpr unsigned long long BLIP_MODIFIER_CULL_ON_DEATH   = 0xAA235D8Bull;
 constexpr unsigned long long BLIP_ANIMAL_DEAD              = 0x4FE13DF7ull;

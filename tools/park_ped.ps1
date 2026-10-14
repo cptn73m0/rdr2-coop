@@ -13,6 +13,7 @@ param(
     [double]$TargetY = -156.2,
     [double]$TargetZ = 123.9,
     [double]$TargetHeading = 0.0,
+    [int]$Move = 0,               # MoveState: 0=Idle, 1=Walk, 2=Run, 3=RideHorse
     [int]$HoldSeconds = 120
 )
 
@@ -54,7 +55,7 @@ try {
         foreach ($v in @([single]$TargetX,[single]$TargetY,[single]$TargetZ,[single]$TargetHeading)) {
             foreach ($bb in [BitConverter]::GetBytes($v)) { $pay2.Add($bb) }
         }
-        $pay2.Add([byte]0)
+        $pay2.Add([byte]$Move)   # move — состояние движения
         for ($k = 0; $k -lt 7; $k++) { $pay2.Add([byte]0) }   # padding
         for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte](($seq -shr (8 * $k)) -band 0xFF)) }
         $seq++

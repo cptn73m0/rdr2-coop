@@ -383,6 +383,12 @@ net::FramePayload s_lastFrame{};
 bool s_haveFrame = false;
 // Флаг «игрок вышел»: обработка (удаление педа) произойдёт в Tick().
 bool s_pendingLeave = false;
+// Последнее применённое к педу состояние движения (сброс при выходе).
+uint8_t s_lastMoveState = 0xFF;
+
+// Применить move-состояние к педу призрака (объявлено здесь — используется
+// в ApplyRemoteFrame ниже; определение дальше в файле).
+void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target);
 
 // Применение позиции из сетевого кадра к педу призрака.
 // Вызывается ИЗ Tick() (игровой поток).
@@ -401,24 +407,36 @@ void ApplyRemoteFrame(const net::FramePayload& f)
 
     Vec3 cur = GetEntityCoords(s_ghost);
     Vec3 p{f.x, f.y, f.z};
-    float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
-    float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if (dist <= 0.001f) return;
 
-    if (dist > TELEPORT_DIST)
+    const uint8_t move = static_cast<uint8_t>(f.move);
+    if (move == static_cast<uint8_t>(coop::MoveState::Walk) ||
+        move == static_cast<uint8_t>(coop::MoveState::Run))
     {
-        // Большой скачок — телепорт (спавн или игрок далеко перенёсся).
-        SetEntityCoords(s_ghost, p);
+        // Движение задачей: не телепортируем и не лерпим — просто
+        // перенаправляем задачу идти к текущей точке кадра (топает ножками).
+        ApplyMoveToGhost(s_ghost, move, p);
     }
     else
     {
-        // Плавное сближение.
-        Vec3 n;
-        n.x = cur.x + dx * LERP_FACTOR;
-        n.y = cur.y + dy * LERP_FACTOR;
-        n.z = cur.z + dz * LERP_FACTOR;
-        SetEntityCoords(s_ghost, n);
+        // Idle (и RideHorse пока что): интерполяция/телепорт как раньше.
+        float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
+        float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist > 0.001f)
+        {
+            if (dist > TELEPORT_DIST)
+                SetEntityCoords(s_ghost, p); // большой скачок — телепорт
+            else
+            {
+                Vec3 n;
+                n.x = cur.x + dx * LERP_FACTOR;
+                n.y = cur.y + dy * LERP_FACTOR;
+                n.z = cur.z + dz * LERP_FACTOR;
+                SetEntityCoords(s_ghost, n);
+            }
+        }
+        ApplyMoveToGhost(s_ghost, move, p);
     }
+
     // Поворот интерполируем мягко: кратчайшая дуга.
     float h = f.heading - GetEntityHeading(s_ghost);
     while (h > 180.f) h -= 360.f;
@@ -450,6 +468,54 @@ void CleanupGhost()
     s_requestedModel = 0;
     s_modelLoadedLogged = false;
     s_haveFrame = false;
+    s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
+}
+
+// Определить move-состояние локального игрока для кадра (передаётся
+// удалённой стороне для выбора анимации педа). Приоритет: верховая езда >
+// бег > ходьба > стояние.
+uint8_t DetectLocalMoveState(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_ON_MOUNT); Push(ped);
+    if (Call()) return static_cast<uint8_t>(coop::MoveState::RideHorse);
+    Init(natives::IS_PED_RUNNING); Push(ped);
+    if (Call()) return static_cast<uint8_t>(coop::MoveState::Run);
+    Init(natives::IS_PED_WALKING); Push(ped);
+    if (Call()) return static_cast<uint8_t>(coop::MoveState::Walk);
+    return static_cast<uint8_t>(coop::MoveState::Idle);
+}
+
+// Применить move-состояние к педу призрака (вызывается из Tick, игровой поток).
+// Для движения ставим задачу идти в точку кадра (пед топает ножками, а не
+// телепортируется); для стояния — TASK_STAND_STILL. Пустая/стабильная задача
+// НЕ ставится каждый тик (избегаем дёрганья) — применяем при смене состояния.
+void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
+{
+    using namespace natives_api;
+    if (move == static_cast<uint8_t>(coop::MoveState::Walk) ||
+        move == static_cast<uint8_t>(coop::MoveState::Run))
+    {
+        // Движение задачей: перезадаём каждый тик к текущей цели кадра,
+        // чтобы пед топал ножками (анимация), а не «скользил».
+        const float speed = (move == static_cast<uint8_t>(coop::MoveState::Run)) ? 6.f : 2.5f;
+        Init(natives::TASK_GO_STRAIGHT_TO_COORD);
+        Push(ped);
+        Push(target.x); Push(target.y); Push(target.z);
+        Push(speed);                    // moveBlendSpeed
+        Push(static_cast<unsigned long long>(0xFFFFFFFF)); // p5 (терпимость)
+        Push(0.f); Push(0.f);           // p6, p7
+        Push(0);                        // p8
+        Call();
+    }
+    else // Idle / RideHorse (верховую анимацию не делаем, просто стоим)
+    {
+        if (s_lastMoveState == move) return; // уже стоит — не дёргаем
+        s_lastMoveState = move;
+        Init(natives::TASK_STAND_STILL);
+        Push(ped); Push(static_cast<unsigned long long>(0xFFFFFFFF));
+        Call();
+    }
 }
 
 // Регистрация колбэков и запуск сетевого клиента.
@@ -663,14 +729,14 @@ void Tick()
 
     // Отправка собственного GhostFrame на сервер (каждые ~4 тика, чтобы
     // сервер видел координаты игрока в таблице состояния и ретранслировал
-    // их другим игрокам).
+    // их другим игрокам). В кадре передаём move-состояние игрока (анимация).
     if (g_netStarted && (s_tickCount % 4 == 1))
     {
         Vec3 pc = GetEntityCoords(playerPed);
         net::FramePayload fp{};
         fp.x = pc.x; fp.y = pc.y; fp.z = pc.z;
         fp.heading = GetEntityHeading(playerPed);
-        fp.move = 0;
+        fp.move = DetectLocalMoveState(playerPed);
         fp.seq = s_tickCount;
         g_netClient.SendFrame(fp);
     }
