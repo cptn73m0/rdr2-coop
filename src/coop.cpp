@@ -373,6 +373,9 @@ bool   s_pendingJoin = false;
 float  s_pendingHeading = 0;
 char   s_pendingName[64] = "";
 unsigned long long s_remoteModel = 0; // модель удалённого игрока (из PLAYER_JOINED)
+// Модель, которой фактически создан текущий пед призрака (0 = ещё нет; будет
+// создан/пересоздан, когда придёт модель персонажа из кадра reserved[2]).
+unsigned long long s_ghostModel = 0;
 // Координаты спавна педа удалённого игрока (из PLAYER_JOINED, если сервер
 // прислал его последние/сохранённые координаты; иначе спавним у хоста).
 bool   s_pendingHasPos = false;
@@ -777,36 +780,41 @@ void ApplyRemoteFrame(const net::FramePayload& f)
     ApplyPlayerOutfitToGhost(f.reserved[1]);
 }
 
+// Физически удалить педа призрака из мира (без сброса имён/флагов —
+// для пересоздания при смене модели персонажа).
+void DeleteGhostEntity()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    // 1) Снимаем mission-флаг: помеченные mission-entity педы движок
+    //    может не давать удалять.
+    Init(natives::SET_ENTITY_AS_MISSION_ENTITY);
+    Push(s_ghost);
+    Push(false);
+    Push(false);
+    Call();
+    // 2) DELETE_PED принимает Ped* (указатель на handle!) — как REMOVE_BLIP.
+    //    Передача handle значением молча НЕ удаляет педа.
+    int h = static_cast<int>(s_ghost);
+    Init(natives::DELETE_PED);
+    Push(reinterpret_cast<unsigned long long>(&h));
+    Call();
+    // 3) Если пед всё ещё существует — доп. попытка через no-longer-needed.
+    if (DoesEntityExist(s_ghost))
+    {
+        Init(natives::SET_ENTITY_AS_NO_LONGER_NEEDED);
+        Push(reinterpret_cast<unsigned long long>(&h));
+        Call();
+    }
+    sh_log::Write("coop: ped %d deleted, exists now=%d\n",
+                  s_ghost, DoesEntityExist(s_ghost) ? 1 : 0);
+    s_ghost = 0;
+}
+
 // Удалить педа и метку, сбросить флаги спавна (игровой поток).
 void CleanupGhost()
 {
-    if (s_ghost && DoesEntityExist(s_ghost))
-    {
-        using namespace natives_api;
-        // 1) Снимаем mission-флаг: помеченные mission-entity педы движок
-        //    может не давать удалять.
-        Init(natives::SET_ENTITY_AS_MISSION_ENTITY);
-        Push(s_ghost);
-        Push(false);
-        Push(false);
-        Call();
-        // 2) DELETE_PED принимает Ped* (указатель на handle!) — как REMOVE_BLIP.
-        //    Передача handle значением молча НЕ удаляет педа.
-        int h = static_cast<int>(s_ghost);
-        Init(natives::DELETE_PED);
-        Push(reinterpret_cast<unsigned long long>(&h));
-        Call();
-        // 3) Если пед всё ещё существует — доп. попытка через no-longer-needed.
-        if (DoesEntityExist(s_ghost))
-        {
-            Init(natives::SET_ENTITY_AS_NO_LONGER_NEEDED);
-            Push(reinterpret_cast<unsigned long long>(&h));
-            Call();
-        }
-        sh_log::Write("coop: ped %d deleted, exists now=%d\n",
-                      s_ghost, DoesEntityExist(s_ghost) ? 1 : 0);
-    }
-    s_ghost = 0;
+    DeleteGhostEntity();
     s_ghostDead = false;
     if (s_blip)
         s_blip = RemoveBlip(s_blip);
@@ -973,6 +981,27 @@ unsigned long long GetLocalWeaponHash(unsigned int ped)
     return out;
 }
 
+// Обработка входящего кадра: модель персонажа удалённого игрока (reserved[2]).
+// Если отличается от текущей модели педа — пересоздаём педа (удаляем старый,
+// новый заспавнится в Tick по wantModel). Модель 0 — не трогаем.
+void CheckRemoteModelChange(const net::FramePayload& f)
+{
+    if (!f.reserved[2] || f.reserved[2] == s_ghostModel) return;
+    sh_log::Write("coop: remote model changed 0x%llX -> 0x%llX\n",
+                  s_ghostModel, f.reserved[2]);
+    // Запоминаем новую модель и просим её загрузить (в Tick чуть ниже будет
+    // использована при спавне). Старого педа удаляем — новый появится сразу.
+    s_requestedModel = f.reserved[2];
+    RequestModel(f.reserved[2]);
+    s_ghostModel = f.reserved[2];
+    DeleteGhostEntity();
+    if (s_blip)
+        s_blip = RemoveBlip(s_blip);
+    s_ghostDead = false;
+    s_lastMoveState = 0xFF;
+    s_lastPedState = 0xFF;
+}
+
 // Регистрация колбэков и запуск сетевого клиента.
 // ВАЖНО: колбэки исполняются в фоновом сетевом потоке — они не имеют права
 // трогать нативы/сущности движка; они только буферизуют состояние, которое
@@ -1044,7 +1073,9 @@ void Tick()
     InitNetworkClient();
 
     // Модель для педа: чужая (из PLAYER_JOINED), иначе дефолтная.
-    unsigned long long wantModel = s_remoteModel ? s_remoteModel : GHOST_PED_MODEL;
+    // Если из кадра пришла модель персонажа — используем её (перезапись).
+    unsigned long long wantModel = s_requestedModel ? s_requestedModel
+                                  : (s_remoteModel ? s_remoteModel : GHOST_PED_MODEL);
     if (s_requestedModel != wantModel)
     {
         RequestModel(wantModel);
@@ -1104,6 +1135,8 @@ void Tick()
             sh_log::Write("coop: [SPAWN] %s next to host (first visit)\n", name);
         }
         s_ghost = CreateGhostPed(wantModel, spawn, heading);
+        if (s_ghost)
+            s_ghostModel = wantModel; // фиксируем модель созданного педа
         sh_log::Write(s_ghost ? "coop: ghost ped created (on join), handle=%u at (%.1f %.1f %.1f)\n"
                               : "coop: CREATE_PED returned 0\n",
                       s_ghost, spawn.x, spawn.y, spawn.z);
@@ -1131,6 +1164,7 @@ void Tick()
     // Применить входящий кадр удалённого игрока (игровой поток).
     if (s_haveFrame)
     {
+        CheckRemoteModelChange(s_lastFrame);
         ApplyRemoteFrame(s_lastFrame);
         s_haveFrame = false;
     }
