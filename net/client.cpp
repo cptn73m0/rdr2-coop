@@ -155,16 +155,35 @@ void Client::Run()
             {
                 if (!p.empty())
                 {
+                    PlayerJoinInfo ji;
                     uint8_t nl = p[0];
-                    std::string nm(reinterpret_cast<char*>(p.data() + 1), nl);
-                    unsigned long long model = 0;
+                    ji.name.assign(reinterpret_cast<char*>(p.data() + 1), nl);
                     size_t off = 1u + nl;
                     if (p.size() >= off + 8)
                     {
                         for (int i = 0; i < 8; ++i)
-                            model |= (unsigned long long)p[off + i] << (8 * i);
+                            ji.model |= (unsigned long long)p[off + i] << (8 * i);
                     }
-                    if (onPlayerJoin_) onPlayerJoin_(nm, model);
+                    // необязательный блок позиции: has_pos + [x,y,z,heading]
+                    off += 8;
+                    if (p.size() >= off + 1)
+                    {
+                        ji.hasPos = p[off] != 0;
+                        off += 1;
+                        if (ji.hasPos && p.size() >= off + 16)
+                        {
+                            auto rf = [&](int o) {
+                                uint32_t u = 0;
+                                std::memcpy(&u, &p[o], 4);
+                                float f;
+                                std::memcpy(&f, &u, 4);
+                                return f;
+                            };
+                            ji.x = rf((int)off); ji.y = rf((int)off + 4);
+                            ji.z = rf((int)off + 8); ji.heading = rf((int)off + 12);
+                        }
+                    }
+                    if (onPlayerJoin_) onPlayerJoin_(ji);
                 }
                 break;
             }

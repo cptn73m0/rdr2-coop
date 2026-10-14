@@ -367,11 +367,15 @@ void DrawNameAt(const Vec3& worldPos, const char* name)
 netio::Client g_netClient;
 bool g_netStarted = false;
 
-// Состояние для спавна от сервера (заполняется колбэком JoinOk).
+// Состояние для спавна от сервера (заполняется колбэком).
 bool   s_pendingJoin = false;
 float  s_pendingHeading = 0;
 char   s_pendingName[64] = "";
 unsigned long long s_remoteModel = 0; // модель удалённого игрока (из PLAYER_JOINED)
+// Координаты спавна педа удалённого игрока (из PLAYER_JOINED, если сервер
+// прислал его последние/сохранённые координаты; иначе спавним у хоста).
+bool   s_pendingHasPos = false;
+float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0;
 
 // Применение позиции из сетевого кадра к педу призрака.
 void ApplyRemoteFrame(const net::FramePayload& f)
@@ -395,14 +399,25 @@ void InitNetworkClient()
             s_pendingHeading = jr.heading;
     });
 
-    g_netClient.SetPlayerJoin([](const std::string& name, unsigned long long model) {
-        sh_log::Write("net: PLAYER_JOINED %s (model=0x%llX)\n", name.c_str(), model);
-        std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s joined", name.c_str());
+    g_netClient.SetPlayerJoin([](const netio::PlayerJoinInfo& ji) {
+        sh_log::Write("net: PLAYER_JOINED %s (model=0x%llX, pos=%d)\n",
+                      ji.name.c_str(), ji.model, ji.hasPos ? 1 : 0);
+        std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s joined", ji.name.c_str());
         s_playerJoinedNotified = true;
         s_subtitleTicksLeft = 8 * 60;
-        std::snprintf(s_pedName, sizeof(s_pedName), "%s", name.c_str());
-        std::snprintf(s_pendingName, sizeof(s_pendingName), "%s", name.c_str());
-        s_remoteModel = model;
+        std::snprintf(s_pedName, sizeof(s_pedName), "%s", ji.name.c_str());
+        std::snprintf(s_pendingName, sizeof(s_pendingName), "%s", ji.name.c_str());
+        s_remoteModel = ji.model;
+        if (ji.hasPos)
+        {
+            s_pendingHasPos = true;
+            s_pendingX = ji.x; s_pendingY = ji.y; s_pendingZ = ji.z;
+            s_pendingHeading = ji.heading;
+        }
+        else
+        {
+            s_pendingHasPos = false;
+        }
     });
 
     g_netClient.SetFrame([](const net::FramePayload& f) {
@@ -411,8 +426,28 @@ void InitNetworkClient()
 
     g_netClient.SetPlayerLeave([](const std::string& name) {
         sh_log::Write("net: PLAYER_LEFT %s\n", name.c_str());
+        // Убираем педа и метку ушедшего игрока и сбрасываем флаги спавна,
+        // чтобы повторное подключение того же игрока создало педа заново.
         if (s_ghost && DoesEntityExist(s_ghost))
-            SetEntityCoords(s_ghost, {0.f, 0.f, -100.f});
+        {
+            using namespace natives_api;
+            Init(natives::DELETE_ENTITY);
+            Push(s_ghost);
+            Call();
+        }
+        s_ghost = 0;
+        if (s_blip)
+            s_blip = RemoveBlip(s_blip);
+        s_ghostDead = false;
+        s_playerJoinedNotified = false;
+        s_subtitleTicksLeft = 0;
+        s_joinedName[0] = '\0';
+        s_pedName[0] = '\0';
+        s_pendingName[0] = '\0';
+        s_remoteModel = 0;
+        s_pendingHasPos = false;
+        s_requestedModel = 0;
+        s_modelLoadedLogged = false;
     });
 
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
@@ -462,13 +497,22 @@ void Tick()
         Vec3 spawn;
         float heading = s_pendingHeading;
         const char* name = s_pendingName[0] ? s_pendingName : "Player";
-        // Другой игрок не передаёт своей сохранённой позиции в этой версии
-        // протокола — спавним рядом с хостом (первый визит).
-        Vec3 pc = GetEntityCoords(playerPed);
-        spawn = pc;
-        spawn.x += SPAWN_DISTANCE;
-        spawn.z += 0.5f;
-        sh_log::Write("coop: [SPAWN] %s next to host (first visit)\n", name);
+        if (s_pendingHasPos)
+        {
+            // Сервер прислал сохранённую/последнюю позицию игрока — спавним там.
+            spawn = Vec3{s_pendingX, s_pendingY, s_pendingZ};
+            sh_log::Write("coop: [SPAWN] %s at saved pos (%.1f %.1f %.1f)\n",
+                          name, spawn.x, spawn.y, spawn.z);
+        }
+        else
+        {
+            // Новый игрок без сохранённой позиции — спавним рядом с хостом.
+            Vec3 pc = GetEntityCoords(playerPed);
+            spawn = pc;
+            spawn.x += SPAWN_DISTANCE;
+            spawn.z += 0.5f;
+            sh_log::Write("coop: [SPAWN] %s next to host (first visit)\n", name);
+        }
         s_ghost = CreateGhostPed(wantModel, spawn, heading);
         sh_log::Write(s_ghost ? "coop: ghost ped created (on join), handle=%u at (%.1f %.1f %.1f)\n"
                               : "coop: CREATE_PED returned 0\n",

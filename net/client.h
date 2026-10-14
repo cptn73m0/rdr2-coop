@@ -32,11 +32,20 @@ struct JoinResult {
     float x = 0, y = 0, z = 0, heading = 0;
 };
 
+// Информация о подключившемся игроке (PLAYER_JOINED). Если hasPos=true,
+// сервер прислал его последние/сохранённые координаты — точку спавна педа.
+struct PlayerJoinInfo {
+    std::string name;
+    unsigned long long model = 0;
+    bool hasPos = false;
+    float x = 0, y = 0, z = 0, heading = 0;
+};
+
 class Client {
 public:
     using OnFrame   = std::function<void(const net::FramePayload&)>;
     using OnJoinOk  = std::function<void(const JoinResult&)>;
-    using OnPlayerJoin = std::function<void(const std::string&, unsigned long long)>;
+    using OnPlayerJoin = std::function<void(const PlayerJoinInfo&)>;
     using OnPlayerLeave= std::function<void(const std::string&)>;
 
     Client();

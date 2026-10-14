@@ -138,15 +138,27 @@ std::vector<uint8_t> MakeMsg(uint8_t type, const uint8_t* payload, uint32_t len)
     return out;
 }
 
-// PLAYER_JOINED / (для списка существующих) — name + model
+// PLAYER_JOINED / (для списка существующих) — name + model + (необязательно)
+// последние/сохранённые координаты. Позиция даёт клиентам точку спавна педа.
 std::vector<uint8_t> MakePlayerInfoMsg(uint8_t type, const std::string& name,
-                                       unsigned long long model)
+                                       unsigned long long model,
+                                       bool hasPos, float x, float y, float z, float heading)
 {
     std::vector<uint8_t> p;
     p.push_back(static_cast<uint8_t>(name.size()));
     p.insert(p.end(), name.begin(), name.end());
     for (int i = 0; i < 8; ++i)
         p.push_back(static_cast<uint8_t>((model >> (8 * i)) & 0xFF));
+    p.push_back(hasPos ? 1 : 0);
+    if (hasPos)
+    {
+        auto pushf = [&](float v) {
+            uint32_t u;
+            std::memcpy(&u, &v, 4);
+            for (int i = 0; i < 4; ++i) p.push_back((uint8_t)(u >> (8 * i)));
+        };
+        pushf(x); pushf(y); pushf(z); pushf(heading);
+    }
     return MakeMsg(type, p.data(), static_cast<uint32_t>(p.size()));
 }
 
@@ -288,14 +300,18 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                                                   (uint32_t)resp.size());
                 sock->Send(ok.data(), (int)ok.size());
 
-                // Существующие игроки — новичку (чтобы он их увидел)
+                // Существующие игроки — новичку (чтобы он их увидел),
+                // с их последними известными координатами.
                 {
                     std::lock_guard<std::mutex> lk(g_mutex);
                     for (auto& kv : g_online)
                     {
                         std::vector<uint8_t> info =
                             MakePlayerInfoMsg((uint8_t)net::Msg::PlayerJoined,
-                                              kv.second.name, kv.second.pedModel);
+                                              kv.second.name, kv.second.pedModel,
+                                              kv.second.hasLoc,
+                                              kv.second.x, kv.second.y,
+                                              kv.second.z, kv.second.heading);
                         sock->Send(info.data(), (int)info.size());
                     }
                 }
@@ -313,9 +329,21 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                     g_lastPos[name] = p;
                 }
 
-                // Остальным — что подключился новый
-                BroadcastToOthers(sock,
-                    MakePlayerInfoMsg((uint8_t)net::Msg::PlayerJoined, name, model));
+                // Остальным — что подключился новый, с его позицией
+                // (сохранённой из players.txt или последней известной).
+                {
+                    bool hasPos = false;
+                    float bx = 0, by = 0, bz = 0, bh = 0;
+                    {
+                        std::lock_guard<std::mutex> lk(g_mutex);
+                        auto& np = g_online[name];
+                        hasPos = np.hasLoc;
+                        bx = np.x; by = np.y; bz = np.z; bh = np.heading;
+                    }
+                    BroadcastToOthers(sock,
+                        MakePlayerInfoMsg((uint8_t)net::Msg::PlayerJoined, name, model,
+                                          hasPos, bx, by, bz, bh));
+                }
 
                 LogLine("[+] " + name + " подключился (" + peerIp + ")" +
                         (has ? " — возврат, позиция восстановлена" : " — новый игрок"));
