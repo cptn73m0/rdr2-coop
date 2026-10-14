@@ -215,7 +215,7 @@ void DrawSubtitle(const char* text)
 
     using namespace natives_api;
     Init(natives::UI_BG_SET_TEXT_SCALE);
-    Push(0.4f); Push(0.4f); // small
+    Push(0.5f); Push(0.5f); // заметнее, чем 0.4 (надпись легко пропустить)
     Call();
     Init(natives::UI_BG_SET_TEXT_COLOR);
     Push(255); Push(255); Push(255); Push(255);
@@ -270,13 +270,16 @@ void UpdateBlipCoords(unsigned int blip, const Vec3& at)
 }
 
 // Полностью убрать метку с карты/мини-карты (натив MAP_REMOVE_BLIP).
+// ВАЖНО: натив принимает Blip* (указатель на handle) и зануляет его —
+// передача handle значением молча НЕ удаляет метку в этом билде.
 // Возвращает 0, чтобы вызывающий код сбросил s_blip.
 unsigned int RemoveBlip(unsigned int blip)
 {
     if (!blip) return 0;
     using namespace natives_api;
+    int h = static_cast<int>(blip);
     Init(natives::MAP_REMOVE_BLIP);
-    Push(blip);
+    Push(reinterpret_cast<unsigned long long>(&h)); // Blip* — out-параметр
     Call();
     return 0;
 }
@@ -562,6 +565,8 @@ void Tick()
     {
         if (s_subtitleTicksLeft > 0)
         {
+            if (s_subtitleTicksLeft == 8 * 60) // первый тик нового таймера — лог для диагностики
+                sh_log::Write("coop: subtitle: '%s' (%u ticks)\n", s_joinedName, s_subtitleTicksLeft);
             DrawSubtitle(s_joinedName);
             --s_subtitleTicksLeft;
         }
