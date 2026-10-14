@@ -54,7 +54,11 @@ struct FramePayload {
     float    health = 0.f;     // здоровье 0..1
     uint64_t weaponHash = 0;   // хэш оружия в руке (0 = нет)
     uint64_t seq = 0;
-    // Резерв: [0] — хэш модели лошади (если верхом), остальное — будущее.
+    // Резерв:
+    // [0] — хэш модели лошади (если верхом);
+    // [1] — хэш мета-наряда игрока (_GET_PED_META_OUTFIT_HASH);
+    // [2] — модель персонажа игрока (GET_ENTITY_MODEL(playerPed)), чтобы пед
+    //       был точной копией (Артур/Джон), а не подставной моделью.
     uint64_t reserved[3] = {0, 0, 0};
 };
 static_assert(sizeof(FramePayload) == 64, "FramePayload must be 64 bytes");

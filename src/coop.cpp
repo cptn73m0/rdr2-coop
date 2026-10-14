@@ -399,6 +399,13 @@ unsigned long long s_mountWantedModel = 0;
 Vec3 s_mountTarget{0.f, 0.f, 0.f};
 bool s_haveMountTarget = false;
 
+// Мета-наряд удалённого игрока: хотим применить к педу призрака.
+// Запрос асинхронный (REQUEST -> ждём -> APPLY), поэтому храним состояние.
+unsigned long long s_wantedOutfit = 0;       // последний запрошенный хэш наряда
+int    s_outfitRequest = 0;                  // id запроса REQUEST_META_PED_OUTFIT
+bool   s_outfitRequestPending = false;       // запрос в полёте
+bool   s_outfitRequestLogged = false;        // логировали ли ожидание
+
 // Посадить педа призрака на лошадь (объявлено здесь — используется в
 // RequestMountModel ниже; определение дальше).
 void PromoteMountToGhost();
@@ -581,6 +588,65 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
         s_lastWeapon = 0;
 }
 
+// Применить мета-наряд удалённого игрока к педу призрака (при смене хэша).
+// Асинхронно: запрашиваем наряд, когда загрузится — применяем. Вызывается
+// из Tick() (игровой поток).
+void ApplyPlayerOutfitToGhost(unsigned long long outfitHash)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+
+    if (!outfitHash)
+    {
+        s_wantedOutfit = 0;
+        if (s_outfitRequestPending)
+        {
+            Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
+            Push(static_cast<unsigned long long>(static_cast<int>(s_outfitRequest)));
+            Call();
+            s_outfitRequestPending = false;
+        }
+        return;
+    }
+    if (outfitHash == s_wantedOutfit && !s_outfitRequestPending) return;
+
+    if (!s_outfitRequestPending)
+    {
+        // Запускаем запрос наряда (модель педа = модель удалённого игрока).
+        Init(natives::REQUEST_META_PED_OUTFIT);
+        Push(s_remoteModel ? s_remoteModel : GHOST_PED_MODEL);
+        Push(outfitHash);
+        s_outfitRequest = static_cast<int>(Call());
+        s_outfitRequestPending = true;
+        s_wantedOutfit = outfitHash;
+        s_outfitRequestLogged = false;
+        sh_log::Write("coop: outfit request 0x%llX -> %d\n", outfitHash, s_outfitRequest);
+    }
+    if (!s_outfitRequestPending) return;
+    {
+        Init(natives::HAS_META_PED_OUTFIT_LOADED);
+        Push(static_cast<unsigned long long>(static_cast<int>(s_outfitRequest)));
+        if (Call())
+        {
+            Init(natives::APPLY_PED_META_PED_OUTFIT);
+            Push(static_cast<unsigned long long>(static_cast<int>(s_outfitRequest)));
+            Push(s_ghost);
+            Push(true); Push(true);
+            bool ok = Call() != 0;
+            sh_log::Write("coop: outfit applied to ghost, ok=%d\n", ok ? 1 : 0);
+            Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
+            Push(static_cast<unsigned long long>(static_cast<int>(s_outfitRequest)));
+            Call();
+            s_outfitRequestPending = false;
+        }
+        else if (!s_outfitRequestLogged)
+        {
+            sh_log::Write("coop: waiting outfit load...\n");
+            s_outfitRequestLogged = true;
+        }
+    }
+}
+
 // Применение позиции из сетевого кадра к педу призрака.
 // Вызывается ИЗ Tick() (игровой поток).
 // Движение ИНТЕРПОЛИРУЕТСЯ: за каждый тик пед смещается на часть пути к цели
@@ -706,6 +772,9 @@ void ApplyRemoteFrame(const net::FramePayload& f)
 
     // Применить особое состояние (ragdoll/cover/swim), оружие (при смене).
     ApplyPedStateToGhost(f);
+
+    // Применить мета-наряд удалённого игрока (внешний вид) — при смене хэша.
+    ApplyPlayerOutfitToGhost(f.reserved[1]);
 }
 
 // Удалить педа и метку, сбросить флаги спавна (игровой поток).
@@ -754,6 +823,17 @@ void CleanupGhost()
     s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
     s_lastPedState = 0xFF;
     s_lastWeapon = 0;
+    // Сброс состояния мета-наряда (новый пед применит наряд заново).
+    if (s_outfitRequestPending)
+    {
+        using namespace natives_api;
+        Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
+        Push(static_cast<unsigned long long>(static_cast<int>(s_outfitRequest)));
+        Call();
+        s_outfitRequestPending = false;
+    }
+    s_wantedOutfit = 0;
+    s_outfitRequestLogged = false;
     // Убрать лошадь (если удалённый игрок был верхом).
     if (s_mount)
         DismountAndRemoveMount();
@@ -1128,6 +1208,18 @@ void Tick()
         fp.flags = DetectLocalFlags(playerPed);
         fp.health = GetLocalHealth01(playerPed);
         fp.weaponHash = GetLocalWeaponHash(playerPed);
+        // Мета-наряд игрока (для синхронизации внешнего вида у партнёра).
+        {
+            using namespace natives_api;
+            Init(natives::GET_PED_META_OUTFIT_HASH);
+            Push(playerPed);
+            fp.reserved[1] = Call();
+            // Модель персонажа (Артур/Джон) — чтобы пед был копией, а не
+            // подставной моделью из конфига.
+            Init(natives::GET_ENTITY_MODEL);
+            Push(playerPed);
+            fp.reserved[2] = Call();
+        }
         // Если игрок верхом — передаём модель его лошади (для точного вида).
         if (fp.move == static_cast<uint8_t>(coop::MoveState::RideHorse))
         {

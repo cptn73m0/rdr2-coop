@@ -95,6 +95,14 @@ constexpr unsigned long long TASK_DISMOUNT_ANIMAL          = 0x48E92D3DDE23C23Au
 // Лошадь для показа верховой езды (a_c_horse_americanstandardbred_black).
 constexpr unsigned long long HORSE_MODEL                   = 0xB57D0193ull;
 
+// Мета-наряды (синхронизация внешнего вида игрока) — хэши сверены с
+// rdr2-runtime-scripthook (совпадают с нашими проверенными нативами).
+constexpr unsigned long long GET_PED_META_OUTFIT_HASH      = 0x30569F348D126A5Aull;
+constexpr unsigned long long REQUEST_META_PED_OUTFIT       = 0x13154A76CE0CF9ABull;
+constexpr unsigned long long HAS_META_PED_OUTFIT_LOADED    = 0x610438375E5D1801ull;
+constexpr unsigned long long APPLY_PED_META_PED_OUTFIT     = 0x74F512E29CB717E2ull;
+constexpr unsigned long long RELEASE_META_PED_OUTFIT_REQUEST = 0x4592B8B9B0EF5F48ull;
+
 // Модификаторы метки: «скрыть при смерти» и «труп» (крестик на карте).
 constexpr unsigned long long BLIP_MODIFIER_CULL_ON_DEATH   = 0xAA235D8Bull;
 constexpr unsigned long long BLIP_ANIMAL_DEAD              = 0x4FE13DF7ull;

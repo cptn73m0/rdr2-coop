@@ -77,6 +77,10 @@ payload: x:f32 y:f32 z:f32 heading:f32 move:u8 state:u8 flags:u8 pad0:u8
 - `flags` — битовые: 0x01=Sprinting, 0x02=WeaponReady.
 - `health` — здоровье 0..1.
 - `weaponHash` — хэш оружия в руке.
+- `reserved[0]` — хэш модели лошади, если игрок верхом (`GET_ENTITY_MODEL(GET_MOUNT)`).
+- `reserved[1]` — хэш мета-наряда игрока (`_GET_PED_META_OUTFIT_HASH`) — для
+  синхронизации внешнего вида персонажа (наряд применяется на стороне
+  получателя через `_REQUEST_META_PED_OUTFIT` + `_APPLY_PED_META_PED_OUTFIT`).
 ВНИМАНИЕ: `FramePayload` из `net/protocol.h` — struct размером ровно **64 байта**
 (из-за выравнивания u64). Ручные сборщики кадров (тестовые PS-скрипты) обязаны
 слать все 64 байта, иначе сервер отбросит кадр
