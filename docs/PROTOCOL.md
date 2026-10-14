@@ -65,15 +65,22 @@ payload: name_len:u8  name[name_len]  ped_model:u64  has_pos:u8  [x:f32 y:f32 z:
 
 ### 0x04 FRAME (клиент → сервер → остальные клиенты)
 ```
-payload: x:f32 y:f32 z:f32 heading:f32 move:u8 [pad:7] seq:u64   (всего 32 байта)
+payload: x:f32 y:f32 z:f32 heading:f32 move:u8 state:u8 flags:u8 pad0:u8
+         health:f32 weaponHash:u64 seq:u64 reserved:u64[3]   (всего 64 байта)
 ```
-Состояние игрока (трансформ + анимация + порядковый номер). Сервер релеит
-всем остальным клиентам в исходном виде.
-ВНИМАНИЕ: `FramePayload` из `net/protocol.h` — struct размером ровно 32 байта
-из-за выравнивания: после `move:u8` идут **7 байт паддинга** перед `seq:u64`.
-Любые ручные сборщики кадров (например, тестовые PS-скрипты) обязаны слать
-все 32 байта с паддингом, иначе сервер отбросит кадр (проверка
-`pay.size() >= sizeof(FramePayload)`).
+Состояние игрока (трансформ + локомоция + особые состояния + здоровье +
+оружие + порядковый номер). Сервер релеит всем остальным клиентам в исходном
+виде.
+- `move` — MoveState: 0=Idle, 1=Walk, 2=Run, 3=RideHorse.
+- `state` — PedState: 0=Normal, 1=Ragdoll, 2=InCover, 3=Swimming,
+  4=SwimUnderwater, 5=Climbing, 6=Jumping, 7=Falling.
+- `flags` — битовые: 0x01=Sprinting, 0x02=WeaponReady.
+- `health` — здоровье 0..1.
+- `weaponHash` — хэш оружия в руке.
+ВНИМАНИЕ: `FramePayload` из `net/protocol.h` — struct размером ровно **64 байта**
+(из-за выравнивания u64). Ручные сборщики кадров (тестовые PS-скрипты) обязаны
+слать все 64 байта, иначе сервер отбросит кадр
+(`pay.size() >= sizeof(FramePayload)`).
 
 ### 0x05 LEAVE (клиент → сервер)
 ```

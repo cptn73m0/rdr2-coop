@@ -11,7 +11,9 @@ param(
     [double]$TargetX = 120.0,
     [double]$TargetY = -186.0,
     [double]$TargetZ = 114.0,
-    [int]$Move = 1                # MoveState: 0=Idle, 1=Walk, 2=Run, 3=RideHorse
+    [int]$Move = 1,               # MoveState: 0=Idle, 1=Walk, 2=Run, 3=RideHorse
+    [int]$State = 0,              # PedState (опционально)
+    [int]$Flags = 0               # битовые флаги (опционально)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,15 +54,21 @@ try {
     # --- Двигаемся по прямой от старта к цели, шлём FRAME ---
     $steps = 90
     function Send-Frame($x, $y, $z) {
-        # FramePayload — ровно 32 байта: x,y,z,heading (16) + move (1) + ПАДДИНГ (7) + seq (8).
+        # FramePayload — ровно 64 байта: x,y,z,heading (16) + move,state,flags,pad (4)
+        # + health (4) + weaponHash (8) + seq (8) + reserved (24).
         $pay2 = New-Object System.Collections.Generic.List[byte]
         foreach ($v in @($x,$y,$z,0.0)) {
             $b4 = [BitConverter]::GetBytes([single]$v)
             foreach ($bb in $b4) { $pay2.Add($bb) }
         }
-        $pay2.Add([byte]$Move)                      # move-состояние
-        for ($k = 0; $k -lt 7; $k++) { $pay2.Add([byte]0) }   # padding
-        for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # seq=0
+        $pay2.Add([byte]$Move)
+        $pay2.Add([byte]$State)
+        $pay2.Add([byte]$Flags)
+        $pay2.Add([byte]0)                              # pad0
+        foreach ($bb in [BitConverter]::GetBytes([single]1.0)) { $pay2.Add($bb) }  # health
+        for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # weaponHash
+        for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # seq
+        for ($k = 0; $k -lt 24; $k++) { $pay2.Add([byte]0) }  # reserved
         $fr = [byte[]]@([byte]$pay2.Count, 0, 0, 0, 0x04) + $pay2.ToArray()
         $s.Write($fr, 0, $fr.Length); $s.Flush()
     }

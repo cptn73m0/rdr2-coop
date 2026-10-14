@@ -14,6 +14,8 @@ param(
     [double]$TargetZ = 123.9,
     [double]$TargetHeading = 0.0,
     [int]$Move = 0,               # MoveState: 0=Idle, 1=Walk, 2=Run, 3=RideHorse
+    [int]$State = 0,              # PedState: 0=Normal, 1=Ragdoll, ... (опц.)
+    [int]$Flags = 0,              # битовые флаги (опц.)
     [int]$HoldSeconds = 120
 )
 
@@ -49,15 +51,21 @@ try {
     # --- Круговой цикл: каждые 2 с телепортируем педа к цели ---
     $seq = 0
     for ($i = 0; $i -lt $HoldSeconds; $i += 2) {
-        # FramePayload в протоколе — ровно 32 байта:
-        # x,y,z,heading (4 флота=16) + move (1) + ПАДДИНГ (7) + seq (8).
+        # FramePayload в протоколе — ровно 64 байта:
+        # x,y,z,heading (16) + move,state,flags,pad (4) + health (4)
+        # + weaponHash (8) + seq (8) + reserved (24).
         $pay2 = New-Object System.Collections.Generic.List[byte]
         foreach ($v in @([single]$TargetX,[single]$TargetY,[single]$TargetZ,[single]$TargetHeading)) {
             foreach ($bb in [BitConverter]::GetBytes($v)) { $pay2.Add($bb) }
         }
         $pay2.Add([byte]$Move)   # move — состояние движения
-        for ($k = 0; $k -lt 7; $k++) { $pay2.Add([byte]0) }   # padding
-        for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte](($seq -shr (8 * $k)) -band 0xFF)) }
+        $pay2.Add([byte]$State)  # state — особое состояние (0=Normal)
+        $pay2.Add([byte]$Flags)  # flags — битовые (0)
+        $pay2.Add([byte]0)       # pad0
+        foreach ($bb in [BitConverter]::GetBytes([single]1.0)) { $pay2.Add($bb) }  # health
+        for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # weaponHash
+        for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte](($seq -shr (8 * $k)) -band 0xFF)) }  # seq
+        for ($k = 0; $k -lt 24; $k++) { $pay2.Add([byte]0) }  # reserved
         $seq++
         $fr = [byte[]]@([byte]$pay2.Count, 0, 0, 0, 0x04) + $pay2.ToArray()
         $s.Write($fr, 0, $fr.Length); $s.Flush()

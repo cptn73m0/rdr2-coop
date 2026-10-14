@@ -72,6 +72,29 @@ constexpr unsigned long long TASK_GO_STRAIGHT_TO_COORD     = 0xD76B57B44F1E6F8Bu
 // Высота земли в точке (для установки педа на землю, а не «в воздух»).
 constexpr unsigned long long GET_GROUND_Z_FOR_3D_COORD      = 0x24FA4267BB8D2431ull;
 
+// Полное состояние педа (Фаза 5 — полная синхронизация, стейт/флаги).
+constexpr unsigned long long IS_PED_RAGDOLL                = 0x47E4E977581C5B55ull;
+constexpr unsigned long long IS_PED_IN_COVER               = 0x60DFD0691A170B88ull;
+constexpr unsigned long long IS_PED_SWIMMING               = 0x9DE327631295B4C2ull;
+constexpr unsigned long long IS_PED_SWIMMING_UNDER_WATER   = 0xC024869A53992F34ull;
+constexpr unsigned long long IS_PED_CLIMBING               = 0x53E8CB4F48BFE623ull;
+constexpr unsigned long long IS_PED_JUMPING                = 0xCEDABC5900A0BF97ull;
+constexpr unsigned long long IS_PED_FALLING                = 0xFB92A102F1C4DFA3ull;
+constexpr unsigned long long IS_PED_SPRINTING              = 0x57E457CD2C0FC168ull;
+constexpr unsigned long long IS_PED_WEAPON_READY_TO_SHOOT  = 0xB80CA294F2F26749ull;
+constexpr unsigned long long GET_ENTITY_HEALTH             = 0x82368787EA73C0F7ull;
+constexpr unsigned long long SET_CURRENT_PED_WEAPON        = 0xADF692B254977C0Cull;
+constexpr unsigned long long SET_PED_TO_RAGDOLL            = 0xAE99FB955581844Aull;
+// Хэш оружия в руке и текущая лошадь (для верховой езды).
+constexpr unsigned long long GET_CURRENT_PED_WEAPON        = 0x3A87E44BB9A01D54ull;
+constexpr unsigned long long GET_MOUNT                     = 0xE7E11B8DCBED1058ull;
+// Верховая езда (получатель): посадить педа на лошадь / снять / перейти на лошадь.
+constexpr unsigned long long SET_PED_ONTO_MOUNT            = 0x028F76B6E78246EBull;
+constexpr unsigned long long TASK_MOUNT_ANIMAL             = 0x92DB0739813C5186ull;
+constexpr unsigned long long TASK_DISMOUNT_ANIMAL          = 0x48E92D3DDE23C23Aull;
+// Лошадь для показа верховой езды (a_c_horse_americanstandardbred_black).
+constexpr unsigned long long HORSE_MODEL                   = 0xB57D0193ull;
+
 // Модификаторы метки: «скрыть при смерти» и «труп» (крестик на карте).
 constexpr unsigned long long BLIP_MODIFIER_CULL_ON_DEATH   = 0xAA235D8Bull;
 constexpr unsigned long long BLIP_ANIMAL_DEAD              = 0x4FE13DF7ull;

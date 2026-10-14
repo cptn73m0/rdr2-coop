@@ -386,6 +386,125 @@ bool s_pendingLeave = false;
 char s_leaveName[64] = ""; // имя ушедшего игрока (для надписи «left»)
 // Последнее применённое к педу состояние движения (сброс при выходе).
 uint8_t s_lastMoveState = 0xFF;
+// Последнее применённое особое состояние/оружие (сброс при выходе).
+uint8_t s_lastPedState = 0xFF;
+unsigned long long s_lastWeapon = 0;
+
+// Лошадь для верховой езды удалённого игрока (0 = нет).
+unsigned int s_mount = 0;
+bool s_mountModelRequested = false;
+// Модель лошади, которую надо создать (из кадра; 0 = стандартная).
+unsigned long long s_mountWantedModel = 0;
+// Позиция лошади (последняя цель из кадра), чтобы двигать её за педом.
+Vec3 s_mountTarget{0.f, 0.f, 0.f};
+bool s_haveMountTarget = false;
+
+// Посадить педа призрака на лошадь (объявлено здесь — используется в
+// RequestMountModel ниже; определение дальше).
+void PromoteMountToGhost();
+
+// Запросить и загрузить модель лошади (вызывается в Tick, игровой поток).
+void RequestMountModel()
+{
+    using namespace natives_api;
+    if (s_mount && DoesEntityExist(s_mount)) return; // лошадь уже есть
+    unsigned long long model = s_mountWantedModel ? s_mountWantedModel
+                                                  : natives::HORSE_MODEL;
+    if (!s_mountModelRequested)
+    {
+        s_mountModelRequested = true;
+        Init(natives::REQUEST_MODEL);
+        Push(model);
+        Call();
+        sh_log::Write("coop: request horse model 0x%llX\n", model);
+    }
+    if (!HasModelLoaded(model))
+    {
+        static bool logged = false;
+        if (!logged) { sh_log::Write("coop: waiting horse model...\n"); logged = true; }
+        return;
+    }
+    // Создаём лошадь рядом с целью кадра.
+    Vec3 at = s_haveMountTarget ? s_mountTarget : GetEntityCoords(s_ghost);
+    Init(natives::CREATE_PED);
+    Push(model);
+    Push(at.x); Push(at.y); Push(at.z);
+    Push(0.f);
+    Push(false); Push(false); Push(false); Push(false);
+    s_mount = static_cast<unsigned int>(Call());
+    if (s_mount)
+    {
+        // Обвязка видимости, как у человеческого педа: mission+variation+visible.
+        Init(natives::SET_ENTITY_AS_MISSION_ENTITY); Push(s_mount); Push(true); Push(true); Call();
+        Init(natives::SET_PED_RANDOM_COMPONENT_VARIATION); Push(s_mount); Push(0ull); Call();
+        Init(natives::SET_ENTITY_VISIBLE); Push(s_mount); Push(true); Call();
+        Init(natives::PLACE_OBJECT_ON_GROUND_PROPERLY); Push(s_mount); Call();
+        sh_log::Write("coop: horse created handle=%u\n", s_mount);
+        PromoteMountToGhost();
+    }
+    s_mountModelRequested = false; // при неудаче позволим повторить запрос
+}
+
+// Посадить педа призрака на лошадь (если лошадь создана и пед жив).
+void PromoteMountToGhost()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost) || !s_mount || !DoesEntityExist(s_mount)) return;
+    using namespace natives_api;
+    Init(natives::SET_PED_ONTO_MOUNT);
+    Push(s_ghost);
+    Push(s_mount);
+    Push(-1);  // seatIndex
+    Push(false);
+    Call();
+    sh_log::Write("coop: mounted ped on horse\n");
+}
+
+// Двигать лошадь к цели кадра (лерп по XY, Z по земле).
+void MoveMountTo(const Vec3& target)
+{
+    if (!s_mount || !DoesEntityExist(s_mount)) return;
+    using namespace natives_api;
+    Vec3 cur = GetEntityCoords(s_mount);
+    float dx = target.x - cur.x, dy = target.y - cur.y;
+    float dist = std::sqrt(dx * dx + dy * dy);
+    if (dist < 0.1f) return;
+    const float STEP = 0.3f;
+    float s = std::min(STEP, dist);
+    Vec3 n;
+    n.x = cur.x + dx / dist * s;
+    n.y = cur.y + dy / dist * s;
+    n.z = cur.z;
+    SetEntityCoords(s_mount, n);
+    float h = GetEntityHeading(s_ghost);
+    SetEntityHeading(s_mount, h);
+    // Держим педа на лошади (SET_PED_ONTO_MOUNT разово при создании; тут не нужно).
+}
+
+// Отменить верховую езду: спешить и удалить лошадь.
+void DismountAndRemoveMount()
+{
+    if (s_mount && DoesEntityExist(s_mount))
+    {
+        using namespace natives_api;
+        if (s_ghost && DoesEntityExist(s_ghost))
+        {
+            Init(natives::TASK_DISMOUNT_ANIMAL);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(0));
+            Push(0); Push(0); Push(0);
+            Call();
+        }
+        int m = static_cast<int>(s_mount);
+        Init(natives::DELETE_PED);
+        Push(reinterpret_cast<unsigned long long>(&m));
+        Call();
+        sh_log::Write("coop: horse removed\n");
+    }
+    s_mount = 0;
+    s_mountModelRequested = false;
+    s_haveMountTarget = false;
+    s_mountWantedModel = 0;
+}
 // Последняя цель задачи движения (чтобы не перезадавать задачу каждый кадр).
 Vec3 s_moveTarget{0.f, 0.f, 0.f};
 bool s_moveTargetValid = false;
@@ -404,6 +523,62 @@ void SetGhostFrozen(bool freeze)
     Push(s_ghost);
     Push(freeze ? 1 : 0);
     Call();
+}
+
+// Применить особое состояние педа (PedState) и оружие/здоровье из кадра
+// к педу призрака. Вызывается из Tick() (игровой поток), только при смене.
+void ApplyPedStateToGhost(const net::FramePayload& f)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    const uint8_t st = f.state;
+
+    if (st != s_lastPedState)
+    {
+        s_lastPedState = st;
+        switch (static_cast<net::PedState>(st))
+        {
+        case net::PedState::Ragdoll:
+            // Уронить педа в ragdoll.
+            Init(natives::SET_PED_TO_RAGDOLL);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(2000));  // время (мс)
+            Push(0); Push(0); Push(0); Push(0);
+            Call();
+            sh_log::Write("coop: state=Ragdoll applied\n");
+            break;
+        case net::PedState::InCover:
+            // Стоим в укрытии не можем напрямую; минимум — не двигаемся задачей,
+            // ставим stand-still (имитация укрытия позже).
+            Init(natives::TASK_STAND_STILL);
+            Push(s_ghost); Push(static_cast<unsigned long long>(0xFFFFFFFF));
+            Call();
+            sh_log::Write("coop: state=InCover (stand-still)\n");
+            break;
+        case net::PedState::Swimming:
+        case net::PedState::SwimUnderwater:
+            sh_log::Write("coop: state=Swimming (teleport to water pos only)\n");
+            break;
+        default:
+            // Normal/Climbing/Jumping/Falling — движение обычное (move).
+            sh_log::Write("coop: state=%d → normal move\n", (int)st);
+            break;
+        }
+    }
+
+    // Оружие: передаём в руку педа при смене (только если hash известен).
+    if (f.weaponHash && f.weaponHash != s_lastWeapon)
+    {
+        s_lastWeapon = f.weaponHash;
+        Init(natives::SET_CURRENT_PED_WEAPON);
+        Push(s_ghost);
+        Push(f.weaponHash);
+        Push(true);
+        Call();
+        sh_log::Write("coop: weapon 0x%llX set\n", f.weaponHash);
+    }
+    if (!f.weaponHash)
+        s_lastWeapon = 0;
 }
 
 // Применение позиции из сетевого кадра к педу призрака.
@@ -425,6 +600,40 @@ void ApplyRemoteFrame(const net::FramePayload& f)
     Vec3 p{f.x, f.y, f.z};
 
     const uint8_t move = static_cast<uint8_t>(f.move);
+    if (move == static_cast<uint8_t>(coop::MoveState::RideHorse))
+    {
+        // Верховая езда: педа напрямую НЕ двигаем и НЕ замораживаем —
+        // он сидит на лошади; правим лошадь (спавн/движение/посадка).
+        s_mountTarget = p;
+        s_haveMountTarget = true;
+        // Модель коня из кадра (0 = стандартная).
+        if (f.reserved[0] && f.reserved[0] != s_mountWantedModel)
+        {
+            s_mountWantedModel = f.reserved[0];
+            if (s_mount && DoesEntityExist(s_mount))
+            {
+                DismountAndRemoveMount(); // модель сменилась — пересоздадим
+            }
+        }
+        if (!s_mount || !DoesEntityExist(s_mount))
+        {
+            RequestMountModel();
+            if (s_mount) PromoteMountToGhost();
+        }
+        else
+        {
+            MoveMountTo(p);
+            SetEntityHeading(s_mount, f.heading);
+        }
+        ApplyPedStateToGhost(f);
+        return;
+    }
+    else if (s_mount && DoesEntityExist(s_mount))
+    {
+        // Сошли с лошади — спешиваемся и убираем её.
+        DismountAndRemoveMount();
+    }
+
     if (move == static_cast<uint8_t>(coop::MoveState::Walk) ||
         move == static_cast<uint8_t>(coop::MoveState::Run))
     {
@@ -494,6 +703,9 @@ void ApplyRemoteFrame(const net::FramePayload& f)
     while (h > 180.f) h -= 360.f;
     while (h < -180.f) h += 360.f;
     SetEntityHeading(s_ghost, GetEntityHeading(s_ghost) + h * LERP_FACTOR);
+
+    // Применить особое состояние (ragdoll/cover/swim), оружие (при смене).
+    ApplyPedStateToGhost(f);
 }
 
 // Удалить педа и метку, сбросить флаги спавна (игровой поток).
@@ -540,6 +752,11 @@ void CleanupGhost()
     s_modelLoadedLogged = false;
     s_haveFrame = false;
     s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
+    s_lastPedState = 0xFF;
+    s_lastWeapon = 0;
+    // Убрать лошадь (если удалённый игрок был верхом).
+    if (s_mount)
+        DismountAndRemoveMount();
 }
 
 // Определить move-состояние локального игрока для кадра (передаётся
@@ -555,6 +772,52 @@ uint8_t DetectLocalMoveState(unsigned int ped)
     Init(natives::IS_PED_WALKING); Push(ped);
     if (Call()) return static_cast<uint8_t>(coop::MoveState::Walk);
     return static_cast<uint8_t>(coop::MoveState::Idle);
+}
+
+// Доп. состояние педа (PedState): ragdoll/укрытие/плавание/лестница/прыжок/
+// падение. Приоритет сверху вниз.
+uint8_t DetectLocalPedState(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_RAGDOLL); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::PedState::Ragdoll);
+    Init(natives::IS_PED_SWIMMING_UNDER_WATER); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::PedState::SwimUnderwater);
+    Init(natives::IS_PED_SWIMMING); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::PedState::Swimming);
+    Init(natives::IS_PED_IN_COVER); Push(ped); Push(true); Push(false);
+    if (Call()) return static_cast<uint8_t>(net::PedState::InCover);
+    Init(natives::IS_PED_CLIMBING); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::PedState::Climbing);
+    Init(natives::IS_PED_JUMPING); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::PedState::Jumping);
+    Init(natives::IS_PED_FALLING); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::PedState::Falling);
+    return static_cast<uint8_t>(net::PedState::Normal);
+}
+
+// Флаги локального игрока (sprint/weapon-ready).
+uint8_t DetectLocalFlags(unsigned int ped)
+{
+    using namespace natives_api;
+    uint8_t f = 0;
+    Init(natives::IS_PED_SPRINTING); Push(ped);
+    if (Call()) f |= net::kFlagSprinting;
+    Init(natives::IS_PED_WEAPON_READY_TO_SHOOT); Push(ped);
+    if (Call()) f |= net::kFlagWeaponReady;
+    return f;
+}
+
+// Здоровье локального педа 0..1 (GET_ENTITY_HEALTH / max примерно 100..200 —
+// нормируем).
+float GetLocalHealth01(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::GET_ENTITY_HEALTH); Push(ped);
+    float h = CallFloat();
+    if (h < 0.f) h = 0.f;
+    if (h > 200.f) h = 200.f;
+    return h / 200.f;
 }
 
 // Применить move-состояние к педу призрака (вызывается из Tick, игровой поток).
@@ -616,6 +879,18 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
             Call();
         }
     }
+}
+
+// Хэш оружия в руке игрока (GET_CURRENT_PED_WEAPON), 0 = нет.
+unsigned long long GetLocalWeaponHash(unsigned int ped)
+{
+    using namespace natives_api;
+    unsigned long long out = 0;
+    Init(natives::GET_CURRENT_PED_WEAPON);
+    Push(ped);
+    Push(reinterpret_cast<unsigned long long>(&out));
+    Call();
+    return out;
 }
 
 // Регистрация колбэков и запуск сетевого клиента.
@@ -841,7 +1116,7 @@ void Tick()
 
     // Отправка собственного GhostFrame на сервер (каждые ~4 тика, чтобы
     // сервер видел координаты игрока в таблице состояния и ретранслировал
-    // их другим игрокам). В кадре передаём move-состояние игрока (анимация).
+    // их другим игрокам). В кадре передаём move/state/flags/health игрока.
     if (g_netStarted && (s_tickCount % 4 == 1))
     {
         Vec3 pc = GetEntityCoords(playerPed);
@@ -849,6 +1124,22 @@ void Tick()
         fp.x = pc.x; fp.y = pc.y; fp.z = pc.z;
         fp.heading = GetEntityHeading(playerPed);
         fp.move = DetectLocalMoveState(playerPed);
+        fp.state = DetectLocalPedState(playerPed);
+        fp.flags = DetectLocalFlags(playerPed);
+        fp.health = GetLocalHealth01(playerPed);
+        fp.weaponHash = GetLocalWeaponHash(playerPed);
+        // Если игрок верхом — передаём модель его лошади (для точного вида).
+        if (fp.move == static_cast<uint8_t>(coop::MoveState::RideHorse))
+        {
+            using namespace natives_api;
+            Init(natives::GET_MOUNT); Push(playerPed);
+            unsigned int m = static_cast<unsigned int>(Call());
+            if (m)
+            {
+                Init(natives::GET_ENTITY_MODEL); Push(m);
+                fp.reserved[0] = Call();
+            }
+        }
         fp.seq = s_tickCount;
         g_netClient.SendFrame(fp);
     }
