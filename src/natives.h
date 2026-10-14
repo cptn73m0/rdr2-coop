@@ -69,6 +69,8 @@ constexpr unsigned long long IS_PED_RUNNING                = 0xC5286FFC176F28A2u
 constexpr unsigned long long IS_PED_WALKING                = 0xDE4C184B2B9B071Aull;
 constexpr unsigned long long IS_PED_ON_MOUNT               = 0x460BC76A0E10655Eull;
 constexpr unsigned long long TASK_GO_STRAIGHT_TO_COORD     = 0xD76B57B44F1E6F8Bull;
+// Высота земли в точке (для установки педа на землю, а не «в воздух»).
+constexpr unsigned long long GET_GROUND_Z_FOR_3D_COORD      = 0x24FA4267BB8D2431ull;
 
 // Модификаторы метки: «скрыть при смерти» и «труп» (крестик на карте).
 constexpr unsigned long long BLIP_MODIFIER_CULL_ON_DEATH   = 0xAA235D8Bull;
