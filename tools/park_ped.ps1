@@ -51,9 +51,9 @@ try {
     # --- Круговой цикл: каждые 2 с телепортируем педа к цели ---
     $seq = 0
     for ($i = 0; $i -lt $HoldSeconds; $i += 2) {
-        # FramePayload в протоколе — ровно 64 байта:
+        # FramePayload в протоколе — ровно 72 байта:
         # x,y,z,heading (16) + move,state,flags,pad (4) + health (4)
-        # + weaponHash (8) + seq (8) + reserved (24).
+        # + weaponHash (8) + seq (8) + reserved (24) + horseOutfitHash (8).
         $pay2 = New-Object System.Collections.Generic.List[byte]
         foreach ($v in @([single]$TargetX,[single]$TargetY,[single]$TargetZ,[single]$TargetHeading)) {
             foreach ($bb in [BitConverter]::GetBytes($v)) { $pay2.Add($bb) }
@@ -66,6 +66,7 @@ try {
         for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # weaponHash
         for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte](($seq -shr (8 * $k)) -band 0xFF)) }  # seq
         for ($k = 0; $k -lt 24; $k++) { $pay2.Add([byte]0) }  # reserved
+        for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # horseOutfitHash
         $seq++
         $fr = [byte[]]@([byte]$pay2.Count, 0, 0, 0, 0x04) + $pay2.ToArray()
         $s.Write($fr, 0, $fr.Length); $s.Flush()

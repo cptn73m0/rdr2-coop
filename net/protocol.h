@@ -40,8 +40,7 @@ enum class PedState : uint8_t {
 constexpr uint8_t kFlagSprinting   = 1u << 0;
 constexpr uint8_t kFlagWeaponReady = 1u << 1;
 
-// Размер полезной нагрузки (без len/type). 64 байта — с резервом под
-// транспорт (лошадь) и будущие поля.
+// Размер полезной нагрузки (без len/type). 88 байт.
 struct FramePayload {
     float    x = 0.f;          // world X
     float    y = 0.f;          // world Y
@@ -57,11 +56,13 @@ struct FramePayload {
     // Резерв:
     // [0] — хэш модели лошади (если верхом);
     // [1] — хэш мета-наряда игрока (_GET_PED_META_OUTFIT_HASH);
-    // [2] — модель персонажа игрока (GET_ENTITY_MODEL(playerPed)), чтобы пед
-    //       был точной копией (Артур/Джон), а не подставной моделью.
+    // [2] — модель персонажа игрока (GET_ENTITY_MODEL(playerPed)).
     uint64_t reserved[3] = {0, 0, 0};
+    // Мета-наряд (снаряжение: седло/одеяло/поклажа) лошади — применяется к
+    // лошади педа-призрака тем же механизмом, что и наряд игрока.
+    uint64_t horseOutfitHash = 0;
 };
-static_assert(sizeof(FramePayload) == 64, "FramePayload must be 64 bytes");
+static_assert(sizeof(FramePayload) == 72, "FramePayload must be 72 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

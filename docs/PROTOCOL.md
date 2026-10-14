@@ -66,7 +66,8 @@ payload: name_len:u8  name[name_len]  ped_model:u64  has_pos:u8  [x:f32 y:f32 z:
 ### 0x04 FRAME (клиент → сервер → остальные клиенты)
 ```
 payload: x:f32 y:f32 z:f32 heading:f32 move:u8 state:u8 flags:u8 pad0:u8
-         health:f32 weaponHash:u64 seq:u64 reserved:u64[3]   (всего 64 байта)
+         health:f32 weaponHash:u64 seq:u64 reserved:u64[3] horseOutfitHash:u64
+                                                         (всего 72 байта)
 ```
 Состояние игрока (трансформ + локомоция + особые состояния + здоровье +
 оружие + порядковый номер). Сервер релеит всем остальным клиентам в исходном
@@ -81,9 +82,13 @@ payload: x:f32 y:f32 z:f32 heading:f32 move:u8 state:u8 flags:u8 pad0:u8
 - `reserved[1]` — хэш мета-наряда игрока (`_GET_PED_META_OUTFIT_HASH`) — для
   синхронизации внешнего вида персонажа (наряд применяется на стороне
   получателя через `_REQUEST_META_PED_OUTFIT` + `_APPLY_PED_META_PED_OUTFIT`).
-ВНИМАНИЕ: `FramePayload` из `net/protocol.h` — struct размером ровно **64 байта**
+- `reserved[2]` — модель персонажа игрока (`GET_ENTITY_MODEL(playerPed)`) — пед
+  пересоздаётся с этой моделью (копия Артура/Джона).
+- `horseOutfitHash` — мета-наряд (снаряжение) лошади, если игрок верхом —
+  применяется к лошади педа-призрака тем же механизмом, что наряд игрока.
+ВНИМАНИЕ: `FramePayload` из `net/protocol.h` — struct размером ровно **72 байта**
 (из-за выравнивания u64). Ручные сборщики кадров (тестовые PS-скрипты) обязаны
-слать все 64 байта, иначе сервер отбросит кадр
+слать все 72 байта, иначе сервер отбросит кадр
 (`pay.size() >= sizeof(FramePayload)`).
 
 ### 0x05 LEAVE (клиент → сервер)

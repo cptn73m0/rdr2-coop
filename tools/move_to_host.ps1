@@ -54,8 +54,8 @@ try {
     # --- Двигаемся по прямой от старта к цели, шлём FRAME ---
     $steps = 90
     function Send-Frame($x, $y, $z) {
-        # FramePayload — ровно 64 байта: x,y,z,heading (16) + move,state,flags,pad (4)
-        # + health (4) + weaponHash (8) + seq (8) + reserved (24).
+        # FramePayload — ровно 72 байта: x,y,z,heading (16) + move,state,flags,pad (4)
+        # + health (4) + weaponHash (8) + seq (8) + reserved (24) + horseOutfitHash (8).
         $pay2 = New-Object System.Collections.Generic.List[byte]
         foreach ($v in @($x,$y,$z,0.0)) {
             $b4 = [BitConverter]::GetBytes([single]$v)
@@ -69,6 +69,7 @@ try {
         for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # weaponHash
         for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # seq
         for ($k = 0; $k -lt 24; $k++) { $pay2.Add([byte]0) }  # reserved
+        for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # horseOutfitHash
         $fr = [byte[]]@([byte]$pay2.Count, 0, 0, 0, 0x04) + $pay2.ToArray()
         $s.Write($fr, 0, $fr.Length); $s.Flush()
     }

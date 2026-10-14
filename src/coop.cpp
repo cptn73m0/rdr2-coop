@@ -409,6 +409,13 @@ int    s_outfitRequest = 0;                  // id запроса REQUEST_META_P
 bool   s_outfitRequestPending = false;       // запрос в полёте
 bool   s_outfitRequestLogged = false;        // логировали ли ожидание
 
+// Мета-наряд (снаряжение) лошади удалённого игрока: хотим применить к нашей
+// лошади призрака. Механизм тот же, что у педа (REQUEST -> APPLY -> RELEASE).
+unsigned long long s_horseOutfitHash = 0;     // последний запрошенный хэш
+int    s_horseOutfitRequest = 0;              // id запроса REQUEST_META_PED_OUTFIT
+bool   s_horseOutfitPending = false;          // запрос в полёте
+bool   s_horseOutfitLogged = false;           // логировали ли ожидание
+
 // Посадить педа призрака на лошадь (объявлено здесь — используется в
 // RequestMountModel ниже; определение дальше).
 void PromoteMountToGhost();
@@ -514,6 +521,17 @@ void DismountAndRemoveMount()
     s_mountModelRequested = false;
     s_haveMountTarget = false;
     s_mountWantedModel = 0;
+    // Сброс состояния наряда лошади (лошади больше нет).
+    if (s_horseOutfitPending)
+    {
+        using namespace natives_api;
+        Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
+        Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
+        Call();
+        s_horseOutfitPending = false;
+    }
+    s_horseOutfitHash = 0;
+    s_horseOutfitLogged = false;
 }
 // Последняя цель задачи движения (чтобы не перезадавать задачу каждый кадр).
 Vec3 s_moveTarget{0.f, 0.f, 0.f};
@@ -650,6 +668,68 @@ void ApplyPlayerOutfitToGhost(unsigned long long outfitHash)
     }
 }
 
+// Применить мета-наряд (снаряжение) лошади удалённого игрока к нашей лошади
+// призрака (при смене хэша). Асинхронно, как и наряд педа: запрашиваем,
+// когда загрузится — применяем. Вызывается из Tick() (игровой поток).
+void ApplyHorseOutfitToMount(unsigned long long outfitHash)
+{
+    if (!s_mount || !DoesEntityExist(s_mount)) return;
+    using namespace natives_api;
+
+    if (!outfitHash)
+    {
+        s_horseOutfitHash = 0;
+        if (s_horseOutfitPending)
+        {
+            Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
+            Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
+            Call();
+            s_horseOutfitPending = false;
+        }
+        return;
+    }
+    if (outfitHash == s_horseOutfitHash && !s_horseOutfitPending) return;
+
+    if (!s_horseOutfitPending)
+    {
+        // Модель для запроса — модель этой лошади (из кадра или стандартная).
+        unsigned long long model = s_mountWantedModel ? s_mountWantedModel
+                                                      : natives::HORSE_MODEL;
+        Init(natives::REQUEST_META_PED_OUTFIT);
+        Push(model);
+        Push(outfitHash);
+        s_horseOutfitRequest = static_cast<int>(Call());
+        s_horseOutfitPending = true;
+        s_horseOutfitHash = outfitHash;
+        s_horseOutfitLogged = false;
+        sh_log::Write("coop: horse outfit request 0x%llX -> %d\n", outfitHash,
+                      s_horseOutfitRequest);
+    }
+    if (!s_horseOutfitPending) return;
+    {
+        Init(natives::HAS_META_PED_OUTFIT_LOADED);
+        Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
+        if (Call())
+        {
+            Init(natives::APPLY_PED_META_PED_OUTFIT);
+            Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
+            Push(s_mount);
+            Push(true); Push(true);
+            bool ok = Call() != 0;
+            sh_log::Write("coop: horse outfit applied, ok=%d\n", ok ? 1 : 0);
+            Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
+            Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
+            Call();
+            s_horseOutfitPending = false;
+        }
+        else if (!s_horseOutfitLogged)
+        {
+            sh_log::Write("coop: waiting horse outfit load...\n");
+            s_horseOutfitLogged = true;
+        }
+    }
+}
+
 // Применение позиции из сетевого кадра к педу призрака.
 // Вызывается ИЗ Tick() (игровой поток).
 // Движение ИНТЕРПОЛИРУЕТСЯ: за каждый тик пед смещается на часть пути к цели
@@ -694,6 +774,8 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             MoveMountTo(p);
             SetEntityHeading(s_mount, f.heading);
         }
+        // Применить мета-наряд (снаряжение) лошади — при смене хэша.
+        ApplyHorseOutfitToMount(f.horseOutfitHash);
         ApplyPedStateToGhost(f);
         return;
     }
@@ -1254,7 +1336,7 @@ void Tick()
             Push(playerPed);
             fp.reserved[2] = Call();
         }
-        // Если игрок верхом — передаём модель его лошади (для точного вида).
+        // Если игрок верхом — передаём модель его лошади и её снаряжение.
         if (fp.move == static_cast<uint8_t>(coop::MoveState::RideHorse))
         {
             using namespace natives_api;
@@ -1264,6 +1346,9 @@ void Tick()
             {
                 Init(natives::GET_ENTITY_MODEL); Push(m);
                 fp.reserved[0] = Call();
+                // Снаряжение (мета-наряд) лошади — для точного вида у партнёра.
+                Init(natives::GET_PED_META_OUTFIT_HASH); Push(m);
+                fp.horseOutfitHash = Call();
             }
         }
         fp.seq = s_tickCount;
