@@ -24,7 +24,7 @@ try {
     $c = New-Object System.Net.Sockets.TcpClient
     $c.Connect($ServerHost, $Port)
     $s = $c.GetStream()
-    Write-Output "connected to $Host`:$Port"
+    Write-Output "connected to $ServerHost`:$Port"
 
     # --- JOIN: name_len:u8 + name + ped_model:u64 (LE) ---
     $nameBytes = [System.Text.Encoding]::UTF8.GetBytes($Name)
