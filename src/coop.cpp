@@ -389,6 +389,9 @@ bool s_pendingLeave = false;
 void ApplyRemoteFrame(const net::FramePayload& f)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    // Мёртвого педа не двигаем: труп лежит там, где умер (иначе он будет
+    // «прыгать» по кадрам удалённого игрока и парить над землёй).
+    if (s_ghostDead) return;
     Vec3 p{f.x, f.y, f.z};
     SetEntityCoords(s_ghost, p);
     SetEntityHeading(s_ghost, f.heading);
