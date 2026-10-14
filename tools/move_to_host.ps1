@@ -10,7 +10,8 @@ param(
     [string]$ModelHex = '0x54D8BE8E',
     [double]$TargetX = 120.0,
     [double]$TargetY = -186.0,
-    [double]$TargetZ = 114.0
+    [double]$TargetZ = 114.0,
+    [int]$Move = 1                # MoveState: 0=Idle, 1=Walk, 2=Run, 3=RideHorse
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,7 +58,7 @@ try {
             $b4 = [BitConverter]::GetBytes([single]$v)
             foreach ($bb in $b4) { $pay2.Add($bb) }
         }
-        $pay2.Add([byte]0)                          # move=0 (Idle)
+        $pay2.Add([byte]$Move)                      # move-состояние
         for ($k = 0; $k -lt 7; $k++) { $pay2.Add([byte]0) }   # padding
         for ($k = 0; $k -lt 8; $k++) { $pay2.Add([byte]0) }   # seq=0
         $fr = [byte[]]@([byte]$pay2.Count, 0, 0, 0, 0x04) + $pay2.ToArray()

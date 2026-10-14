@@ -385,6 +385,9 @@ bool s_haveFrame = false;
 bool s_pendingLeave = false;
 // Последнее применённое к педу состояние движения (сброс при выходе).
 uint8_t s_lastMoveState = 0xFF;
+// Последняя цель задачи движения (чтобы не перезадавать задачу каждый кадр).
+Vec3 s_moveTarget{0.f, 0.f, 0.f};
+bool s_moveTargetValid = false;
 
 // Применить move-состояние к педу призрака (объявлено здесь — используется
 // в ApplyRemoteFrame ниже; определение дальше в файле).
@@ -496,22 +499,40 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
     if (move == static_cast<uint8_t>(coop::MoveState::Walk) ||
         move == static_cast<uint8_t>(coop::MoveState::Run))
     {
-        // Движение задачей: перезадаём каждый тик к текущей цели кадра,
-        // чтобы пед топал ножками (анимация), а не «скользил».
-        const float speed = (move == static_cast<uint8_t>(coop::MoveState::Run)) ? 6.f : 2.5f;
-        Init(natives::TASK_GO_STRAIGHT_TO_COORD);
-        Push(ped);
-        Push(target.x); Push(target.y); Push(target.z);
-        Push(speed);                    // moveBlendSpeed
-        Push(static_cast<unsigned long long>(0xFFFFFFFF)); // p5 (терпимость)
-        Push(0.f); Push(0.f);           // p6, p7
-        Push(0);                        // p8
-        Call();
+        // Считаем, нужно ли ПЕРЕдавать задачу: только если сменилось состояние
+        // движения ИЛИ цель ушла дальше ~0.3 м от предыдущей. Если задачи нет
+        // ни разу — поставить сразу. Иначе пед будет «замерзать» на каждом
+        // кадре (задача постоянно сбрасывается и он не успевает шагнуть).
+        bool retarget = false;
+        if (move != s_lastMoveState)
+            retarget = true;
+        else if (!s_moveTargetValid ||
+                 std::fabs(target.x - s_moveTarget.x) > 0.3f ||
+                 std::fabs(target.y - s_moveTarget.y) > 0.3f)
+            retarget = true;
+
+        if (retarget)
+        {
+            const float speed = (move == static_cast<uint8_t>(coop::MoveState::Run)) ? 6.f : 2.5f;
+            Init(natives::TASK_GO_STRAIGHT_TO_COORD);
+            Push(ped);
+            Push(target.x); Push(target.y); Push(target.z);
+            Push(speed);                    // moveBlendSpeed (скорость анимации)
+            Push(static_cast<unsigned long long>(0xFFFFFFFF)); // p5 timeBeforeTeleport = -1 (не телепорт)
+            Push(0.f);                      // p6 finalHeading
+            Push(0.5f);                     // p7 targetRadius
+            Push(0);                        // p8
+            Call();
+            s_moveTarget = target;
+            s_moveTargetValid = true;
+        }
+        s_lastMoveState = move;
     }
     else // Idle / RideHorse (верховую анимацию не делаем, просто стоим)
     {
         if (s_lastMoveState == move) return; // уже стоит — не дёргаем
         s_lastMoveState = move;
+        s_moveTargetValid = false;
         Init(natives::TASK_STAND_STILL);
         Push(ped); Push(static_cast<unsigned long long>(0xFFFFFFFF));
         Call();
