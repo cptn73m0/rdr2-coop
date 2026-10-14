@@ -386,15 +386,44 @@ bool s_pendingLeave = false;
 
 // Применение позиции из сетевого кадра к педу призрака.
 // Вызывается ИЗ Tick() (игровой поток).
+// Движение ИНТЕРПОЛИРУЕТСЯ: за каждый тик пед смещается на часть пути к цели
+// (без телепортов). Полный телепорт — только если скачок большой (спавн
+// далеко от текущей точки, напр. из players.txt).
 void ApplyRemoteFrame(const net::FramePayload& f)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     // Мёртвого педа не двигаем: труп лежит там, где умер (иначе он будет
     // «прыгать» по кадрам удалённого игрока и парить над землёй).
     if (s_ghostDead) return;
+
+    constexpr float LERP_FACTOR = 0.25f; // за тик проходит ~25% оставшегося пути
+    constexpr float TELEPORT_DIST = 10.0f; // больше этой дистанции — телепорт
+
+    Vec3 cur = GetEntityCoords(s_ghost);
     Vec3 p{f.x, f.y, f.z};
-    SetEntityCoords(s_ghost, p);
-    SetEntityHeading(s_ghost, f.heading);
+    float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
+    float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist <= 0.001f) return;
+
+    if (dist > TELEPORT_DIST)
+    {
+        // Большой скачок — телепорт (спавн или игрок далеко перенёсся).
+        SetEntityCoords(s_ghost, p);
+    }
+    else
+    {
+        // Плавное сближение.
+        Vec3 n;
+        n.x = cur.x + dx * LERP_FACTOR;
+        n.y = cur.y + dy * LERP_FACTOR;
+        n.z = cur.z + dz * LERP_FACTOR;
+        SetEntityCoords(s_ghost, n);
+    }
+    // Поворот интерполируем мягко: кратчайшая дуга.
+    float h = f.heading - GetEntityHeading(s_ghost);
+    while (h > 180.f) h -= 360.f;
+    while (h < -180.f) h += 360.f;
+    SetEntityHeading(s_ghost, GetEntityHeading(s_ghost) + h * LERP_FACTOR);
 }
 
 // Удалить педа и метку, сбросить флаги спавна (игровой поток).
