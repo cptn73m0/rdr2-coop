@@ -56,6 +56,9 @@ std::atomic<bool> g_running{true};
 uint64_t g_nextSession = 1;
 
 // ---------------- Логи ----------------
+// Файл, куда дублируются строки лога (рядом с сервером в рабочей папке).
+const std::string kLogFile = "server_console.log";
+
 std::string Now()
 {
     std::time_t t = std::time(nullptr);
@@ -73,7 +76,11 @@ std::string Now()
 void LogLine(const std::string& s)
 {
     std::lock_guard<std::mutex> lk(g_logMutex);
-    std::cout << "[" << Now() << "] " << s << std::endl;
+    std::string line = "[" + Now() + "] " + s;
+    std::cout << line << std::endl;
+    // Дублируем ту же строку в файл (для диагностики без окна).
+    std::ofstream f(kLogFile, std::ios::app);
+    if (f) f << line << "\n";
 }
 
 // ---------------- Персистентность (players.txt) ----------------
