@@ -269,21 +269,16 @@ void UpdateBlipCoords(unsigned int blip, const Vec3& at)
     Call();
 }
 
-// Пометить метку как «труп»: добавить модификатор CULL_ON_DEATH (крестикуляция
-// при смерти) и модификатор трупа-животного (визуальный «крестик»).
-// Надёжность: модификаторы накладываются поверх базового FRIENDLY.
-void SetBlipAsDead(unsigned int blip)
+// Полностью убрать метку с карты/мини-карты (натив MAP_REMOVE_BLIP).
+// Возвращает 0, чтобы вызывающий код сбросил s_blip.
+unsigned int RemoveBlip(unsigned int blip)
 {
-    if (!blip) return;
+    if (!blip) return 0;
     using namespace natives_api;
-    Init(natives::MAP_BLIP_ADD_MODIFIER);
+    Init(natives::MAP_REMOVE_BLIP);
     Push(blip);
-    Push(natives::BLIP_MODIFIER_CULL_ON_DEATH);
     Call();
-    Init(natives::MAP_BLIP_ADD_MODIFIER);
-    Push(blip);
-    Push(natives::BLIP_ANIMAL_DEAD);
-    Call();
+    return 0;
 }
 
 // --- Remote player name over the ped's head ----------------------------
@@ -519,7 +514,7 @@ void Tick()
         s_ghostDead = true;
         sh_log::Write("coop: [DEAD] %s\n", s_pedName[0] ? s_pedName : "Player");
         if (s_blip)
-            SetBlipAsDead(s_blip);
+            s_blip = RemoveBlip(s_blip);
         // короткое оповещение, как при подключении
         std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s is dead",
                       s_pedName[0] ? s_pedName : "Player");
