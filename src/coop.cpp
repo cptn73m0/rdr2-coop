@@ -367,7 +367,8 @@ void DrawNameAt(const Vec3& worldPos, const char* name)
 netio::Client g_netClient;
 bool g_netStarted = false;
 
-// Состояние для спавна от сервера (заполняется колбэком).
+// Состояние для спавна от сервера (заполняется колбэком, который бежит в
+// СЕТЕВОМ потоке — здесь НЕЛЬЗЯ вызывать нативы! Все нативы — в Tick()).
 bool   s_pendingJoin = false;
 float  s_pendingHeading = 0;
 char   s_pendingName[64] = "";
@@ -377,7 +378,14 @@ unsigned long long s_remoteModel = 0; // модель удалённого иг�
 bool   s_pendingHasPos = false;
 float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0;
 
+// Последний кадр от удалённого игрока (для применения в Tick()).
+net::FramePayload s_lastFrame{};
+bool s_haveFrame = false;
+// Флаг «игрок вышел»: обработка (удаление педа) произойдёт в Tick().
+bool s_pendingLeave = false;
+
 // Применение позиции из сетевого кадра к педу призрака.
+// Вызывается ИЗ Tick() (игровой поток).
 void ApplyRemoteFrame(const net::FramePayload& f)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
@@ -386,7 +394,36 @@ void ApplyRemoteFrame(const net::FramePayload& f)
     SetEntityHeading(s_ghost, f.heading);
 }
 
+// Удалить педа и метку, сбросить флаги спавна (игровой поток).
+void CleanupGhost()
+{
+    if (s_ghost && DoesEntityExist(s_ghost))
+    {
+        using namespace natives_api;
+        Init(natives::DELETE_ENTITY);
+        Push(s_ghost);
+        Call();
+    }
+    s_ghost = 0;
+    s_ghostDead = false;
+    if (s_blip)
+        s_blip = RemoveBlip(s_blip);
+    s_playerJoinedNotified = false;
+    s_subtitleTicksLeft = 0;
+    s_joinedName[0] = '\0';
+    s_pedName[0] = '\0';
+    s_pendingName[0] = '\0';
+    s_remoteModel = 0;
+    s_pendingHasPos = false;
+    s_requestedModel = 0;
+    s_modelLoadedLogged = false;
+    s_haveFrame = false;
+}
+
 // Регистрация колбэков и запуск сетевого клиента.
+// ВАЖНО: колбэки исполняются в фоновом сетевом потоке — они не имеют права
+// трогать нативы/сущности движка; они только буферизуют состояние, которое
+// Tick() (игровой поток) применит на следующем тике.
 void InitNetworkClient()
 {
     if (g_netStarted) return;
@@ -421,33 +458,14 @@ void InitNetworkClient()
     });
 
     g_netClient.SetFrame([](const net::FramePayload& f) {
-        ApplyRemoteFrame(f);
+        // Только копируем кадр; нативы применит Tick().
+        s_lastFrame = f;
+        s_haveFrame = true;
     });
 
     g_netClient.SetPlayerLeave([](const std::string& name) {
         sh_log::Write("net: PLAYER_LEFT %s\n", name.c_str());
-        // Убираем педа и метку ушедшего игрока и сбрасываем флаги спавна,
-        // чтобы повторное подключение того же игрока создало педа заново.
-        if (s_ghost && DoesEntityExist(s_ghost))
-        {
-            using namespace natives_api;
-            Init(natives::DELETE_ENTITY);
-            Push(s_ghost);
-            Call();
-        }
-        s_ghost = 0;
-        if (s_blip)
-            s_blip = RemoveBlip(s_blip);
-        s_ghostDead = false;
-        s_playerJoinedNotified = false;
-        s_subtitleTicksLeft = 0;
-        s_joinedName[0] = '\0';
-        s_pedName[0] = '\0';
-        s_pendingName[0] = '\0';
-        s_remoteModel = 0;
-        s_pendingHasPos = false;
-        s_requestedModel = 0;
-        s_modelLoadedLogged = false;
+        s_pendingLeave = true; // физическое удаление сделает Tick()
     });
 
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
@@ -490,8 +508,16 @@ void Tick()
         return;
     }
 
-    // Spawn the remote player's ped ONLY when another player joins
-    // (PLAYER_JOINED). Own JOIN_OK must NOT spawn a ped.
+    // Обработка выхода игрока (флаг ставит сетевой колбэк, всё удаление —
+    // здесь, на игровом потоке). Делаем ДО спавна, чтобы новый JOIN не
+    // перебился LEAVE от старого клиента.
+    if (s_pendingLeave)
+    {
+        s_pendingLeave = false;
+        CleanupGhost();
+    }
+
+    // Спавн педа: только при PLAYER_JOINED (не при своём JOIN_OK).
     if (!s_ghost && s_playerJoinedNotified)
     {
         Vec3 spawn;
@@ -528,6 +554,20 @@ void Tick()
             sh_log::Write("coop: friendly blip -> %u\n", s_blip);
             std::snprintf(s_pedName, sizeof(s_pedName), "%s", name);
         }
+        // Применить самый свежий кадр, если уже пришёл (иначе пед «догонит»
+        // позицию на следующем кадре).
+        if (s_haveFrame)
+        {
+            ApplyRemoteFrame(s_lastFrame);
+            s_haveFrame = false;
+        }
+    }
+
+    // Применить входящий кадр удалённого игрока (игровой поток).
+    if (s_haveFrame)
+    {
+        ApplyRemoteFrame(s_lastFrame);
+        s_haveFrame = false;
     }
 
     // Draw the remote player's name over the ped's head while within range.
