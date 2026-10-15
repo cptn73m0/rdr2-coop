@@ -419,6 +419,8 @@ uint8_t s_lastMoveState = 0xFF;
 // Последнее применённое особое состояние/оружие (сброс при выходе).
 uint8_t s_lastPedState = 0xFF;
 unsigned long long s_lastWeapon = 0;
+// Последнее применённое действие (для применения при смене).
+uint8_t s_lastAction = 0xFF;
 
 // Лошадь для верховой езды удалённого игрока (0 = нет).
 unsigned int s_mount = 0;
@@ -588,6 +590,44 @@ void SetGhostFrozen(bool freeze)
     Call();
 }
 
+// Применить действие (action) удалённого игрока к педу призрака.
+// Вызывается из ApplyRemoteFrame (игровой поток), только при смене.
+// Первое приближение: сидение/сценарий/пьян — стоим на месте (пед не бежит
+// во время еды/питья); стрельба/перезарядка/прицел — оставляем движение
+// (анимация оружия частично идёт через weaponHash). Детальные анимации —
+// следующей итерацией.
+void ApplyActionToGhost(const net::FramePayload& f)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    const uint8_t ac = static_cast<uint8_t>(f.action);
+    if (ac == s_lastAction) return;
+    s_lastAction = ac;
+    using namespace natives_api;
+    switch (static_cast<net::Action>(ac))
+    {
+    case net::Action::InScenario:
+    case net::Action::Sitting:
+    case net::Action::Drunk:
+        // Стоим на месте (не даём задач движения — пед не бежит во время
+        // сценария). Физику не замораживаем: пед может стоять свободно.
+        Init(natives::TASK_STAND_STILL);
+        Push(s_ghost); Push(static_cast<unsigned long long>(0xFFFFFFFF));
+        Call();
+        sh_log::Write("coop: action=%d → stand still\n", (int)ac);
+        break;
+    case net::Action::Shooting:
+    case net::Action::Reloading:
+    case net::Action::Aiming:
+        // Боевые действия: оставляем движение/позицию как есть; анимация
+        // оружия частично идёт через weaponHash (SET_CURRENT_PED_WEAPON).
+        sh_log::Write("coop: action=%d → combat (weapon sync)\n", (int)ac);
+        break;
+    default:
+        sh_log::Write("coop: action=%d → none\n", (int)ac);
+        break;
+    }
+}
+
 // Применить особое состояние педа (PedState) и оружие/здоровье из кадра
 // к педу призрака. Вызывается из Tick() (игровой поток), только при смене.
 void ApplyPedStateToGhost(const net::FramePayload& f)
@@ -658,6 +698,9 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
     }
     if (!f.weaponHash)
         s_lastWeapon = 0;
+
+    // Действие (стрельба/сидение/сценарий…) — при смене.
+    ApplyActionToGhost(f);
 }
 
 // Применить мета-наряд удалённого игрока к педу призрака (при смене хэша).
@@ -1054,6 +1097,35 @@ void ApplyRemoteFrame(const net::FramePayload& f)
                 SetGhostFrozen(true);
             }
         }
+        else
+        {
+            // ПЕД СТОИТ (ближе CLOSE к цели кадра): прижимаем к земле каждый
+            // Idle-кадр, не только при движении. Иначе после остановки пед
+            // «подвешивается» на высоте конца nav-задачи (на пару см выше
+            // земли) — заморозка фиксирует этот подвес.
+            float groundZ = 0.f;
+            bool hasGround = false;
+            {
+                using namespace natives_api;
+                Init(natives::GET_GROUND_Z_FOR_3D_COORD);
+                Push(cur.x); Push(cur.y); Push(cur.z);
+                Push(reinterpret_cast<unsigned long long>(&groundZ));
+                unsigned long long ok = Call();
+                hasGround = ok != 0;
+            }
+            if (hasGround && std::fabs(cur.z - (groundZ + 0.2f)) > 0.15f)
+            {
+                // Только если пед реально висит выше земли (допуск 15 см) —
+                // не трогаем, если уже стоит нормально (избегаем дёрганья).
+                SetGhostFrozen(false);
+                SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
+                using namespace natives_api;
+                Init(natives::PLACE_OBJECT_ON_GROUND_PROPERLY);
+                Push(s_ghost);
+                Call();
+                SetGhostFrozen(true);
+            }
+        }
         ApplyMoveToGhost(s_ghost, move, p);
     }
 
@@ -1121,6 +1193,7 @@ void CleanupGhost()
     s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
     s_lastPedState = 0xFF;
     s_lastWeapon = 0;
+    s_lastAction = 0xFF;
     // Сброс состояния мета-наряда (новый пед применит наряд заново).
     if (s_outfitRequestPending)
     {
@@ -1184,6 +1257,28 @@ uint8_t DetectLocalFlags(unsigned int ped)
     Init(natives::IS_PED_WEAPON_READY_TO_SHOOT); Push(ped);
     if (Call()) f |= net::kFlagWeaponReady;
     return f;
+}
+
+// Действие локального игрока (кратковременное/контекстное поведение).
+// Приоритет сверху вниз: сценарий (едят/пьют/курят) > стрельба > перезарядка
+// > сидение > прицеливание > пьян. Прыжок/падение/плавление/укрытие уже
+// покрыты state. Возвращает 0 (Action::None) при обычном движении/стойке.
+uint8_t DetectLocalAction(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_USING_ANY_SCENARIO); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::Action::InScenario);
+    Init(natives::IS_PED_SHOOTING); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::Action::Shooting);
+    Init(natives::IS_PED_RELOADING); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::Action::Reloading);
+    Init(natives::IS_PED_SITTING); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::Action::Sitting);
+    Init(natives::IS_PED_AIMING_FROM_COVER); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::Action::Aiming);
+    Init(natives::IS_PED_DRUNK); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::Action::Drunk);
+    return static_cast<uint8_t>(net::Action::None);
 }
 
 // Здоровье локального педа 0..1 (GET_ENTITY_HEALTH / max примерно 100..200 —
@@ -1654,6 +1749,7 @@ void Tick()
         fp.move = DetectLocalMoveState(playerPed);
         fp.state = DetectLocalPedState(playerPed);
         fp.flags = DetectLocalFlags(playerPed);
+        fp.action = DetectLocalAction(playerPed);
         fp.health = GetLocalHealth01(playerPed);
         fp.weaponHash = GetLocalWeaponHash(playerPed);
         // Мета-наряд игрока (для синхронизации внешнего вида у партнёра).

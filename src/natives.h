@@ -130,6 +130,15 @@ constexpr unsigned long long RESET_PED_COMPONENTS          = 0x0BFA1BD465CDFEFDu
 constexpr unsigned long long GET_NUM_COMPONENT_CATEGORIES_IN_PED = 0xA622E66EEE92A08Dull;
 constexpr unsigned long long GET_SHOP_ITEM_COMPONENT_AT_INDEX    = 0x77BA37622E22023Bull;
 constexpr unsigned long long APPLY_SHOP_ITEM_TO_PED              = 0xD3A7B003ED343FD9ull;
+
+// ДЕЙСТВИЯ: детект кратковременных/контекстных анимаций (стрельба,
+// перезарядка, сидение, сценарий, прицеливание, пьян).
+constexpr unsigned long long IS_PED_SHOOTING             = 0x34616828CD07F1A1ull;
+constexpr unsigned long long IS_PED_RELOADING            = 0x24B100C68C645951ull;
+constexpr unsigned long long IS_PED_SITTING              = 0x84D0BF2B21862059ull;
+constexpr unsigned long long IS_PED_USING_ANY_SCENARIO   = 0x57AB4A3080F85143ull;
+constexpr unsigned long long IS_PED_AIMING_FROM_COVER    = 0x3998B1276A3300E5ull;
+constexpr unsigned long long IS_PED_DRUNK                = 0x50F124E6EF188B22ull;
 // Бессмертие педа-призрака: чтобы он не умирал от коллизий/бандитов,
 // а умирал только вместе с оригиналом (сервер шлёт Died).
 constexpr unsigned long long SET_ENTITY_INVINCIBLE         = 0xA5C38736C426FCB8ull;

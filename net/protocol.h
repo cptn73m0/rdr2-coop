@@ -67,6 +67,19 @@ enum class PedState : uint8_t {
 constexpr uint8_t kFlagSprinting   = 1u << 0;
 constexpr uint8_t kFlagWeaponReady = 1u << 1;
 
+// Действие (action в кадре): кратковременное/контекстное поведение поверх
+// движения. Идёт в отдельном байте кадра (pad0). Приоритет ниже state
+// (ragdoll и т.п. обрабатываются первыми). None = обычное движение/стойка.
+enum class Action : uint8_t {
+    None      = 0,
+    Shooting  = 1,   // стреляет (IS_PED_SHOOTING)
+    Reloading = 2,   // перезаряжается (IS_PED_RELOADING)
+    Sitting   = 3,   // сидит (IS_PED_SITTING)
+    InScenario= 4,   // в сценарии (IS_PED_USING_ANY_SCENARIO: ест/пьёт/курит…)
+    Aiming    = 5,   // целится (IS_PED_AIMING_FROM_COVER / оружие наготове)
+    Drunk     = 6,   // пьян (_IS_PED_DRUNK)
+};
+
 // Размер полезной нагрузки (без len/type). 88 байт.
 struct FramePayload {
     float    x = 0.f;          // world X
@@ -76,7 +89,7 @@ struct FramePayload {
     uint8_t  move = 0;         // MoveState (Idle/Walk/Run/RideHorse)
     uint8_t  state = 0;        // PedState (доп. поведение)
     uint8_t  flags = 0;        // битовые флаги (sprint/weapon)
-    uint8_t  pad0 = 0;
+    uint8_t  action = 0;       // Action (стрельба/сидение/сценарий…)
     float    health = 0.f;     // здоровье 0..1
     uint64_t weaponHash = 0;   // хэш оружия в руке (0 = нет)
     uint64_t seq = 0;
