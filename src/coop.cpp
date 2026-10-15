@@ -408,6 +408,8 @@ bool s_sentOutfitValid = false;
 // (труп и снаряжение остаются). Обрабатывается в Tick() игровым потоком.
 bool s_remoteDiedPending = false;
 char s_remoteDiedName[64] = "";
+// Сколько тиков ждём первый кадр (модель персонажа) перед спавном педа.
+unsigned int s_pendingJoinWaitTicks = 0;
 // Отложенный наряд: применён, только когда модель педа совпадёт с моделью
 // наряда (пед пересоздаётся по модели персонажа из кадра reserved[2]).
 net::OutfitState s_pendingOutfit{};
@@ -417,6 +419,14 @@ bool s_pendingLeave = false;
 char s_leaveName[64] = ""; // имя ушедшего игрока (для надписи «left»)
 // Последнее применённое к педу состояние движения (сброс при выходе).
 uint8_t s_lastMoveState = 0xFF;
+// Дебаунс определения move: переключаем только после нескольких подряд
+// одинаковых замеров. Иначе стоящий игрок мерцает Walk/Idle (IS_PED_WALKING
+// дрожит + скорость на месте колеблется) → пед-призрак дёргается (задачи
+// движения/стояния переключаются каждый кадр).
+uint8_t s_moveStable = 0xFF;      // текущее стабильное состояние
+uint8_t s_moveCandidate = 0xFF;   // кандидат на смену
+int     s_moveCandidateCount = 0; // сколько подряд замеров совпало
+constexpr int kMoveDebounce = 6;  // ~0.4 с при отправке каждые 4 тика
 // Последнее применённое особое состояние/оружие (сброс при выходе).
 uint8_t s_lastPedState = 0xFF;
 unsigned long long s_lastWeapon = 0;
@@ -1031,93 +1041,38 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         if (s_tickCount % (3 * 60) == 1)
             sh_log::Write("coop: recv move=%u state=%u at (%.1f %.1f %.1f), cur=(%.1f %.1f %.1f)\n",
                           move, f.state, p.x, p.y, p.z, cur.x, cur.y, cur.z);
-        // Прижим к земле при движении: TASK_FOLLOW_NAV_MESH ведёт педа к цели
-        // (Z кадра = «пояс» игрока), но если пед завис высоко (после спавна/
-        // телепорта/смены местности), задача его не опускает и он «летит».
-        // Если пед выше земли больше ~1 м — снимаем высоту (не каждый кадр,
-        // чтобы не дёргать; порог отсекает обычные бугры/лестницы).
-        {
-            float groundZ = 0.f;
-            bool hasGround = false;
-            {
-                using namespace natives_api;
-                Init(natives::GET_GROUND_Z_FOR_3D_COORD);
-                Push(cur.x); Push(cur.y); Push(cur.z);
-                Push(reinterpret_cast<unsigned long long>(&groundZ));
-                hasGround = Call() != 0;
-            }
-            if (hasGround && (cur.z - groundZ) > 1.0f)
-            {
-                SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
-                cur.z = groundZ + 0.2f; // обновить для проверки ниже
-                sh_log::Write("coop: lowered ghost to ground during move (%.1f -> %.1f)\n",
-                              cur.z, groundZ + 0.2f);
-            }
-        }
+        // НЕ прижимаем педа к земле во время движения: TASK_FOLLOW_NAV_MESH
+        // сам ведёт по навмешу (по земле). Ручной SetEntityCoords здесь —
+        // источник багов: GET_GROUND_Z_FOR_3D_COORD на движущемся педе даёт
+        // нестабильную высоту, пед «уходит под землю» и дёргается каждым
+        // кадром (лог lowered спамил 40.7 -> 40.7). Прижим — только в Idle.
         // Движение задачей: не телепортируем и не лерпим — просто
         // перенаправляем задачу идти к текущей точке кадра (топает ножками).
         ApplyMoveToGhost(s_ghost, move, p);
     }
     else
     {
-        // Idle: плавно подходим к XY цели кадра с фиксированным шагом ЗА ТИК
-        // (а не «25% за кадр» — кадры приходят редко, и каждый давал рывок).
-        // Z не трогаем (пеd стоит на земле; на Z кадра — «пояс» игрока, он
-        // выше земли). Когда пед уже близко к цели (<= CLOSE), НЕ двигаем
-        // вовсе — иначе каждый входящий кадр дёргает его (прыжки на месте).
-        const float CLOSE = 0.5f;      // дистанция XY, ближе которой стоим
-        const float STEP  = 0.15f;     // метров за тик (при 60 FPS ~9 м/с)
+        // Idle: пед стоит задачей TASK_STAND_STILL. НЕ двигаем его руками
+        // (шаг за тик) и НЕ дёргаем заморозкой — это и было причиной
+        // «дёрганья в покое» (задача стоит, а мы телепаем координаты).
+        // Только два исключения:
+        //  1) цель очень далеко (>TELEPORT_DIST) — резкий перенос (загрузка);
+        //  2) пед висит выше 0.5 м над землёй — опускаем на неё.
+        const float CLOSE = 0.5f;
         float dx = p.x - cur.x, dy = p.y - cur.y;
         float dist = std::sqrt(dx * dx + dy * dy);
-        bool moved = false;
         if (dist > TELEPORT_DIST)
         {
-            // Резкий перенос: XY из кадра, Z сохраняем (землю).
             SetEntityCoords(s_ghost, Vec3{p.x, p.y, cur.z});
-            moved = true;
         }
-        else if (dist > CLOSE)
+        if (dist > CLOSE)
         {
-            float s = std::min(STEP, dist);
-            Vec3 n;
-            n.x = cur.x + dx / dist * s;
-            n.y = cur.y + dy / dist * s;
-            n.z = cur.z;
-            SetEntityCoords(s_ghost, n);
-            moved = true;
-        }
-        if (moved)
-        {
-            // Ставим педа на ЗЕМЛЮ: берём высоту земли в точке XY (Z кадра —
-            // «пояс» игрока, выше земли) и опускаем педа на неё. Заморозку
-            // на время снимаем, иначе PRONE/прижим не сработает.
-            float groundZ = 0.f;
-            bool hasGround = false;
-            {
-                using namespace natives_api;
-                Init(natives::GET_GROUND_Z_FOR_3D_COORD);
-                Push(p.x); Push(p.y); Push(cur.z);
-                Push(reinterpret_cast<unsigned long long>(&groundZ));
-                unsigned long long ok = Call();
-                hasGround = ok != 0;
-            }
-            if (hasGround)
-            {
-                SetGhostFrozen(false);
-                SetEntityCoords(s_ghost, Vec3{p.x, p.y, groundZ + 0.2f});
-                using namespace natives_api;
-                Init(natives::PLACE_OBJECT_ON_GROUND_PROPERLY);
-                Push(s_ghost);
-                Call();
-                SetGhostFrozen(true);
-            }
+            // Далёкий Idle-разрыв (напр. после загрузки): пед «топает на
+            // месте» не должен — просто плавно подтягиваем задачей к цели.
         }
         else
         {
-            // ПЕД СТОИТ (ближе CLOSE к цели кадра): прижимаем к земле каждый
-            // Idle-кадр, не только при движении. Иначе после остановки пед
-            // «подвешивается» на высоте конца nav-задачи (на пару см выше
-            // земли) — заморозка фиксирует этот подвес.
+            // Стоит рядом с целью: не трогаем XY, только прижим при подвесе.
             float groundZ = 0.f;
             bool hasGround = false;
             {
@@ -1128,19 +1083,15 @@ void ApplyRemoteFrame(const net::FramePayload& f)
                 unsigned long long ok = Call();
                 hasGround = ok != 0;
             }
-            if (hasGround && std::fabs(cur.z - (groundZ + 0.2f)) > 0.15f)
+            if (hasGround && (cur.z - groundZ) > 0.5f && groundZ > -100.f)
             {
-                // Только если пед реально висит выше земли (допуск 15 см) —
-                // не трогаем, если уже стоит нормально (избегаем дёрганья).
-                SetGhostFrozen(false);
+                // Опускаем на землю только если реально висим НАД ней
+                // (groundZ<0 = функции не нашла землю, не трогаем).
                 SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
-                using namespace natives_api;
-                Init(natives::PLACE_OBJECT_ON_GROUND_PROPERLY);
-                Push(s_ghost);
-                Call();
-                SetGhostFrozen(true);
             }
         }
+        // Единый вызов для Idle: ставит/обновляет stand-still при смене
+        // состояния (сам защищён s_lastMoveState — не дёргает).
         ApplyMoveToGhost(s_ghost, move, p);
     }
 
@@ -1209,6 +1160,10 @@ void CleanupGhost()
     s_lastPedState = 0xFF;
     s_lastWeapon = 0;
     s_lastAction = 0xFF;
+    // Сброс дебаунса move (новый игрок — заново определяем состояние).
+    s_moveStable = 0xFF;
+    s_moveCandidate = 0xFF;
+    s_moveCandidateCount = 0;
     // Сброс состояния мета-наряда (новый пед применит наряд заново).
     if (s_outfitRequestPending)
     {
@@ -1231,20 +1186,69 @@ void CleanupGhost()
 uint8_t DetectLocalMoveState(unsigned int ped)
 {
     using namespace natives_api;
+    uint8_t raw;
     Init(natives::IS_PED_ON_MOUNT); Push(ped);
-    if (Call()) return static_cast<uint8_t>(coop::MoveState::RideHorse);
-    Init(natives::IS_PED_RUNNING); Push(ped);
-    if (Call()) return static_cast<uint8_t>(coop::MoveState::Run);
-    Init(natives::IS_PED_WALKING); Push(ped);
-    if (Call()) return static_cast<uint8_t>(coop::MoveState::Walk);
-    // IS_PED_WALKING в RDR2 ложно при медленной ходьбе → move мерцает
-    // Walk<->Idle, и пед-призрак дёргается (Т-поза между задачами).
-    // Надёжный fallback: фактическая скорость педа (м/с).
-    Init(natives::GET_ENTITY_SPEED); Push(ped);
-    float speed = CallFloat();
-    if (speed > 0.3f) // медленный шаг ~1.0 м/с; порог отсекает дрожание на месте
-        return static_cast<uint8_t>(coop::MoveState::Walk);
-    return static_cast<uint8_t>(coop::MoveState::Idle);
+    if (Call())
+    {
+        raw = static_cast<uint8_t>(coop::MoveState::RideHorse);
+    }
+    else
+    {
+        Init(natives::IS_PED_RUNNING); Push(ped);
+        if (Call())
+        {
+            raw = static_cast<uint8_t>(coop::MoveState::Run);
+        }
+        else
+        {
+            Init(natives::IS_PED_WALKING); Push(ped);
+            if (Call())
+            {
+                raw = static_cast<uint8_t>(coop::MoveState::Walk);
+            }
+            else
+            {
+                // IS_PED_WALKING в RDR2 ложно при медленной ходьбе. Fallback —
+                // фактическая скорость. Порог 0.8 м/с: шаг RDR2 ~1.5 м/с, а
+                // покачивание стоящего игрока даёт <0.3 — не путаем.
+                Init(natives::GET_ENTITY_SPEED); Push(ped);
+                float speed = CallFloat();
+                raw = (speed > 0.8f)
+                        ? static_cast<uint8_t>(coop::MoveState::Walk)
+                        : static_cast<uint8_t>(coop::MoveState::Idle);
+            }
+        }
+    }
+
+    // Дебаунс: состояние меняем только после kMoveDebounce подряд одинаковых
+    // замеров. Убирает мерцание Walk<->Idle (главная причина дёрганья педа).
+    if (raw == s_moveStable)
+    {
+        s_moveCandidateCount = 0;
+        s_moveCandidate = raw;
+        return s_moveStable;
+    }
+    if (raw == s_moveCandidate)
+    {
+        ++s_moveCandidateCount;
+    }
+    else
+    {
+        s_moveCandidate = raw;
+        s_moveCandidateCount = 1;
+    }
+    if (s_moveStable == 0xFF)
+    {
+        s_moveStable = raw; // первичная инициализация — сразу
+        s_moveCandidateCount = 0;
+        return s_moveStable;
+    }
+    if (s_moveCandidateCount >= kMoveDebounce)
+    {
+        s_moveStable = raw; // подтверждено — переключаем
+        s_moveCandidateCount = 0;
+    }
+    return s_moveStable;
 }
 
 // Доп. состояние педа (PedState): ragdoll/укрытие/плавание/лестница/прыжок/
@@ -1328,9 +1332,13 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
     {
         // Движение задачей (топает ножками). Физику педа НЕ замораживаем,
         // иначе TASK_GO_* не сможет его вести.
+        // ВАЖНО: размораживаем на КАЖДОМ кадре движения, а не только при
+        // смене состояния. Иначе после Idle (заморожен) с продолжением Walk
+        // пед остаётся замороженным — задача ведёт, но физика стоит, и он
+        // «застревает» на месте, пока ручной SetEntityCoords не телепортнёт.
+        SetGhostFrozen(false);
         if (s_lastMoveState != move)
         {
-            SetGhostFrozen(false);
             // При переходе ОТ Idle/стояния к движению цель устарела — задачу
             // надо поставить заново. При смене Walk<->Run цель НЕ трогаем:
             // повторная постановка TASK_FOLLOW вызывает «подхват» педа
@@ -1364,18 +1372,19 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
 
         if (retarget)
         {
-            // TASK_FOLLOW_NAV_MESH_TO_COORD — плавное анимированное движение
-            // (шаг/бег по speedMultiplier). Перезадаём на каждый заметный
-            // сдвиг цели — пед не встаёт между кадрами, шаг не рвётся.
-            const float speed = (move == runState) ? 3.5f : 1.0f; // multiplier
+            // TASK_FOLLOW_NAV_MESH_TO_COORD — движение с АБСОЛЮТНОЙ скоростью
+            // (м/с), как в rdr2-runtime (GoTo: speed, timeout, 1.0f, 4, 40000).
+            // Нельзя передавать «множитель» — иначе пед идёт со скоростью
+            // множителя × 1 м/с и не догоняет игрока (дёргается, отставая).
+            const float speed = (move == runState) ? 7.0f : 2.5f; // м/с
             Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
             Push(ped);
             Push(target.x); Push(target.y); Push(target.z);
-            Push(speed);                    // speedMultiplier (walk=1.0, run=3.5)
+            Push(speed);                    // absolute speed (м/с)
             Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
-            Push(0.1f);                     // stoppingRange (0.1 — задача не завершается сама)
-            Push(static_cast<unsigned long long>(0)); // flags
-            Push(0.f);                      // heading (не важно)
+            Push(1.0f);                     // stoppingRange (как в rdr2-runtime)
+            Push(static_cast<unsigned long long>(4)); // flags
+            Push(40000.f);                  // heading? в rdr2-runtime 40000 (unk)
             Call();
             s_moveTarget = target;
             s_moveTargetValid = true;
@@ -1386,9 +1395,10 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
     {
         if (s_lastMoveState != move)
         {
-            // Стоящий пед замораживаем: движок не толкает его коллизиями
-            // игрока/физикой — он стоит как статуя, пока кадры не переместят.
-            SetGhostFrozen(true);
+            // Стоящий пед: ставим stand-still, НО НЕ замораживаем физику.
+            // Заморозка (FREEZE_ENTITY_POSITION) конфликтует с задачей и
+            // ручным позиционированием — пед «дёргается» (задача ведёт,
+            // физика стоит). Свободная физика + TASK_STAND_STILL = стоит ровно.
             s_lastMoveState = move;
             Init(natives::TASK_STAND_STILL);
             Push(ped); Push(static_cast<unsigned long long>(0xFFFFFFFF));
@@ -1467,6 +1477,7 @@ void InitNetworkClient()
                       ji.name.c_str(), ji.model, ji.hasPos ? 1 : 0);
         std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s joined", ji.name.c_str());
         s_playerJoinedNotified = true;
+        s_pendingJoinWaitTicks = 0; // новый игрок — заново ждём его первый кадр
         s_subtitleTicksLeft = 8 * 60;
         std::snprintf(s_pedName, sizeof(s_pedName), "%s", ji.name.c_str());
         std::snprintf(s_pendingName, sizeof(s_pendingName), "%s", ji.name.c_str());
@@ -1586,6 +1597,20 @@ void Tick()
     }
 
     // Спавн педа: только при PLAYER_JOINED (не при своём JOIN_OK).
+    // ВАЖНО: не спавним сразу с «подставной» моделью из JOIN (горожанин) —
+    // через миг прилетит кадр с реальной моделью персонажа (reserved[2]),
+    // и пед придётся пересоздавать (Т-поза + слёт одежды). Ждём первый кадр
+    // до ~2 секунд: если пришёл — спавним сразу с моделью персонажа.
+    if (!s_ghost && s_playerJoinedNotified)
+    {
+        // Если кадр с моделью персонажа ещё не получен — ждём (но не вечно).
+        if (!s_haveFrame || !s_lastFrame.reserved[2])
+        {
+            unsigned int waitTicks = s_pendingJoinWaitTicks++;
+            if (waitTicks < 2 * 60) // до ~2 секунд
+                return;
+        }
+    }
     if (!s_ghost && s_playerJoinedNotified)
     {
         Vec3 spawn;
@@ -1632,13 +1657,16 @@ void Tick()
         if (s_ghost)
         {
             SetEntityMission(s_ghost);
+            // ВАЖНО: RandomizePedComponents (SET_PED_RANDOM_COMPONENT_VARIATION)
+            // ОБЯЗАТЕЛЕН для рендера модели педа — без него пед невидим
+            // (остаются только прикреплённые shop-предметы-одёжки). Наряд из
+            // сети применяется ПОЗЖЕ и перекрывает рандом, так что он не мешает.
             RandomizePedComponents(s_ghost);
             SetEntityVisibleForce(s_ghost);
             PlaceOnGround(s_ghost);
             if (hasGround)
                 SetEntityCoords(s_ghost, Vec3{spawn.x, spawn.y, groundZ + 0.2f});
             TaskStandStill(s_ghost);
-            SetGhostFrozen(true); // дефолт для Idle; кадры с Walk/Run разморозят
             s_blip = CreateFriendlyBlipAt(spawn);
             sh_log::Write("coop: friendly blip -> %u\n", s_blip);
             std::snprintf(s_pedName, sizeof(s_pedName), "%s", name);
