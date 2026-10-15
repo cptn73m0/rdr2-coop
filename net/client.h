@@ -26,10 +26,11 @@ enum class ClientState {
     Error,
 };
 
-// Результат JOIN_OK от сервера (персистентность).
+// Результат JOIN_OK от сервера (персистентность + роль).
 struct JoinResult {
     bool hasSaved = false;
     float x = 0, y = 0, z = 0, heading = 0;
+    bool isHost = false;   // сервер назначил хостом (первый подключившийся)
 };
 
 // Информация о подключившемся игроке (PLAYER_JOINED). Если hasPos=true,
@@ -47,6 +48,9 @@ public:
     using OnJoinOk  = std::function<void(const JoinResult&)>;
     using OnPlayerJoin = std::function<void(const PlayerJoinInfo&)>;
     using OnPlayerLeave= std::function<void(const std::string&)>;
+    using OnDied       = std::function<void(const std::string&)>; // игрок умер (имя)
+    using OnWorldState = std::function<void(const net::WorldState&)>;
+    using OnOutfit     = std::function<void(const net::OutfitState&)>;
 
     Client();
     ~Client();
@@ -57,11 +61,18 @@ public:
     void SendFrame(const net::FramePayload& f);
     // Сообщить серверу, что локальный игрок умер (лог в консоли сервера).
     void SendDied();
+    // Отправить хостом состояние мира (время+погода) всем остальным.
+    void SendWorldState(const net::WorldState& ws);
+    // Отправить компоненты одежды игрока (при смене наряда).
+    void SendOutfit(const net::OutfitState& os);
 
     void SetFrame(OnFrame cb);
     void SetJoinOk(OnJoinOk cb);
     void SetPlayerJoin(OnPlayerJoin cb);
     void SetPlayerLeave(OnPlayerLeave cb);
+    void SetDied(OnDied cb);
+    void SetWorldState(OnWorldState cb);
+    void SetOutfit(OnOutfit cb);
 
     ClientState State() const;
 
@@ -85,6 +96,9 @@ private:
     OnJoinOk onJoinOk_;
     OnPlayerJoin onPlayerJoin_;
     OnPlayerLeave onPlayerLeave_;
+    OnDied onDied_;
+    OnWorldState onWorldState_;
+    OnOutfit onOutfit_;
 };
 
 } // namespace netio

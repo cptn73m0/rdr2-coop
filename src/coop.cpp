@@ -125,6 +125,12 @@ void SetEntityMission(unsigned int handle)
     Push(true);
     Push(true);
     Call();
+    // Бессмертие: пед-призрак не должен умирать от коллизий/бандитов/физики.
+    // Он умрёт только когда умрёт оригинал игрока (сервер пришлёт Died).
+    Init(natives::SET_ENTITY_INVINCIBLE);
+    Push(handle);
+    Push(static_cast<unsigned long long>(1));
+    Call();
 }
 
 void RandomizePedComponents(unsigned int handle)
@@ -384,6 +390,27 @@ float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0;
 // Последний кадр от удалённого игрока (для применения в Tick()).
 net::FramePayload s_lastFrame{};
 bool s_haveFrame = false;
+// Состояние мира от хоста (время+погода) для применения в Tick().
+net::WorldState s_worldState{};
+bool s_haveWorldState = false;
+bool s_amHost = false;              // сервер назначил нас хостом
+unsigned int s_lastWorldSendTick = 0; // троттлинг отправки WorldState
+// Последнее применённое время (для лога смены).
+int s_lastAppliedHour = -1, s_lastAppliedMin = -1;
+// Компоненты одежды удалённого игрока (для применения в Tick()).
+net::OutfitState s_outfitIn{};
+bool s_haveOutfit = false;
+// Последний отправленный набор компонентов (чтобы слать при смене).
+net::OutfitState s_sentOutfit{};
+bool s_sentOutfitValid = false;
+// Признак «оригинал игрока умер» — педа-призрака надо убить, но НЕ удалять
+// (труп и снаряжение остаются). Обрабатывается в Tick() игровым потоком.
+bool s_remoteDiedPending = false;
+char s_remoteDiedName[64] = "";
+// Отложенный наряд: применён, только когда модель педа совпадёт с моделью
+// наряда (пед пересоздаётся по модели персонажа из кадра reserved[2]).
+net::OutfitState s_pendingOutfit{};
+bool s_havePendingOutfit = false;
 // Флаг «игрок вышел»: обработка (удаление педа) произойдёт в Tick().
 bool s_pendingLeave = false;
 char s_leaveName[64] = ""; // имя ушедшего игрока (для надписи «left»)
@@ -427,18 +454,19 @@ void RequestMountModel()
     if (s_mount && DoesEntityExist(s_mount)) return; // лошадь уже есть
     unsigned long long model = s_mountWantedModel ? s_mountWantedModel
                                                   : natives::HORSE_MODEL;
-    if (!s_mountModelRequested)
-    {
-        s_mountModelRequested = true;
-        Init(natives::REQUEST_MODEL);
-        Push(model);
-        Call();
+    // Запрашиваем модель КАЖДЫЙ раз, пока она не загрузилась (движок
+    // идемпотентен; не полагаемся на однократный флаг — если модель не
+    // успела загрузиться к первому кадру, без ретрая лошадь не появится).
+    Init(natives::REQUEST_MODEL);
+    Push(model);
+    Call();
+    s_mountModelRequested = true;
+    if (s_tickCount % (1 * 60) == 1) // лог не чаще раза в секунду
         sh_log::Write("coop: request horse model 0x%llX\n", model);
-    }
     if (!HasModelLoaded(model))
     {
-        static bool logged = false;
-        if (!logged) { sh_log::Write("coop: waiting horse model...\n"); logged = true; }
+        if (s_tickCount % (1 * 60) == 1)
+            sh_log::Write("coop: waiting horse model 0x%llX...\n", model);
         return;
     }
     // Создаём лошадь рядом с целью кадра.
@@ -453,9 +481,16 @@ void RequestMountModel()
     {
         // Обвязка видимости, как у человеческого педа: mission+variation+visible.
         Init(natives::SET_ENTITY_AS_MISSION_ENTITY); Push(s_mount); Push(true); Push(true); Call();
+        // variation НУЖНА для рендера лошади (как и педа) — без неё лошадь
+        // невидима. Масть задаётся моделью из кадра (0x28F9976A и т.п.),
+        // variation рандомизирует только текстуру-вариацию, сохраняя модель.
         Init(natives::SET_PED_RANDOM_COMPONENT_VARIATION); Push(s_mount); Push(0ull); Call();
         Init(natives::SET_ENTITY_VISIBLE); Push(s_mount); Push(true); Call();
         Init(natives::PLACE_OBJECT_ON_GROUND_PROPERLY); Push(s_mount); Call();
+        // Отключаем коллизию лошади-призрака: на месте спавна может быть
+        // другая лошадь (чужая/дикая) — с включённой коллизией они
+        // сталкиваются и пед-седок «улетает в небеса».
+        Init(natives::SET_ENTITY_COLLISION); Push(s_mount); Push(0); Call();
         sh_log::Write("coop: horse created handle=%u\n", s_mount);
         PromoteMountToGhost();
     }
@@ -587,6 +622,22 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
         case net::PedState::SwimUnderwater:
             sh_log::Write("coop: state=Swimming (teleport to water pos only)\n");
             break;
+        case net::PedState::Climbing:
+            // Лезет: даём задачу лазания один раз (задача сама ведёт вдоль
+            // препятствия; физику размораживаем, иначе TASK_CLIMB не сработает).
+            SetGhostFrozen(false);
+            Init(natives::TASK_CLIMB);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(0));
+            Call();
+            sh_log::Write("coop: state=Climbing -> TASK_CLIMB\n");
+            break;
+        case net::PedState::Jumping:
+            // Прыжок: задача прыжка конфликтует с ручным lerp'ом позиции
+            // (в воздухе), поэтому анимацию не задаём — пед плавно догоняет
+            // точку кадра по всем осям (обрабатывается в ApplyRemoteFrame).
+            sh_log::Write("coop: state=Jumping (lerp in air)\n");
+            break;
         default:
             // Normal/Climbing/Jumping/Falling — движение обычное (move).
             sh_log::Write("coop: state=%d → normal move\n", (int)st);
@@ -633,15 +684,22 @@ void ApplyPlayerOutfitToGhost(unsigned long long outfitHash)
 
     if (!s_outfitRequestPending)
     {
-        // Запускаем запрос наряда (модель педа = модель удалённого игрока).
+        // Запускаем запрос наряда. МОДЕЛЬ — та, что у педа-призрака СЕЙЧАС
+        // (s_ghostModel: реальная модель персонажа из кадра reserved[2]).
+        // Раньше использовали s_remoteModel («подставная» модель из ini) —
+        // наряд запрашивался для неё, а применялся к педу с другой моделью
+        // → применялся частично/рандомно (патронташи/кобуры/шляпы не те).
+        unsigned long long model = s_ghostModel ? s_ghostModel
+                                  : (s_remoteModel ? s_remoteModel : GHOST_PED_MODEL);
         Init(natives::REQUEST_META_PED_OUTFIT);
-        Push(s_remoteModel ? s_remoteModel : GHOST_PED_MODEL);
+        Push(model);
         Push(outfitHash);
         s_outfitRequest = static_cast<int>(Call());
         s_outfitRequestPending = true;
         s_wantedOutfit = outfitHash;
         s_outfitRequestLogged = false;
-        sh_log::Write("coop: outfit request 0x%llX -> %d\n", outfitHash, s_outfitRequest);
+        sh_log::Write("coop: outfit request 0x%llX (model 0x%llX) -> %d\n",
+                      outfitHash, model, s_outfitRequest);
     }
     if (!s_outfitRequestPending) return;
     {
@@ -666,6 +724,112 @@ void ApplyPlayerOutfitToGhost(unsigned long long outfitHash)
             s_outfitRequestLogged = true;
         }
     }
+}
+
+// Собрать компоненты одежды (наряд) локального игрока: список хэшей одетых
+// компонентов (шляпа, куртка, рубашка, штаны, патронташ, кобура, пояс и т.п.)
+// через _GET_NUM_COMPONENTS_IN_PED + _GET_PED_COMPONENT_CATEGORY_BY_INDEX.
+// Возвращает false, если прочитать не удалось (насив вернул 0/нет данных).
+void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
+{
+    using namespace natives_api;
+    out.model = 0;
+    out.count = 0;
+    Init(natives::GET_ENTITY_MODEL); Push(ped);
+    out.model = Call();
+
+    // Правильный способ: _GET_NUM_COMPONENT_CATEGORIES_IN_PED + 
+    // _GET_SHOP_ITEM_COMPONENT_AT_INDEX (входным struct'ом ждёт буфер-слоты).
+    // GetShopItemComponents() из rdr2-runtime-scripthook делает именно так.
+    Init(natives::GET_NUM_COMPONENT_CATEGORIES_IN_PED); Push(ped);
+    int categories = static_cast<int>(Call());
+    if (categories <= 0)
+        return;
+    if (categories > net::kMaxOutfitComponents)
+        categories = net::kMaxOutfitComponents;
+
+    // Два script-буфера по 4 слота (8 байт каждый) — их заполняет натив.
+    // Для входа достаточно нулей (структуры «запроса»).
+    static unsigned long long inA[4] = {0, 0, 0, 0};
+    static unsigned long long inB[4] = {0, 0, 0, 0};
+
+    int n = 0;
+    for (int i = 0; i < categories; ++i)
+    {
+        std::memset(inA, 0, sizeof(inA));
+        std::memset(inB, 0, sizeof(inB));
+        Init(natives::GET_SHOP_ITEM_COMPONENT_AT_INDEX);
+        Push(ped);
+        Push(static_cast<unsigned long long>(i));
+        Push(static_cast<unsigned long long>(1)); // p2 = true (как в rdr2-runtime)
+        Push(reinterpret_cast<unsigned long long>(inA));
+        Push(reinterpret_cast<unsigned long long>(inB));
+        uint32_t comp = static_cast<uint32_t>(Call());
+        if (comp)
+            out.components[n++] = comp;
+    }
+    out.count = static_cast<uint32_t>(n);
+    {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+                      "coop: collect outfit n=%u cats=%d model=0x%llX comps=[%08X %08X %08X %08X %08X %08X %08X %08X]\n",
+                      out.count, categories, out.model,
+                      out.components[0], out.components[1], out.components[2], out.components[3],
+                      out.components[4], out.components[5], out.components[6], out.components[7]);
+        sh_log::Write("%s", buf);
+    }
+}
+
+// Применить надетые shop-предметы (одежду) удалённого игрока к педу призрака
+// через _APPLY_SHOP_ITEM_TO_PED + _UPDATE_PED_VARIATION (как в rdr2-runtime
+// ApplyShopItemComponents). Вызывается из Tick() (игровой поток).
+void ApplyOutfitToGhost(const net::OutfitState& os)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    // Модель педа должна совпадать (иначе компоненты от другой модели
+    // применятся некорректно / визуально сломаются). Если пед ещё создан
+    // со старой моделью (до пересоздания по кадру) — откладываем наряд.
+    if (os.model && os.model != s_ghostModel)
+    {
+        s_pendingOutfit = os;
+        s_havePendingOutfit = true;
+        sh_log::Write("coop: outfit model mismatch (0x%llX != 0x%llX), deferred\n",
+                      os.model, s_ghostModel);
+        return;
+    }
+    for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
+    {
+        uint32_t c = os.components[i];
+        if (!c) continue;
+        Init(natives::APPLY_SHOP_ITEM_TO_PED);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(c));
+        Push(static_cast<unsigned long long>(1)); // immediately = true
+        Push(static_cast<unsigned long long>(0)); // isMp = false
+        Push(static_cast<unsigned long long>(1)); // p4 = true (как в rdr2-runtime)
+        Call();
+    }
+    Init(natives::UPDATE_PED_VARIATION);
+    Push(s_ghost);
+    Push(static_cast<unsigned long long>(0)); // p1=false: не сбрасывать лицо/волосы
+    Push(static_cast<unsigned long long>(1)); // p2=true
+    Push(static_cast<unsigned long long>(1)); // p3=true
+    Push(static_cast<unsigned long long>(1)); // p4=true
+    Push(static_cast<unsigned long long>(0)); // p5=false
+    Call();
+    sh_log::Write("coop: outfit applied to ghost (%u shop items)\n", os.count);
+}
+
+// Применить отложенный наряд, если модель педа наконец совпала.
+void TryApplyPendingOutfit()
+{
+    if (!s_havePendingOutfit) return;
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    if (s_pendingOutfit.model && s_pendingOutfit.model != s_ghostModel) return;
+    net::OutfitState os = s_pendingOutfit;
+    s_havePendingOutfit = false;
+    ApplyOutfitToGhost(os);
 }
 
 // Применить мета-наряд (снаряжение) лошади удалённого игрока к нашей лошади
@@ -755,6 +919,13 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         // он сидит на лошади; правим лошадь (спавн/движение/посадка).
         s_mountTarget = p;
         s_haveMountTarget = true;
+        // Диагностика: лог прихода кадра с верховой ездой (редко — раз в
+        // несколько секунд, чтобы не спамить лог при 15 кадрах/с).
+        if (s_tickCount % (3 * 60) == 1)
+            sh_log::Write("coop: frame RideHorse, mountWanted=0x%llX mount=%u "
+                          "model=0x%llX outfit=0x%llX\n",
+                          s_mountWantedModel, s_mount,
+                          f.reserved[0], f.horseOutfitHash);
         // Модель коня из кадра (0 = стандартная).
         if (f.reserved[0] && f.reserved[0] != s_mountWantedModel)
         {
@@ -766,6 +937,10 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         }
         if (!s_mount || !DoesEntityExist(s_mount))
         {
+            // Идл-пед заморожен (FREEZE_ENTITY_POSITION) — на замороженном
+            // педе SET_PED_ONTO_MOUNT не работает (лошадь создаётся, а пед
+            // не садится). Перед посадкой обязательно размораживаем.
+            SetGhostFrozen(false);
             RequestMountModel();
             if (s_mount) PromoteMountToGhost();
         }
@@ -774,7 +949,6 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             MoveMountTo(p);
             SetEntityHeading(s_mount, f.heading);
         }
-        // Применить мета-наряд (снаряжение) лошади — при смене хэша.
         ApplyHorseOutfitToMount(f.horseOutfitHash);
         ApplyPedStateToGhost(f);
         return;
@@ -785,9 +959,43 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         DismountAndRemoveMount();
     }
 
+    // Прыжок/падение/плавание: пед в воздухе или в воде — Z кадра валиден
+    // (это «пояс» игрока на высоте прыжка). НЕ прижимаем к земле и НЕ даём
+    // задач движения (TASK_GO_* в прыжке заставляют педа «бежать по земле»
+    // и хаотично дёргаться). Плавно догоняем точку кадра по ВСЕМ осям.
+    const uint8_t st = static_cast<uint8_t>(f.state);
+    if (st == static_cast<uint8_t>(net::PedState::Jumping) ||
+        st == static_cast<uint8_t>(net::PedState::Falling) ||
+        st == static_cast<uint8_t>(net::PedState::Swimming) ||
+        st == static_cast<uint8_t>(net::PedState::SwimUnderwater))
+    {
+        const float STEP_AIR = 0.35f; // метров за тик (быстрее обычного шага)
+        float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
+        float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist > TELEPORT_DIST)
+        {
+            SetEntityCoords(s_ghost, p); // резкий перенос (спавн/загрузка)
+        }
+        else if (dist > 0.05f)
+        {
+            float s = std::min(STEP_AIR, dist);
+            Vec3 n;
+            n.x = cur.x + dx / dist * s;
+            n.y = cur.y + dy / dist * s;
+            n.z = cur.z + dz / dist * s;
+            SetEntityCoords(s_ghost, n);
+        }
+        ApplyPedStateToGhost(f);
+        return;
+    }
+
     if (move == static_cast<uint8_t>(coop::MoveState::Walk) ||
         move == static_cast<uint8_t>(coop::MoveState::Run))
     {
+        // Диагностика: редкий лог прихода кадра движения.
+        if (s_tickCount % (3 * 60) == 1)
+            sh_log::Write("coop: recv move=%u state=%u at (%.1f %.1f %.1f), cur=(%.1f %.1f %.1f)\n",
+                          move, f.state, p.x, p.y, p.z, cur.x, cur.y, cur.z);
         // Движение задачей: не телепортируем и не лерпим — просто
         // перенаправляем задачу идти к текущей точке кадра (топает ножками).
         ApplyMoveToGhost(s_ghost, move, p);
@@ -1006,30 +1214,51 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
         if (s_lastMoveState != move)
         {
             SetGhostFrozen(false);
+            // При переходе ОТ Idle/стояния к движению цель устарела — задачу
+            // надо поставить заново. При смене Walk<->Run цель НЕ трогаем:
+            // повторная постановка TASK_FOLLOW вызывает «подхват» педа
+            // (телепорт ~1 м вперёд при переходе на бег).
+            if (s_lastMoveState != walkState && s_lastMoveState != runState)
+                s_moveTargetValid = false;
             s_lastMoveState = move;
-            s_moveTargetValid = false; // принудим перепостановку задачи
         }
-        // Считаем, нужно ли ПЕРЕдавать задачу: только если сменилось
-        // состояние движения ИЛИ цель ушла дальше ~0.3 м от предыдущей.
-        bool retarget = false;
-        if (move != s_lastMoveState)
-            retarget = true;
-        else if (!s_moveTargetValid ||
-                 std::fabs(target.x - s_moveTarget.x) > 0.3f ||
-                 std::fabs(target.y - s_moveTarget.y) > 0.3f)
-            retarget = true;
+        // Ограничить скорость АНИМАЦИИ: TASK_GO_STRAIGHT_TO_COORD просит
+        // moveBlendSpeed, но движок сам решает бежать ли педу (скорость
+        // анимации от физики). Без ограничения пед «бежит» даже когда
+        // оригинал идёт шагом. 2.0 = шаг, 6.0 = бег, 10.0 = спринт.
+        {
+            const float maxBlend = (move == runState) ? 6.0f : 2.0f;
+            Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
+            Push(ped);
+            Push(maxBlend);
+            Call();
+        }
+        // Считаем, нужно ли ПЕРЕдавать задачу. При движении перезадаём, если
+        // цель ушла дальше 0.5 м от предыдущей. Смена Walk<->Run сама по
+        // себе НЕ перезадаёт задачу (движение уже идёт; повторная постановка
+        // TASK_FOLLOW вызывает «подхват» педа — телепорт ~1 м вперёд при
+        // переходе на бег). Скорость бега задаётся SET_PED_MAX_MOVE_BLEND_RATIO
+        // выше, а задача продолжает вести педа к той же цели.
+        // stoppingRange ставим 0.1 — чтобы задача движения НЕ завершалась
+        // преждевременно (когда пед в пределах 0.1 м от цели).
+        bool retarget = (!s_moveTargetValid ||
+                         std::fabs(target.x - s_moveTarget.x) > 0.5f ||
+                         std::fabs(target.y - s_moveTarget.y) > 0.5f);
 
         if (retarget)
         {
-            const float speed = (move == runState) ? 6.f : 2.5f;
-            Init(natives::TASK_GO_STRAIGHT_TO_COORD);
+            // TASK_FOLLOW_NAV_MESH_TO_COORD — плавное анимированное движение
+            // (шаг/бег по speedMultiplier). Перезадаём на каждый заметный
+            // сдвиг цели — пед не встаёт между кадрами, шаг не рвётся.
+            const float speed = (move == runState) ? 3.5f : 1.0f; // multiplier
+            Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
             Push(ped);
             Push(target.x); Push(target.y); Push(target.z);
-            Push(speed);                    // moveBlendSpeed (скорость анимации)
-            Push(static_cast<unsigned long long>(0xFFFFFFFF)); // p5 timeBeforeTeleport = -1
-            Push(0.f);                      // p6 finalHeading
-            Push(0.5f);                     // p7 targetRadius
-            Push(0);                        // p8
+            Push(speed);                    // speedMultiplier (walk=1.0, run=3.5)
+            Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
+            Push(0.1f);                     // stoppingRange (0.1 — задача не завершается сама)
+            Push(static_cast<unsigned long long>(0)); // flags
+            Push(0.f);                      // heading (не важно)
             Call();
             s_moveTarget = target;
             s_moveTargetValid = true;
@@ -1077,11 +1306,25 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     RequestModel(f.reserved[2]);
     s_ghostModel = f.reserved[2];
     DeleteGhostEntity();
+    // Сброс состояния наряда: старый запрос относился к прежней модели и
+    // старому педу. Новый пед применит наряд заново (по новой модели).
+    if (s_outfitRequestPending)
+    {
+        using namespace natives_api;
+        Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
+        Push(static_cast<unsigned long long>(static_cast<int>(s_outfitRequest)));
+        Call();
+        s_outfitRequestPending = false;
+    }
+    s_wantedOutfit = 0;
+    s_outfitRequestLogged = false;
     if (s_blip)
         s_blip = RemoveBlip(s_blip);
     s_ghostDead = false;
     s_lastMoveState = 0xFF;
     s_lastPedState = 0xFF;
+    // НОВЫЙ пед создаётся со спавна (рядом с хостом / на сохранённой позиции);
+    // наряд из последнего кадра применится автоматически (reserved[1]).
 }
 
 // Регистрация колбэков и запуск сетевого клиента.
@@ -1094,8 +1337,10 @@ void InitNetworkClient()
     g_netStarted = true;
 
     g_netClient.SetJoinOk([](const netio::JoinResult& jr) {
-        sh_log::Write("net: JOIN_OK (hasSaved=%d) from server\n", jr.hasSaved ? 1 : 0);
+        sh_log::Write("net: JOIN_OK (hasSaved=%d, isHost=%d) from server\n",
+                      jr.hasSaved ? 1 : 0, jr.isHost ? 1 : 0);
         s_pendingJoin = true;
+        s_amHost = jr.isHost;
         if (jr.hasSaved)
             s_pendingHeading = jr.heading;
     });
@@ -1127,10 +1372,29 @@ void InitNetworkClient()
         s_haveFrame = true;
     });
 
+    g_netClient.SetWorldState([](const net::WorldState& ws) {
+        // Только копируем; нативы (SET_CLOCK_TIME/SET_WEATHER_TYPE) вызовет
+        // Tick() в игровом потоке.
+        s_worldState = ws;
+        s_haveWorldState = true;
+    });
+
+    g_netClient.SetOutfit([](const net::OutfitState& os) {
+        // Только копируем; нативы (EQUIP/UPDATE_VARIATION) вызовет Tick().
+        s_outfitIn = os;
+        s_haveOutfit = true;
+    });
+
     g_netClient.SetPlayerLeave([](const std::string& name) {
         sh_log::Write("net: PLAYER_LEFT %s\n", name.c_str());
         std::snprintf(s_leaveName, sizeof(s_leaveName), "%s", name.c_str());
         s_pendingLeave = true; // физическое удаление сделает Tick()
+    });
+
+    g_netClient.SetDied([](const std::string& name) {
+        sh_log::Write("net: PLAYER_DIED %s\n", name.c_str());
+        std::snprintf(s_remoteDiedName, sizeof(s_remoteDiedName), "%s", name.c_str());
+        s_remoteDiedPending = true; // убить педа-призрака сделает Tick()
     });
 
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
@@ -1156,6 +1420,16 @@ void Tick()
 
     // Модель для педа: чужая (из PLAYER_JOINED), иначе дефолтная.
     // Если из кадра пришла модель персонажа — используем её (перезапись).
+    // ВАЖНО: если кадр уже пришёл ДО спавна — сразу берём модель персонажа
+    // из кадра, чтобы пед создавался с правильной моделью с первого раза
+    // (иначе он создаётся горожанином и тут же пересоздаётся — анимации
+    // рвутся, см. «remote model changed 0xCF7E73BE -> 0xD7114C9»).
+    if (s_haveFrame && s_lastFrame.reserved[2] && !s_requestedModel)
+    {
+        s_requestedModel = s_lastFrame.reserved[2];
+        RequestModel(s_requestedModel);
+        s_modelLoadedLogged = false;
+    }
     unsigned long long wantModel = s_requestedModel ? s_requestedModel
                                   : (s_remoteModel ? s_remoteModel : GHOST_PED_MODEL);
     if (s_requestedModel != wantModel)
@@ -1216,18 +1490,36 @@ void Tick()
             spawn.z += 0.5f;
             sh_log::Write("coop: [SPAWN] %s next to host (first visit)\n", name);
         }
-        s_ghost = CreateGhostPed(wantModel, spawn, heading);
+        // Вычислить высоту земли ДО создания педа: создать педа на z кадра
+        // («пояс» игрока, может быть высоко) нельзя — пед успеет упасть с
+        // высоты до того, как мы поставим его на землю, и разобьётся
+        // (наблюдали: телепорт в небо, падение, смерть педа на ПК2).
+        float groundZ = 0.f;
+        bool hasGround = false;
+        {
+            using namespace natives_api;
+            Init(natives::GET_GROUND_Z_FOR_3D_COORD);
+            Push(spawn.x); Push(spawn.y); Push(spawn.z);
+            Push(reinterpret_cast<unsigned long long>(&groundZ));
+            hasGround = Call() != 0;
+        }
+        Vec3 createAt = spawn;
+        if (hasGround)
+            createAt.z = groundZ + 0.2f; // чуть над землёй
+        s_ghost = CreateGhostPed(wantModel, createAt, heading);
         if (s_ghost)
             s_ghostModel = wantModel; // фиксируем модель созданного педа
-        sh_log::Write(s_ghost ? "coop: ghost ped created (on join), handle=%u at (%.1f %.1f %.1f)\n"
+        sh_log::Write(s_ghost ? "coop: ghost ped created (on join), handle=%u at (%.1f %.1f %.1f) ground=%d\n"
                               : "coop: CREATE_PED returned 0\n",
-                      s_ghost, spawn.x, spawn.y, spawn.z);
+                      s_ghost, createAt.x, createAt.y, createAt.z, hasGround ? 1 : 0);
         if (s_ghost)
         {
             SetEntityMission(s_ghost);
             RandomizePedComponents(s_ghost);
             SetEntityVisibleForce(s_ghost);
             PlaceOnGround(s_ghost);
+            if (hasGround)
+                SetEntityCoords(s_ghost, Vec3{spawn.x, spawn.y, groundZ + 0.2f});
             TaskStandStill(s_ghost);
             SetGhostFrozen(true); // дефолт для Idle; кадры с Walk/Run разморозят
             s_blip = CreateFriendlyBlipAt(spawn);
@@ -1251,6 +1543,15 @@ void Tick()
         s_haveFrame = false;
     }
 
+    // Применить компоненты одежды от удалённого игрока (при смене наряда).
+    if (s_haveOutfit)
+    {
+        s_haveOutfit = false;
+        ApplyOutfitToGhost(s_outfitIn);
+    }
+    // Применить отложенный наряд, если модель педа наконец совпала.
+    TryApplyPendingOutfit();
+
     // Draw the remote player's name over the ped's head while within range.
     if (s_ghost && s_pedName[0] && DoesEntityExist(s_ghost))
     {
@@ -1263,7 +1564,7 @@ void Tick()
             // add a fixed head-height offset (GET_PED_BONE_COORDS for the
             // head returns mid-body in this build, so we use a constant).
             Vec3 aboveHead = gp;
-            aboveHead.z += 1.9f; // roughly above a standing human
+            aboveHead.z += 1.4f; // ~0.5 м над макушкой (опущено на 25% от 1.9f)
             DrawNameAt(aboveHead, s_pedName);
         }
     }
@@ -1273,6 +1574,37 @@ void Tick()
     {
         Vec3 gp = GetEntityCoords(s_ghost);
         UpdateBlipCoords(s_blip, gp);
+    }
+
+    // Смерть удалённого игрока от СЕРВЕРА (оригинал умер в своём мире):
+    // убиваем педа-призрака, но НЕ удаляем — труп и всё снаряжение остаются
+    // лежать. (От коллизий/бандитов/физики пед не умирает — он invincible.)
+    if (s_remoteDiedPending)
+    {
+        s_remoteDiedPending = false;
+        const char* who = s_remoteDiedName[0] ? s_remoteDiedName : "Player";
+        if (s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead)
+        {
+            using namespace natives_api;
+            Init(natives::SET_ENTITY_HEALTH);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(0)); // 0 HP = смерть
+            Push(static_cast<unsigned long long>(0)); // entityKilledBy
+            Call();
+            s_ghostDead = true; // труп не двигаем/не трогаем
+            sh_log::Write("coop: [DEAD] %s (killed by server Died)\n", who);
+            if (s_blip)
+                s_blip = RemoveBlip(s_blip);
+            std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s is dead", who);
+            s_playerJoinedNotified = true; // переиспользуем таймер оповещения
+            s_subtitleTicksLeft = 8 * 60;
+            s_pedName[0] = '\0'; // имя над головой скрыто
+        }
+        else
+        {
+            sh_log::Write("coop: Died for %s but no ghost\n", who);
+        }
+        s_remoteDiedName[0] = '\0';
     }
 
     // Смерть удалённого игрока: метка-крестик, скрыть имя и показать
@@ -1335,6 +1667,11 @@ void Tick()
             Init(natives::GET_ENTITY_MODEL);
             Push(playerPed);
             fp.reserved[2] = Call();
+            // Диагностика: что реально уходит в кадре (редко).
+            if (s_tickCount % (5 * 60) == 1)
+                sh_log::Write("coop: send pedLook, outfit=0x%llX model=0x%llX "
+                              "move=%u state=%u\n",
+                              fp.reserved[1], fp.reserved[2], fp.move, fp.state);
         }
         // Если игрок верхом — передаём модель его лошади и её снаряжение.
         if (fp.move == static_cast<uint8_t>(coop::MoveState::RideHorse))
@@ -1349,10 +1686,110 @@ void Tick()
                 // Снаряжение (мета-наряд) лошади — для точного вида у партнёра.
                 Init(natives::GET_PED_META_OUTFIT_HASH); Push(m);
                 fp.horseOutfitHash = Call();
+                // Диагностика (редко): что реально уходит в кадре при верховой езде.
+                if (s_tickCount % (3 * 60) == 1)
+                    sh_log::Write("coop: send RideHorse, horseModel=0x%llX "
+                                  "horseOutfit=0x%llX\n",
+                                  fp.reserved[0], fp.horseOutfitHash);
+            }
+            else if (s_tickCount % (3 * 60) == 1)
+            {
+                sh_log::Write("coop: send RideHorse but GET_MOUNT=0\n");
             }
         }
         fp.seq = s_tickCount;
         g_netClient.SendFrame(fp);
+    }
+
+    // Синхронизация одежды: собираем компоненты наряда локального игрока и
+    // отправляем при их смене (не каждый кадр). У сюжетных персонажей
+    // GET_PED_META_OUTFIT_HASH = 0, поэтому используем список компонентов.
+    if (g_netStarted)
+    {
+        net::OutfitState os{};
+        CollectLocalOutfit(playerPed, os);
+        bool changed = !s_sentOutfitValid ||
+                       os.model != s_sentOutfit.model ||
+                       os.count != s_sentOutfit.count ||
+                       std::memcmp(os.components, s_sentOutfit.components,
+                                   sizeof(os.components)) != 0;
+        if (os.count > 0 && changed)
+        {
+            s_sentOutfit = os;
+            s_sentOutfitValid = true;
+            g_netClient.SendOutfit(os);
+            sh_log::Write("coop: send outfit (%u components, model 0x%llX)\n",
+                          os.count, os.model);
+        }
+    }
+
+    // Синхронизация мира (время + погода): хост шлёт своё состояние каждые
+    // ~5 секунд, остальные применяют его у себя (SET_CLOCK_TIME / погода).
+    if (g_netStarted && s_amHost)
+    {
+        // Раз в 5 секунд (300 тиков) отправляем текущее время/погоду.
+        if (s_tickCount - s_lastWorldSendTick >= 5 * 60)
+        {
+            s_lastWorldSendTick = s_tickCount;
+            net::WorldState ws{};
+            using namespace natives_api;
+            Init(natives::GET_CLOCK_HOURS);   ws.hour   = static_cast<uint8_t>(Call());
+            Init(natives::GET_CLOCK_MINUTES); ws.minute = static_cast<uint8_t>(Call());
+            Init(natives::GET_CLOCK_SECONDS); ws.second = static_cast<uint8_t>(Call());
+            // Текущее состояние погоды: два типа + доля перехода.
+            uint32_t w1 = 0, w2 = 0; float pct = 0.f;
+            void* a = nullptr, * b = nullptr;
+            Init(natives::GET_CURR_WEATHER_STATE);
+            Push(reinterpret_cast<unsigned long long>(&w1));
+            Push(reinterpret_cast<unsigned long long>(&w2));
+            Push(reinterpret_cast<unsigned long long>(&pct));
+            Call();
+            ws.weatherType1 = w1;
+            ws.weatherType2 = w2;
+            ws.weatherPct = pct;
+            g_netClient.SendWorldState(ws);
+            if (s_tickCount % (15 * 60) == 1) // редкий лог
+                sh_log::Write("coop: host world state %02u:%02u:%02u w=%08X/%08X %.2f\n",
+                              ws.hour, ws.minute, ws.second,
+                              ws.weatherType1, ws.weatherType2, ws.weatherPct);
+        }
+    }
+    else if (s_haveWorldState)
+    {
+        // Не хост: применяем время и погоду хоста.
+        s_haveWorldState = false;
+        const net::WorldState& ws = s_worldState;
+        using namespace natives_api;
+        // Применяем часы только при заметном расхождении (иначе дёргаем
+        // секунды каждый кадр — секунды всё равно идут сами).
+        int ch = 0, cm = 0;
+        Init(natives::GET_CLOCK_HOURS);   ch = static_cast<int>(Call());
+        Init(natives::GET_CLOCK_MINUTES); cm = static_cast<int>(Call());
+        if (ch != ws.hour || cm != ws.minute || s_lastAppliedHour < 0)
+        {
+            Init(natives::SET_CLOCK_TIME);
+            Push(static_cast<unsigned long long>(ws.hour));
+            Push(static_cast<unsigned long long>(ws.minute));
+            Push(static_cast<unsigned long long>(ws.second));
+            Call();
+            s_lastAppliedHour = ws.hour;
+            s_lastAppliedMin = ws.minute;
+            sh_log::Write("coop: apply host time %02u:%02u:%02u\n",
+                          ws.hour, ws.minute, ws.second);
+        }
+        // Погода: SET_WEATHER_TYPE переключает сразу (с плавным переходом).
+        if (ws.weatherType1 || ws.weatherType2)
+        {
+            Init(natives::SET_WEATHER_TYPE);
+            Push(static_cast<unsigned long long>(ws.weatherType2 ? ws.weatherType2
+                                                                 : ws.weatherType1));
+            Push(static_cast<unsigned long long>(1));  // p1
+            Push(static_cast<unsigned long long>(0));  // p2
+            Push(static_cast<unsigned long long>(1));  // transition
+            Push(0.5f);                                // transitionTime (сек)
+            Push(static_cast<unsigned long long>(0));  // p5
+            Call();
+        }
     }
 
     // Small "Player X joined" subtitle on screen while a join happened

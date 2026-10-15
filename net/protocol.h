@@ -17,7 +17,34 @@ enum class Msg : uint8_t {
     Leave       = 0x05, // клиент -> сервер: выход
     PlayerLeft  = 0x06, // сервер -> остальные: кто-то вышел
     Died        = 0x07, // клиент -> сервер: локальный игрок умер (лог в консоли)
+    WorldState  = 0x08, // клиент-хост -> сервер -> остальные: время и погода
+    Outfit      = 0x09, // клиент -> сервер -> остальные: компоненты одежды
 };
+
+// Компоненты одежды игрока (наряд): список хэшей одетых компонентов
+// (_GET_NUM_COMPONENTS_IN_PED / _GET_PED_COMPONENT_CATEGORY_BY_INDEX) + модель.
+// Отправляется при смене наряда (не в каждом кадре). Получатель применяет
+// каждый компонент через _EQUIP_META_PED_OUTFIT + _UPDATE_PED_VARIATION.
+constexpr int kMaxOutfitComponents = 8;
+struct OutfitState {
+    unsigned long long model = 0;            // модель педа (для проверки)
+    uint32_t count = 0;                      // сколько компонентов одето
+    uint32_t components[kMaxOutfitComponents] = {0}; // хэши компонентов
+};
+
+// Состояние мира, транслируемое хостом всем игрокам (время + погода).
+// Хостом считается ПЕРВЫЙ подключившийся игрок; остальные применяют его
+// время и погоду у себя (клиентские часы/погода не расходятся с хостом).
+struct WorldState {
+    uint8_t  hour = 0;        // 0..23
+    uint8_t  minute = 0;      // 0..59
+    uint8_t  second = 0;      // 0..59
+    uint8_t  pad = 0;         // выравнивание
+    uint32_t weatherType1 = 0; // текущий тип погоды (хэш)
+    uint32_t weatherType2 = 0; // следующий тип (для плавного перехода)
+    float    weatherPct = 0.f; // доля weatherType2 в текущем состоянии (0..1)
+};
+static_assert(sizeof(WorldState) == 16, "WorldState must be 16 bytes");
 
 // Длина имени игрока (как строка). Строки в пакетах: 1 байт длины + байты.
 using NameLen = uint8_t;

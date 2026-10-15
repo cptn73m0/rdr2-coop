@@ -28,6 +28,9 @@ void Client::SetFrame(OnFrame cb)          { onFrame_ = std::move(cb); }
 void Client::SetJoinOk(OnJoinOk cb)        { onJoinOk_ = std::move(cb); }
 void Client::SetPlayerJoin(OnPlayerJoin cb){ onPlayerJoin_ = std::move(cb); }
 void Client::SetPlayerLeave(OnPlayerLeave cb) { onPlayerLeave_ = std::move(cb); }
+void Client::SetDied(OnDied cb)                { onDied_ = std::move(cb); }
+void Client::SetWorldState(OnWorldState cb){ onWorldState_ = std::move(cb); }
+void Client::SetOutfit(OnOutfit cb)        { onOutfit_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -70,6 +73,24 @@ void Client::SendDied()
 {
     // Сообщение без payload: сервер выводит лог о смерти игрока.
     SendRaw(MakeFrame((uint8_t)net::Msg::Died, nullptr, 0));
+}
+
+void Client::SendWorldState(const net::WorldState& ws)
+{
+    std::vector<uint8_t> pay(reinterpret_cast<const uint8_t*>(&ws),
+                             reinterpret_cast<const uint8_t*>(&ws) + sizeof(ws));
+    std::vector<uint8_t> frame = MakeFrame((uint8_t)net::Msg::WorldState, pay.data(),
+                                           (uint32_t)pay.size());
+    SendRaw(frame);
+}
+
+void Client::SendOutfit(const net::OutfitState& os)
+{
+    std::vector<uint8_t> pay(reinterpret_cast<const uint8_t*>(&os),
+                             reinterpret_cast<const uint8_t*>(&os) + sizeof(os));
+    std::vector<uint8_t> frame = MakeFrame((uint8_t)net::Msg::Outfit, pay.data(),
+                                           (uint32_t)pay.size());
+    SendRaw(frame);
 }
 
 void Client::Run()
@@ -130,13 +151,13 @@ void Client::Run()
             case net::Msg::JoinOk:
             {
                 JoinResult jr;
-                if (p.size() < 9) break;
-                // session_id (8) + has_saved (1) [+ coords 16]
+                if (p.size() < 10) break; // session(8) + has_saved(1) + is_host(1)
+                // session_id (8) + has_saved (1) [+ coords 16] + is_host (1)
                 uint64_t sid = 0;
                 for (int i = 0; i < 8; ++i) sid |= (uint64_t)p[i] << (8 * i);
                 (void)sid;
                 jr.hasSaved = p[8] != 0;
-                if (jr.hasSaved && p.size() >= 25)
+                if (jr.hasSaved && p.size() >= 26)
                 {
                     auto rf = [&](int off) {
                         uint32_t u = 0;
@@ -146,6 +167,11 @@ void Client::Run()
                         return f;
                     };
                     jr.x = rf(9); jr.y = rf(13); jr.z = rf(17); jr.heading = rf(21);
+                    jr.isHost = p[25] != 0;
+                }
+                else
+                {
+                    jr.isHost = p[9] != 0; // без координат is_host сразу после has_saved
                 }
                 state_.store(ClientState::JoinOk);
                 if (onJoinOk_) onJoinOk_(jr);
@@ -203,6 +229,36 @@ void Client::Run()
                 {
                     std::string nm(reinterpret_cast<char*>(p.data() + 1), p[0]);
                     if (onPlayerLeave_) onPlayerLeave_(nm);
+                }
+                break;
+            }
+            case net::Msg::Died:
+            {
+                // От сервера: игрок умер. name в payload (как PlayerLeft).
+                if (!p.empty())
+                {
+                    std::string nm(reinterpret_cast<char*>(p.data() + 1), p[0]);
+                    if (onDied_) onDied_(nm);
+                }
+                break;
+            }
+            case net::Msg::WorldState:
+            {
+                if (p.size() >= sizeof(net::WorldState))
+                {
+                    net::WorldState ws;
+                    std::memcpy(&ws, p.data(), sizeof(ws));
+                    if (onWorldState_) onWorldState_(ws);
+                }
+                break;
+            }
+            case net::Msg::Outfit:
+            {
+                if (p.size() >= sizeof(net::OutfitState))
+                {
+                    net::OutfitState os;
+                    std::memcpy(&os, p.data(), sizeof(os));
+                    if (onOutfit_) onOutfit_(os);
                 }
                 break;
             }

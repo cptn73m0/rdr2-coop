@@ -46,6 +46,7 @@ struct OnlinePlayer {
     netio::Socket* sock = nullptr;
     float x = 0, y = 0, z = 0, heading = 0;
     bool hasLoc = false;
+    bool isHost = false;   // первый подключившийся (его время/погода = канонические)
 };
 
 std::mutex g_mutex;                       // защищает g_online и g_lastPos
@@ -280,7 +281,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 float sx = 0, sy = 0, sz = 0, shd = 0;
                 bool has = LoadSaved(name, sx, sy, sz, shd);
 
-                // JOIN_OK: session_id + has_saved + [x,y,z,heading]
+                // JOIN_OK: session_id + has_saved + [x,y,z,heading] + is_host
                 std::vector<uint8_t> resp;
                 uint8_t le[8];
                 uint64_t sid = g_nextSession++;
@@ -295,6 +296,11 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                         for (int i = 0; i < 4; ++i) resp.push_back((uint8_t)(u >> (8 * i)));
                     };
                     pushf(sx); pushf(sy); pushf(sz); pushf(shd);
+                }
+                // is_host: первый подключившийся к пустому серверу — хост.
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    resp.push_back(g_online.empty() ? 1 : 0);
                 }
                 std::vector<uint8_t> ok = MakeMsg((uint8_t)net::Msg::JoinOk, resp.data(),
                                                   (uint32_t)resp.size());
@@ -382,7 +388,32 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 goto done;
             case net::Msg::Died:
                 LogLine("[x] " + name + " умер (игрок погиб в мире, " + peerIp + ")");
+                // Ретранслируем остальным (с именем) — они покажут смерть
+                // педа-призрака (убить, но оставить труп и снаряжение).
+                if (registered && !name.empty())
+                    BroadcastToOthers(sock, MakeNameMsg((uint8_t)net::Msg::Died, name));
                 break;
+            case net::Msg::WorldState:
+            {
+                // Состояние мира от хоста — ретранслируем всем, кроме отправителя
+                // (так же, как Frame). Сервер никак не интерпретирует payload.
+                if (pay.size() >= sizeof(net::WorldState))
+                {
+                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::WorldState,
+                                                    pay.data(), (uint32_t)pay.size()));
+                }
+                break;
+            }
+            case net::Msg::Outfit:
+            {
+                // Компоненты одежды — ретранслируем остальным (как Frame).
+                if (pay.size() >= sizeof(net::OutfitState))
+                {
+                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::Outfit,
+                                                    pay.data(), (uint32_t)pay.size()));
+                }
+                break;
+            }
             default:
                 break;
             }

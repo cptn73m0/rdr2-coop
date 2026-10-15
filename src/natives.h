@@ -85,6 +85,10 @@ constexpr unsigned long long IS_PED_WEAPON_READY_TO_SHOOT  = 0xB80CA294F2F26749u
 constexpr unsigned long long GET_ENTITY_HEALTH             = 0x82368787EA73C0F7ull;
 constexpr unsigned long long SET_CURRENT_PED_WEAPON        = 0xADF692B254977C0Cull;
 constexpr unsigned long long SET_PED_TO_RAGDOLL            = 0xAE99FB955581844Aull;
+// Анимации-задачи для педа-призрака (прыжок/лазание) — хэши из
+// rdr2-runtime-scripthook (TASK_JUMP / TASK_CLIMB).
+constexpr unsigned long long TASK_JUMP                     = 0x0AE4086104E067B1ull;
+constexpr unsigned long long TASK_CLIMB                    = 0x89D9FCC2435112F1ull;
 // Хэш оружия в руке и текущая лошадь (для верховой езды).
 constexpr unsigned long long GET_CURRENT_PED_WEAPON        = 0x3A87E44BB9A01D54ull;
 constexpr unsigned long long GET_MOUNT                     = 0xE7E11B8DCBED1058ull;
@@ -106,5 +110,34 @@ constexpr unsigned long long RELEASE_META_PED_OUTFIT_REQUEST = 0x4592B8B9B0EF5F4
 // Модификаторы метки: «скрыть при смерти» и «труп» (крестик на карте).
 constexpr unsigned long long BLIP_MODIFIER_CULL_ON_DEATH   = 0xAA235D8Bull;
 constexpr unsigned long long BLIP_ANIMAL_DEAD              = 0x4FE13DF7ull;
+
+// Время (игровые часы) и погода — синхронизация мира от хоста.
+constexpr unsigned long long GET_CLOCK_HOURS               = 0xC82CF208C2B19199ull;
+constexpr unsigned long long GET_CLOCK_MINUTES             = 0x4E162231B823DBBFull;
+constexpr unsigned long long GET_CLOCK_SECONDS             = 0xB6101ABE62B5F080ull;
+constexpr unsigned long long SET_CLOCK_TIME                = 0x3A52C59FFB2DEED8ull;
+constexpr unsigned long long GET_CURR_WEATHER_STATE        = 0x0AC679B2342F14F2ull;
+constexpr unsigned long long SET_WEATHER_TYPE              = 0x59174F1AFE095B5Aull;
+
+// Компоненты одежды (наряд) педа — синхронизация внешнего вида. Хэши из
+// rdr2-runtime-scripthook: перечислить одетые компоненты и применить их.
+constexpr unsigned long long GET_NUM_COMPONENTS_IN_PED     = 0x90403E8107B60E81ull;
+constexpr unsigned long long GET_PED_COMPONENT_CATEGORY_BY_INDEX = 0xCCB97B51893C662Full;
+constexpr unsigned long long EQUIP_META_PED_OUTFIT         = 0x1902C4CFCC5BE57Cull;
+constexpr unsigned long long UPDATE_PED_VARIATION          = 0xCC8CA3E88256E58Full;
+constexpr unsigned long long RESET_PED_COMPONENTS          = 0x0BFA1BD465CDFEFDull;
+// ОДЕЖДА: чтение и применение надетых shop-предметов (правильный механизм).
+constexpr unsigned long long GET_NUM_COMPONENT_CATEGORIES_IN_PED = 0xA622E66EEE92A08Dull;
+constexpr unsigned long long GET_SHOP_ITEM_COMPONENT_AT_INDEX    = 0x77BA37622E22023Bull;
+constexpr unsigned long long APPLY_SHOP_ITEM_TO_PED              = 0xD3A7B003ED343FD9ull;
+// Бессмертие педа-призрака: чтобы он не умирал от коллизий/бандитов,
+// а умирал только вместе с оригиналом (сервер шлёт Died).
+constexpr unsigned long long SET_ENTITY_INVINCIBLE         = 0xA5C38736C426FCB8ull;
+constexpr unsigned long long SET_ENTITY_HEALTH             = 0xAC2767ED8BDFAB15ull;
+// Ограничение скорости анимации педа (для шага/бега — чтобы пед-призрак
+// шёл шагом, а не бежал, при движении задачей TASK_GO_*).
+constexpr unsigned long long SET_PED_MAX_MOVE_BLEND_RATIO   = 0x433083750C5E064Aull;
+// Плавное анимированное движение педа к координатам (walk/run по скорости).
+constexpr unsigned long long TASK_FOLLOW_NAV_MESH_TO_COORD  = 0x15D3A79D4E44B913ull;
 
 } // namespace natives
