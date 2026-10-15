@@ -139,6 +139,9 @@ constexpr unsigned long long IS_PED_SITTING              = 0x84D0BF2B21862059ull
 constexpr unsigned long long IS_PED_USING_ANY_SCENARIO   = 0x57AB4A3080F85143ull;
 constexpr unsigned long long IS_PED_AIMING_FROM_COVER    = 0x3998B1276A3300E5ull;
 constexpr unsigned long long IS_PED_DRUNK                = 0x50F124E6EF188B22ull;
+// Скорость сущности (для надёжного детекта движения, когда IS_PED_WALKING
+// ложно при медленной ходьбе).
+constexpr unsigned long long GET_ENTITY_SPEED             = 0xFB6BA510A533DF81ull;
 // Бессмертие педа-призрака: чтобы он не умирал от коллизий/бандитов,
 // а умирал только вместе с оригиналом (сервер шлёт Died).
 constexpr unsigned long long SET_ENTITY_INVINCIBLE         = 0xA5C38736C426FCB8ull;

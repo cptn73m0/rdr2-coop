@@ -170,7 +170,8 @@ void SetEntityCoords(unsigned int handle, const Vec3& v)
     Push(false);
     Push(false);
     Push(false);
-    Push(true);
+    Push(false); // clearTasks=false: НЕ сбрасывать задачи (TASK_GO/CLIMB и т.п.),
+                // иначе ручное перемещение на ходу обрывает анимацию (Т-поза).
     Call();
 }
 
@@ -812,15 +813,6 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
             out.components[n++] = comp;
     }
     out.count = static_cast<uint32_t>(n);
-    {
-        char buf[256];
-        std::snprintf(buf, sizeof(buf),
-                      "coop: collect outfit n=%u cats=%d model=0x%llX comps=[%08X %08X %08X %08X %08X %08X %08X %08X]\n",
-                      out.count, categories, out.model,
-                      out.components[0], out.components[1], out.components[2], out.components[3],
-                      out.components[4], out.components[5], out.components[6], out.components[7]);
-        sh_log::Write("%s", buf);
-    }
 }
 
 // Применить надетые shop-предметы (одежду) удалённого игрока к педу призрака
@@ -1039,6 +1031,29 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         if (s_tickCount % (3 * 60) == 1)
             sh_log::Write("coop: recv move=%u state=%u at (%.1f %.1f %.1f), cur=(%.1f %.1f %.1f)\n",
                           move, f.state, p.x, p.y, p.z, cur.x, cur.y, cur.z);
+        // Прижим к земле при движении: TASK_FOLLOW_NAV_MESH ведёт педа к цели
+        // (Z кадра = «пояс» игрока), но если пед завис высоко (после спавна/
+        // телепорта/смены местности), задача его не опускает и он «летит».
+        // Если пед выше земли больше ~1 м — снимаем высоту (не каждый кадр,
+        // чтобы не дёргать; порог отсекает обычные бугры/лестницы).
+        {
+            float groundZ = 0.f;
+            bool hasGround = false;
+            {
+                using namespace natives_api;
+                Init(natives::GET_GROUND_Z_FOR_3D_COORD);
+                Push(cur.x); Push(cur.y); Push(cur.z);
+                Push(reinterpret_cast<unsigned long long>(&groundZ));
+                hasGround = Call() != 0;
+            }
+            if (hasGround && (cur.z - groundZ) > 1.0f)
+            {
+                SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
+                cur.z = groundZ + 0.2f; // обновить для проверки ниже
+                sh_log::Write("coop: lowered ghost to ground during move (%.1f -> %.1f)\n",
+                              cur.z, groundZ + 0.2f);
+            }
+        }
         // Движение задачей: не телепортируем и не лерпим — просто
         // перенаправляем задачу идти к текущей точке кадра (топает ножками).
         ApplyMoveToGhost(s_ghost, move, p);
@@ -1222,6 +1237,13 @@ uint8_t DetectLocalMoveState(unsigned int ped)
     if (Call()) return static_cast<uint8_t>(coop::MoveState::Run);
     Init(natives::IS_PED_WALKING); Push(ped);
     if (Call()) return static_cast<uint8_t>(coop::MoveState::Walk);
+    // IS_PED_WALKING в RDR2 ложно при медленной ходьбе → move мерцает
+    // Walk<->Idle, и пед-призрак дёргается (Т-поза между задачами).
+    // Надёжный fallback: фактическая скорость педа (м/с).
+    Init(natives::GET_ENTITY_SPEED); Push(ped);
+    float speed = CallFloat();
+    if (speed > 0.3f) // медленный шаг ~1.0 м/с; порог отсекает дрожание на месте
+        return static_cast<uint8_t>(coop::MoveState::Walk);
     return static_cast<uint8_t>(coop::MoveState::Idle);
 }
 
