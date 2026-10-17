@@ -1087,16 +1087,25 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
 
 // Пересобрать внешний вид педа после посадки на лошадь / спешивания: движок
 // в этих переходах сбрасывает component variation, и модель педа перестаёт
-// рисоваться (видны только надетыми одёжки). Делаем то же, что при спавне:
-// random variation (возвращает рендер) + наряд с чистого листа.
+// рисоваться (видны только надетыми одёжки). Пед при этом НЕ пересоздаётся —
+// просто заново надеваем наряд на ту же сущность.
 void RefreshGhostComponents()
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
-    RandomizePedComponents(s_ghost);
-    SetEntityVisibleForce(s_ghost);
     s_appliedOutfitValid = false;
     if (s_outfitIn.count)
+    {
+        // Есть наряд — просто надеваем его заново (ApplyOutfitToGhost сам
+        // сбрасывает компоненты). Без случайной рандомизации: иначе на миг
+        // мелькает чужая одежда.
         ApplyOutfitToGhost(s_outfitIn);
+    }
+    else
+    {
+        // Наряд ещё не пришёл — нужна рандомизация, иначе пед не рендерится.
+        RandomizePedComponents(s_ghost);
+        SetEntityVisibleForce(s_ghost);
+    }
 }
 
 // Применить отложенный наряд, если модель педа наконец совпала.
