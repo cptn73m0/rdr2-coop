@@ -224,10 +224,10 @@ void DrawSubtitle(const char* text)
 
     using namespace natives_api;
     Init(natives::UI_BG_SET_TEXT_SCALE);
-    Push(0.5f); Push(0.5f); // заметнее, чем 0.4 (надпись легко пропустить)
+    Push(0.32f); Push(0.32f); // как у игровых субтитров — не выпирает
     Call();
     Init(natives::UI_BG_SET_TEXT_COLOR);
-    Push(255); Push(255); Push(255); Push(255);
+    Push(215); Push(215); Push(215); Push(235); // мягкий белый
     Call();
     Init(natives::UI_BG_DISPLAY_TEXT);
     Push(strHandle);
@@ -250,10 +250,10 @@ void DrawHudLine(const char* text)
     }
     using namespace natives_api;
     Init(natives::UI_BG_SET_TEXT_SCALE);
-    Push(0.32f); Push(0.32f);
+    Push(0.28f); Push(0.28f);
     Call();
     Init(natives::UI_BG_SET_TEXT_COLOR);
-    Push(255); Push(255); Push(255); Push(255);
+    Push(200); Push(200); Push(200); Push(210); // приглушённый
     Call();
     Init(natives::UI_BG_DISPLAY_TEXT);
     Push(strHandle);
@@ -386,10 +386,10 @@ void DrawNameAt(const Vec3& worldPos, const char* name)
 
     using namespace natives_api;
     Init(natives::UI_BG_SET_TEXT_SCALE);
-    Push(0.35f); Push(0.35f);
+    Push(0.28f); Push(0.28f);
     Call();
     Init(natives::UI_BG_SET_TEXT_COLOR);
-    Push(255); Push(230); Push(80); Push(255); // yellow-ish
+    Push(235); Push(235); Push(235); Push(220); // мягкий белый вместо жёлтого
     Call();
     Init(natives::UI_BG_DISPLAY_TEXT);
     Push(strHandle);
