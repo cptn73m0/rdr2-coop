@@ -840,7 +840,7 @@ void ShootGhostForward()
     Init(natives::TASK_SHOOT_AT_COORD);
     Push(s_ghost);
     Push(t.x); Push(t.y); Push(t.z);
-    Push(static_cast<unsigned long long>(1500));       // duration ms
+    Push(static_cast<unsigned long long>(200));        // duration ms (~1 выстрел)
     Push(static_cast<unsigned long long>(0x5D60E4E0)); // SingleShot
     Push(static_cast<unsigned long long>(0));
     Call();
@@ -877,7 +877,7 @@ void ApplyActionToGhost(const net::FramePayload& f)
     // Пока стрельба продолжается — продлеваем задачу (иначе она
     // заканчивается через 1.5 с, хотя игрок стреляет дольше).
     if (isCombat && ac == static_cast<uint8_t>(net::Action::Shooting) &&
-        s_tickCount - s_lastShootTaskTick >= 60)
+        s_tickCount - s_lastShootTaskTick >= 15)
     {
         s_lastShootTaskTick = s_tickCount;
         ShootGhostForward();
@@ -1012,6 +1012,10 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
             Call();
             s_givenWeapon = f.weaponHash;
             sh_log::Write("coop: weapon 0x%llX given+equipped\n", f.weaponHash);
+            // Доставание оружия сбрасывает component variation — тело педа
+            // перестаёт рисоваться. Возвращаем внешний вид.
+            RefreshGhostComponents();
+            s_outfitRefreshTicks = 90;
         }
         else if (s_givenWeapon)
         {
@@ -1024,6 +1028,8 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
             Call();
             sh_log::Write("coop: weapon 0x%llX removed\n", s_givenWeapon);
             s_givenWeapon = 0;
+            RefreshGhostComponents();
+            s_outfitRefreshTicks = 60;
         }
     }
 
@@ -1213,20 +1219,15 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
 void RefreshGhostComponents()
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    // ВАЖНО: без SET_PED_RANDOM_COMPONENT_VARIATION тело педа перестаёт
+    // рисоваться (видны только прикреплённые одёжки). Рандомизация и
+    // последующее применение наряда идут в ОДНОМ тике, поэтому случайная
+    // одежда не успевает показаться.
+    RandomizePedComponents(s_ghost);
+    SetEntityVisibleForce(s_ghost);
     s_appliedOutfitValid = false;
     if (s_outfitIn.count)
-    {
-        // Есть наряд — просто надеваем его заново (ApplyOutfitToGhost сам
-        // сбрасывает компоненты). Без случайной рандомизации: иначе на миг
-        // мелькает чужая одежда.
         ApplyOutfitToGhost(s_outfitIn);
-    }
-    else
-    {
-        // Наряд ещё не пришёл — нужна рандомизация, иначе пед не рендерится.
-        RandomizePedComponents(s_ghost);
-        SetEntityVisibleForce(s_ghost);
-    }
 }
 
 // Применить отложенный наряд, если модель педа наконец совпала.
@@ -1848,6 +1849,83 @@ uint8_t DetectLocalAction(unsigned int ped)
     return static_cast<uint8_t>(net::Action::None);
 }
 
+// Стабильное действие локального игрока для отправки в кадре.
+// Выстрел длится 1-3 тика, а кадр собирается раз в 4 тика — событие терялось.
+// Поэтому стрельба/перезарядка «залипают» через latch, а остальные состояния
+// проходят дебаунс (иначе aim моргал каждые 2 кадра из-за
+// IS_PED_WEAPON_READY_TO_SHOOT, и пед-призрак дёргал задачи).
+uint8_t s_localActionStable = 0;
+uint8_t s_localActionCandidate = 0;
+unsigned int s_localActionCandidateCount = 0;
+unsigned int s_localShootLatch = 0;
+unsigned int s_localReloadLatch = 0;
+constexpr unsigned int kLocalShootLatchTicks = 8;   // ~0.13 с
+constexpr unsigned int kLocalReloadLatchTicks = 20; // ~0.33 с
+constexpr unsigned int kLocalActionDebounce = 5;
+
+void UpdateLocalActionState(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_SHOOTING); Push(ped);
+    if (Call()) s_localShootLatch = kLocalShootLatchTicks;
+    else if (s_localShootLatch) --s_localShootLatch;
+
+    Init(natives::IS_PED_RELOADING); Push(ped);
+    if (Call()) s_localReloadLatch = kLocalReloadLatchTicks;
+    else if (s_localReloadLatch) --s_localReloadLatch;
+
+    uint8_t raw;
+    if (s_localShootLatch)
+        raw = static_cast<uint8_t>(net::Action::Shooting);
+    else if (s_localReloadLatch)
+        raw = static_cast<uint8_t>(net::Action::Reloading);
+    else
+    {
+        Init(natives::IS_PED_USING_ANY_SCENARIO); Push(ped);
+        if (Call()) raw = static_cast<uint8_t>(net::Action::InScenario);
+        else
+        {
+            Init(natives::IS_PED_SITTING); Push(ped);
+            if (Call()) raw = static_cast<uint8_t>(net::Action::Sitting);
+            else
+            {
+                // Прицел определяем по игроку (free aim), а не по
+                // IS_PED_WEAPON_READY_TO_SHOOT — он дрожит в покое.
+                Init(natives::IS_PLAYER_FREE_AIMING); Push(0ull); // player 0
+                if (Call()) raw = static_cast<uint8_t>(net::Action::Aiming);
+                else
+                {
+                    Init(natives::IS_PED_DRUNK); Push(ped);
+                    raw = Call() ? static_cast<uint8_t>(net::Action::Drunk)
+                                 : static_cast<uint8_t>(net::Action::None);
+                }
+            }
+        }
+    }
+
+    if (raw == s_localActionStable)
+    {
+        s_localActionCandidate = raw;
+        s_localActionCandidateCount = 0;
+        return;
+    }
+    if (raw == s_localActionCandidate) ++s_localActionCandidateCount;
+    else { s_localActionCandidate = raw; s_localActionCandidateCount = 1; }
+
+    // Стрельба/перезарядка — сразу (событие), остальное — после дебаунса.
+    const bool immediate =
+        raw == static_cast<uint8_t>(net::Action::Shooting) ||
+        raw == static_cast<uint8_t>(net::Action::Reloading) ||
+        s_localActionStable == static_cast<uint8_t>(net::Action::Shooting) ||
+        s_localActionStable == static_cast<uint8_t>(net::Action::Reloading);
+    if (immediate || s_localActionCandidateCount >= kLocalActionDebounce)
+    {
+        s_localActionStable = raw;
+        s_localActionCandidate = raw;
+        s_localActionCandidateCount = 0;
+    }
+}
+
 // Здоровье локального педа 0..1 (GET_ENTITY_HEALTH / max примерно 100..200 —
 // нормируем).
 float GetLocalHealth01(unsigned int ped)
@@ -1985,6 +2063,9 @@ unsigned long long GetLocalWeaponHash(unsigned int ped)
     Push(static_cast<unsigned long long>(0)); // attachPoint = HAND_PRIMARY
     Push(static_cast<unsigned long long>(0)); // p4
     Call();
+    // Unarmed (0xA2719263) — это «без оружия», а не предмет.
+    if (out == 0xA2719263ull)
+        out = 0;
     return out;
 }
 
@@ -2128,6 +2209,11 @@ void Tick()
     // Start the network client on first tick (replaces the old offline
     // emulation as the source of join events).
     InitNetworkClient();
+
+    // Действие игрока обновляем КАЖДЫЙ тик: короткие события (выстрел)
+    // иначе теряются между отправками кадра.
+    if (g_netStarted)
+        UpdateLocalActionState(playerPed);
 
     // Модель для педа: чужая (из PLAYER_JOINED), иначе дефолтная.
     // Если из кадра пришла модель персонажа — используем её (перезапись).
@@ -2422,7 +2508,7 @@ void Tick()
         fp.move = DetectLocalMoveState(playerPed);
         fp.state = DetectLocalPedState(playerPed);
         fp.flags = DetectLocalFlags(playerPed);
-        fp.action = DetectLocalAction(playerPed);
+        fp.action = s_localActionStable;
         fp.health = GetLocalHealth01(playerPed);
         fp.weaponHash = GetLocalWeaponHash(playerPed);
         // Мета-наряд игрока (для синхронизации внешнего вида у партнёра).
