@@ -49,6 +49,7 @@ public:
     using OnPlayerJoin = std::function<void(const PlayerJoinInfo&)>;
     using OnPlayerLeave= std::function<void(const std::string&)>;
     using OnDied       = std::function<void(const std::string&)>; // игрок умер (имя)
+    using OnRespawned  = std::function<void(const std::string&)>; // игрок ожил (имя)
     using OnWorldState = std::function<void(const net::WorldState&)>;
     using OnOutfit     = std::function<void(const net::OutfitState&)>;
 
@@ -61,6 +62,8 @@ public:
     void SendFrame(const net::FramePayload& f);
     // Сообщить серверу, что локальный игрок умер (лог в консоли сервера).
     void SendDied();
+    // Сообщить серверу, что локальный игрок ожил после смерти.
+    void SendRespawned();
     // Отправить хостом состояние мира (время+погода) всем остальным.
     void SendWorldState(const net::WorldState& ws);
     // Отправить компоненты одежды игрока (при смене наряда).
@@ -71,6 +74,7 @@ public:
     void SetPlayerJoin(OnPlayerJoin cb);
     void SetPlayerLeave(OnPlayerLeave cb);
     void SetDied(OnDied cb);
+    void SetRespawned(OnRespawned cb);
     void SetWorldState(OnWorldState cb);
     void SetOutfit(OnOutfit cb);
 
@@ -97,6 +101,7 @@ private:
     OnPlayerJoin onPlayerJoin_;
     OnPlayerLeave onPlayerLeave_;
     OnDied onDied_;
+    OnRespawned onRespawned_;
     OnWorldState onWorldState_;
     OnOutfit onOutfit_;
 };

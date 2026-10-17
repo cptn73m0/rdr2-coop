@@ -408,12 +408,21 @@ bool s_sentOutfitValid = false;
 // (труп и снаряжение остаются). Обрабатывается в Tick() игровым потоком.
 bool s_remoteDiedPending = false;
 char s_remoteDiedName[64] = "";
+// Игрок ожил после смерти (сервер прислал Respawned) — возродить педа.
+bool s_remoteRespawnPending = false;
+char s_remoteRespawnName[64] = "";
 // Сколько тиков ждём первый кадр (модель персонажа) перед спавном педа.
 unsigned int s_pendingJoinWaitTicks = 0;
 // Отложенный наряд: применён, только когда модель педа совпадёт с моделью
 // наряда (пед пересоздаётся по модели персонажа из кадра reserved[2]).
 net::OutfitState s_pendingOutfit{};
 bool s_havePendingOutfit = false;
+// Последний ФАКТИЧЕСКИ надетый на педа наряд. Нужен, чтобы не применять один
+// и тот же набор повторно: каждое APPLY_SHOP_ITEM_TO_PED добавляет слой
+// одежды, и через несколько применений старая одежда начинает просвечивать
+// сквозь новую (наблюдали у педа после возрождения).
+net::OutfitState s_appliedOutfit{};
+bool s_appliedOutfitValid = false;
 // Флаг «игрок вышел»: обработка (удаление педа) произойдёт в Tick().
 bool s_pendingLeave = false;
 char s_leaveName[64] = ""; // имя ушедшего игрока (для надписи «left»)
@@ -427,6 +436,12 @@ uint8_t s_moveStable = 0xFF;      // текущее стабильное сос�
 uint8_t s_moveCandidate = 0xFF;   // кандидат на смену
 int     s_moveCandidateCount = 0; // сколько подряд замеров совпало
 constexpr int kMoveDebounce = 6;  // ~0.4 с при отправке каждые 4 тика
+// Тик последнего прижима педа к земле в покое (троттлинг, не чаще раза в сек).
+unsigned int s_lastIdleGroundFixTick = 0;
+// «Грация» после возрождения педа: несколько тиков не считаем его мёртвым
+// (RESURRECT_PED применяется не мгновенно — защита от ложного повторного
+// срабатывания блока локальной смерти).
+unsigned int s_reviveGraceTicks = 0;
 // Последнее применённое особое состояние/оружие (сброс при выходе).
 uint8_t s_lastPedState = 0xFF;
 unsigned long long s_lastWeapon = 0;
@@ -581,6 +596,27 @@ void DismountAndRemoveMount()
     s_horseOutfitHash = 0;
     s_horseOutfitLogged = false;
 }
+// Педу-призраку не даём уставать: иначе после бега за игроком он «отдувается»
+// (анимация тяжёлого дыхания/усталости), даже стоя. Множитель истощения
+// выносливости = 0 (не устаёт) + полное восстановление.
+void SetGhostStaminaFull()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    Init(natives::SET_STAMINA_DEPLETION_MULTIPLIER);
+    Push(s_ghost);
+    Push(static_cast<unsigned long long>(0));
+    Call();
+    Init(natives::GET_PED_MAX_STAMINA);
+    Push(s_ghost);
+    float maxStam = CallFloat();
+    if (maxStam <= 0.f) maxStam = 1.0f;
+    Init(natives::RESTORE_PED_STAMINA);
+    Push(s_ghost);
+    Push(maxStam);
+    Call();
+}
+
 // Последняя цель задачи движения (чтобы не перезадавать задачу каждый кадр).
 Vec3 s_moveTarget{0.f, 0.f, 0.f};
 bool s_moveTargetValid = false;
@@ -825,6 +861,14 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
     out.count = static_cast<uint32_t>(n);
 }
 
+// Одинаковые ли наборы компонентов (с учётом модели, если она известна).
+bool OutfitsEqual(const net::OutfitState& a, const net::OutfitState& b)
+{
+    if (a.count != b.count) return false;
+    if (a.model && b.model && a.model != b.model) return false;
+    return std::memcmp(a.components, b.components, sizeof(a.components)) == 0;
+}
+
 // Применить надетые shop-предметы (одежду) удалённого игрока к педу призрака
 // через _APPLY_SHOP_ITEM_TO_PED + _UPDATE_PED_VARIATION (как в rdr2-runtime
 // ApplyShopItemComponents). Вызывается из Tick() (игровой поток).
@@ -832,6 +876,8 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     using namespace natives_api;
+    // На труп одежду не надеваем: наряд применится при возрождении.
+    if (s_ghostDead) return;
     // Модель педа должна совпадать (иначе компоненты от другой модели
     // применятся некорректно / визуально сломаются). Если пед ещё создан
     // со старой моделью (до пересоздания по кадру) — откладываем наряд.
@@ -843,6 +889,17 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
                       os.model, s_ghostModel);
         return;
     }
+    // Уже надет этот же набор — пропускаем. Повторное применение
+    // НАСЛАИВАЕТ одежду (нативный APPLY_SHOP_ITEM_TO_PED не заменяет, а
+    // добавляет слой) → «сквозь одну одежду видно другую».
+    if (s_appliedOutfitValid && OutfitsEqual(os, s_appliedOutfit))
+        return;
+    // Сначала снимаем прежние компоненты: иначе предметы старого наряда
+    // остаются в своих слотах и просвечивают сквозь новый (баг после
+    // возрождения — RESURRECT_PED возвращает дефолтные компоненты модели).
+    Init(natives::RESET_PED_COMPONENTS);
+    Push(s_ghost);
+    Call();
     for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
     {
         uint32_t c = os.components[i];
@@ -864,6 +921,8 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     Push(static_cast<unsigned long long>(0)); // p5=false
     Call();
     sh_log::Write("coop: outfit applied to ghost (%u shop items)\n", os.count);
+    s_appliedOutfit = os;
+    s_appliedOutfitValid = true;
 }
 
 // Применить отложенный наряд, если модель педа наконец совпала.
@@ -944,12 +1003,113 @@ void ApplyHorseOutfitToMount(unsigned long long outfitHash)
 // Движение ИНТЕРПОЛИРУЕТСЯ: за каждый тик пед смещается на часть пути к цели
 // (без телепортов). Полный телепорт — только если скачок большой (спавн
 // далеко от текущей точки, напр. из players.txt).
+// Оживить педа-призрака, когда оригинал вернулся в мир после смерти.
+// Если труп ещё существует — поднимаем его (RESURRECT_PED) и переносим к
+// оригиналу. Если трупа уже нет (движок убрал) — заставляем спавн-блок
+// создать педа заново. Плюс надпись «Player X is respawn» для проверки.
+void RespawnGhostPed(const net::FramePayload* f)
+{
+    const char* who = s_remoteRespawnName[0] ? s_remoteRespawnName
+                    : (s_pendingName[0] ? s_pendingName : "Player");
+    using namespace natives_api;
+
+    // Сброс состояний, чтобы задачи/наряд/действия применились заново.
+    s_ghostDead = false;
+    s_reviveGraceTicks = 90; // ~1.5 с: не считаем педа мёртвым сразу
+    s_lastMoveState = 0xFF;
+    s_lastPedState = 0xFF;
+    s_lastAction = 0xFF;
+    s_moveTargetValid = false;
+    // После RESURRECT_PED движок возвращает дефолтные компоненты модели,
+    // поэтому наряд надо надеть заново (с полным сбросом слоёв).
+    s_appliedOutfitValid = false;
+
+    if (s_ghost && DoesEntityExist(s_ghost))
+    {
+        // Труп на месте — оживляем его.
+        Init(natives::RESURRECT_PED);
+        Push(s_ghost);
+        Call();
+
+        Init(natives::SET_ENTITY_HEALTH);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(200));
+        Push(static_cast<unsigned long long>(0));
+        Call();
+
+        Init(natives::SET_ENTITY_INVINCIBLE);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(1));
+        Call();
+
+        Init(natives::SET_ENTITY_VISIBLE);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(1));
+        Call();
+
+        // Перенести к позиции оригинала (после респавна он в другом месте)
+        // и поставить на землю.
+        Vec3 at = f ? Vec3{f->x, f->y, f->z}
+                    : Vec3{s_pendingX, s_pendingY, s_pendingZ};
+        float groundZ = 0.f;
+        bool hasGround = false;
+        {
+            Init(natives::GET_GROUND_Z_FOR_3D_COORD);
+            Push(at.x); Push(at.y); Push(at.z + 5.0f);
+            Push(reinterpret_cast<unsigned long long>(&groundZ));
+            hasGround = Call() != 0;
+        }
+        if (hasGround)
+            at.z = groundZ + 0.2f;
+        SetEntityCoords(s_ghost, at);
+
+        if (!s_blip)
+            s_blip = CreateFriendlyBlipAt(at);
+        if (!s_pedName[0] && s_pendingName[0])
+            std::snprintf(s_pedName, sizeof(s_pedName), "%s", s_pendingName);
+        if (s_outfitIn.count)
+            ApplyOutfitToGhost(s_outfitIn);
+        SetGhostStaminaFull();
+
+        sh_log::Write("coop: ghost revived at (%.1f %.1f %.1f) ground=%d\n",
+                      at.x, at.y, at.z, hasGround ? 1 : 0);
+    }
+    else
+    {
+        // Трупа нет — сбрасываем хэндл, спавн-блок создаст педа заново
+        // (позиция — из последнего кадра).
+        if (f)
+        {
+            s_pendingHasPos = true;
+            s_pendingX = f->x; s_pendingY = f->y; s_pendingZ = f->z;
+        }
+        s_ghost = 0;
+        sh_log::Write("coop: ghost corpse gone -> fresh respawn\n");
+    }
+
+    // Надпись для проверки возрождения.
+    std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s is respawn", who);
+    s_playerJoinedNotified = true;
+    s_subtitleTicksLeft = 8 * 60;
+    s_remoteRespawnName[0] = '\0';
+}
+
 void ApplyRemoteFrame(const net::FramePayload& f)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
-    // Мёртвого педа не двигаем: труп лежит там, где умер (иначе он будет
-    // «прыгать» по кадрам удалённого игрока и парить над землёй).
-    if (s_ghostDead) return;
+    // Мёртвый пед: труп лежит там, где умер — не двигаем. НО если оригинал
+    // ожил (в кадре положительное здоровье) — воскрешаем педа.
+    if (s_ghostDead)
+    {
+        if (f.health > 0.2f)
+        {
+            RespawnGhostPed(&f);
+        }
+        else
+        {
+            return; // всё ещё мёртв — труп не трогаем
+        }
+    }
 
     constexpr float LERP_FACTOR = 0.25f; // за тик проходит ~25% оставшегося пути
     constexpr float TELEPORT_DIST = 10.0f; // больше этой дистанции — телепорт
@@ -1083,10 +1243,13 @@ void ApplyRemoteFrame(const net::FramePayload& f)
                 unsigned long long ok = Call();
                 hasGround = ok != 0;
             }
-            if (hasGround && (cur.z - groundZ) > 0.5f && groundZ > -100.f)
+            if (hasGround && (cur.z - groundZ) > 1.0f && groundZ > -100.f
+                && (s_tickCount - s_lastIdleGroundFixTick) > 60)
             {
-                // Опускаем на землю только если реально висим НАД ней
-                // (groundZ<0 = функции не нашла землю, не трогаем).
+                // Опускаем на землю, если реально висим НАД ней >1 м.
+                // Троттлинг (раз в сек): без него на неровной земле пед
+                // «подтягивался» каждый кадр и дрожал.
+                s_lastIdleGroundFixTick = s_tickCount;
                 SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
             }
         }
@@ -1095,11 +1258,15 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         ApplyMoveToGhost(s_ghost, move, p);
     }
 
-    // Поворот интерполируем мягко: кратчайшая дуга.
+    // Поворот интерполируем мягко: кратчайшая дуга. МЁРТВАЯ ЗОНА 2°:
+    // не переписываем heading мелкими коррекциями каждый кадр — именно это
+    // давало микро-дрожь стоящего педа (idle-анимация слегка смещает корпус,
+    // а мы 15 раз/с «поправляли» поворот на 25% → пед трясся в покое).
     float h = f.heading - GetEntityHeading(s_ghost);
     while (h > 180.f) h -= 360.f;
     while (h < -180.f) h += 360.f;
-    SetEntityHeading(s_ghost, GetEntityHeading(s_ghost) + h * LERP_FACTOR);
+    if (std::fabs(h) > 2.0f)
+        SetEntityHeading(s_ghost, GetEntityHeading(s_ghost) + h * LERP_FACTOR);
 
     // Применить особое состояние (ragdoll/cover/swim), оружие (при смене).
     ApplyPedStateToGhost(f);
@@ -1178,6 +1345,8 @@ void CleanupGhost()
     // Убрать лошадь (если удалённый игрок был верхом).
     if (s_mount)
         DismountAndRemoveMount();
+    // Новый пед — наряд нужно применить заново.
+    s_appliedOutfitValid = false;
 }
 
 // Определить move-состояние локального игрока для кадра (передаётся
@@ -1202,21 +1371,20 @@ uint8_t DetectLocalMoveState(unsigned int ped)
         else
         {
             Init(natives::IS_PED_WALKING); Push(ped);
-            if (Call())
-            {
-                raw = static_cast<uint8_t>(coop::MoveState::Walk);
-            }
-            else
-            {
-                // IS_PED_WALKING в RDR2 ложно при медленной ходьбе. Fallback —
-                // фактическая скорость. Порог 0.8 м/с: шаг RDR2 ~1.5 м/с, а
-                // покачивание стоящего игрока даёт <0.3 — не путаем.
-                Init(natives::GET_ENTITY_SPEED); Push(ped);
-                float speed = CallFloat();
-                raw = (speed > 0.8f)
-                        ? static_cast<uint8_t>(coop::MoveState::Walk)
-                        : static_cast<uint8_t>(coop::MoveState::Idle);
-            }
+            bool walking = Call() != 0;
+            // Фактическая скорость нужна и для fallback, и для гистерезиса.
+            Init(natives::GET_ENTITY_SPEED); Push(ped);
+            float speed = CallFloat();
+            // Гистерезис (ключ к отсутствию дёрганья): из стояния (Idle) в
+            // шаг переходим только при ЯВНОМ движении (>1.0 м/с), а из шага
+            // в стояние — только когда точно встали (<0.3 м/с). Без этого
+            // покачивание корпуса мерцало Walk<->Idle и пед дёргался.
+            const bool wasWalking =
+                (s_moveStable == static_cast<uint8_t>(coop::MoveState::Walk));
+            const float walkThresh = wasWalking ? 0.3f : 1.0f;
+            raw = (walking || speed > walkThresh)
+                    ? static_cast<uint8_t>(coop::MoveState::Walk)
+                    : static_cast<uint8_t>(coop::MoveState::Idle);
         }
     }
 
@@ -1328,6 +1496,10 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
     using namespace natives_api;
     const uint8_t runState = static_cast<uint8_t>(coop::MoveState::Run);
     const uint8_t walkState = static_cast<uint8_t>(coop::MoveState::Walk);
+    // Диагностика: смена состояния движения (если пед дёргается — тут будет
+    // видно мерцание Walk<->Idle).
+    if (move != s_lastMoveState)
+        sh_log::Write("coop: move change %u -> %u\n", (unsigned)s_lastMoveState, (unsigned)move);
     if (move == walkState || move == runState)
     {
         // Движение задачей (топает ножками). Физику педа НЕ замораживаем,
@@ -1347,12 +1519,11 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
                 s_moveTargetValid = false;
             s_lastMoveState = move;
         }
-        // Ограничить скорость АНИМАЦИИ: TASK_GO_STRAIGHT_TO_COORD просит
-        // moveBlendSpeed, но движок сам решает бежать ли педу (скорость
-        // анимации от физики). Без ограничения пед «бежит» даже когда
-        // оригинал идёт шагом. 2.0 = шаг, 6.0 = бег, 10.0 = спринт.
+        // Ограничить скорость АНИМАЦИИ. Шкала RDR2: 0 = стоим, 1.0 = шаг,
+        // 2.0 = бег, 3.0 = спринт. Раньше стояло 2.0 для шага — это уровень
+        // БЕГА, поэтому пед при шаге оригинала срывался в бег (прерывисто).
         {
-            const float maxBlend = (move == runState) ? 6.0f : 2.0f;
+            const float maxBlend = (move == runState) ? 2.0f : 1.0f;
             Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
             Push(ped);
             Push(maxBlend);
@@ -1372,19 +1543,18 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
 
         if (retarget)
         {
-            // TASK_FOLLOW_NAV_MESH_TO_COORD — движение с АБСОЛЮТНОЙ скоростью
-            // (м/с), как в rdr2-runtime (GoTo: speed, timeout, 1.0f, 4, 40000).
-            // Нельзя передавать «множитель» — иначе пед идёт со скоростью
-            // множителя × 1 м/с и не догоняет игрока (дёргается, отставая).
-            const float speed = (move == runState) ? 7.0f : 2.5f; // м/с
+            // TASK_FOLLOW_NAV_MESH_TO_COORD — 5-й параметр это
+            // speedMultiplier (множитель, НЕ м/с): 1.0 = обычный шаг,
+            // 2.0 = бег. Раньше стояло 2.5 для шага — пед бежал.
+            const float speed = (move == runState) ? 2.0f : 1.0f;
             Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
             Push(ped);
             Push(target.x); Push(target.y); Push(target.z);
-            Push(speed);                    // absolute speed (м/с)
+            Push(speed);                    // speedMultiplier (шаг 1.0 / бег 2.0)
             Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
             Push(1.0f);                     // stoppingRange (как в rdr2-runtime)
             Push(static_cast<unsigned long long>(4)); // flags
-            Push(40000.f);                  // heading? в rdr2-runtime 40000 (unk)
+            Push(40000.f);                  // как в rdr2-runtime
             Call();
             s_moveTarget = target;
             s_moveTargetValid = true;
@@ -1393,6 +1563,13 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
     }
     else // Idle / RideHorse (верховую анимацию не делаем, просто стоим)
     {
+        // Сброс «скорости анимации движения»: иначе движок продолжает
+        // проигрывать бег/отдышку на месте (педа как будто «прёт» стоя).
+        Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
+        Push(ped);
+        Push(0.0f);
+        Call();
+
         if (s_lastMoveState != move)
         {
             // Стоящий пед: ставим stand-still, НО НЕ замораживаем физику.
@@ -1403,6 +1580,8 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
             Init(natives::TASK_STAND_STILL);
             Push(ped); Push(static_cast<unsigned long long>(0xFFFFFFFF));
             Call();
+            // Восстановить выносливость — чтобы пед не отдувался после бега.
+            SetGhostStaminaFull();
         }
     }
 }
@@ -1445,6 +1624,8 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     }
     s_wantedOutfit = 0;
     s_outfitRequestLogged = false;
+    // Пед будет создан заново — наряд применяем с чистого листа.
+    s_appliedOutfitValid = false;
     if (s_blip)
         s_blip = RemoveBlip(s_blip);
     s_ghostDead = false;
@@ -1523,6 +1704,12 @@ void InitNetworkClient()
         sh_log::Write("net: PLAYER_DIED %s\n", name.c_str());
         std::snprintf(s_remoteDiedName, sizeof(s_remoteDiedName), "%s", name.c_str());
         s_remoteDiedPending = true; // убить педа-призрака сделает Tick()
+    });
+
+    g_netClient.SetRespawned([](const std::string& name) {
+        sh_log::Write("net: PLAYER_RESPAWNED %s\n", name.c_str());
+        std::snprintf(s_remoteRespawnName, sizeof(s_remoteRespawnName), "%s", name.c_str());
+        s_remoteRespawnPending = true; // оживить педа сделает Tick()
     });
 
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
@@ -1657,6 +1844,7 @@ void Tick()
         if (s_ghost)
         {
             SetEntityMission(s_ghost);
+            s_appliedOutfitValid = false; // новый пед — наряд наденем заново
             // ВАЖНО: RandomizePedComponents (SET_PED_RANDOM_COMPONENT_VARIATION)
             // ОБЯЗАТЕЛЕН для рендера модели педа — без него пед невидим
             // (остаются только прикреплённые shop-предметы-одёжки). Наряд из
@@ -1667,6 +1855,7 @@ void Tick()
             if (hasGround)
                 SetEntityCoords(s_ghost, Vec3{spawn.x, spawn.y, groundZ + 0.2f});
             TaskStandStill(s_ghost);
+            SetGhostStaminaFull(); // не устаёт и не «отдувается» после бега
             s_blip = CreateFriendlyBlipAt(spawn);
             sh_log::Write("coop: friendly blip -> %u\n", s_blip);
             std::snprintf(s_pedName, sizeof(s_pedName), "%s", name);
@@ -1752,9 +1941,21 @@ void Tick()
         s_remoteDiedName[0] = '\0';
     }
 
+    // Оригинал ожил после смерти (сервер прислал Respawned) — возрождаем
+    // педа-призрака (или создаём заново, если трупа уже нет) + надпись.
+    if (s_remoteRespawnPending)
+    {
+        s_remoteRespawnPending = false;
+        RespawnGhostPed(s_haveFrame ? &s_lastFrame : nullptr);
+    }
+
     // Смерть удалённого игрока: метка-крестик, скрыть имя и показать
-    // короткое оповещение (однократно).
-    if (s_ghost && DoesEntityExist(s_ghost) && IsPedDeadOrDying(s_ghost) && !s_ghostDead)
+    // короткое оповещение (однократно). Грация после возрождения — не
+    // считаем педа мёртвым, пока RESURRECT_PED не применился.
+    if (s_reviveGraceTicks > 0)
+        --s_reviveGraceTicks;
+    if (s_reviveGraceTicks == 0 && s_ghost && DoesEntityExist(s_ghost)
+        && IsPedDeadOrDying(s_ghost) && !s_ghostDead)
     {
         s_ghostDead = true;
         sh_log::Write("coop: [DEAD] %s\n", s_pedName[0] ? s_pedName : "Player");
@@ -1768,12 +1969,23 @@ void Tick()
         s_pedName[0] = '\0'; // имя над головой скрыто
     }
 
-    // Смерть локального игрока: сообщить серверу (лог в консоли), однократно.
-    if (g_netStarted && !s_localDiedNotified &&
-        DoesEntityExist(playerPed) && IsPedDeadOrDying(playerPed))
+    // Смерть/возрождение локального игрока — уведомляем сервер однократно.
+    if (g_netStarted && DoesEntityExist(playerPed))
     {
-        s_localDiedNotified = true;
-        g_netClient.SendDied();
+        if (!s_localDiedNotified && IsPedDeadOrDying(playerPed))
+        {
+            s_localDiedNotified = true;
+            g_netClient.SendDied();
+            sh_log::Write("coop: local player died, sent Died\n");
+        }
+        else if (s_localDiedNotified && !IsPedDeadOrDying(playerPed))
+        {
+            // Ожили — сбрасываем флаг, чтобы следующая смерть снова уведомила,
+            // и сообщаем серверу «ожил» (партнёр возродит педа-призрака).
+            s_localDiedNotified = false;
+            g_netClient.SendRespawned();
+            sh_log::Write("coop: local player revived, sent Respawned\n");
+        }
     }
 
     // Persist the ped's position regularly so a returning player spawns on

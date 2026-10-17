@@ -393,6 +393,11 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 if (registered && !name.empty())
                     BroadcastToOthers(sock, MakeNameMsg((uint8_t)net::Msg::Died, name));
                 break;
+            case net::Msg::Respawned:
+                LogLine("[+] " + name + " возродился после смерти");
+                if (registered && !name.empty())
+                    BroadcastToOthers(sock, MakeNameMsg((uint8_t)net::Msg::Respawned, name));
+                break;
             case net::Msg::WorldState:
             {
                 // Состояние мира от хоста — ретранслируем всем, кроме отправителя

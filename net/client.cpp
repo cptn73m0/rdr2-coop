@@ -29,6 +29,7 @@ void Client::SetJoinOk(OnJoinOk cb)        { onJoinOk_ = std::move(cb); }
 void Client::SetPlayerJoin(OnPlayerJoin cb){ onPlayerJoin_ = std::move(cb); }
 void Client::SetPlayerLeave(OnPlayerLeave cb) { onPlayerLeave_ = std::move(cb); }
 void Client::SetDied(OnDied cb)                { onDied_ = std::move(cb); }
+void Client::SetRespawned(OnRespawned cb)      { onRespawned_ = std::move(cb); }
 void Client::SetWorldState(OnWorldState cb){ onWorldState_ = std::move(cb); }
 void Client::SetOutfit(OnOutfit cb)        { onOutfit_ = std::move(cb); }
 
@@ -73,6 +74,12 @@ void Client::SendDied()
 {
     // Сообщение без payload: сервер выводит лог о смерти игрока.
     SendRaw(MakeFrame((uint8_t)net::Msg::Died, nullptr, 0));
+}
+
+void Client::SendRespawned()
+{
+    // Сообщение без payload: сервер ретранслирует другим «игрок ожил».
+    SendRaw(MakeFrame((uint8_t)net::Msg::Respawned, nullptr, 0));
 }
 
 void Client::SendWorldState(const net::WorldState& ws)
@@ -239,6 +246,16 @@ void Client::Run()
                 {
                     std::string nm(reinterpret_cast<char*>(p.data() + 1), p[0]);
                     if (onDied_) onDied_(nm);
+                }
+                break;
+            }
+            case net::Msg::Respawned:
+            {
+                // От сервера: игрок ожил после смерти (name в payload).
+                if (!p.empty())
+                {
+                    std::string nm(reinterpret_cast<char*>(p.data() + 1), p[0]);
+                    if (onRespawned_) onRespawned_(nm);
                 }
                 break;
             }

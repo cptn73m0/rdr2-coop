@@ -146,6 +146,13 @@ constexpr unsigned long long GET_ENTITY_SPEED             = 0xFB6BA510A533DF81ul
 // а умирал только вместе с оригиналом (сервер шлёт Died).
 constexpr unsigned long long SET_ENTITY_INVINCIBLE         = 0xA5C38736C426FCB8ull;
 constexpr unsigned long long SET_ENTITY_HEALTH             = 0xAC2767ED8BDFAB15ull;
+// Возрождение педа (когда оригинал ожил после смерти).
+constexpr unsigned long long RESURRECT_PED                 = 0x71BC8E838B9C6035ull;
+// Выносливость педа: чтобы пед-призрак не «отдувался» (не играл анимацию
+// усталости) после бега. Множитель истощения 0 = не устаёт.
+constexpr unsigned long long RESTORE_PED_STAMINA           = 0x675680D089BFA21Full;
+constexpr unsigned long long SET_STAMINA_DEPLETION_MULTIPLIER = 0xEF5A3D2285D8924Bull;
+constexpr unsigned long long GET_PED_MAX_STAMINA           = 0xCB42AFE2B613EE55ull;
 // Ограничение скорости анимации педа (для шага/бега — чтобы пед-призрак
 // шёл шагом, а не бежал, при движении задачей TASK_GO_*).
 constexpr unsigned long long SET_PED_MAX_MOVE_BLEND_RATIO   = 0x433083750C5E064Aull;
