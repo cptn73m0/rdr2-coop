@@ -460,12 +460,21 @@ bool s_haveMountTarget = false;
 // перезадавать её каждый кадр — иначе лошадь дёргается).
 Vec3 s_mountTaskTarget{0.f, 0.f, 0.f};
 bool s_mountTaskValid = false;
-// «Грация» верховой езды: кадры move=RideHorse могут кратко мерцать на
-// Walk/Idle (IS_PED_ON_MOUNT дрожит). Если удалять лошадь на первом же
-// таком кадре, она пересоздаётся каждые пару секунд: пед падает с лошади,
-// лошадь «взлетает» и падает, модели пропадают. Держим посадку ~1.5 с.
-unsigned int s_rideGraceTicks = 0;
-constexpr unsigned int kRideGraceTicks = 90;
+// «Грация» верховой езды заменена фазовой машиной: кадры move=RideHorse
+// могут кратко мерцать на Walk/Idle (IS_PED_ON_MOUNT дрожит), поэтому
+// спешивание начинаем только после kRideLossTicks подряд «не верхом».
+unsigned int s_rideLossTicks = 0;
+constexpr unsigned int kRideLossTicks = 15; // ~0.25 с
+// Фаза взаимодействия педа с лошадью (для анимаций посадки/спешивания).
+enum class MountPhase : uint8_t
+{
+    None = 0,    // лошади нет
+    Mounting,    // пед идёт к лошади и садится (анимация)
+    Seated,      // в седле — ведём лошадь за кадрами
+    Dismounting, // пед слезает (анимация), лошадь ещё стоит
+};
+MountPhase s_mountPhase = MountPhase::None;
+unsigned int s_mountPhaseTicks = 0;
 // Дистанция, после которой лошадь переносим телепортом (а не задачей).
 constexpr float TELEPORT_DIST_MOUNT = 10.0f;
 
@@ -488,6 +497,10 @@ bool   s_horseOutfitLogged = false;           // логировали ли ож�
 void PromoteMountToGhost();
 // Пересобрать внешний вид педа (component variation + наряд). Определение ниже.
 void RefreshGhostComponents();
+// Анимации посадки/спешивания (определения ниже).
+void StartMounting();
+void StartDismounting();
+bool IsGhostMounted();
 
 // Запросить и загрузить модель лошади (вызывается в Tick, игровой поток).
 void RequestMountModel()
@@ -511,10 +524,15 @@ void RequestMountModel()
             sh_log::Write("coop: waiting horse model 0x%llX...\n", model);
         return;
     }
-    // Создаём лошадь НА ЗЕМЛЕ рядом с целью кадра. Раньше создавали на z
-    // кадра (это z всадника, ~1.2 м над землёй) — лошадь появлялась в
-    // воздухе и падала; вместе с посадкой это и давало «взлёт» и падение.
-    Vec3 at = s_haveMountTarget ? s_mountTarget : GetEntityCoords(s_ghost);
+    // Ставим лошадь РЯДОМ С ПЕДОМ (справа ~1.6 м): по сценарию пед сначала
+    // подходит и садится с анимацией (TASK_MOUNT_ANIMAL), а не телепортируется
+    // в седло. Раньше лошадь создавалась прямо в позиции всадника.
+    Vec3 at = GetEntityCoords(s_ghost);
+    {
+        float h = GetEntityHeading(s_ghost) * 0.01745329251f; // рад.
+        at.x += 1.6f * std::cos(h);
+        at.y += 1.6f * std::sin(h);
+    }
     {
         float gz = 0.f;
         Init(natives::GET_GROUND_Z_FOR_3D_COORD);
@@ -548,7 +566,10 @@ void RequestMountModel()
         s_mountTaskValid = false;
         sh_log::Write("coop: horse created handle=%u at (%.1f %.1f %.1f)\n",
                       s_mount, at.x, at.y, at.z);
-        PromoteMountToGhost();
+        // НЕ сажаем сразу: ApplyRemoteFrame запустит TASK_MOUNT_ANIMAL,
+        // чтобы пед подошёл и сел с анимацией.
+        s_mountPhase = MountPhase::None;
+        s_mountPhaseTicks = 0;
     }
     s_mountModelRequested = false; // при неудаче позволим повторить запрос
 }
@@ -568,6 +589,55 @@ void PromoteMountToGhost()
     // После посадки движок сбрасывает component variation педа — модель
     // «исчезает», остаются только надетыми одёжки. Возвращаем вариацию и наряд.
     RefreshGhostComponents();
+}
+
+// Пед подходит к лошади и садится С АНИМАЦИЕЙ (TASK_MOUNT_ANIMAL).
+// timer = 4 с: если пед не дойдёт (кривой навмеш), движок сам посадит его.
+void StartMounting()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    if (!s_mount || !DoesEntityExist(s_mount)) return;
+    using namespace natives_api;
+    Init(natives::TASK_MOUNT_ANIMAL);
+    Push(s_ghost);
+    Push(s_mount);
+    Push(static_cast<unsigned long long>(4000)); // timer (ms): авто-посадка
+    Push(static_cast<unsigned long long>(0));    // seatIndex
+    Push(1.0f);                                  // pedSpeed
+    Push(static_cast<unsigned long long>(0));    // mountStyle
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Call();
+    s_mountPhase = MountPhase::Mounting;
+    s_mountPhaseTicks = 0;
+    sh_log::Write("coop: mount animation started\n");
+}
+
+// Пед слезает С АНИМАЦИЕЙ (TASK_DISMOUNT_ANIMAL). Лошадь удалим после.
+void StartDismounting()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    Init(natives::TASK_DISMOUNT_ANIMAL);
+    Push(s_ghost);
+    Push(static_cast<unsigned long long>(0)); // taskFlag (сторона спешивания)
+    Push(static_cast<unsigned long long>(0)); // p2
+    Push(static_cast<unsigned long long>(0)); // p3
+    Push(static_cast<unsigned long long>(0)); // p4
+    Push(static_cast<unsigned long long>(0)); // targetPed
+    Call();
+    s_mountPhase = MountPhase::Dismounting;
+    s_mountPhaseTicks = 0;
+    sh_log::Write("coop: dismount animation started\n");
+}
+
+bool IsGhostMounted()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return false;
+    using namespace natives_api;
+    Init(natives::IS_PED_ON_MOUNT);
+    Push(s_ghost);
+    return Call() != 0;
 }
 
 // Двигать лошадь к цели кадра. ВАЖНО: двигаем ЗАДАЧЕЙ по навмешу, а не
@@ -641,6 +711,8 @@ void DismountAndRemoveMount()
     s_haveMountTarget = false;
     s_mountWantedModel = 0;
     s_mountTaskValid = false;
+    s_mountPhase = MountPhase::None;
+    s_mountPhaseTicks = 0;
     RefreshGhostComponents();
     // Сброс состояния наряда лошади (лошади больше нет).
     if (s_horseOutfitPending)
@@ -1120,7 +1192,9 @@ void RespawnGhostPed(const net::FramePayload* f)
     // Игрок возродился в другом месте — старая лошадь уже не актуальна.
     if (s_mount)
         DismountAndRemoveMount();
-    s_rideGraceTicks = 0;
+    s_mountPhase = MountPhase::None;
+    s_mountPhaseTicks = 0;
+    s_rideLossTicks = 0;
 
     if (s_ghost && DoesEntityExist(s_ghost))
     {
@@ -1217,16 +1291,31 @@ void ApplyRemoteFrame(const net::FramePayload& f)
 
     const uint8_t move = static_cast<uint8_t>(f.move);
     const uint8_t rideState = static_cast<uint8_t>(coop::MoveState::RideHorse);
-    // «Грация» езды: IS_PED_ON_MOUNT у отправителя может кратко мерцать,
-    // и один такой кадр раньше удалял лошадь. Пока грация идёт, продолжаем
-    // вести себя как при езде (лошадь жива, пед не получает задач движения).
+    // Отсев мерцания: IS_PED_ON_MOUNT у отправителя может кратко дрожать,
+    // поэтому «не верхом» считаем только после kRideLossTicks подряд.
     if (move == rideState)
-        s_rideGraceTicks = kRideGraceTicks;
-    else if (s_rideGraceTicks > 0)
-        --s_rideGraceTicks;
-    const bool riding = (move == rideState) ||
-        (s_rideGraceTicks > 0 && s_mount && DoesEntityExist(s_mount));
-    if (riding)
+        s_rideLossTicks = 0;
+    else if (s_rideLossTicks < 1000)
+        ++s_rideLossTicks;
+
+    // Анимация спешивания: ждём, пока пед слезет, и только потом убираем
+    // лошадь. Задач движения/состояний в это время не даём — прервут анимацию.
+    if (s_mountPhase == MountPhase::Dismounting)
+    {
+        ++s_mountPhaseTicks;
+        const bool off = !IsGhostMounted();
+        // Лошадь убираем, когда пед уже слез и доиграл приземление
+        // (~1.5 с), либо по жёсткому таймауту 4 с.
+        if ((off && s_mountPhaseTicks >= 90) || s_mountPhaseTicks >= 240)
+        {
+            sh_log::Write("coop: dismount finished (off=%d, ticks=%u)\n",
+                          off ? 1 : 0, s_mountPhaseTicks);
+            DismountAndRemoveMount(); // удаляет лошадь + пересобирает внешний вид
+        }
+        return;
+    }
+
+    if (move == rideState)
     {
         // Верховая езда: педа напрямую НЕ двигаем и НЕ замораживаем —
         // он сидит на лошади; правим лошадь (спавн/движение/посадка).
@@ -1236,9 +1325,10 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         // несколько секунд, чтобы не спамить лог при 15 кадрах/с).
         if (s_tickCount % (3 * 60) == 1)
             sh_log::Write("coop: frame RideHorse, mountWanted=0x%llX mount=%u "
-                          "model=0x%llX outfit=0x%llX\n",
+                          "model=0x%llX outfit=0x%llX phase=%d\n",
                           s_mountWantedModel, s_mount,
-                          f.reserved[0], f.horseOutfitHash);
+                          f.reserved[0], f.horseOutfitHash,
+                          static_cast<int>(s_mountPhase));
         // Модель коня из кадра (0 = стандартная).
         if (f.reserved[0] && f.reserved[0] != s_mountWantedModel)
         {
@@ -1250,29 +1340,54 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         }
         if (!s_mount || !DoesEntityExist(s_mount))
         {
-            // Идл-пед заморожен (FREEZE_ENTITY_POSITION) — на замороженном
-            // педе SET_PED_ONTO_MOUNT не работает (лошадь создаётся, а пед
-            // не садится). Перед посадкой обязательно размораживаем.
+            // Идл-пед заморожен (FREEZE_ENTITY_POSITION) — задачу посадки на
+            // замороженном педе движок не проигрывает. Размораживаем.
             SetGhostFrozen(false);
-            // RequestMountModel сам сажает педа после создания лошади —
-            // повторный PromoteMountToGhost не нужен (двойная посадка
-            // ломала позу всадника).
-            RequestMountModel();
+            RequestMountModel();       // создаёт лошадь рядом с педом
+            if (s_mount)
+                StartMounting();       // подойти и сесть с анимацией
+            ApplyHorseOutfitToMount(f.horseOutfitHash);
+            return;
         }
-        else
+        if (s_mountPhase == MountPhase::Mounting)
         {
-            MoveMountTo(p);
-            SetEntityHeading(s_mount, f.heading);
-            DisableMountLocalCollision();
+            ++s_mountPhaseTicks;
+            if (IsGhostMounted())
+            {
+                s_mountPhase = MountPhase::Seated;
+                s_mountTaskValid = false;
+                sh_log::Write("coop: mounting finished (%u ticks)\n", s_mountPhaseTicks);
+            }
+            else if (s_mountPhaseTicks >= 6 * 60) // страховка ~6 с
+            {
+                sh_log::Write("coop: mounting timeout -> seat instantly\n");
+                PromoteMountToGhost();
+                s_mountPhase = MountPhase::Seated;
+                s_mountTaskValid = false;
+            }
+            ApplyHorseOutfitToMount(f.horseOutfitHash);
+            return; // пока пед садится — лошадь не двигаем
         }
+        // В седле: ведём лошадь за кадрами.
+        if (s_mountPhase != MountPhase::Seated)
+        {
+            s_mountPhase = MountPhase::Seated;
+            s_mountTaskValid = false;
+        }
+        MoveMountTo(p);
+        SetEntityHeading(s_mount, f.heading);
+        DisableMountLocalCollision();
         ApplyHorseOutfitToMount(f.horseOutfitHash);
         ApplyPedStateToGhost(f);
         return;
     }
-    else if (s_mount && DoesEntityExist(s_mount))
+
+    // Кадр «не верхом», но лошадь ещё есть.
+    if (s_mount && DoesEntityExist(s_mount))
     {
-        // Сошли с лошади (после грации) — убираем её.
-        DismountAndRemoveMount();
+        if (s_rideLossTicks >= kRideLossTicks)
+            StartDismounting(); // запустит анимацию спешивания
+        return;                 // мерцание — продолжаем держать посадку
     }
 
     // Прыжок/падение/плавание: пед в воздухе или в воде — Z кадра валиден
@@ -1456,7 +1571,9 @@ void CleanupGhost()
     // Убрать лошадь (если удалённый игрок был верхом).
     if (s_mount)
         DismountAndRemoveMount();
-    s_rideGraceTicks = 0;
+    s_mountPhase = MountPhase::None;
+    s_mountPhaseTicks = 0;
+    s_rideLossTicks = 0;
     // Новый пед — наряд нужно применить заново.
     s_appliedOutfitValid = false;
 }
@@ -1741,7 +1858,9 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     // Пед удалён — лошадь-призрак без седока не нужна.
     if (s_mount)
         DismountAndRemoveMount();
-    s_rideGraceTicks = 0;
+    s_mountPhase = MountPhase::None;
+    s_mountPhaseTicks = 0;
+    s_rideLossTicks = 0;
     if (s_blip)
         s_blip = RemoveBlip(s_blip);
     s_ghostDead = false;
