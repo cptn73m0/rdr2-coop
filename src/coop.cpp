@@ -448,6 +448,13 @@ unsigned int s_reviveGraceTicks = 0;
 // Последнее применённое особое состояние/оружие (сброс при выходе).
 uint8_t s_lastPedState = 0xFF;
 unsigned long long s_lastWeapon = 0;
+// Оружие, реально выданное педу-призраку (чтобы снять при смене на «без оружия»).
+unsigned long long s_givenWeapon = 0;
+// Боевое действие активно (прицеливание/стрельба/перезарядка): пед стоит и
+// держит оружие, задачи движения не ставим (они отменяют боевую задачу).
+bool s_combatActive = false;
+// Тик последней выдачи задачи стрельбы (перезадаём, пока стрельба идёт).
+unsigned int s_lastShootTaskTick = 0;
 // Последнее применённое действие (для применения при смене).
 uint8_t s_lastAction = 0xFF;
 
@@ -797,19 +804,88 @@ void SetGhostFrozen(bool freeze)
     Call();
 }
 
+// Точка прицеливания педа: 15 м вперёд по его heading на уровне груди.
+// Направление в RDR2: heading 0 = +Y, вперёд = (-sin h, cos h).
+Vec3 GhostAimPointAhead()
+{
+    Vec3 p = GetEntityCoords(s_ghost);
+    float h = GetEntityHeading(s_ghost) * 0.01745329251f;
+    Vec3 t;
+    t.x = p.x - std::sin(h) * 15.0f;
+    t.y = p.y + std::cos(h) * 15.0f;
+    t.z = p.z + 1.2f;
+    return t;
+}
+
+// Прицеливание: задача «целиться в точку» (time = -1 — до смены задачи).
+void AimGhostForward()
+{
+    Vec3 t = GhostAimPointAhead();
+    using namespace natives_api;
+    Init(natives::TASK_AIM_GUN_AT_COORD);
+    Push(s_ghost);
+    Push(t.x); Push(t.y); Push(t.z);
+    Push(static_cast<unsigned long long>(0xFFFFFFFF)); // time (ms), -1
+    Push(static_cast<unsigned long long>(0));          // p5 (instant blend)
+    Push(static_cast<unsigned long long>(0));          // p6 (fire)
+    Call();
+}
+
+// Стрельба: настоящие выстрелы в точку (движок сам даёт звук, вспышку,
+// отдачу, гильзы). duration — сколько стрелять, SingleShot — темп.
+void ShootGhostForward()
+{
+    Vec3 t = GhostAimPointAhead();
+    using namespace natives_api;
+    Init(natives::TASK_SHOOT_AT_COORD);
+    Push(s_ghost);
+    Push(t.x); Push(t.y); Push(t.z);
+    Push(static_cast<unsigned long long>(1500));       // duration ms
+    Push(static_cast<unsigned long long>(0x5D60E4E0)); // SingleShot
+    Push(static_cast<unsigned long long>(0));
+    Call();
+}
+
 // Применить действие (action) удалённого игрока к педу призрака.
-// Вызывается из ApplyRemoteFrame (игровой поток), только при смене.
-// Первое приближение: сидение/сценарий/пьян — стоим на месте (пед не бежит
-// во время еды/питья); стрельба/перезарядка/прицел — оставляем движение
-// (анимация оружия частично идёт через weaponHash). Детальные анимации —
-// следующей итерацией.
+// Вызывается из ApplyRemoteFrame (игровой поток).
+// Прицеливание/стрельба/перезарядка — реальные задачи оружия: пед стоит,
+// целится и стреляет (со звуком и вспышкой).
 void ApplyActionToGhost(const net::FramePayload& f)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
     const uint8_t ac = static_cast<uint8_t>(f.action);
+    const bool wasCombat = (s_lastAction == static_cast<uint8_t>(net::Action::Shooting) ||
+                            s_lastAction == static_cast<uint8_t>(net::Action::Reloading) ||
+                            s_lastAction == static_cast<uint8_t>(net::Action::Aiming));
+    const bool isCombat = (ac == static_cast<uint8_t>(net::Action::Shooting) ||
+                           ac == static_cast<uint8_t>(net::Action::Reloading) ||
+                           ac == static_cast<uint8_t>(net::Action::Aiming));
+    s_combatActive = isCombat;
+
+    // Выход из боя: снимаем боевую задачу и заставляем движение
+    // перепоставить задачу на следующем кадре.
+    if (wasCombat && !isCombat)
+    {
+        Init(natives::TASK_STAND_STILL);
+        Push(s_ghost); Push(static_cast<unsigned long long>(0xFFFFFFFF));
+        Call();
+        s_moveTargetValid = false;
+        s_lastMoveState = 0xFF;
+    }
+
+    // Пока стрельба продолжается — продлеваем задачу (иначе она
+    // заканчивается через 1.5 с, хотя игрок стреляет дольше).
+    if (isCombat && ac == static_cast<uint8_t>(net::Action::Shooting) &&
+        s_tickCount - s_lastShootTaskTick >= 60)
+    {
+        s_lastShootTaskTick = s_tickCount;
+        ShootGhostForward();
+        return;
+    }
+
     if (ac == s_lastAction) return;
     s_lastAction = ac;
-    using namespace natives_api;
     switch (static_cast<net::Action>(ac))
     {
     case net::Action::InScenario:
@@ -822,12 +898,21 @@ void ApplyActionToGhost(const net::FramePayload& f)
         Call();
         sh_log::Write("coop: action=%d → stand still\n", (int)ac);
         break;
-    case net::Action::Shooting:
-    case net::Action::Reloading:
     case net::Action::Aiming:
-        // Боевые действия: оставляем движение/позицию как есть; анимация
-        // оружия частично идёт через weaponHash (SET_CURRENT_PED_WEAPON).
-        sh_log::Write("coop: action=%d → combat (weapon sync)\n", (int)ac);
+        AimGhostForward();
+        sh_log::Write("coop: action=%d → aim\n", (int)ac);
+        break;
+    case net::Action::Shooting:
+        s_lastShootTaskTick = s_tickCount;
+        ShootGhostForward();
+        sh_log::Write("coop: action=%d → shoot\n", (int)ac);
+        break;
+    case net::Action::Reloading:
+        Init(natives::TASK_RELOAD_WEAPON);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(0));
+        Call();
+        sh_log::Write("coop: action=%d → reload\n", (int)ac);
         break;
     default:
         sh_log::Write("coop: action=%d → none\n", (int)ac);
@@ -892,19 +977,55 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
         }
     }
 
-    // Оружие: передаём в руку педа при смене (только если hash известен).
-    if (f.weaponHash && f.weaponHash != s_lastWeapon)
+    // Оружие: выдать педу и взять в руку при смене. Без GIVE_WEAPON_TO_PED
+    // модель оружия не появляется (SET_CURRENT одного недостаточно), а
+    // натив требует ПОЛНЫЙ набор параметров (13) — при меньшем числе движок
+    // читает мусор и оружие «не появляется».
+    if (f.weaponHash != s_lastWeapon)
     {
         s_lastWeapon = f.weaponHash;
-        Init(natives::SET_CURRENT_PED_WEAPON);
-        Push(s_ghost);
-        Push(f.weaponHash);
-        Push(true);
-        Call();
-        sh_log::Write("coop: weapon 0x%llX set\n", f.weaponHash);
+        if (f.weaponHash)
+        {
+            Init(natives::GIVE_WEAPON_TO_PED);
+            Push(s_ghost);
+            Push(f.weaponHash);
+            Push(static_cast<unsigned long long>(60)); // ammoCount
+            Push(static_cast<unsigned long long>(0));  // bForceInHand (0: с анимацией доставания)
+            Push(static_cast<unsigned long long>(0));  // bForceInHolster
+            Push(static_cast<unsigned long long>(0));  // attachPoint = HAND_PRIMARY
+            Push(static_cast<unsigned long long>(0));  // bAllowMultipleCopies
+            Push(0.5f);                                // p7 (как в R* скриптах)
+            Push(1.0f);                                // p8
+            Push(static_cast<unsigned long long>(0));  // addReason
+            Push(static_cast<unsigned long long>(1));  // bIgnoreUnlocks
+            Push(0.5f);                                // permanentDegradation
+            Push(static_cast<unsigned long long>(0));  // p12
+            Call();
+            // Взять в руку (equipNow=true) — проигрывается доставание.
+            Init(natives::SET_CURRENT_PED_WEAPON);
+            Push(s_ghost);
+            Push(f.weaponHash);
+            Push(static_cast<unsigned long long>(1)); // equipNow
+            Push(static_cast<unsigned long long>(0)); // attachPoint
+            Push(static_cast<unsigned long long>(0));
+            Push(static_cast<unsigned long long>(0));
+            Call();
+            s_givenWeapon = f.weaponHash;
+            sh_log::Write("coop: weapon 0x%llX given+equipped\n", f.weaponHash);
+        }
+        else if (s_givenWeapon)
+        {
+            // Убрали оружие — снимаем его с педа (иначе остаётся в руке).
+            Init(natives::REMOVE_WEAPON_FROM_PED);
+            Push(s_ghost);
+            Push(s_givenWeapon);
+            Push(static_cast<unsigned long long>(0));
+            Push(static_cast<unsigned long long>(0));
+            Call();
+            sh_log::Write("coop: weapon 0x%llX removed\n", s_givenWeapon);
+            s_givenWeapon = 0;
+        }
     }
-    if (!f.weaponHash)
-        s_lastWeapon = 0;
 
     // Действие (стрельба/сидение/сценарий…) — при смене.
     ApplyActionToGhost(f);
@@ -1569,6 +1690,9 @@ void CleanupGhost()
     s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
     s_lastPedState = 0xFF;
     s_lastWeapon = 0;
+    s_givenWeapon = 0;
+    s_combatActive = false;
+    s_lastShootTaskTick = 0;
     s_lastAction = 0xFF;
     // Сброс дебаунса move (новый игрок — заново определяем состояние).
     s_moveStable = 0xFF;
@@ -1716,6 +1840,9 @@ uint8_t DetectLocalAction(unsigned int ped)
     if (Call()) return static_cast<uint8_t>(net::Action::Sitting);
     Init(natives::IS_PED_AIMING_FROM_COVER); Push(ped);
     if (Call()) return static_cast<uint8_t>(net::Action::Aiming);
+    // Обычное прицеливание (не только из укрытия): оружие наготове к выстрелу.
+    Init(natives::IS_PED_WEAPON_READY_TO_SHOOT); Push(ped);
+    if (Call()) return static_cast<uint8_t>(net::Action::Aiming);
     Init(natives::IS_PED_DRUNK); Push(ped);
     if (Call()) return static_cast<uint8_t>(net::Action::Drunk);
     return static_cast<uint8_t>(net::Action::None);
@@ -1742,6 +1869,18 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
     using namespace natives_api;
     const uint8_t runState = static_cast<uint8_t>(coop::MoveState::Run);
     const uint8_t walkState = static_cast<uint8_t>(coop::MoveState::Walk);
+    // Во время прицеливания/стрельбы/перезарядки пед стоит и держит оружие.
+    // Любая задача движения (TASK_FOLLOW/TASK_STAND_STILL) отменила бы
+    // боевую задачу (прицел/выстрел) — поэтому движение не трогаем.
+    if (s_combatActive)
+    {
+        Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
+        Push(ped);
+        Push(0.0f);
+        Call();
+        s_lastMoveState = move;
+        return;
+    }
     // Диагностика: смена состояния движения (если пед дёргается — тут будет
     // видно мерцание Walk<->Idle).
     if (move != s_lastMoveState)
@@ -1833,6 +1972,8 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
 }
 
 // Хэш оружия в руке игрока (GET_CURRENT_PED_WEAPON), 0 = нет.
+// ВАЖНО: у натива 5 параметров (ped, &hash, p2, attachPoint, p4) — при
+// меньшем числе движок читает мусор и оружие не синхронизировалось.
 unsigned long long GetLocalWeaponHash(unsigned int ped)
 {
     using namespace natives_api;
@@ -1840,6 +1981,9 @@ unsigned long long GetLocalWeaponHash(unsigned int ped)
     Init(natives::GET_CURRENT_PED_WEAPON);
     Push(ped);
     Push(reinterpret_cast<unsigned long long>(&out));
+    Push(static_cast<unsigned long long>(1)); // p2 (как в rdr2-runtime)
+    Push(static_cast<unsigned long long>(0)); // attachPoint = HAND_PRIMARY
+    Push(static_cast<unsigned long long>(0)); // p4
     Call();
     return out;
 }
