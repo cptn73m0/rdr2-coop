@@ -15,6 +15,7 @@
 #include "net/frame.h"
 #include "net/protocol.h"
 #include "net/socket.h"
+#include "net/udp.h"
 
 namespace netio {
 
@@ -60,6 +61,10 @@ public:
     void Start(const std::string& host, int port, const std::string& name,
                unsigned long long pedModel);
     void Stop();
+    // Игровой поток вычисляет кадр (нативы) и «пушит» его сюда; отдельный
+    // поток отправки шлёт последний снимок с фиксированными 60 Гц — джиттер
+    // игрового цикла не сбивает сетевую частоту.
+    void PushFrame(const net::FramePayload& f);
     void SendFrame(const net::FramePayload& f);
     // Сообщить серверу, что локальный игрок умер (лог в консоли сервера).
     void SendDied();
@@ -91,6 +96,19 @@ private:
     bool SendRaw(const std::vector<uint8_t>& frame);
     void SendPing();
     uint64_t NowMs() const;
+    // UDP-канал для кадров (Frame/Shot): отдельная дейтаграммная сессия.
+    bool OpenUdp();
+    void CloseUdp();
+    void UdpSendFrame(const net::FramePayload& f);
+    void UdpSendShot(const net::ShotPayload& sp);
+    void UdpReadLoop();
+    std::atomic<bool> udpRun_{false};
+    std::thread udpThread_;
+    SOCKET udpFd_{INVALID_SOCKET};
+    bool udpReady_{false};
+    int udpPort_{0};
+    uint64_t sid_{0};
+    sockaddr_in serverUdp_{};
 
     std::string host_;
     int         port_ = 0;
@@ -114,6 +132,12 @@ private:
     OnOutfit onOutfit_;
     OnShot onShot_;
     std::atomic<uint32_t> rttMs_{0};
+    // Последний снимок кадра для потока отправки + сам поток.
+    std::mutex frameMtx_;
+    net::FramePayload latFrame_{};
+    bool haveLatFrame_{false};
+    std::atomic<bool> sendRun_{false};
+    std::thread sendThread_;
 };
 
 } // namespace netio
