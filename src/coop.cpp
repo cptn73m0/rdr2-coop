@@ -1270,6 +1270,17 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
     int categories = static_cast<int>(Call());
     if (categories <= 0)
         return;
+    // Диагностика: сколько категорий реально у педа (если > лимита — хвост
+    // обрезался, и именно это давало рассинхрон одежды).
+    {
+        static int s_lastCats = -1;
+        if (categories != s_lastCats)
+        {
+            s_lastCats = categories;
+            sh_log::Write("coop: outfit categories for ped %u = %d (limit %d)\n",
+                          ped, categories, net::kMaxOutfitComponents);
+        }
+    }
     if (categories > net::kMaxOutfitComponents)
         categories = net::kMaxOutfitComponents;
 
@@ -1637,6 +1648,13 @@ void ApplyRemoteFrame(const net::FramePayload& f)
                 s_mountPhase = MountPhase::Seated;
                 s_mountTaskValid = false;
                 sh_log::Write("coop: mounting finished (%u ticks)\n", s_mountPhaseTicks);
+                // Снаряжение пришло по сети ДО создания лошади — применим
+                // сейчас, когда пед уже сел (иначе седло так и не появится).
+                if (s_horseOutfitIn.count)
+                {
+                    s_horseOutfitAppliedValid = false;
+                    ApplyHorseOutfitToMount(s_horseOutfitIn);
+                }
             }
             else if (s_mountPhaseTicks >= 6 * 60) // страховка ~6 с
             {
