@@ -398,12 +398,6 @@ bool s_remoteAimValid = false;
 // Событие выстрела от удалённого игрока (колбэк сетевого потока -> Tick).
 bool s_pendingShotEvent = false;
 Vec3 s_pendingShotPoint{0.f, 0.f, 0.f};
-// Dead reckoning (экстраполяция): скорость удалённого игрока по двум
-// последним кадрам; цель движения педа уводится вперёд на ~2 кадра, чтобы
-// компенсировать задержку сети (особенно заметно по интернету).
-Vec3 s_remoteVelocity{0.f, 0.f, 0.f};
-Vec3 s_lastRemotePos{0.f, 0.f, 0.f};
-int64_t s_lastRemoteSeq = -1;
 // Состояние мира от хоста (время+погода) для применения в Tick().
 net::WorldState s_worldState{};
 bool s_haveWorldState = false;
@@ -1676,31 +1670,10 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         // кадром (лог lowered спамил 40.7 -> 40.7). Прижим — только в Idle.
         // Движение задачей: не телепортируем и не лерпим — просто
         // перенаправляем задачу идти к текущей точке кадра (топает ножками).
-        // Dead reckoning: по двум кадрам считаем скорость и уводим цель на
-        // ~2 кадра вперёд, чтобы пед не «отставал» на задержку сети.
-        Vec3 target = p;
-        if (s_lastRemoteSeq >= 0)
-        {
-            int64_t ds = static_cast<int64_t>(f.seq) - s_lastRemoteSeq;
-            float dt = (ds > 0 && ds < 120) ? ds / 60.0f : (1.0f / 60.0f);
-            s_remoteVelocity.x = (p.x - s_lastRemotePos.x) / dt;
-            s_remoteVelocity.y = (p.y - s_lastRemotePos.y) / dt;
-            float vlen = std::sqrt(s_remoteVelocity.x * s_remoteVelocity.x +
-                                   s_remoteVelocity.y * s_remoteVelocity.y);
-            if (vlen > 12.0f) { s_remoteVelocity.x *= 12.0f / vlen; s_remoteVelocity.y *= 12.0f / vlen; }
-            const float kPredict = 0.066f; // ~2 кадра (16 мс) вперёд
-            target.x += s_remoteVelocity.x * kPredict;
-            target.y += s_remoteVelocity.y * kPredict;
-        }
-        s_lastRemotePos = p;
-        s_lastRemoteSeq = f.seq;
-        ApplyMoveToGhost(s_ghost, move, target);
+        ApplyMoveToGhost(s_ghost, move, p);
     }
     else
     {
-        // Idle/стояние — экстраполяцию сбрасываем.
-        s_remoteVelocity = Vec3{0.f, 0.f, 0.f};
-        s_lastRemoteSeq = -1;
         // Idle: пед стоит задачей TASK_STAND_STILL. НЕ двигаем его руками
         // (шаг за тик) и НЕ дёргаем заморозкой — это и было причиной
         // «дёрганья в покое» (задача стоит, а мы телепаем координаты).
@@ -2781,7 +2754,7 @@ void Tick()
             }
         }
         fp.seq = s_tickCount;
-        g_netClient.PushFrame(fp); // поток отправки шлёт снимок с 60 Гц
+        g_netClient.SendFrame(fp);
     }
 
     // Синхронизация одежды: собираем компоненты наряда локального игрока и

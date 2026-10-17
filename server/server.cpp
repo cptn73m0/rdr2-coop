@@ -33,7 +33,6 @@
 #include "net/frame.h"
 #include "net/protocol.h"
 #include "net/socket.h"
-#include "net/udp.h"
 
 using netio::Result;
 
@@ -45,10 +44,6 @@ struct OnlinePlayer {
     std::string ip;
     unsigned long long pedModel = 0;
     netio::Socket* sock = nullptr;
-    // UDP-канал для ретрансляции кадров (заполняется первой дейтаграммой).
-    unsigned long long sid = 0;
-    bool hasUdp = false;
-    sockaddr_in udpAddr{};
     float x = 0, y = 0, z = 0, heading = 0;
     bool hasLoc = false;
     bool isHost = false;   // первый подключившийся (его время/погода = канонические)
@@ -198,68 +193,6 @@ void BroadcastToAll(const std::vector<uint8_t>& frame)
     }
 }
 
-// Ретрансляция кадра по TCP только тем, у кого ещё нет UDP-канала
-// (по UDP их догоняет UdpThread; иначе кадр бы дублировался).
-void BroadcastFrameTcp(netio::Socket* except, const std::vector<uint8_t>& frame)
-{
-    std::lock_guard<std::mutex> lk(g_mutex);
-    for (auto& kv : g_online)
-    {
-        OnlinePlayer& p = kv.second;
-        netio::Socket* s = p.sock;
-        if (s && s != except && !p.hasUdp)
-            s->Send(frame.data(), static_cast<int>(frame.size()));
-    }
-}
-
-// Поток UDP-ретрансляции: кадры Frame летят по UDP (меньше лага и джиттера),
-// события и управление — по TCP. Привязывается к tcpPort+1.
-void UdpThread(int tcpPort)
-{
-    SOCKET u;
-    if (!netio::UdpCreate(u) || !netio::UdpBind(u, tcpPort + 1))
-    {
-        LogLine("[udp] не удалось открыть порт " + std::to_string(tcpPort + 1));
-        return;
-    }
-    netio::SetNonBlocking(u);
-    LogLine("[udp] ретрансляция кадров на порту " + std::to_string(tcpPort + 1));
-
-    uint8_t buf[1 + 8 + sizeof(net::FramePayload)];
-    while (g_running.load())
-    {
-        sockaddr_in from{};
-        int n = netio::UdpRecvFrom(u, buf, static_cast<int>(sizeof(buf)), from);
-        if (n < 0) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
-        if (n < 9) continue; // type + sid
-        uint8_t type = buf[0];
-        if (type != static_cast<uint8_t>(net::Msg::Frame)) continue;
-        uint64_t sid = 0;
-        for (int i = 0; i < 8; ++i)
-            sid |= static_cast<uint64_t>(buf[1 + i]) << (8 * i);
-        if (n - 9 < static_cast<int>(sizeof(net::FramePayload))) continue;
-
-        std::lock_guard<std::mutex> lk(g_mutex);
-        OnlinePlayer* sender = nullptr;
-        for (auto& kv : g_online)
-        {
-            if (kv.second.sid == sid) { sender = &kv.second; break; }
-        }
-        if (!sender) continue;
-        sender->udpAddr = from;
-        sender->hasUdp = true;
-        for (auto& kv : g_online)
-        {
-            OnlinePlayer& p = kv.second;
-            if (&p == sender) continue;
-            if (p.hasUdp)
-                netio::UdpSendTo(u, p.udpAddr, buf, n);
-        }
-    }
-
-    netio::UdpClose(u);
-}
-
 // ---------------- Таблица состояния ----------------
 void PrintStatus()
 {
@@ -399,7 +332,6 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                     p.ip = peerIp;
                     p.pedModel = model;
                     p.sock = sock;
-                    p.sid = sid;
                     if (has) { p.x = sx; p.y = sy; p.z = sz; p.heading = shd; p.hasLoc = true; }
                     g_online[name] = p;
                     g_lastPos[name] = p;
@@ -446,9 +378,8 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                         }
                     }
 
-                    // ретрансляция всем, кроме отправителя; с UDP-адресом у
-                    // получателя кадр догоняет UdpThread (иначе дубликат)
-                    BroadcastFrameTcp(sock, MakeMsg((uint8_t)net::Msg::Frame,
+                    // ретрансляция всем, кроме отправителя
+                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::Frame,
                                                     pay.data(), (uint32_t)pay.size()));
                 }
                 break;
@@ -583,10 +514,6 @@ int main(int argc, char** argv)
     // статусный поток
     std::thread st(StatusThread);
     st.detach();
-
-    // UDP-ретрансляция кадров (порт TCP + 1).
-    std::thread udp(UdpThread, port);
-    udp.detach();
 
     for (;;)
     {

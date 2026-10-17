@@ -17,7 +17,6 @@ add_library(rdr2_coop SHARED
     net/client.cpp
     net/socket.cpp
     net/frame.cpp
-    net/udp.cpp
 )
 
 target_include_directories(rdr2_coop PRIVATE .)

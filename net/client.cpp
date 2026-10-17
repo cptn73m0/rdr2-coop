@@ -65,31 +65,11 @@ void Client::Start(const std::string& host, int port, const std::string& name,
     running_.store(true);
     state_.store(ClientState::Connecting);
     th_ = std::thread([this] { Run(); });
-    // Поток отправки кадров с фиксированными 60 Гц.
-    sendRun_.store(true);
-    sendThread_ = std::thread([this]() {
-        while (sendRun_.load())
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 Гц
-            net::FramePayload f;
-            {
-                std::lock_guard<std::mutex> lk(frameMtx_);
-                if (!haveLatFrame_) continue;
-                f = latFrame_;
-            }
-            SendFrame(f);
-        }
-    });
 }
 
 void Client::Stop()
 {
     running_.store(false);
-    udpRun_.store(false);
-    sendRun_.store(false);
-    if (sendThread_.joinable()) sendThread_.join();
-    if (udpFd_ != INVALID_SOCKET) { netio::UdpClose(udpFd_); udpFd_ = INVALID_SOCKET; }
-    if (udpThread_.joinable()) udpThread_.join();
     if (sock_) sock_->Close();
     if (th_.joinable()) th_.join();
     state_.store(ClientState::Disconnected);
@@ -101,22 +81,8 @@ bool Client::SendRaw(const std::vector<uint8_t>& frame)
     return sock_->Send(frame.data(), static_cast<int>(frame.size())) == Result::Ok;
 }
 
-void Client::PushFrame(const net::FramePayload& f)
-{
-    std::lock_guard<std::mutex> lk(frameMtx_);
-    latFrame_ = f;
-    haveLatFrame_ = true;
-}
-
 void Client::SendFrame(const net::FramePayload& f)
 {
-    // Кадры состояния — по UDP (см. OpenUdp); TCP-отправка только до
-    // установления UDP-канала.
-    if (udpReady_ && udpFd_ != INVALID_SOCKET)
-    {
-        UdpSendFrame(f);
-        return;
-    }
     std::vector<uint8_t> pay(reinterpret_cast<const uint8_t*>(&f),
                              reinterpret_cast<const uint8_t*>(&f) + sizeof(f));
     std::vector<uint8_t> frame = MakeFrame((uint8_t)net::Msg::Frame, pay.data(), (uint32_t)pay.size());
@@ -155,108 +121,11 @@ void Client::SendOutfit(const net::OutfitState& os)
 
 void Client::SendShot(const net::ShotPayload& sp)
 {
-    // События — по TCP (надёжно); UDP — только для кадров Frame.
     std::vector<uint8_t> pay(reinterpret_cast<const uint8_t*>(&sp),
                              reinterpret_cast<const uint8_t*>(&sp) + sizeof(sp));
     std::vector<uint8_t> frame = MakeFrame((uint8_t)net::Msg::Shot, pay.data(),
                                            (uint32_t)pay.size());
     SendRaw(frame);
-}
-
-bool Client::OpenUdp()
-{
-    if (udpFd_ != INVALID_SOCKET) return true;
-    int udpPort = udpPort_ ? udpPort_ : (port_ + 1);
-    SOCKET u;
-    if (!netio::UdpCreate(u)) return false;
-    // Локальная привязка к любому свободному порту.
-    sockaddr_in local{};
-    local.sin_family = AF_INET;
-    local.sin_addr.s_addr = htonl(INADDR_ANY);
-    local.sin_port = 0;
-    if (bind(u, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0)
-    {
-        netio::UdpClose(u);
-        return false;
-    }
-    serverUdp_ = {};
-    serverUdp_.sin_family = AF_INET;
-    serverUdp_.sin_port = htons(static_cast<uint16_t>(udpPort));
-    inet_pton(AF_INET, host_.c_str(), &serverUdp_.sin_addr);
-    udpFd_ = u;
-    udpRun_.store(true);
-    udpThread_ = std::thread([this]() { UdpReadLoop(); });
-    return true;
-}
-
-void Client::CloseUdp()
-{
-    udpRun_.store(false);
-    if (udpFd_ != INVALID_SOCKET) { netio::UdpClose(udpFd_); udpFd_ = INVALID_SOCKET; }
-    if (udpThread_.joinable()) udpThread_.join();
-    udpReady_ = false;
-}
-
-void Client::UdpSendFrame(const net::FramePayload& f)
-{
-    if (udpFd_ == INVALID_SOCKET) return;
-    uint8_t buf[1 + 8 + sizeof(net::FramePayload)];
-    buf[0] = static_cast<uint8_t>(net::Msg::Frame);
-    for (int i = 0; i < 8; ++i)
-        buf[1 + i] = static_cast<uint8_t>((sid_ >> (8 * i)) & 0xFF);
-    std::memcpy(buf + 1 + 8, &f, sizeof(f));
-    netio::UdpSendTo(udpFd_, serverUdp_, buf, static_cast<int>(sizeof(buf)));
-}
-
-void Client::UdpSendShot(const net::ShotPayload& sp)
-{
-    if (udpFd_ == INVALID_SOCKET) return;
-    uint8_t buf[1 + 8 + sizeof(net::ShotPayload)];
-    buf[0] = static_cast<uint8_t>(net::Msg::Shot);
-    for (int i = 0; i < 8; ++i)
-        buf[1 + i] = static_cast<uint8_t>((sid_ >> (8 * i)) & 0xFF);
-    std::memcpy(buf + 1 + 8, &sp, sizeof(sp));
-    netio::UdpSendTo(udpFd_, serverUdp_, buf, static_cast<int>(sizeof(buf)));
-}
-
-void Client::UdpReadLoop()
-{
-    uint8_t buf[1 + 8 + sizeof(net::FramePayload) + 16];
-    while (udpRun_.load())
-    {
-        sockaddr_in from{};
-        int n = netio::UdpRecvFrom(udpFd_, buf, static_cast<int>(sizeof(buf)), from);
-        if (n < 0) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
-        if (n < 9) continue; // type + sid
-        uint8_t type = buf[0];
-        uint64_t sid = 0;
-        for (int i = 0; i < 8; ++i)
-            sid |= static_cast<uint64_t>(buf[1 + i]) << (8 * i);
-        if (sid != sid_) continue; // чужая сессия
-        const uint8_t* p = buf + 9;
-        const int plen = n - 9;
-        switch (static_cast<net::Msg>(type))
-        {
-        case net::Msg::Frame:
-            if (plen >= static_cast<int>(sizeof(net::FramePayload)))
-            {
-                net::FramePayload fp;
-                std::memcpy(&fp, p, sizeof(fp));
-                if (onFrame_) onFrame_(fp);
-            }
-            break;
-        case net::Msg::Shot:
-            if (plen >= static_cast<int>(sizeof(net::ShotPayload)))
-            {
-                net::ShotPayload sp;
-                std::memcpy(&sp, p, sizeof(sp));
-                if (onShot_) onShot_(sp);
-            }
-            break;
-        default:
-            break;
-        }
-    }
 }
 
 void Client::Run()
@@ -337,7 +206,7 @@ void Client::Run()
                 // session_id (8) + has_saved (1) [+ coords 16] + is_host (1)
                 uint64_t sid = 0;
                 for (int i = 0; i < 8; ++i) sid |= (uint64_t)p[i] << (8 * i);
-                sid_ = sid;
+                (void)sid;
                 jr.hasSaved = p[8] != 0;
                 if (jr.hasSaved && p.size() >= 26)
                 {
@@ -356,9 +225,6 @@ void Client::Run()
                     jr.isHost = p[9] != 0; // без координат is_host сразу после has_saved
                 }
                 state_.store(ClientState::JoinOk);
-                // Кадры дальше пойдут по UDP (после получения session_id).
-                if (!udpReady_ && OpenUdp())
-                    udpReady_ = true;
                 if (onJoinOk_) onJoinOk_(jr);
                 break;
             }

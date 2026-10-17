@@ -11,7 +11,6 @@ add_executable(rdr2_coop_server
     server.cpp
     ../net/socket.cpp
     ../net/frame.cpp
-    ../net/udp.cpp
 )
 
 target_compile_definitions(rdr2_coop_server PRIVATE
