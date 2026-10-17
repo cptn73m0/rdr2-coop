@@ -438,7 +438,7 @@ uint8_t s_lastMoveState = 0xFF;
 uint8_t s_moveStable = 0xFF;      // текущее стабильное состояние
 uint8_t s_moveCandidate = 0xFF;   // кандидат на смену
 int     s_moveCandidateCount = 0; // сколько подряд замеров совпало
-constexpr int kMoveDebounce = 6;  // ~0.4 с при отправке каждые 4 тика
+constexpr int kMoveDebounce = 24; // ~0.4 с при отправке КАЖДЫЙ тик (60 Гц)
 // Тик последнего прижима педа к земле в покое (троттлинг, не чаще раза в сек).
 unsigned int s_lastIdleGroundFixTick = 0;
 // «Грация» после возрождения педа: несколько тиков не считаем его мёртвым
@@ -2528,7 +2528,7 @@ void Tick()
     // Отправка собственного GhostFrame на сервер (каждые ~4 тика, чтобы
     // сервер видел координаты игрока в таблице состояния и ретранслировал
     // их другим игрокам). В кадре передаём move/state/flags/health игрока.
-    if (g_netStarted && (s_tickCount % 2 == 1))
+    if (g_netStarted)
     {
         Vec3 pc = GetEntityCoords(playerPed);
         net::FramePayload fp{};
