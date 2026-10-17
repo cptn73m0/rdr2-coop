@@ -29,7 +29,7 @@ enum class Msg : uint8_t {
 // (_GET_NUM_COMPONENTS_IN_PED / _GET_PED_COMPONENT_CATEGORY_BY_INDEX) + модель.
 // Отправляется при смене наряда (не в каждом кадре). Получатель применяет
 // каждый компонент через _EQUIP_META_PED_OUTFIT + _UPDATE_PED_VARIATION.
-constexpr int kMaxOutfitComponents = 8;
+constexpr int kMaxOutfitComponents = 16;
 struct OutfitState {
     unsigned long long model = 0;            // модель педа (для проверки)
     uint32_t count = 0;                      // сколько компонентов одето

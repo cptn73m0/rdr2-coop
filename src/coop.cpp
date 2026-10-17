@@ -1326,12 +1326,15 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     // добавляет слой) → «сквозь одну одежду видно другую».
     if (s_appliedOutfitValid && OutfitsEqual(os, s_appliedOutfit))
         return;
-    // НЕ рандомизируем компоненты здесь: смена наряда при доставании оружия
-    // (кобуры/патронташи в списке) иначе каждый раз перебирает одежду —
-    // «слетает» синхронизация. Новые shop-предметы сами заменяют старые в
-    // своих категориях; RESET_PED_COMPONENTS тоже не трогаем (ломает рендер
-    // тела). Рандомизация — только в RefreshGhostComponents (после
-    // посадки/спешивания, где движок сбрасывает variation).
+    // Сброс СТАРОГО наряда: иначе предметы, которых нет в новом наборе,
+    // остаются на педе и он выглядит «помесью» старой и новой одежды
+    // (именно так пед на втором ПК сильно отличался от оригинала).
+    // RandomizePedComponents даёт валидную variation и НЕ ломает рендер
+    // тела (в отличие от RESET_PED_COMPONENTS); сразу следом надеваем
+    // новый полный набор — в одном тике случайная одежда не успевает
+    // показаться.
+    RandomizePedComponents(s_ghost);
+    SetEntityVisibleForce(s_ghost);
     for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
     {
         uint32_t c = os.components[i];
@@ -2150,31 +2153,51 @@ void UpdateLocalAim(unsigned int ped)
 // Выстрел — отдельное событие (опрос состояния в кадре терял выстрелы).
 // Точка — фактическое попадание последнего выстрела (GET_PED_LAST_WEAPON_IMPACT_COORD),
 // иначе текущая точка прицела.
+// Выстрел — отдельное событие (опрос состояния в кадре терял выстрелы).
+// Детект по ДВУМ каналам: IS_PED_SHOOTING (мгновенно) и изменение точки
+// попадания последнего выстрела (надёжно, если флаг «проскочил» между
+// тиками). В точке — фактическое попадание (GET_PED_LAST_WEAPON_IMPACT_COORD).
+Vec3 s_lastImpact{0.f, 0.f, 0.f};
+
 void UpdateLocalShotEvents(unsigned int ped)
 {
     using namespace natives_api;
+    bool shooting = false;
     Init(natives::IS_PED_SHOOTING); Push(ped);
-    if (!Call()) return;
-    if (s_tickCount - s_lastShotEventTick < 2) return; // не чаще 30 раз/с
-    s_lastShotEventTick = s_tickCount;
-    net::ShotPayload sp{};
-    // Буфер 3×u64: движок пишет компоненты Vector3 в 8-байтовые слоты.
+    shooting = Call() != 0;
+
+    // Точка попадания последнего выстрела — меняется после каждого выстрела.
     unsigned long long impactBuf[3] = {0, 0, 0};
     Vec3 impact{0.f, 0.f, 0.f};
+    bool haveImpact = false;
     Init(natives::GET_PED_LAST_WEAPON_IMPACT_COORD);
     Push(ped);
     Push(reinterpret_cast<unsigned long long>(impactBuf));
     if (Call())
     {
         natives_api::ReadVec3Out(impactBuf, impact);
-        sp.x = impact.x; sp.y = impact.y; sp.z = impact.z;
+        haveImpact = true;
     }
-    else
+    const bool newImpact = haveImpact &&
+        (impact.x != s_lastImpact.x || impact.y != s_lastImpact.y ||
+         impact.z != s_lastImpact.z);
+
+    if ((shooting || newImpact) && s_tickCount - s_lastShotEventTick >= 2)
     {
-        sp.x = s_localAimX; sp.y = s_localAimY; sp.z = s_localAimZ;
+        s_lastShotEventTick = s_tickCount;
+        net::ShotPayload sp{};
+        if (haveImpact)
+        {
+            sp.x = impact.x; sp.y = impact.y; sp.z = impact.z;
+            s_lastImpact = impact;
+        }
+        else
+        {
+            sp.x = s_localAimX; sp.y = s_localAimY; sp.z = s_localAimZ;
+        }
+        g_netClient.SendShot(sp);
+        sh_log::Write("coop: send shot (%.1f %.1f %.1f)\n", sp.x, sp.y, sp.z);
     }
-    g_netClient.SendShot(sp);
-    sh_log::Write("coop: send shot (%.1f %.1f %.1f)\n", sp.x, sp.y, sp.z);
 }
 
 // Здоровье локального педа 0..1 (GET_ENTITY_HEALTH / max примерно 100..200 —
@@ -2920,9 +2943,17 @@ void Tick()
                 s_sentOutfit = os;
                 s_sentOutfitValid = true;
                 g_netClient.SendOutfit(os);
+                char comps[256] = "";
+                {
+                    int off = 0;
+                    for (uint32_t i = 0; i < os.count && off < 220; ++i)
+                        off += std::snprintf(comps + off, sizeof(comps) - off,
+                                             "%s0x%X", i ? " " : "", os.components[i]);
+                }
                 sh_log::Write("coop: send outfit (%u comp, model 0x%llX, diff=%d "
-                              "first[%d]=0x%X->0x%X)\n",
-                              os.count, os.model, diffCount, firstIdx, oldV, newV);
+                              "first[%d]=0x%X->0x%X) [%s]\n",
+                              os.count, os.model, diffCount, firstIdx, oldV, newV,
+                              comps);
             }
         }
     }
