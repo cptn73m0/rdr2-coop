@@ -23,6 +23,10 @@ constexpr unsigned long long SET_ENTITY_VISIBLE          = 0x1794B4FCC84D812Full
 constexpr unsigned long long IS_ENTITY_VISIBLE           = 0xFFC96ECB7FA404CAull;
 constexpr unsigned long long DOES_ENTITY_HAVE_DRAWABLE   = 0x20487F0DA9AF164Aull;
 constexpr unsigned long long SET_ENTITY_COLLISION        = 0xF66F820909453B8Cull;
+// Снять столкновения МЕЖДУ двумя сущностями (thisFrameOnly=true — вызывать
+// каждый кадр). Нужно для лошади-призрака: мир/земля остаются коллизионными,
+// а с локальным игроком и его лошадью она не толкается.
+constexpr unsigned long long SET_ENTITY_NO_COLLISION_ENTITY = 0xE037BF068223C38Dull;
 constexpr unsigned long long SET_ENTITY_COMPLETELY_DISABLE_COLLISION = 0xE0580EC84813875Aull;
 constexpr unsigned long long FREEZE_ENTITY_POSITION      = 0x7D9EFB7AD6B19754ull;
 constexpr unsigned long long DELETE_ENTITY               = 0x4CD38C78BD19A497ull;
