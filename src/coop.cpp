@@ -234,6 +234,32 @@ void DrawSubtitle(const char* text)
     Call();
 }
 
+// Маленькая строка-индикатор в левом верхнем углу (для отладки сети).
+void DrawHudLine(const char* text)
+{
+    unsigned long long strHandle = 0;
+    {
+        using namespace natives_api;
+        Init(natives::MISC_VAR_STRING);
+        Push(static_cast<unsigned long long>(10));
+        Push(reinterpret_cast<unsigned long long>(const_cast<char*>("LITERAL_STRING")));
+        Push(reinterpret_cast<unsigned long long>(const_cast<char*>(text)));
+        strHandle = Call();
+    }
+    using namespace natives_api;
+    Init(natives::UI_BG_SET_TEXT_SCALE);
+    Push(0.32f); Push(0.32f);
+    Call();
+    Init(natives::UI_BG_SET_TEXT_COLOR);
+    Push(255); Push(255); Push(255); Push(255);
+    Call();
+    Init(natives::UI_BG_DISPLAY_TEXT);
+    Push(strHandle);
+    Push(0.02f); // x
+    Push(0.03f); // y
+    Call();
+}
+
 // --- Blip (map/minimap) handling --------------------------------------
 // BLIP_ADD_FOR_ENTITY returns 0 in this build, so we create the blip from
 // the ped's world coords and keep its coords up to date each tick.
@@ -457,6 +483,11 @@ int     s_moveCandidateCount = 0; // сколько подряд замеров 
 constexpr int kMoveDebounce = 24; // ~0.4 с при отправке КАЖДЫЙ тик (60 Гц)
 // Тик последнего прижима педа к земле в покое (троттлинг, не чаще раза в сек).
 unsigned int s_lastIdleGroundFixTick = 0;
+// RTT-окно для экранного индикатора (мин/макс за последние ~2 с).
+uint32_t s_rttMin = 0, s_rttMax = 0;
+unsigned int s_lastRttDrawTick = 0;
+uint32_t s_rttPrev = 0;      // предыдущий замер (для джиттера)
+float    s_rttJitter = 0.f;  // сглаженный джиттер, мс
 // «Грация» после возрождения педа: несколько тиков не считаем его мёртвым
 // (RESURRECT_PED применяется не мгновенно — защита от ложного повторного
 // срабатывания блока локальной смерти).
@@ -1689,8 +1720,11 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         }
         if (dist > CLOSE)
         {
-            // Далёкий Idle-разрыв (напр. после загрузки): пед «топает на
-            // месте» не должен — просто плавно подтягиваем задачей к цели.
+            // Пед отстал от позиции игрока (тот остановился в другом месте
+            // или пед только что спавнился) — подводим его задачей ходьбы.
+            // Раньше блок был пустым, и пед замирал на месте до телепорта.
+            ApplyMoveToGhost(s_ghost,
+                             static_cast<uint8_t>(coop::MoveState::Walk), p);
         }
         else
         {
@@ -1714,10 +1748,10 @@ void ApplyRemoteFrame(const net::FramePayload& f)
                 s_lastIdleGroundFixTick = s_tickCount;
                 SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
             }
+            // Единый вызов для Idle: ставит/обновляет stand-still при смене
+            // состояния (сам защищён s_lastMoveState — не дёргает).
+            ApplyMoveToGhost(s_ghost, move, p);
         }
-        // Единый вызов для Idle: ставит/обновляет stand-still при смене
-        // состояния (сам защищён s_lastMoveState — не дёргает).
-        ApplyMoveToGhost(s_ghost, move, p);
     }
 
     // Поворот интерполируем мягко: кратчайшая дуга. МЁРТВАЯ ЗОНА 2°:
@@ -2153,16 +2187,17 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
             Call();
         }
         // Считаем, нужно ли ПЕРЕдавать задачу. При движении перезадаём, если
-        // цель ушла дальше 0.5 м от предыдущей. Смена Walk<->Run сама по
+        // цель ушла дальше 0.25 м от предыдущей (меньше — пед точнее следует
+        // за игроком; больше — реже дёргает задачу). Смена Walk<->Run сама по
         // себе НЕ перезадаёт задачу (движение уже идёт; повторная постановка
         // TASK_FOLLOW вызывает «подхват» педа — телепорт ~1 м вперёд при
         // переходе на бег). Скорость бега задаётся SET_PED_MAX_MOVE_BLEND_RATIO
         // выше, а задача продолжает вести педа к той же цели.
-        // stoppingRange ставим 0.1 — чтобы задача движения НЕ завершалась
-        // преждевременно (когда пед в пределах 0.1 м от цели).
+        // stoppingRange 0.1 — задача гасится у самой цели, пед почти не
+        // «недохаживает» (люфт следа ~0.25 м, это меньше, чем был).
         bool retarget = (!s_moveTargetValid ||
-                         std::fabs(target.x - s_moveTarget.x) > 0.5f ||
-                         std::fabs(target.y - s_moveTarget.y) > 0.5f);
+                         std::fabs(target.x - s_moveTarget.x) > 0.25f ||
+                         std::fabs(target.y - s_moveTarget.y) > 0.25f);
 
         if (retarget)
         {
@@ -2175,7 +2210,7 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
             Push(target.x); Push(target.y); Push(target.z);
             Push(speed);                    // speedMultiplier (шаг 1.0 / бег 2.0)
             Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
-            Push(1.0f);                     // stoppingRange (как в rdr2-runtime)
+            Push(0.1f);                     // stoppingRange — задача гасится у цели
             Push(static_cast<unsigned long long>(4)); // flags
             Push(40000.f);                  // как в rdr2-runtime
             Call();
@@ -2908,9 +2943,37 @@ void Tick()
     if (s_tickCount % 120 == 1 && s_ghost && DoesEntityExist(s_ghost))
         sh_log::Write("coop: ghost ped alive, handle=%u\n", s_ghost);
 
-    // Замер задержки до сервера (Ping/Pong раз в секунду) — раз в ~5 с в лог.
-    if (g_netStarted && s_tickCount % (5 * 60) == 1)
-        sh_log::Write("net: rtt %u ms\n", g_netClient.RttMs());
+    // Задержка до сервера: окно мин/макс за ~2 с — на экран и в лог.
+    if (g_netStarted)
+    {
+        uint32_t rtt = g_netClient.RttMs();
+        if (rtt > 0)
+        {
+            if (s_rttMin == 0 || rtt < s_rttMin) s_rttMin = rtt;
+            if (rtt > s_rttMax) s_rttMax = rtt;
+        }
+        if (s_tickCount - s_lastRttDrawTick >= 2 * 60)
+        {
+            s_lastRttDrawTick = s_tickCount;
+            // Джиттер: |rtt - prev| со сглаживанием (RFC 3550-стиль).
+            if (s_rttPrev)
+            {
+                float diff = rtt > s_rttPrev ? (float)(rtt - s_rttPrev)
+                                             : (float)(s_rttPrev - rtt);
+                s_rttJitter = s_rttJitter * 0.75f + diff * 0.25f;
+            }
+            s_rttPrev = rtt;
+            char rttText[96];
+            std::snprintf(rttText, sizeof(rttText),
+                          "RTT %u ms jit %.0f (min %u / max %u)",
+                          rtt, s_rttJitter, s_rttMin, s_rttMax);
+            DrawHudLine(rttText);
+            sh_log::Write("net: rtt %u ms (min %u / max %u, jit %.0f)\n",
+                          rtt, s_rttMin, s_rttMax, s_rttJitter);
+            s_rttMin = rtt;
+            s_rttMax = rtt;
+        }
+    }
 }
 
 } // namespace coop
