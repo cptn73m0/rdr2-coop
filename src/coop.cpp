@@ -562,16 +562,21 @@ int    s_outfitRequest = 0;                  // id запроса REQUEST_META_P
 bool   s_outfitRequestPending = false;       // запрос в полёте
 bool   s_outfitRequestLogged = false;        // логировали ли ожидание
 
-// Мета-наряд (снаряжение) лошади удалённого игрока: хотим применить к нашей
-// лошади призрака. Механизм тот же, что у педа (REQUEST -> APPLY -> RELEASE).
-unsigned long long s_horseOutfitHash = 0;     // последний запрошенный хэш
-int    s_horseOutfitRequest = 0;              // id запроса REQUEST_META_PED_OUTFIT
-bool   s_horseOutfitPending = false;          // запрос в полёте
-bool   s_horseOutfitLogged = false;           // логировали ли ожидание
+// Снаряжение лошади удалённого игрока (седло/поклажа): мета-наряд лошади
+// всегда 0, поэтому, как и одежду, синхронизируем shop-предметы через
+// GET_SHOP_ITEM_COMPONENT_AT_INDEX + APPLY_SHOP_ITEM_TO_PED.
+net::OutfitState s_horseOutfitIn{};     // пришло по сети (сетевой поток)
+bool s_haveHorseOutfit = false;
+net::OutfitState s_horseOutfitApplied{};// фактически надето на лошадь
+bool s_horseOutfitAppliedValid = false;
+net::OutfitState s_sentHorseOutfit{};   // последний отправленный набор (отправитель)
+bool s_sentHorseOutfitValid = false;
 
 // Посадить педа призрака на лошадь (объявлено здесь — используется в
 // RequestMountModel ниже; определение дальше).
 void PromoteMountToGhost();
+// Применить снаряжение лошади (определение дальше).
+void ApplyHorseOutfitToMount(const net::OutfitState& os);
 // Пересобрать внешний вид педа (component variation + наряд). Определение ниже.
 void RefreshGhostComponents();
 // Анимации посадки/спешивания (определения ниже).
@@ -666,6 +671,12 @@ void PromoteMountToGhost()
     // После посадки движок сбрасывает component variation педа — модель
     // «исчезает», остаются только надетыми одёжки. Возвращаем вариацию и наряд.
     RefreshGhostComponents();
+    // Снаряжение лошади применяется после посадки (пришло раньше по сети).
+    if (s_horseOutfitIn.count)
+    {
+        s_horseOutfitAppliedValid = false;
+        ApplyHorseOutfitToMount(s_horseOutfitIn);
+    }
 }
 
 // Пед подходит к лошади и садится С АНИМАЦИЕЙ (TASK_MOUNT_ANIMAL).
@@ -796,17 +807,9 @@ void DismountAndRemoveMount()
     s_mountPhase = MountPhase::None;
     s_mountPhaseTicks = 0;
     RefreshGhostComponents();
-    // Сброс состояния наряда лошади (лошади больше нет).
-    if (s_horseOutfitPending)
-    {
-        using namespace natives_api;
-        Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
-        Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
-        Call();
-        s_horseOutfitPending = false;
-    }
-    s_horseOutfitHash = 0;
-    s_horseOutfitLogged = false;
+    // Сброс состояния снаряжения лошади (лошади больше нет).
+    s_horseOutfitApplied = net::OutfitState{};
+    s_horseOutfitAppliedValid = false;
 }
 
 // Снять столкновения лошади-призрака с локальным игроком и его лошадью.
@@ -1394,66 +1397,52 @@ void TryApplyPendingOutfit()
     ApplyOutfitToGhost(os);
 }
 
-// Применить мета-наряд (снаряжение) лошади удалённого игрока к нашей лошади
-// призрака (при смене хэша). Асинхронно, как и наряд педа: запрашиваем,
-// когда загрузится — применяем. Вызывается из Tick() (игровой поток).
-void ApplyHorseOutfitToMount(unsigned long long outfitHash)
+// Применить снаряжение (седло/поклажу) лошади удалённого игрока к лошади-
+// призраку. Мета-наряд у лошадей всегда 0, поэтому механизм тот же, что у
+// одежды: APPLY_SHOP_ITEM_TO_PED + UPDATE_PED_VARIATION по shop-предметам.
+void ApplyHorseOutfitToMount(const net::OutfitState& os)
 {
     if (!s_mount || !DoesEntityExist(s_mount)) return;
     using namespace natives_api;
 
-    if (!outfitHash)
+    if (!os.count)
     {
-        s_horseOutfitHash = 0;
-        if (s_horseOutfitPending)
-        {
-            Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
-            Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
-            Call();
-            s_horseOutfitPending = false;
-        }
+        s_horseOutfitAppliedValid = false;
+        s_horseOutfitApplied = net::OutfitState{};
         return;
     }
-    if (outfitHash == s_horseOutfitHash && !s_horseOutfitPending) return;
-
-    if (!s_horseOutfitPending)
+    // Уже надет этот же набор — пропускаем (наслаивание предметов).
+    if (s_horseOutfitAppliedValid && OutfitsEqual(os, s_horseOutfitApplied))
+        return;
+    // Сброс старого набора: RandomizePedComponents даёт валидную variation
+    // (седло не «липнет» от старого), затем сразу новый полный набор.
+    Init(natives::SET_PED_RANDOM_COMPONENT_VARIATION);
+    Push(s_mount);
+    Push(static_cast<unsigned long long>(0));
+    Call();
+    for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
     {
-        // Модель для запроса — модель этой лошади (из кадра или стандартная).
-        unsigned long long model = s_mountWantedModel ? s_mountWantedModel
-                                                      : natives::HORSE_MODEL;
-        Init(natives::REQUEST_META_PED_OUTFIT);
-        Push(model);
-        Push(outfitHash);
-        s_horseOutfitRequest = static_cast<int>(Call());
-        s_horseOutfitPending = true;
-        s_horseOutfitHash = outfitHash;
-        s_horseOutfitLogged = false;
-        sh_log::Write("coop: horse outfit request 0x%llX -> %d\n", outfitHash,
-                      s_horseOutfitRequest);
+        uint32_t c = os.components[i];
+        if (!c) continue;
+        Init(natives::APPLY_SHOP_ITEM_TO_PED);
+        Push(s_mount);
+        Push(static_cast<unsigned long long>(c));
+        Push(static_cast<unsigned long long>(1)); // immediately = true
+        Push(static_cast<unsigned long long>(0)); // isMp = false
+        Push(static_cast<unsigned long long>(1)); // p4 = true
+        Call();
     }
-    if (!s_horseOutfitPending) return;
-    {
-        Init(natives::HAS_META_PED_OUTFIT_LOADED);
-        Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
-        if (Call())
-        {
-            Init(natives::APPLY_PED_META_PED_OUTFIT);
-            Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
-            Push(s_mount);
-            Push(true); Push(true);
-            bool ok = Call() != 0;
-            sh_log::Write("coop: horse outfit applied, ok=%d\n", ok ? 1 : 0);
-            Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
-            Push(static_cast<unsigned long long>(static_cast<int>(s_horseOutfitRequest)));
-            Call();
-            s_horseOutfitPending = false;
-        }
-        else if (!s_horseOutfitLogged)
-        {
-            sh_log::Write("coop: waiting horse outfit load...\n");
-            s_horseOutfitLogged = true;
-        }
-    }
+    Init(natives::UPDATE_PED_VARIATION);
+    Push(s_mount);
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(1));
+    Push(static_cast<unsigned long long>(1));
+    Push(static_cast<unsigned long long>(1));
+    Push(static_cast<unsigned long long>(0));
+    Call();
+    s_horseOutfitApplied = os;
+    s_horseOutfitAppliedValid = true;
+    sh_log::Write("coop: horse outfit applied (%u shop items)\n", os.count);
 }
 
 // Применение позиции из сетевого кадра к педу призрака.
@@ -1638,7 +1627,6 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             RequestMountModel();       // создаёт лошадь рядом с педом
             if (s_mount)
                 StartMounting();       // подойти и сесть с анимацией
-            ApplyHorseOutfitToMount(f.horseOutfitHash);
             return;
         }
         if (s_mountPhase == MountPhase::Mounting)
@@ -1657,7 +1645,6 @@ void ApplyRemoteFrame(const net::FramePayload& f)
                 s_mountPhase = MountPhase::Seated;
                 s_mountTaskValid = false;
             }
-            ApplyHorseOutfitToMount(f.horseOutfitHash);
             return; // пока пед садится — лошадь не двигаем
         }
         // В седле: ведём лошадь за кадрами.
@@ -1669,7 +1656,6 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         MoveMountTo(p);
         SetEntityHeading(s_mount, f.heading);
         DisableMountLocalCollision();
-        ApplyHorseOutfitToMount(f.horseOutfitHash);
         ApplyPedStateToGhost(f);
         return;
     }
@@ -1882,6 +1868,11 @@ void CleanupGhost()
     s_mountPhase = MountPhase::None;
     s_mountPhaseTicks = 0;
     s_rideLossTicks = 0;
+    // Сброс состояния снаряжения лошади (новый игрок применит заново).
+    s_haveHorseOutfit = false;
+    s_horseOutfitIn = net::OutfitState{};
+    s_horseOutfitApplied = net::OutfitState{};
+    s_horseOutfitAppliedValid = false;
     // Новый пед — наряд нужно применить заново.
     s_appliedOutfitValid = false;
 }
@@ -2153,19 +2144,15 @@ void UpdateLocalAim(unsigned int ped)
 // Выстрел — отдельное событие (опрос состояния в кадре терял выстрелы).
 // Точка — фактическое попадание последнего выстрела (GET_PED_LAST_WEAPON_IMPACT_COORD),
 // иначе текущая точка прицела.
-// Выстрел — отдельное событие (опрос состояния в кадре терял выстрелы).
-// Детект по ДВУМ каналам: IS_PED_SHOOTING (мгновенно) и изменение точки
-// попадания последнего выстрела (надёжно, если флаг «проскочил» между
-// тиками). В точке — фактическое попадание (GET_PED_LAST_WEAPON_IMPACT_COORD).
+// Выстрел — отдельное событие. ОСНОВНОЙ триггер — изменение точки попадания
+// последнего выстрела (меняется после каждого выстрела и не «дребезжит»).
+// IS_PED_SHOOTING живёт ~15 тиков на один выстрел: раньше по нему слали
+// дубли, они забивали очередь приёмника, и настоящие выстрелы терялись.
 Vec3 s_lastImpact{0.f, 0.f, 0.f};
 
 void UpdateLocalShotEvents(unsigned int ped)
 {
     using namespace natives_api;
-    bool shooting = false;
-    Init(natives::IS_PED_SHOOTING); Push(ped);
-    shooting = Call() != 0;
-
     // Точка попадания последнего выстрела — меняется после каждого выстрела.
     unsigned long long impactBuf[3] = {0, 0, 0};
     Vec3 impact{0.f, 0.f, 0.f};
@@ -2178,18 +2165,33 @@ void UpdateLocalShotEvents(unsigned int ped)
         natives_api::ReadVec3Out(impactBuf, impact);
         haveImpact = true;
     }
-    const bool newImpact = haveImpact &&
-        (impact.x != s_lastImpact.x || impact.y != s_lastImpact.y ||
-         impact.z != s_lastImpact.z);
 
-    if ((shooting || newImpact) && s_tickCount - s_lastShotEventTick >= 2)
+    bool send = false;
+    if (haveImpact)
+    {
+        if (impact.x != s_lastImpact.x || impact.y != s_lastImpact.y ||
+            impact.z != s_lastImpact.z)
+        {
+            s_lastImpact = impact;
+            send = true;
+        }
+    }
+    else
+    {
+        // Нет данных о попадании (натив молчит) — фолбэк на флаг стрельбы,
+        // но не чаще раза в ~100 мс, чтобы не плодить дубли.
+        Init(natives::IS_PED_SHOOTING); Push(ped);
+        if (Call() && s_tickCount - s_lastShotEventTick >= 6)
+            send = true;
+    }
+
+    if (send && s_tickCount - s_lastShotEventTick >= 2)
     {
         s_lastShotEventTick = s_tickCount;
         net::ShotPayload sp{};
         if (haveImpact)
         {
             sp.x = impact.x; sp.y = impact.y; sp.z = impact.z;
-            s_lastImpact = impact;
         }
         else
         {
@@ -2446,6 +2448,12 @@ void InitNetworkClient()
         s_haveOutfit = true;
     });
 
+    g_netClient.SetHorseOutfit([](const net::OutfitState& os) {
+        // Сетевой поток: копируем; применит Tick().
+        s_horseOutfitIn = os;
+        s_haveHorseOutfit = true;
+    });
+
     g_netClient.SetShot([](const net::ShotPayload& sp) {
         // Сетевой поток: кладём в очередь, задачу стрельбы выдаст Tick().
         std::lock_guard<std::mutex> lk(s_shotMtx);
@@ -2686,6 +2694,13 @@ void Tick()
         s_haveOutfit = false;
         ApplyOutfitToGhost(s_outfitIn);
     }
+    // Снаряжение лошади удалённого игрока — применить к лошади-призраку.
+    if (s_haveHorseOutfit)
+    {
+        s_haveHorseOutfit = false;
+        if (s_mount && DoesEntityExist(s_mount))
+            ApplyHorseOutfitToMount(s_horseOutfitIn);
+    }
     // Применить отложенный наряд, если модель педа наконец совпала.
     TryApplyPendingOutfit();
 
@@ -2870,14 +2885,22 @@ void Tick()
             {
                 Init(natives::GET_ENTITY_MODEL); Push(m);
                 fp.reserved[0] = Call();
-                // Снаряжение (мета-наряд) лошади — для точного вида у партнёра.
-                Init(natives::GET_PED_META_OUTFIT_HASH); Push(m);
-                fp.horseOutfitHash = Call();
-                // Диагностика (редко): что реально уходит в кадре при верховой езде.
-                if (s_tickCount % (3 * 60) == 1)
-                    sh_log::Write("coop: send RideHorse, horseModel=0x%llX "
-                                  "horseOutfit=0x%llX\n",
-                                  fp.reserved[0], fp.horseOutfitHash);
+                // Снаряжение: shop-предметы лошади (мета-наряд у лошадей
+                // всегда 0, поэтому собираем компоненты как у педа).
+                net::OutfitState ho{};
+                CollectLocalOutfit(m, ho);
+                bool changed = !s_sentHorseOutfitValid ||
+                               ho.model != s_sentHorseOutfit.model ||
+                               ho.count != s_sentHorseOutfit.count ||
+                               std::memcmp(ho.components, s_sentHorseOutfit.components,
+                                           sizeof(ho.components)) != 0;
+                if (ho.count > 0 && changed)
+                {
+                    s_sentHorseOutfit = ho;
+                    s_sentHorseOutfitValid = true;
+                    g_netClient.SendHorseOutfit(ho);
+                    sh_log::Write("coop: send horse outfit (%u comp)\n", ho.count);
+                }
             }
             else if (s_tickCount % (3 * 60) == 1)
             {

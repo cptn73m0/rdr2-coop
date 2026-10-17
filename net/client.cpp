@@ -51,6 +51,7 @@ void Client::SetRespawned(OnRespawned cb)      { onRespawned_ = std::move(cb); }
 void Client::SetWorldState(OnWorldState cb){ onWorldState_ = std::move(cb); }
 void Client::SetOutfit(OnOutfit cb)        { onOutfit_ = std::move(cb); }
 void Client::SetShot(OnShot cb)            { onShot_ = std::move(cb); }
+void Client::SetHorseOutfit(OnHorseOutfit cb) { onHorseOutfit_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -115,7 +116,16 @@ void Client::SendOutfit(const net::OutfitState& os)
     std::vector<uint8_t> pay(reinterpret_cast<const uint8_t*>(&os),
                              reinterpret_cast<const uint8_t*>(&os) + sizeof(os));
     std::vector<uint8_t> frame = MakeFrame((uint8_t)net::Msg::Outfit, pay.data(),
-                                           (uint32_t)pay.size());
+                                            (uint32_t)pay.size());
+    SendRaw(frame);
+}
+
+void Client::SendHorseOutfit(const net::OutfitState& os)
+{
+    std::vector<uint8_t> pay(reinterpret_cast<const uint8_t*>(&os),
+                             reinterpret_cast<const uint8_t*>(&os) + sizeof(os));
+    std::vector<uint8_t> frame = MakeFrame((uint8_t)net::Msg::HorseOutfit, pay.data(),
+                                            (uint32_t)pay.size());
     SendRaw(frame);
 }
 
@@ -320,6 +330,16 @@ void Client::Run()
                     net::OutfitState os;
                     std::memcpy(&os, p.data(), sizeof(os));
                     if (onOutfit_) onOutfit_(os);
+                }
+                break;
+            }
+            case net::Msg::HorseOutfit:
+            {
+                if (p.size() >= sizeof(net::OutfitState))
+                {
+                    net::OutfitState os;
+                    std::memcpy(&os, p.data(), sizeof(os));
+                    if (onHorseOutfit_) onHorseOutfit_(os);
                 }
                 break;
             }

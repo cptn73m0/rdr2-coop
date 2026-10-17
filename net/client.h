@@ -53,6 +53,7 @@ public:
     using OnWorldState = std::function<void(const net::WorldState&)>;
     using OnOutfit     = std::function<void(const net::OutfitState&)>;
     using OnShot       = std::function<void(const net::ShotPayload&)>; // выстрел
+    using OnHorseOutfit= std::function<void(const net::OutfitState&)>; // снаряжение лошади
 
     Client();
     ~Client();
@@ -71,6 +72,8 @@ public:
     void SendOutfit(const net::OutfitState& os);
     // Отправить событие выстрела (точка попадания/прицеливания).
     void SendShot(const net::ShotPayload& sp);
+    // Отправить снаряжение лошади (shop-предметы: седло/поклажа) при смене.
+    void SendHorseOutfit(const net::OutfitState& os);
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
     uint32_t RttMs() const { return rttMs_.load(); }
 
@@ -83,6 +86,7 @@ public:
     void SetWorldState(OnWorldState cb);
     void SetOutfit(OnOutfit cb);
     void SetShot(OnShot cb);
+    void SetHorseOutfit(OnHorseOutfit cb);
 
     ClientState State() const;
 
@@ -113,6 +117,7 @@ private:
     OnWorldState onWorldState_;
     OnOutfit onOutfit_;
     OnShot onShot_;
+    OnHorseOutfit onHorseOutfit_;
     std::atomic<uint32_t> rttMs_{0};
 };
 
