@@ -477,6 +477,11 @@ unsigned int s_lastShootTaskTick = 0;
 unsigned int s_shootHoldTicks = 0;
 // Выход из боя отложен, пока доигрывает выстрел.
 bool s_pendingCombatExit = false;
+// Куда пед наведён сейчас (чтобы перенаводить при движении цели: прицел
+// с time=-1 держится за ФИКСИРОВАННОЙ точкой и сам не обновляется).
+Vec3 s_lastAimTaskPoint{0.f, 0.f, 0.f};
+bool s_lastAimTaskValid = false;
+unsigned int s_lastAimTaskTick = 0;
 // Последнее применённое действие (для применения при смене).
 uint8_t s_lastAction = 0xFF;
 
@@ -915,7 +920,10 @@ void ApplyActionToGhost(const net::FramePayload& f)
     // перепоставить задачу на следующем кадре. Если только что был выстрел —
     // откладываем, чтобы не оборвать его до фактического срабатывания.
     if (wasCombat && !isCombat)
+    {
         s_pendingCombatExit = true;
+        s_lastAimTaskValid = false;
+    }
     if (s_pendingCombatExit && s_shootHoldTicks == 0)
     {
         s_pendingCombatExit = false;
@@ -924,6 +932,26 @@ void ApplyActionToGhost(const net::FramePayload& f)
         Call();
         s_moveTargetValid = false;
         s_lastMoveState = 0xFF;
+    }
+
+    // Перенаводка прицела: задача TASK_AIM_GUN_AT_COORD с time=-1 держится за
+    // ФИКСИРОВАННОЙ точкой, а игрок продолжает вести прицел. Поэтому, пока
+    // идёт прицеливание, обновляем задачу при сдвиге точки >0.5 м.
+    if (isCombat && ac == static_cast<uint8_t>(net::Action::Aiming) &&
+        s_shootHoldTicks == 0)
+    {
+        Vec3 t = GhostAimPointAhead();
+        const bool moved = !s_lastAimTaskValid ||
+            std::fabs(t.x - s_lastAimTaskPoint.x) > 0.5f ||
+            std::fabs(t.y - s_lastAimTaskPoint.y) > 0.5f ||
+            std::fabs(t.z - s_lastAimTaskPoint.z) > 0.5f;
+        if (moved && (s_tickCount - s_lastAimTaskTick) >= 10)
+        {
+            AimGhostForward();
+            s_lastAimTaskPoint = t;
+            s_lastAimTaskValid = true;
+            s_lastAimTaskTick = s_tickCount;
+        }
     }
 
     // Пока стрельба продолжается — продлеваем задачу.
@@ -961,6 +989,9 @@ void ApplyActionToGhost(const net::FramePayload& f)
             break;
         }
         AimGhostForward();
+        s_lastAimTaskPoint = GhostAimPointAhead();
+        s_lastAimTaskValid = true;
+        s_lastAimTaskTick = s_tickCount;
         sh_log::Write("coop: action=%d → aim\n", (int)ac);
         break;
     case net::Action::Shooting:
@@ -1762,6 +1793,7 @@ void CleanupGhost()
     s_lastShootTaskTick = 0;
     s_shootHoldTicks = 0;
     s_pendingCombatExit = false;
+    s_lastAimTaskValid = false;
     s_lastAction = 0xFF;
     // Сброс дебаунса move (новый игрок — заново определяем состояние).
     s_moveStable = 0xFF;
@@ -2032,15 +2064,18 @@ void UpdateLocalShotEvents(unsigned int ped)
     using namespace natives_api;
     Init(natives::IS_PED_SHOOTING); Push(ped);
     if (!Call()) return;
-    if (s_tickCount - s_lastShotEventTick < 4) return; // не чаще ~15 раз/с
+    if (s_tickCount - s_lastShotEventTick < 2) return; // не чаще 30 раз/с
     s_lastShotEventTick = s_tickCount;
     net::ShotPayload sp{};
+    // Буфер 3×u64: движок пишет компоненты Vector3 в 8-байтовые слоты.
+    unsigned long long impactBuf[3] = {0, 0, 0};
     Vec3 impact{0.f, 0.f, 0.f};
     Init(natives::GET_PED_LAST_WEAPON_IMPACT_COORD);
     Push(ped);
-    Push(reinterpret_cast<unsigned long long>(&impact));
+    Push(reinterpret_cast<unsigned long long>(impactBuf));
     if (Call())
     {
+        natives_api::ReadVec3Out(impactBuf, impact);
         sp.x = impact.x; sp.y = impact.y; sp.z = impact.z;
     }
     else
@@ -2048,6 +2083,7 @@ void UpdateLocalShotEvents(unsigned int ped)
         sp.x = s_localAimX; sp.y = s_localAimY; sp.z = s_localAimZ;
     }
     g_netClient.SendShot(sp);
+    sh_log::Write("coop: send shot (%.1f %.1f %.1f)\n", sp.x, sp.y, sp.z);
 }
 
 // Здоровье локального педа 0..1 (GET_ENTITY_HEALTH / max примерно 100..200 —

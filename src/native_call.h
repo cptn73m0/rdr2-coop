@@ -87,4 +87,15 @@ inline void CallVec3(Vec3& out)
     }
 }
 
+// Прочитать Vector3, который натив записал через out-параметр (Vector3*).
+// ВАЖНО: движок пишет компоненты в 8-байтовые слоты (как и возвращаемый
+// Vector3), поэтому буфер должен быть 3×u64, а не 12-байтовый Vec3 —
+// иначе y читается нулём, а z содержит реальный y.
+inline void ReadVec3Out(const unsigned long long* buf, Vec3& out)
+{
+    out.x = *reinterpret_cast<const float*>(&buf[0]);
+    out.y = *reinterpret_cast<const float*>(&buf[1]);
+    out.z = *reinterpret_cast<const float*>(&buf[2]);
+}
+
 } // namespace natives_api
