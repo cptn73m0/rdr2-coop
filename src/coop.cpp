@@ -423,6 +423,9 @@ bool s_havePendingOutfit = false;
 // сквозь новую (наблюдали у педа после возрождения).
 net::OutfitState s_appliedOutfit{};
 bool s_appliedOutfitValid = false;
+// Тиков, в течение которых периодически переприменяем наряд (после
+// посадки/спешивания движок сам сбрасывает variation и внешний вид «слетает»).
+unsigned int s_outfitRefreshTicks = 0;
 // Флаг «игрок вышел»: обработка (удаление педа) произойдёт в Tick().
 bool s_pendingLeave = false;
 char s_leaveName[64] = ""; // имя ушедшего игрока (для надписи «left»)
@@ -602,7 +605,9 @@ void StartMounting()
     Push(s_ghost);
     Push(s_mount);
     Push(static_cast<unsigned long long>(4000)); // timer (ms): авто-посадка
-    Push(static_cast<unsigned long long>(0));    // seatIndex
+    // seatIndex = -1 (как в рабочем SET_PED_ONTO_MOUNT): 0 — это ПАССАЖИРСКОЕ
+    // место на крупе, из-за него пед садился «за спиной» всадника.
+    Push(static_cast<unsigned long long>(-1));   // seatIndex
     Push(1.0f);                                  // pedSpeed
     Push(static_cast<unsigned long long>(0));    // mountStyle
     Push(static_cast<unsigned long long>(0));
@@ -628,6 +633,9 @@ void StartDismounting()
     Call();
     s_mountPhase = MountPhase::Dismounting;
     s_mountPhaseTicks = 0;
+    // Окно переприменения наряда: во время спешивания движок сбрасывает
+    // component variation, из-за чего «слетает» модель/одежда.
+    s_outfitRefreshTicks = 240; // ~4 с
     sh_log::Write("coop: dismount animation started\n");
 }
 
@@ -2120,6 +2128,21 @@ void Tick()
     }
     // Применить отложенный наряд, если модель педа наконец совпала.
     TryApplyPendingOutfit();
+
+    // «Догоняющее» применение наряда после посадки/спешивания: движок в эти
+    // моменты несколько раз сбрасывает component variation, и один наш
+    // apply может быть перебит. Пока окно активно — периодически надеваем
+    // наряд заново (ApplyOutfitToGhost сам сбрасывает прежние слои).
+    if (s_outfitRefreshTicks > 0)
+    {
+        --s_outfitRefreshTicks;
+        if (s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead &&
+            s_outfitIn.count && s_tickCount % 20 == 0)
+        {
+            s_appliedOutfitValid = false;
+            ApplyOutfitToGhost(s_outfitIn);
+        }
+    }
 
     // Draw the remote player's name over the ped's head while within range.
     if (s_ghost && s_pedName[0] && DoesEntityExist(s_ghost))
