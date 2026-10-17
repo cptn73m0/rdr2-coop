@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 namespace coop {
 
@@ -422,8 +424,13 @@ bool s_haveFrame = false;
 Vec3 s_remoteAim{0.f, 0.f, 0.f};
 bool s_remoteAimValid = false;
 // Событие выстрела от удалённого игрока (колбэк сетевого потока -> Tick).
-bool s_pendingShotEvent = false;
-Vec3 s_pendingShotPoint{0.f, 0.f, 0.f};
+// Очередь событий выстрела (несколько могут прийти пачкой по TCP).
+// Один bool перезаписывал точку следующего выстрела, из-за чего часть
+// выстрелов терялась. Сетевой поток добавляет, Tick разбирает по одному.
+std::mutex s_shotMtx;
+Vec3 s_shotQueue[8];
+int  s_shotQCount = 0;
+unsigned int s_lastShotTick = 0; // минимум паузы между задачами выстрела
 // Состояние мира от хоста (время+погода) для применения в Tick().
 net::WorldState s_worldState{};
 bool s_haveWorldState = false;
@@ -488,6 +495,8 @@ uint32_t s_rttMin = 0, s_rttMax = 0;
 unsigned int s_lastRttDrawTick = 0;
 uint32_t s_rttPrev = 0;      // предыдущий замер (для джиттера)
 float    s_rttJitter = 0.f;  // сглаженный джиттер, мс
+char     s_rttHud[96] = "";  // последняя сформированная строка HUD
+char     s_rttLine[96] = "RTT -"; // строка HUD (рисуется каждый кадр)
 // «Грация» после возрождения педа: несколько тиков не считаем его мёртвым
 // (RESURRECT_PED применяется не мгновенно — защита от ложного повторного
 // срабатывания блока локальной смерти).
@@ -985,8 +994,11 @@ void ApplyActionToGhost(const net::FramePayload& f)
         }
     }
 
-    // Пока стрельба продолжается — продлеваем задачу.
+    // Пока стрельба продолжается — продлеваем задачу. Сериализация: пока
+    // предыдущий выстрел доигрывает (hold), задачу НЕ перезадаём — иначе
+    // анимация перезапускается и выстрел не «регистрируется».
     if (isCombat && ac == static_cast<uint8_t>(net::Action::Shooting) &&
+        s_shootHoldTicks == 0 &&
         s_tickCount - s_lastShootTaskTick >= 15)
     {
         s_lastShootTaskTick = s_tickCount;
@@ -1026,6 +1038,13 @@ void ApplyActionToGhost(const net::FramePayload& f)
         sh_log::Write("coop: action=%d → aim\n", (int)ac);
         break;
     case net::Action::Shooting:
+        // Пока предыдущий выстрел доигрывает — не перезадаём (анимация
+        // перезапустилась бы, и выстрел потерялся бы).
+        if (s_shootHoldTicks > 0)
+        {
+            handled = false;
+            break;
+        }
         s_lastShootTaskTick = s_tickCount;
         ShootGhostForward();
         s_shootHoldTicks = 30;
@@ -1307,12 +1326,12 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     // добавляет слой) → «сквозь одну одежду видно другую».
     if (s_appliedOutfitValid && OutfitsEqual(os, s_appliedOutfit))
         return;
-    // ВАЖНО: НЕ вызываем RESET_PED_COMPONENTS — после него тело педа
-    // перестаёт рисоваться (видны только одёжки). Вместо сброса даём
-    // валидную component variation (random) и сразу перекрываем её нарядом —
-    // так и старые предметы не остаются, и тело рендерится.
-    RandomizePedComponents(s_ghost);
-    SetEntityVisibleForce(s_ghost);
+    // НЕ рандомизируем компоненты здесь: смена наряда при доставании оружия
+    // (кобуры/патронташи в списке) иначе каждый раз перебирает одежду —
+    // «слетает» синхронизация. Новые shop-предметы сами заменяют старые в
+    // своих категориях; RESET_PED_COMPONENTS тоже не трогаем (ломает рендер
+    // тела). Рандомизация — только в RefreshGhostComponents (после
+    // посадки/спешивания, где движок сбрасывает variation).
     for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
     {
         uint32_t c = os.components[i];
@@ -1348,7 +1367,10 @@ void RefreshGhostComponents()
     s_appliedOutfitValid = false;
     if (s_outfitIn.count)
     {
-        // ApplyOutfitToGhost сам даёт валидную variation и надевает наряд.
+        // Вернуть валидную variation (движок сбросил после посадки) и надеть
+        // наряд. Рандомизация и наряд идут в одном тике — не мелькают.
+        RandomizePedComponents(s_ghost);
+        SetEntityVisibleForce(s_ghost);
         ApplyOutfitToGhost(s_outfitIn);
     }
     else
@@ -1507,7 +1529,7 @@ void RespawnGhostPed(const net::FramePayload* f)
         if (!s_pedName[0] && s_pendingName[0])
             std::snprintf(s_pedName, sizeof(s_pedName), "%s", s_pendingName);
         if (s_outfitIn.count)
-            ApplyOutfitToGhost(s_outfitIn);
+            RefreshGhostComponents(); // variation + наряд после воскрешения
         SetGhostStaminaFull();
 
         sh_log::Write("coop: ghost revived at (%.1f %.1f %.1f) ground=%d\n",
@@ -1758,11 +1780,18 @@ void ApplyRemoteFrame(const net::FramePayload& f)
     // не переписываем heading мелкими коррекциями каждый кадр — именно это
     // давало микро-дрожь стоящего педа (idle-анимация слегка смещает корпус,
     // а мы 15 раз/с «поправляли» поворот на 25% → пед трясся в покое).
-    float h = f.heading - GetEntityHeading(s_ghost);
-    while (h > 180.f) h -= 360.f;
-    while (h < -180.f) h += 360.f;
-    if (std::fabs(h) > 2.0f)
-        SetEntityHeading(s_ghost, GetEntityHeading(s_ghost) + h * LERP_FACTOR);
+    // ВАЖНО: во время прицеливания/стрельбы поворот НЕ трогаем — heading
+    // тела игрока может не совпадать с направлением камеры, и наш SetEntityHeading
+    // каждый кадр разворачивал педа «строго вперёд», перебивая прицел
+    // (задачу TASK_AIM_GUN_AT_COORD). Ориентацией управляет боевая задача.
+    if (!s_combatActive)
+    {
+        float h = f.heading - GetEntityHeading(s_ghost);
+        while (h > 180.f) h -= 360.f;
+        while (h < -180.f) h += 360.f;
+        if (std::fabs(h) > 2.0f)
+            SetEntityHeading(s_ghost, GetEntityHeading(s_ghost) + h * LERP_FACTOR);
+    }
 
     // Применить особое состояние (ragdoll/cover/swim), оружие (при смене).
     ApplyPedStateToGhost(f);
@@ -2082,6 +2111,34 @@ void UpdateLocalAim(unsigned int ped)
         s_localAimValid = true;
         return;
     }
+    // Игрок целится «в пустоту» (не в сущность): берём направление камеры —
+    // иначе пед-призрак целится строго вперёд, а пуля летит по реальному
+    // прицелу. Пед наводится туда, куда смотрит камера оригинал.
+    {
+        Init(natives::IS_PLAYER_FREE_AIMING);
+        Push(0ull);
+        if (Call())
+        {
+            Vec3 cam{0.f, 0.f, 0.f};
+            Init(natives::GET_GAMEPLAY_CAM_COORD);
+            CallVec3(cam);
+            Vec3 rot{0.f, 0.f, 0.f};
+            Init(natives::GET_GAMEPLAY_CAM_ROT);
+            Push(static_cast<unsigned long long>(2)); // rotationOrder
+            CallVec3(rot);
+            // rotationOrder 2: x=pitch, y=roll, z=yaw (градусы).
+            float pitch = rot.x * 0.01745329251f;
+            float yaw = rot.z * 0.01745329251f;
+            Vec3 dir{-std::sin(yaw) * std::cos(pitch),
+                     std::cos(yaw) * std::cos(pitch),
+                     std::sin(pitch)};
+            s_localAimX = cam.x + dir.x * 30.0f;
+            s_localAimY = cam.y + dir.y * 30.0f;
+            s_localAimZ = cam.z + dir.z * 30.0f;
+            s_localAimValid = true;
+            return;
+        }
+    }
     Vec3 p = GetEntityCoords(ped);
     float h = GetEntityHeading(ped) * 0.01745329251f;
     s_localAimX = p.x - std::sin(h) * 15.0f;
@@ -2367,9 +2424,10 @@ void InitNetworkClient()
     });
 
     g_netClient.SetShot([](const net::ShotPayload& sp) {
-        // Сетевой поток: только запоминаем, задачу стрельбы выдаст Tick().
-        s_pendingShotEvent = true;
-        s_pendingShotPoint = Vec3{sp.x, sp.y, sp.z};
+        // Сетевой поток: кладём в очередь, задачу стрельбы выдаст Tick().
+        std::lock_guard<std::mutex> lk(s_shotMtx);
+        if (s_shotQCount < 8)
+            s_shotQueue[s_shotQCount++] = Vec3{sp.x, sp.y, sp.z};
     });
 
     g_netClient.SetPlayerLeave([](const std::string& name) {
@@ -2568,18 +2626,31 @@ void Tick()
         s_haveFrame = false;
     }
 
-    // Событие выстрела удалённого игрока: гарантированно отыгрываем выстрел
-    // в точку фактического попадания (опрос действия в кадре терял часть).
-    if (s_pendingShotEvent)
+    // Событие выстрела: разбираем очередь по одному. Пока предыдущий выстрел
+    // доигрывает (hold), событие ждёт — иначе задача TASK_SHOOT_AT_COORD
+    // перезапускается и выстрел «глотается».
+    if (s_shootHoldTicks == 0)
     {
-        s_pendingShotEvent = false;
-        if (s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead)
+        Vec3 t{0.f, 0.f, 0.f};
+        bool have = false;
         {
-            Vec3 t = s_pendingShotPoint;
+            std::lock_guard<std::mutex> lk(s_shotMtx);
+            if (s_shotQCount > 0)
+            {
+                t = s_shotQueue[0];
+                for (int i = 1; i < s_shotQCount; ++i)
+                    s_shotQueue[i - 1] = s_shotQueue[i];
+                --s_shotQCount;
+                have = true;
+            }
+        }
+        if (have && s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead)
+        {
             if (t.x == 0.f && t.y == 0.f && t.z == 0.f)
                 t = GhostAimPointAhead(); // нет данных — вперёд
             ShootGhostAt(t, 250);
-            s_shootHoldTicks = 30; // прицел не перебьёт выстрел
+            s_shootHoldTicks = 15; // ~длительность выстрела: следующая задача
+                                   // стартует сразу, не копя очередь при фаннинге
             s_combatActive = true;
             s_lastAction = static_cast<uint8_t>(net::Action::Shooting);
             sh_log::Write("coop: shot event -> (%.1f %.1f %.1f)\n", t.x, t.y, t.z);
@@ -2597,16 +2668,18 @@ void Tick()
 
     // «Догоняющее» применение наряда после посадки/спешивания: движок в эти
     // моменты несколько раз сбрасывает component variation, и один наш
-    // apply может быть перебит. Пока окно активно — периодически надеваем
-    // наряд заново (ApplyOutfitToGhost сам сбрасывает прежние слои).
+    // apply может быть перебит. Пока окно активно — периодически
+    // пересобираем внешний вид через RefreshGhostComponents (рандомизация +
+    // наряд в одном тике): так каждый повтор начинается с чистого variation,
+    // а не наслаивает одни и те же предметы (из-за наслаивания одежда
+    // «слетала» — старая просвечивала сквозь новую).
     if (s_outfitRefreshTicks > 0)
     {
         --s_outfitRefreshTicks;
         if (s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead &&
             s_outfitIn.count && s_tickCount % 20 == 0)
         {
-            s_appliedOutfitValid = false;
-            ApplyOutfitToGhost(s_outfitIn);
+            RefreshGhostComponents();
         }
     }
 
@@ -2943,7 +3016,9 @@ void Tick()
     if (s_tickCount % 120 == 1 && s_ghost && DoesEntityExist(s_ghost))
         sh_log::Write("coop: ghost ped alive, handle=%u\n", s_ghost);
 
-    // Задержка до сервера: окно мин/макс за ~2 с — на экран и в лог.
+    // Задержка до сервера: окно мин/макс обновляется раз в 2 с, но строка
+    // РИСУЕТСЯ КАЖДЫЙ КАДР — _BG_DISPLAY_TEXT живёт один кадр, иначе надпись
+    // мелькает миллисекунду и пропадает.
     if (g_netStarted)
     {
         uint32_t rtt = g_netClient.RttMs();
@@ -2963,16 +3038,18 @@ void Tick()
                 s_rttJitter = s_rttJitter * 0.75f + diff * 0.25f;
             }
             s_rttPrev = rtt;
-            char rttText[96];
-            std::snprintf(rttText, sizeof(rttText),
+            std::snprintf(s_rttHud, sizeof(s_rttHud),
                           "RTT %u ms jit %.0f (min %u / max %u)",
                           rtt, s_rttJitter, s_rttMin, s_rttMax);
-            DrawHudLine(rttText);
             sh_log::Write("net: rtt %u ms (min %u / max %u, jit %.0f)\n",
                           rtt, s_rttMin, s_rttMax, s_rttJitter);
             s_rttMin = rtt;
             s_rttMax = rtt;
         }
+        // _BG_DISPLAY_TEXT рисует строку только на ОДИН кадр, поэтому
+        // вызываем каждый тик с уже сформированным текстом (иначе моргает).
+        if (s_rttHud[0])
+            DrawHudLine(s_rttHud);
     }
 }
 
