@@ -71,6 +71,8 @@ public:
     void SendOutfit(const net::OutfitState& os);
     // Отправить событие выстрела (точка попадания/прицеливания).
     void SendShot(const net::ShotPayload& sp);
+    // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
+    uint32_t RttMs() const { return rttMs_.load(); }
 
     void SetFrame(OnFrame cb);
     void SetJoinOk(OnJoinOk cb);
@@ -87,6 +89,8 @@ public:
 private:
     void Run();
     bool SendRaw(const std::vector<uint8_t>& frame);
+    void SendPing();
+    uint64_t NowMs() const;
 
     std::string host_;
     int         port_ = 0;
@@ -109,6 +113,7 @@ private:
     OnWorldState onWorldState_;
     OnOutfit onOutfit_;
     OnShot onShot_;
+    std::atomic<uint32_t> rttMs_{0};
 };
 
 } // namespace netio

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <thread>
 
 #include "frame.h"
 
@@ -23,6 +24,23 @@ std::vector<uint8_t> BuildJoinFrame(const std::string& name, unsigned long long 
 
 Client::Client() = default;
 Client::~Client() { Stop(); }
+
+uint64_t Client::NowMs() const
+{
+    using namespace std::chrono;
+    return static_cast<uint64_t>(
+        duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+void Client::SendPing()
+{
+    // Метка времени — в payload: сервер вернёт её в Pong, клиент посчитает RTT.
+    uint64_t ts = NowMs();
+    uint8_t pay[8];
+    for (int i = 0; i < 8; ++i)
+        pay[i] = static_cast<uint8_t>((ts >> (8 * i)) & 0xFF);
+    SendRaw(MakeFrame((uint8_t)net::Msg::Ping, pay, sizeof(pay)));
+}
 
 void Client::SetFrame(OnFrame cb)          { onFrame_ = std::move(cb); }
 void Client::SetJoinOk(OnJoinOk cb)        { onJoinOk_ = std::move(cb); }
@@ -147,18 +165,34 @@ void Client::Run()
 #endif
 
     sock_ = std::make_unique<Socket>(c);
+    // Отключаем алгоритм Нагла (иначе кадры копятся до ~40 мс) и переводим
+    // сокет в неблокирующий режим: Send() только ставит данные в очередь.
+    SetNoDelay(c);
+    SetNonBlocking(c);
     state_.store(ClientState::JoinOk); // соединено; JOIN шлём дальше
 
     // Отправить JOIN.
     SendRaw(BuildJoinFrame(name_, pedModel_));
 
     uint8_t buf[4096];
+    uint64_t lastPingMs = NowMs();
     while (running_.load())
     {
+        sock_->Flush(); // дослать накопленный хвост (неблокирующий сокет)
+
+        // Замер RTT: пинг раз в секунду, сервер отвечает Pong.
+        uint64_t nowMs = NowMs();
+        if (nowMs - lastPingMs >= 1000)
+        {
+            lastPingMs = nowMs;
+            SendPing();
+        }
+
         int n = 0;
         Result r = sock_->Recv(buf, sizeof(buf), n);
         if (r == Result::NoData || r == Result::Error) break;
         if (r == Result::Ok) reader_.Feed(buf, n);
+        else std::this_thread::sleep_for(std::chrono::milliseconds(1)); // не крутим CPU
 
         uint8_t type; std::vector<uint8_t> p;
         while (reader_.Poll(type, p))
@@ -296,6 +330,19 @@ void Client::Run()
                     net::ShotPayload sp;
                     std::memcpy(&sp, p.data(), sizeof(sp));
                     if (onShot_) onShot_(sp);
+                }
+                break;
+            }
+            case net::Msg::Pong:
+            {
+                if (p.size() >= 8)
+                {
+                    uint64_t ts = 0;
+                    for (int i = 0; i < 8; ++i)
+                        ts |= static_cast<uint64_t>(p[i]) << (8 * i);
+                    uint64_t now = NowMs();
+                    if (now >= ts)
+                        rttMs_.store(static_cast<uint32_t>(now - ts));
                 }
                 break;
             }

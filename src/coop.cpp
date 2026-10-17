@@ -2907,6 +2907,10 @@ void Tick()
 
     if (s_tickCount % 120 == 1 && s_ghost && DoesEntityExist(s_ghost))
         sh_log::Write("coop: ghost ped alive, handle=%u\n", s_ghost);
+
+    // Замер задержки до сервера (Ping/Pong раз в секунду) — раз в ~5 с в лог.
+    if (g_netStarted && s_tickCount % (5 * 60) == 1)
+        sh_log::Write("net: rtt %u ms\n", g_netClient.RttMs());
 }
 
 } // namespace coop

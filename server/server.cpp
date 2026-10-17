@@ -253,9 +253,11 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
     for (;;)
     {
         int n = 0;
+        sock->Flush(); // дослать хвост из очереди (неблокирующие сокеты)
         Result r = sock->Recv(buf, sizeof(buf), n);
         if (r == Result::NoData || r == Result::Error) { sock->Close(); break; }
         if (r == Result::Ok) reader.Feed(buf, n);
+        else std::this_thread::sleep_for(std::chrono::milliseconds(1)); // не крутим CPU
 
         uint8_t type; std::vector<uint8_t> pay;
         while (reader.Poll(type, pay))
@@ -429,6 +431,14 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 }
                 break;
             }
+            case net::Msg::Ping:
+            {
+                // Замер задержки: возвращаем ту же метку времени отправителю.
+                std::vector<uint8_t> pong = MakeMsg((uint8_t)net::Msg::Pong,
+                                                    pay.data(), (uint32_t)pay.size());
+                sock->Send(pong.data(), (int)pong.size());
+                break;
+            }
             default:
                 break;
             }
@@ -520,6 +530,9 @@ int main(int argc, char** argv)
         inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf));
 
         netio::Socket* cs = new netio::Socket(c);
+        // Как и на клиенте: без Нагла + неблокирующий сокет.
+        netio::SetNoDelay(c);
+        netio::SetNonBlocking(c);
         std::thread([cs, ip = std::string(ipbuf)]() {
             HandleClient(cs, ip);
             delete cs;
