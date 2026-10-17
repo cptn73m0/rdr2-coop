@@ -455,6 +455,12 @@ unsigned long long s_givenWeapon = 0;
 bool s_combatActive = false;
 // Тик последней выдачи задачи стрельбы (перезадаём, пока стрельба идёт).
 unsigned int s_lastShootTaskTick = 0;
+// «Залипание» выстрела на получателе: пока >0, прицел НЕ перебивает задачу
+// стрельбы (иначе кадр aim, пришедший сразу за shoot, отменял выстрел до
+// срабатывания).
+unsigned int s_shootHoldTicks = 0;
+// Выход из боя отложен, пока доигрывает выстрел.
+bool s_pendingCombatExit = false;
 // Последнее применённое действие (для применения при смене).
 uint8_t s_lastAction = 0xFF;
 
@@ -863,10 +869,17 @@ void ApplyActionToGhost(const net::FramePayload& f)
                            ac == static_cast<uint8_t>(net::Action::Aiming));
     s_combatActive = isCombat;
 
+    if (s_shootHoldTicks > 0)
+        --s_shootHoldTicks;
+
     // Выход из боя: снимаем боевую задачу и заставляем движение
-    // перепоставить задачу на следующем кадре.
+    // перепоставить задачу на следующем кадре. Если только что был выстрел —
+    // откладываем, чтобы не оборвать его до фактического срабатывания.
     if (wasCombat && !isCombat)
+        s_pendingCombatExit = true;
+    if (s_pendingCombatExit && s_shootHoldTicks == 0)
     {
+        s_pendingCombatExit = false;
         Init(natives::TASK_STAND_STILL);
         Push(s_ghost); Push(static_cast<unsigned long long>(0xFFFFFFFF));
         Call();
@@ -874,18 +887,19 @@ void ApplyActionToGhost(const net::FramePayload& f)
         s_lastMoveState = 0xFF;
     }
 
-    // Пока стрельба продолжается — продлеваем задачу (иначе она
-    // заканчивается через 1.5 с, хотя игрок стреляет дольше).
+    // Пока стрельба продолжается — продлеваем задачу.
     if (isCombat && ac == static_cast<uint8_t>(net::Action::Shooting) &&
         s_tickCount - s_lastShootTaskTick >= 15)
     {
         s_lastShootTaskTick = s_tickCount;
         ShootGhostForward();
+        s_shootHoldTicks = 30;
         return;
     }
 
     if (ac == s_lastAction) return;
-    s_lastAction = ac;
+
+    bool handled = true;
     switch (static_cast<net::Action>(ac))
     {
     case net::Action::InScenario:
@@ -899,12 +913,21 @@ void ApplyActionToGhost(const net::FramePayload& f)
         sh_log::Write("coop: action=%d → stand still\n", (int)ac);
         break;
     case net::Action::Aiming:
+        // Кадры «выстрел → прицел» идут вперемешку (IS_PED_SHOOTING живёт
+        // 1-3 тика). Если сразу вернуть прицел, задача стрельбы отменяется
+        // ДО выстрела. Поэтому держим выстрел ~0.5 с.
+        if (s_shootHoldTicks > 0)
+        {
+            handled = false; // повторим прицел, когда выстрел отыграет
+            break;
+        }
         AimGhostForward();
         sh_log::Write("coop: action=%d → aim\n", (int)ac);
         break;
     case net::Action::Shooting:
         s_lastShootTaskTick = s_tickCount;
         ShootGhostForward();
+        s_shootHoldTicks = 30;
         sh_log::Write("coop: action=%d → shoot\n", (int)ac);
         break;
     case net::Action::Reloading:
@@ -918,6 +941,8 @@ void ApplyActionToGhost(const net::FramePayload& f)
         sh_log::Write("coop: action=%d → none\n", (int)ac);
         break;
     }
+    if (handled)
+        s_lastAction = ac;
 }
 
 // Применить особое состояние педа (PedState) и оружие/здоровье из кадра
@@ -1181,12 +1206,12 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     // добавляет слой) → «сквозь одну одежду видно другую».
     if (s_appliedOutfitValid && OutfitsEqual(os, s_appliedOutfit))
         return;
-    // Сначала снимаем прежние компоненты: иначе предметы старого наряда
-    // остаются в своих слотах и просвечивают сквозь новый (баг после
-    // возрождения — RESURRECT_PED возвращает дефолтные компоненты модели).
-    Init(natives::RESET_PED_COMPONENTS);
-    Push(s_ghost);
-    Call();
+    // ВАЖНО: НЕ вызываем RESET_PED_COMPONENTS — после него тело педа
+    // перестаёт рисоваться (видны только одёжки). Вместо сброса даём
+    // валидную component variation (random) и сразу перекрываем её нарядом —
+    // так и старые предметы не остаются, и тело рендерится.
+    RandomizePedComponents(s_ghost);
+    SetEntityVisibleForce(s_ghost);
     for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
     {
         uint32_t c = os.components[i];
@@ -1219,15 +1244,17 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
 void RefreshGhostComponents()
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
-    // ВАЖНО: без SET_PED_RANDOM_COMPONENT_VARIATION тело педа перестаёт
-    // рисоваться (видны только прикреплённые одёжки). Рандомизация и
-    // последующее применение наряда идут в ОДНОМ тике, поэтому случайная
-    // одежда не успевает показаться.
-    RandomizePedComponents(s_ghost);
-    SetEntityVisibleForce(s_ghost);
     s_appliedOutfitValid = false;
     if (s_outfitIn.count)
+    {
+        // ApplyOutfitToGhost сам даёт валидную variation и надевает наряд.
         ApplyOutfitToGhost(s_outfitIn);
+    }
+    else
+    {
+        RandomizePedComponents(s_ghost);
+        SetEntityVisibleForce(s_ghost);
+    }
 }
 
 // Применить отложенный наряд, если модель педа наконец совпала.
@@ -1694,6 +1721,8 @@ void CleanupGhost()
     s_givenWeapon = 0;
     s_combatActive = false;
     s_lastShootTaskTick = 0;
+    s_shootHoldTicks = 0;
+    s_pendingCombatExit = false;
     s_lastAction = 0xFF;
     // Сброс дебаунса move (новый игрок — заново определяем состояние).
     s_moveStable = 0xFF;
@@ -2499,7 +2528,7 @@ void Tick()
     // Отправка собственного GhostFrame на сервер (каждые ~4 тика, чтобы
     // сервер видел координаты игрока в таблице состояния и ретранслировал
     // их другим игрокам). В кадре передаём move/state/flags/health игрока.
-    if (g_netStarted && (s_tickCount % 4 == 1))
+    if (g_netStarted && (s_tickCount % 2 == 1))
     {
         Vec3 pc = GetEntityCoords(playerPed);
         net::FramePayload fp{};
