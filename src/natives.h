@@ -105,6 +105,9 @@ constexpr unsigned long long REMOVE_WEAPON_FROM_PED        = 0x4899CB088EDF59B8u
 constexpr unsigned long long TASK_AIM_GUN_AT_COORD         = 0x6671F3EEC681BDA1ull;
 constexpr unsigned long long TASK_SHOOT_AT_COORD           = 0x46A6CC01E0826106ull;
 constexpr unsigned long long TASK_RELOAD_WEAPON            = 0x62D2916F56B9CD2Dull;
+// Точка прицела/попадания (для точной стрельбы педа-призрака).
+constexpr unsigned long long GET_ENTITY_PLAYER_IS_FREE_AIMING_AT = 0xA6817C110B830EADull;
+constexpr unsigned long long GET_PED_LAST_WEAPON_IMPACT_COORD    = 0x6C4D0409BA1A2BC2ull;
 constexpr unsigned long long GET_MOUNT                     = 0xE7E11B8DCBED1058ull;
 // Верховая езда (получатель): посадить педа на лошадь / снять / перейти на лошадь.
 constexpr unsigned long long SET_PED_ONTO_MOUNT            = 0x028F76B6E78246EBull;

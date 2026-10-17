@@ -391,6 +391,13 @@ float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0;
 // Последний кадр от удалённого игрока (для применения в Tick()).
 net::FramePayload s_lastFrame{};
 bool s_haveFrame = false;
+// Точка прицела удалённого игрока (из последнего кадра): пед целится и
+// стреляет именно туда, а не «вперёд по heading».
+Vec3 s_remoteAim{0.f, 0.f, 0.f};
+bool s_remoteAimValid = false;
+// Событие выстрела от удалённого игрока (колбэк сетевого потока -> Tick).
+bool s_pendingShotEvent = false;
+Vec3 s_pendingShotPoint{0.f, 0.f, 0.f};
 // Состояние мира от хоста (время+погода) для применения в Tick().
 net::WorldState s_worldState{};
 bool s_haveWorldState = false;
@@ -404,6 +411,15 @@ bool s_haveOutfit = false;
 // Последний отправленный набор компонентов (чтобы слать при смене).
 net::OutfitState s_sentOutfit{};
 bool s_sentOutfitValid = false;
+// Дебаунс смены наряда: набор должен продержаться ~0.5 с, иначе оружие,
+// кобуры и патронташи при доставании дёргают список компонентов и наряд
+// переприменяется без необходимости. Плюс диагностика изменённых позиций.
+net::OutfitState s_candidateOutfit{};
+bool s_haveCandidateOutfit = false;
+unsigned int s_candidateOutfitTicks = 0;
+unsigned int s_lastOutfitSendTick = 0;
+constexpr unsigned int kOutfitDebounceTicks = 30; // ~0.5 с при 60 Гц
+constexpr unsigned int kOutfitMinIntervalTicks = 30;
 // Признак «оригинал игрока умер» — педа-призрака надо убить, но НЕ удалять
 // (труп и снаряжение остаются). Обрабатывается в Tick() игровым потоком.
 bool s_remoteDiedPending = false;
@@ -814,6 +830,15 @@ void SetGhostFrozen(bool freeze)
 // Направление в RDR2: heading 0 = +Y, вперёд = (-sin h, cos h).
 Vec3 GhostAimPointAhead()
 {
+    // 1) Точка прицела от удалённого игрока (если она не рядом с педом).
+    if (s_remoteAimValid)
+    {
+        Vec3 p = GetEntityCoords(s_ghost);
+        float dx = s_remoteAim.x - p.x, dy = s_remoteAim.y - p.y, dz = s_remoteAim.z - p.z;
+        if (dx * dx + dy * dy + dz * dz > 2.25f) // >1.5 м
+            return s_remoteAim;
+    }
+    // 2) Иначе — вперёд по heading.
     Vec3 p = GetEntityCoords(s_ghost);
     float h = GetEntityHeading(s_ghost) * 0.01745329251f;
     Vec3 t;
@@ -847,6 +872,20 @@ void ShootGhostForward()
     Push(s_ghost);
     Push(t.x); Push(t.y); Push(t.z);
     Push(static_cast<unsigned long long>(200));        // duration ms (~1 выстрел)
+    Push(static_cast<unsigned long long>(0x5D60E4E0)); // SingleShot
+    Push(static_cast<unsigned long long>(0));
+    Call();
+}
+
+// Выстрел в КОНКРЕТНУЮ точку (из события Shot — точка попадания игрока).
+void ShootGhostAt(const Vec3& t, int durationMs = 250)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    Init(natives::TASK_SHOOT_AT_COORD);
+    Push(s_ghost);
+    Push(t.x); Push(t.y); Push(t.z);
+    Push(static_cast<unsigned long long>(static_cast<unsigned int>(durationMs)));
     Push(static_cast<unsigned long long>(0x5D60E4E0)); // SingleShot
     Push(static_cast<unsigned long long>(0));
     Call();
@@ -1449,7 +1488,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         }
     }
 
-    constexpr float LERP_FACTOR = 0.25f; // за тик проходит ~25% оставшегося пути
+    constexpr float LERP_FACTOR = 0.2f; // ~20% за тик при 60 Гц (плавно, без рывков)
     constexpr float TELEPORT_DIST = 10.0f; // больше этой дистанции — телепорт
 
     Vec3 cur = GetEntityCoords(s_ghost);
@@ -1566,7 +1605,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         st == static_cast<uint8_t>(net::PedState::Swimming) ||
         st == static_cast<uint8_t>(net::PedState::SwimUnderwater))
     {
-        const float STEP_AIR = 0.35f; // метров за тик (быстрее обычного шага)
+        const float STEP_AIR = 0.13f; // ~8 м/с при 60 Гц (было 0.35 для 15 Гц)
         float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
         float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (dist > TELEPORT_DIST)
@@ -1955,6 +1994,62 @@ void UpdateLocalActionState(unsigned int ped)
     }
 }
 
+// Точка прицела локального игрока (уходит в кадре) и событие выстрела.
+float s_localAimX = 0.f, s_localAimY = 0.f, s_localAimZ = 0.f;
+bool  s_localAimValid = false;
+unsigned int s_lastShotEventTick = 0;
+
+// Куда игрок целится: сущность под прицелом; иначе точка в 15 м впереди.
+void UpdateLocalAim(unsigned int ped)
+{
+    using namespace natives_api;
+    int target = 0;
+    Init(natives::GET_ENTITY_PLAYER_IS_FREE_AIMING_AT);
+    Push(0ull); // player index
+    Push(reinterpret_cast<unsigned long long>(&target));
+    if (Call() && target && DoesEntityExist(static_cast<unsigned int>(target)))
+    {
+        Vec3 tc = GetEntityCoords(static_cast<unsigned int>(target));
+        s_localAimX = tc.x;
+        s_localAimY = tc.y;
+        s_localAimZ = tc.z + 0.8f; // примерно грудь цели
+        s_localAimValid = true;
+        return;
+    }
+    Vec3 p = GetEntityCoords(ped);
+    float h = GetEntityHeading(ped) * 0.01745329251f;
+    s_localAimX = p.x - std::sin(h) * 15.0f;
+    s_localAimY = p.y + std::cos(h) * 15.0f;
+    s_localAimZ = p.z + 1.2f;
+    s_localAimValid = true;
+}
+
+// Выстрел — отдельное событие (опрос состояния в кадре терял выстрелы).
+// Точка — фактическое попадание последнего выстрела (GET_PED_LAST_WEAPON_IMPACT_COORD),
+// иначе текущая точка прицела.
+void UpdateLocalShotEvents(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_SHOOTING); Push(ped);
+    if (!Call()) return;
+    if (s_tickCount - s_lastShotEventTick < 4) return; // не чаще ~15 раз/с
+    s_lastShotEventTick = s_tickCount;
+    net::ShotPayload sp{};
+    Vec3 impact{0.f, 0.f, 0.f};
+    Init(natives::GET_PED_LAST_WEAPON_IMPACT_COORD);
+    Push(ped);
+    Push(reinterpret_cast<unsigned long long>(&impact));
+    if (Call())
+    {
+        sp.x = impact.x; sp.y = impact.y; sp.z = impact.z;
+    }
+    else
+    {
+        sp.x = s_localAimX; sp.y = s_localAimY; sp.z = s_localAimZ;
+    }
+    g_netClient.SendShot(sp);
+}
+
 // Здоровье локального педа 0..1 (GET_ENTITY_HEALTH / max примерно 100..200 —
 // нормируем).
 float GetLocalHealth01(unsigned int ped)
@@ -2200,6 +2295,12 @@ void InitNetworkClient()
         s_haveOutfit = true;
     });
 
+    g_netClient.SetShot([](const net::ShotPayload& sp) {
+        // Сетевой поток: только запоминаем, задачу стрельбы выдаст Tick().
+        s_pendingShotEvent = true;
+        s_pendingShotPoint = Vec3{sp.x, sp.y, sp.z};
+    });
+
     g_netClient.SetPlayerLeave([](const std::string& name) {
         sh_log::Write("net: PLAYER_LEFT %s\n", name.c_str());
         std::snprintf(s_leaveName, sizeof(s_leaveName), "%s", name.c_str());
@@ -2242,7 +2343,11 @@ void Tick()
     // Действие игрока обновляем КАЖДЫЙ тик: короткие события (выстрел)
     // иначе теряются между отправками кадра.
     if (g_netStarted)
+    {
         UpdateLocalActionState(playerPed);
+        UpdateLocalAim(playerPed);
+        UpdateLocalShotEvents(playerPed);
+    }
 
     // Модель для педа: чужая (из PLAYER_JOINED), иначе дефолтная.
     // Если из кадра пришла модель персонажа — используем её (перезапись).
@@ -2384,8 +2489,30 @@ void Tick()
     if (s_haveFrame)
     {
         CheckRemoteModelChange(s_lastFrame);
+        // Точка прицела удалённого игрока — для наведения педа.
+        s_remoteAimValid = (s_lastFrame.aimDist > 1.0f);
+        if (s_remoteAimValid)
+            s_remoteAim = Vec3{s_lastFrame.aimX, s_lastFrame.aimY, s_lastFrame.aimZ};
         ApplyRemoteFrame(s_lastFrame);
         s_haveFrame = false;
+    }
+
+    // Событие выстрела удалённого игрока: гарантированно отыгрываем выстрел
+    // в точку фактического попадания (опрос действия в кадре терял часть).
+    if (s_pendingShotEvent)
+    {
+        s_pendingShotEvent = false;
+        if (s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead)
+        {
+            Vec3 t = s_pendingShotPoint;
+            if (t.x == 0.f && t.y == 0.f && t.z == 0.f)
+                t = GhostAimPointAhead(); // нет данных — вперёд
+            ShootGhostAt(t, 250);
+            s_shootHoldTicks = 30; // прицел не перебьёт выстрел
+            s_combatActive = true;
+            s_lastAction = static_cast<uint8_t>(net::Action::Shooting);
+            sh_log::Write("coop: shot event -> (%.1f %.1f %.1f)\n", t.x, t.y, t.z);
+        }
     }
 
     // Применить компоненты одежды от удалённого игрока (при смене наряда).
@@ -2539,6 +2666,15 @@ void Tick()
         fp.flags = DetectLocalFlags(playerPed);
         fp.action = s_localActionStable;
         fp.health = GetLocalHealth01(playerPed);
+        // Точка прицела (куда целится/стреляет игрок) — для точной наводки.
+        if (s_localAimValid)
+        {
+            fp.aimX = s_localAimX;
+            fp.aimY = s_localAimY;
+            fp.aimZ = s_localAimZ;
+            float dx = fp.aimX - fp.x, dy = fp.aimY - fp.y, dz = fp.aimZ - fp.z;
+            fp.aimDist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        }
         fp.weaponHash = GetLocalWeaponHash(playerPed);
         // Мета-наряд игрока (для синхронизации внешнего вида у партнёра).
         {
@@ -2588,6 +2724,8 @@ void Tick()
     // Синхронизация одежды: собираем компоненты наряда локального игрока и
     // отправляем при их смене (не каждый кадр). У сюжетных персонажей
     // GET_PED_META_OUTFIT_HASH = 0, поэтому используем список компонентов.
+    // Смена отправляется только если набор продержался ~0.5 с: доставание
+    // оружия (кобуры/патронташи) дёргает список и вызывает лишние применения.
     if (g_netStarted)
     {
         net::OutfitState os{};
@@ -2599,11 +2737,49 @@ void Tick()
                                    sizeof(os.components)) != 0;
         if (os.count > 0 && changed)
         {
-            s_sentOutfit = os;
-            s_sentOutfitValid = true;
-            g_netClient.SendOutfit(os);
-            sh_log::Write("coop: send outfit (%u components, model 0x%llX)\n",
-                          os.count, os.model);
+            if (s_haveCandidateOutfit && os.model == s_candidateOutfit.model &&
+                os.count == s_candidateOutfit.count &&
+                std::memcmp(os.components, s_candidateOutfit.components,
+                            sizeof(os.components)) == 0)
+            {
+                ++s_candidateOutfitTicks;
+            }
+            else
+            {
+                s_candidateOutfit = os;
+                s_haveCandidateOutfit = true;
+                s_candidateOutfitTicks = 1;
+            }
+            if (s_candidateOutfitTicks >= kOutfitDebounceTicks &&
+                s_tickCount - s_lastOutfitSendTick >= kOutfitMinIntervalTicks)
+            {
+                // Диагностика: какие позиции изменились (чтобы понять, что
+                // именно дёргает оружие — кобура/патронташ/пояс).
+                int diffCount = 0, firstIdx = -1;
+                unsigned int oldV = 0, newV = 0;
+                for (int i = 0; i < net::kMaxOutfitComponents; ++i)
+                {
+                    if (os.components[i] != s_sentOutfit.components[i])
+                    {
+                        ++diffCount;
+                        if (firstIdx < 0)
+                        {
+                            firstIdx = i;
+                            oldV = s_sentOutfit.components[i];
+                            newV = os.components[i];
+                        }
+                    }
+                }
+                s_lastOutfitSendTick = s_tickCount;
+                s_haveCandidateOutfit = false;
+                s_candidateOutfitTicks = 0;
+                s_sentOutfit = os;
+                s_sentOutfitValid = true;
+                g_netClient.SendOutfit(os);
+                sh_log::Write("coop: send outfit (%u comp, model 0x%llX, diff=%d "
+                              "first[%d]=0x%X->0x%X)\n",
+                              os.count, os.model, diffCount, firstIdx, oldV, newV);
+            }
         }
     }
 

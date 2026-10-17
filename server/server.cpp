@@ -419,6 +419,16 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 }
                 break;
             }
+            case net::Msg::Shot:
+            {
+                // Событие выстрела — ретранслируем остальным.
+                if (pay.size() >= sizeof(net::ShotPayload))
+                {
+                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::Shot,
+                                                    pay.data(), (uint32_t)pay.size()));
+                }
+                break;
+            }
             default:
                 break;
             }

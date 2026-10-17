@@ -52,6 +52,7 @@ public:
     using OnRespawned  = std::function<void(const std::string&)>; // игрок ожил (имя)
     using OnWorldState = std::function<void(const net::WorldState&)>;
     using OnOutfit     = std::function<void(const net::OutfitState&)>;
+    using OnShot       = std::function<void(const net::ShotPayload&)>; // выстрел
 
     Client();
     ~Client();
@@ -68,6 +69,8 @@ public:
     void SendWorldState(const net::WorldState& ws);
     // Отправить компоненты одежды игрока (при смене наряда).
     void SendOutfit(const net::OutfitState& os);
+    // Отправить событие выстрела (точка попадания/прицеливания).
+    void SendShot(const net::ShotPayload& sp);
 
     void SetFrame(OnFrame cb);
     void SetJoinOk(OnJoinOk cb);
@@ -77,6 +80,7 @@ public:
     void SetRespawned(OnRespawned cb);
     void SetWorldState(OnWorldState cb);
     void SetOutfit(OnOutfit cb);
+    void SetShot(OnShot cb);
 
     ClientState State() const;
 
@@ -104,6 +108,7 @@ private:
     OnRespawned onRespawned_;
     OnWorldState onWorldState_;
     OnOutfit onOutfit_;
+    OnShot onShot_;
 };
 
 } // namespace netio

@@ -20,6 +20,7 @@ enum class Msg : uint8_t {
     WorldState  = 0x08, // клиент-хост -> сервер -> остальные: время и погода
     Outfit      = 0x09, // клиент -> сервер -> остальные: компоненты одежды
     Respawned   = 0x0A, // клиент -> сервер -> остальные: игрок ожил после смерти
+    Shot        = 0x0B, // клиент -> сервер -> остальные: событие выстрела
 };
 
 // Компоненты одежды игрока (наряд): список хэшей одетых компонентов
@@ -92,6 +93,12 @@ struct FramePayload {
     uint8_t  flags = 0;        // битовые флаги (sprint/weapon)
     uint8_t  action = 0;       // Action (стрельба/сидение/сценарий…)
     float    health = 0.f;     // здоровье 0..1
+    // Точка прицела: куда игрок целится/стреляет (мировые координаты).
+    // Получатель разворачивает педа и целится/стреляет именно туда.
+    float    aimX = 0.f;
+    float    aimY = 0.f;
+    float    aimZ = 0.f;
+    float    aimDist = 0.f;    // дистанция до точки прицела (0 = нет данных)
     uint64_t weaponHash = 0;   // хэш оружия в руке (0 = нет)
     uint64_t seq = 0;
     // Резерв:
@@ -103,7 +110,17 @@ struct FramePayload {
     // лошади педа-призрака тем же механизмом, что и наряд игрока.
     uint64_t horseOutfitHash = 0;
 };
-static_assert(sizeof(FramePayload) == 72, "FramePayload must be 72 bytes");
+static_assert(sizeof(FramePayload) == 88, "FramePayload must be 88 bytes");
+
+// Событие выстрела: точка попадания/прицеливания. Шлётся отдельным пакетом,
+// чтобы НИ ОДИН выстрел не терялся (опрос состояния в кадре — ненадёжен).
+struct ShotPayload {
+    float x = 0.f;
+    float y = 0.f;
+    float z = 0.f;
+    float pad = 0.f;
+};
+static_assert(sizeof(ShotPayload) == 16, "ShotPayload must be 16 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32
