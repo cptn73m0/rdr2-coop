@@ -342,6 +342,10 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         if (!model)
             continue;
 
+        const bool mission = IsMissionEntity(handle);
+        if (mission && !coopcfg::Get().worldMissionEntities)
+            continue;
+
         HostIdState& state = g_hostIds[handle];
         if (state.netId == 0 || state.model != model)
         {
@@ -357,7 +361,6 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         e.heading = GetHeading(handle);
         e.kind = net::kEntityKindPed;
         e.flags = 0;
-        const bool mission = IsMissionEntity(handle);
         if (mission) e.flags |= net::kEntityFlagMission;
         if (IsDeadPed(handle)) e.flags |= net::kEntityFlagDead;
 
@@ -413,6 +416,9 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             const unsigned int model = GetModel(handle);
             if (!model)
                 return false;
+            const bool mission = IsMissionEntity(handle);
+            if (mission && !coopcfg::Get().worldMissionEntities)
+                return false;
 
             HostIdState& state = g_hostIds[handle];
             if (state.netId == 0 || state.model != model)
@@ -429,7 +435,6 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             e.heading = GetHeading(handle);
             e.kind = net::kEntityKindVehicle;
             e.flags = 0;
-            const bool mission = IsMissionEntity(handle);
             if (mission) e.flags |= net::kEntityFlagMission;
             {
                 using namespace natives_api;
@@ -472,6 +477,10 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             if (!model)
                 continue;
 
+            const bool mission = IsMissionEntity(handle);
+            if (mission && !coopcfg::Get().worldMissionEntities)
+                continue;
+
             {
                 using namespace natives_api;
                 Init(natives::IS_THIS_MODEL_A_TRAIN);
@@ -511,7 +520,6 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             e.heading = GetHeading(handle);
             e.kind = net::kEntityKindVehicle;
             e.flags = 0;
-            const bool mission = IsMissionEntity(handle);
             if (mission) e.flags |= net::kEntityFlagMission;
             {
                 using namespace natives_api;
@@ -660,6 +668,8 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                 continue;
             if (!IsMissionEntity(handle))
                 continue; // только миссионные объекты
+            if (!coopcfg::Get().worldMissionEntities)
+                continue; // safe mode: mission-objects отключены
 
             const Vec3 p = GetCoords(handle);
             const float dx = p.x - origin.x;
@@ -803,16 +813,12 @@ bool g_hasPendingTrain = false;
 
 void SuppressLocalWorld()
 {
+    // Safe mode: глушим ТОЛЬКО ambient людей. Животные и транспорт не
+    // глушатся — из-за этого раньше пропадали лошади/тягловые.
     using namespace natives_api;
     Init(natives::_SET_AMBIENT_HUMAN_DENSITY_MULTIPLIER_THIS_FRAME);
     Push(0.0f); Call();
     Init(natives::_SET_AMBIENT_PED_DENSITY_MULTIPLIER_THIS_FRAME);
-    Push(0.0f); Call();
-    Init(natives::_SET_AMBIENT_ANIMAL_DENSITY_MULTIPLIER_THIS_FRAME);
-    Push(0.0f); Call();
-    Init(natives::SET_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME);
-    Push(0.0f); Call();
-    Init(natives::SET_RANDOM_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME);
     Push(0.0f); Call();
 }
 
@@ -1350,7 +1356,8 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
         return;
     }
 
-    SuppressLocalWorld();
+    if (coopcfg::Get().worldSuppressAmbient)
+        SuppressLocalWorld();
 }
 
 } // namespace world_sync
