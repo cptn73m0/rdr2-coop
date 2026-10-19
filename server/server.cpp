@@ -388,6 +388,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                     p.ip = peerIp;
                     p.pedModel = model;
                     p.sock = sock;
+                    p.isHost = isHost;
                     if (has) { p.x = sx; p.y = sy; p.z = sz; p.heading = shd; p.hasLoc = true; }
                     g_online[name] = p;
                     g_lastPos[name] = p;
@@ -464,6 +465,28 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 if (pay.size() >= sizeof(net::WorldState))
                 {
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::WorldState,
+                                                    pay.data(), (uint32_t)pay.size()));
+                }
+                break;
+            }
+            case net::Msg::WorldSnapshot:
+            {
+                // P1: снапшот мира принимаем ТОЛЬКО от хоста сессии и
+                // ретранслируем остальным (гостю). Гость не может подменить мир.
+                bool senderIsHost = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    auto it = g_online.find(name);
+                    senderIsHost = it != g_online.end() && it->second.isHost;
+                }
+                if (!senderIsHost)
+                {
+                    LogLine("[!] " + name + ": WorldSnapshot от не-хоста проигнорирован");
+                    break;
+                }
+                if (pay.size() >= sizeof(net::WorldSnapshotHeader))
+                {
+                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::WorldSnapshot,
                                                     pay.data(), (uint32_t)pay.size()));
                 }
                 break;

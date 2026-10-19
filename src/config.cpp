@@ -59,7 +59,10 @@ void WriteDefaultIni()
     fputs("#   a_f_m_armtownfolk_01  = 0x9854FB06 (горожанка)\n", f);
     fputs("#   a_m_m_rancher_01      = 0x54D8BE8E (ранчер)\n", f);
     fputs("#   a_c_dogstreet_01      = 0x3B313FCE (собака)\n", f);
-    fputs("ped_model = 0xCF7E73BE\n", f);
+    fputs("ped_model = 0xCF7E73BE\n\n", f);
+    fputs("# P1: репликация мира/NPC (хост -> гость).\n", f);
+    fputs("# 0 = выключено (по умолчанию), 1 = включено на ОБОИХ ПК.\n", f);
+    fputs("world_sync = 0\n", f);
     fclose(f);
 }
 
@@ -95,6 +98,11 @@ Config& Load()
         if (key == "server_host") g_cfg.serverHost = val;
         else if (key == "server_port") g_cfg.serverPort = std::atoi(val.c_str());
         else if (key == "player_name") g_cfg.playerName = val;
+        else if (key == "world_sync")
+        {
+            g_cfg.worldSync = !(val == "0" || val == "false" || val == "no" ||
+                                val == "off" || val == "False" || val == "OFF");
+        }
         else if (key == "ped_model")
         {
             // hex (0x...) или десятичное

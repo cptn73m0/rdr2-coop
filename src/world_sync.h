@@ -1,0 +1,29 @@
+#pragma once
+
+#include <cstdint>
+#include <vector>
+
+// P1 (модель A): репликация мира/NPC между хостом и гостем.
+//
+// Хост раз в ~100 мс сканирует пул педов вокруг игроков, присваивает им
+// стабильные netId и отправляет WorldSnapshot. Гость создаёт визуальные
+// прокси-педы, обновляет их позиции/состояние и подавляет собственную
+// ambient-популяцию, чтобы мир хоста не дублировался.
+//
+// Все нативы выполняются только из Tick() (игровой поток). OnSnapshot()
+// вызывается из сетевого потока и лишь копирует payload под мьютексом.
+
+namespace coop {
+namespace world_sync {
+
+void Tick(unsigned int localPlayerPed, unsigned int tickCount,
+          bool amHost, bool enabled);
+
+// Сетевой поток: пришёл WorldSnapshot от хоста (payload уже проверен client).
+void OnSnapshot(const std::vector<uint8_t>& payload);
+
+// Убрать прокси/сбросить состояние (выход из сессии, смена роли, disable).
+void Reset();
+
+} // namespace world_sync
+} // namespace coop

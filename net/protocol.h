@@ -10,7 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-constexpr uint16_t kProtocolVersion = 2;
+// v3: WorldSnapshot (P1 — репликация мира/NPC).
+constexpr uint16_t kProtocolVersion = 3;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -40,6 +41,7 @@ enum class Msg : uint8_t {
     Pong        = 0x0D, // сервер -> клиент: ответ с той же меткой (RTT)
     HorseOutfit = 0x0E, // клиент -> сервер -> остальные: снаряжение лошади
     JoinRejected= 0x0F, // сервер -> клиент: отказ в JOIN (версия/полный/ник)
+    WorldSnapshot = 0x10, // хост -> сервер -> гость: сущности мира (P1)
 };
 
 // Компоненты одежды игрока (наряд): список хэшей одетых компонентов
@@ -140,6 +142,49 @@ struct ShotPayload {
     float pad = 0.f;
 };
 static_assert(sizeof(ShotPayload) == 16, "ShotPayload must be 16 bytes");
+
+// ---------------- P1: репликация мира (NPC) ----------------
+// Хост 10 Гц шлёт гостю снапшот сущностей вокруг игроков. Пока только Ped;
+// Vehicle/Object будут добавлены отдельными kind. Позиция — авторитетная,
+// гость держит визуальные прокси.
+constexpr uint8_t kEntityKindPed     = 1;
+constexpr uint8_t kEntityKindVehicle = 2;
+constexpr uint8_t kEntityKindObject  = 3;
+
+constexpr uint8_t kEntityFlagMission = 1u << 0; // mission entity (важнее)
+constexpr uint8_t kEntityFlagDead    = 1u << 1; // мёртв/умирает
+constexpr uint8_t kEntityFlagMounted = 1u << 2; // сидит на лошади
+
+// Locomotion-состояние прокси: 0 — стоять, 1 — шаг, 2 — бег/галоп.
+constexpr uint8_t kEntityStateIdle = 0;
+constexpr uint8_t kEntityStateWalk = 1;
+constexpr uint8_t kEntityStateRun  = 2;
+
+constexpr int kMaxWorldEntities = 32;
+
+struct WorldEntity {
+    uint64_t netId = 0;   // стабильный id (не handle)
+    uint32_t model = 0;   // хэш модели
+    float    x = 0.f;
+    float    y = 0.f;
+    float    z = 0.f;
+    float    heading = 0.f;
+    uint8_t  kind = kEntityKindPed;
+    uint8_t  flags = 0;
+    uint8_t  state = kEntityStateIdle;
+    uint8_t  pad = 0;
+};
+static_assert(sizeof(WorldEntity) == 32, "WorldEntity must be 32 bytes");
+
+struct WorldSnapshotHeader {
+    uint16_t count = 0;
+    uint16_t pad = 0;
+};
+static_assert(sizeof(WorldSnapshotHeader) == 4, "WorldSnapshotHeader must be 4 bytes");
+
+// Полный размер сообщения WorldSnapshot: header + count * WorldEntity.
+constexpr std::size_t kWorldSnapshotMaxSize =
+    sizeof(WorldSnapshotHeader) + kMaxWorldEntities * sizeof(WorldEntity);
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

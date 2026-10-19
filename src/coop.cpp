@@ -6,6 +6,7 @@
 #include "net/client.h"
 #include "persist.h"
 #include "world_scan.h"
+#include "world_sync.h"
 
 #include <algorithm>
 #include <cmath>
@@ -2494,6 +2495,12 @@ void InitNetworkClient()
                       static_cast<unsigned>(reason));
     });
 
+    // P1: WorldSnapshot от хоста. Сетевой поток только копирует payload;
+    // прокси-сущности создаёт/обновляет world_sync из Tick() (игровой поток).
+    g_netClient.SetWorldSnapshot([](const std::vector<uint8_t>& payload) {
+        world_sync::OnSnapshot(payload);
+    });
+
     g_netClient.SetPlayerJoin([](const netio::PlayerJoinInfo& ji) {
         sh_log::Write("net: PLAYER_JOINED %s (model=0x%llX, pos=%d)\n",
                       ji.name.c_str(), ji.model, ji.hasPos ? 1 : 0);
@@ -2576,6 +2583,20 @@ void InitNetworkClient()
 
 } // namespace
 
+// P1 (модель A): отправка WorldSnapshot от хоста. Вызывается только из
+// world_sync::Tick() (игровой поток), сетевой клиент кладёт кадр в очередь.
+void SendWorldSnapshot(const std::vector<uint8_t>& payload)
+{
+    g_netClient.SendWorldSnapshot(payload);
+}
+
+// P1: пед-призрак и его лошадь — не часть мира NPC; их нельзя реплицировать
+// как обычные сущности (иначе на госте появятся дубли игрока).
+bool IsWorldSyncExcluded(unsigned int handle)
+{
+    return handle != 0 && (handle == s_ghost || handle == s_mount);
+}
+
 void Tick()
 {
     ++s_tickCount;
@@ -2598,6 +2619,12 @@ void Tick()
         UpdateLocalActionState(playerPed);
         UpdateLocalAim(playerPed);
         UpdateLocalShotEvents(playerPed);
+
+        // P1: репликация мира/NPC. Хост шлёт снапшоты, гость применяет их
+        // и подавляет собственную ambient-популяцию. По умолчанию выключено
+        // в ini (world_sync = 1 на ОБОИХ ПК для теста).
+        world_sync::Tick(playerPed, s_tickCount, s_amHost,
+                         coopcfg::Get().worldSync);
     }
 
     // Модель для педа: чужая (из PLAYER_JOINED), иначе дефолтная.

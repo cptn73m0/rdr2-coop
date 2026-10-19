@@ -57,6 +57,7 @@ void Client::SetOutfit(OnOutfit cb)        { onOutfit_ = std::move(cb); }
 void Client::SetShot(OnShot cb)            { onShot_ = std::move(cb); }
 void Client::SetHorseOutfit(OnHorseOutfit cb) { onHorseOutfit_ = std::move(cb); }
 void Client::SetJoinRejected(OnJoinRejected cb) { onJoinRejected_ = std::move(cb); }
+void Client::SetWorldSnapshot(OnWorldSnapshot cb) { onWorldSnapshot_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -131,6 +132,13 @@ void Client::SendHorseOutfit(const net::OutfitState& os)
                              reinterpret_cast<const uint8_t*>(&os) + sizeof(os));
     std::vector<uint8_t> frame = MakeFrame((uint8_t)net::Msg::HorseOutfit, pay.data(),
                                             (uint32_t)pay.size());
+    SendRaw(frame);
+}
+
+void Client::SendWorldSnapshot(const std::vector<uint8_t>& payload)
+{
+    std::vector<uint8_t> frame = MakeFrame((uint8_t)net::Msg::WorldSnapshot,
+                                           payload.data(), (uint32_t)payload.size());
     SendRaw(frame);
 }
 
@@ -250,6 +258,23 @@ void Client::Run()
                     onJoinRejected_(static_cast<net::JoinRejectReason>(reason));
                 state_.store(ClientState::Error);
                 running_.store(false);
+                break;
+            }
+            case net::Msg::WorldSnapshot:
+            {
+                // P1: payload разбирает coop в игровом потоке; здесь только
+                // проверяем границы и передаём копию.
+                net::WorldSnapshotHeader h{};
+                if (p.size() >= sizeof(h))
+                {
+                    std::memcpy(&h, p.data(), sizeof(h));
+                    const std::size_t need = sizeof(h) +
+                        static_cast<std::size_t>(h.count) * sizeof(net::WorldEntity);
+                    if (h.count <= net::kMaxWorldEntities && p.size() >= need)
+                    {
+                        if (onWorldSnapshot_) onWorldSnapshot_(p);
+                    }
+                }
                 break;
             }
             case net::Msg::PlayerJoined:

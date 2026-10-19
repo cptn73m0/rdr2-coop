@@ -55,6 +55,8 @@ public:
     using OnShot       = std::function<void(const net::ShotPayload&)>; // выстрел
     using OnHorseOutfit= std::function<void(const net::OutfitState&)>; // снаряжение лошади
     using OnJoinRejected = std::function<void(net::JoinRejectReason)>;
+    // P1: сырой payload WorldSnapshot (разбор — в игровом потоке, в coop).
+    using OnWorldSnapshot = std::function<void(const std::vector<uint8_t>&)>;
 
     Client();
     ~Client();
@@ -75,6 +77,8 @@ public:
     void SendShot(const net::ShotPayload& sp);
     // Отправить снаряжение лошади (shop-предметы: седло/поклажа) при смене.
     void SendHorseOutfit(const net::OutfitState& os);
+    // P1: отправить снапшот мира (только хост).
+    void SendWorldSnapshot(const std::vector<uint8_t>& payload);
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
     uint32_t RttMs() const { return rttMs_.load(); }
 
@@ -89,6 +93,7 @@ public:
     void SetShot(OnShot cb);
     void SetHorseOutfit(OnHorseOutfit cb);
     void SetJoinRejected(OnJoinRejected cb);
+    void SetWorldSnapshot(OnWorldSnapshot cb);
 
     ClientState State() const;
 
@@ -121,6 +126,7 @@ private:
     OnShot onShot_;
     OnHorseOutfit onHorseOutfit_;
     OnJoinRejected onJoinRejected_;
+    OnWorldSnapshot onWorldSnapshot_;
     std::atomic<uint32_t> rttMs_{0};
 };
 

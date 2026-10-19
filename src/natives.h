@@ -182,4 +182,12 @@ constexpr unsigned long long TASK_FOLLOW_NAV_MESH_TO_COORD  = 0x15D3A79D4E44B913
 // и фильтр для прокси-сущностей на госте.
 constexpr unsigned long long IS_ENTITY_A_MISSION_ENTITY     = 0x138190F64DB4BBD1ull;
 
+// P1 (модель A): подавление локальной популяции у гостя, чтобы мир хоста
+// не дублировался собственными ambient-NPC гостем.
+constexpr unsigned long long _SET_AMBIENT_HUMAN_DENSITY_MULTIPLIER_THIS_FRAME  = 0xBA0980B5C0A11924ull;
+constexpr unsigned long long _SET_AMBIENT_PED_DENSITY_MULTIPLIER_THIS_FRAME    = 0xAB0D553FE20A6E25ull;
+constexpr unsigned long long _SET_AMBIENT_ANIMAL_DENSITY_MULTIPLIER_THIS_FRAME = 0xC0258742B034DFAFull;
+constexpr unsigned long long SET_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME         = 0x606374EBFC27B133ull;
+constexpr unsigned long long SET_RANDOM_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME  = 0x1F91D44490E1EA0Cull;
+
 } // namespace natives

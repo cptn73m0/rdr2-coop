@@ -18,6 +18,9 @@ struct Config {
     int         serverPort = 7777;
     std::string playerName = "Player";
     unsigned long long pedModel = 0xCF7E73BEull; // a_m_m_armtownfolk_01
+    // P1: репликация мира/NPC (хост -> гость). По умолчанию выключена,
+    // пока функция не проверена на двух ПК.
+    bool worldSync = false;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —
