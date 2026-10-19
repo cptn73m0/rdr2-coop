@@ -17,7 +17,7 @@ namespace coop {
 namespace world_sync {
 
 void Tick(unsigned int localPlayerPed, unsigned int tickCount,
-          bool amHost, bool enabled);
+          bool amHost, bool enabled, bool includeTrains);
 
 // Сетевой поток: пришёл WorldSnapshot от хоста (payload уже проверен client).
 void OnSnapshot(const std::vector<uint8_t>& payload);

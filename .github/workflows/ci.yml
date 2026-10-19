@@ -40,5 +40,11 @@ jobs:
       - name: Client reconnect test
         run: .\tests\build\Release\client_reconnect_test.exe
 
+      - name: Config parser test
+        run: .\tests\build\Release\config_test.exe
+
+      - name: Restore saves test
+        run: powershell -ExecutionPolicy Bypass -File tests\restore_saves_test.ps1
+
       - name: Server integration tests
         run: python tests/integration_server.py --exe build-server-ci\Release\rdr2_coop_server.exe

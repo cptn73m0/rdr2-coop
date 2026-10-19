@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS 1
 #include "config.h"
 
 #include <windows.h>
@@ -5,6 +6,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 namespace coopcfg {
@@ -78,7 +81,57 @@ void WriteDefaultIni()
     fputs("save_backup = 1\n", f);
     fputs("# P3: dry-run лог плана наград миссии (нативы не вызываются).\n", f);
     fputs("mission_reward_log = 1\n", f);
+    fputs("# R&D: экспериментальная репликация поездов (состав). 0 = выкл.\n", f);
+    fputs("world_trains = 0\n", f);
     fclose(f);
+}
+
+bool AsBool(const std::string& val)
+{
+    return !(val == "0" || val == "false" || val == "no" ||
+             val == "off" || val == "False" || val == "OFF");
+}
+
+void ApplyLine(const std::string& raw, Config& out)
+{
+    const std::string s = Trim(raw);
+    if (s.empty() || s[0] == '#' || s[0] == ';') return;
+
+    const size_t eq = s.find('=');
+    if (eq == std::string::npos) return;
+
+    const std::string key = Trim(s.substr(0, eq));
+    const std::string val = Trim(s.substr(eq + 1));
+    if (val.empty()) return;
+
+    if (key == "server_host") out.serverHost = val;
+    else if (key == "server_port") out.serverPort = std::atoi(val.c_str());
+    else if (key == "player_name") out.playerName = val;
+    else if (key == "world_sync") out.worldSync = AsBool(val);
+    else if (key == "action_sync") out.actionSync = AsBool(val);
+    else if (key == "vehicle_sync") out.vehicleSync = AsBool(val);
+    else if (key == "mission_sync") out.missionSync = AsBool(val);
+    else if (key == "mission_credit") out.missionCredit = AsBool(val);
+    else if (key == "save_backup") out.saveBackup = AsBool(val);
+    else if (key == "mission_reward_log") out.missionRewardLog = AsBool(val);
+    else if (key == "world_trains") out.worldTrains = AsBool(val);
+    else if (key == "ped_model")
+    {
+        unsigned long long m = 0;
+        if (val.size() > 2 && val[0] == '0' && (val[1] == 'x' || val[1] == 'X'))
+            m = std::strtoull(val.c_str() + 2, nullptr, 16);
+        else
+            m = std::strtoull(val.c_str(), nullptr, 10);
+        if (m) out.pedModel = m;
+    }
+}
+
+bool ParseStream(std::istream& in, Config& out)
+{
+    std::string line;
+    while (std::getline(in, line))
+        ApplyLine(line, out);
+    return true;
 }
 
 } // namespace
@@ -94,73 +147,17 @@ Config& Load()
     }
     fclose(probe);
 
-    FILE* f = _wfopen(IniPath().c_str(), L"r");
+    std::ifstream f(IniPath());
     if (!f) return g_cfg;
-
-    char line[512];
-    while (fgets(line, sizeof(line), f))
-    {
-        std::string s = Trim(line);
-        if (s.empty() || s[0] == '#' || s[0] == ';') continue;
-
-        size_t eq = s.find('=');
-        if (eq == std::string::npos) continue;
-
-        std::string key = Trim(s.substr(0, eq));
-        std::string val = Trim(s.substr(eq + 1));
-        if (val.empty()) continue;
-
-        if (key == "server_host") g_cfg.serverHost = val;
-        else if (key == "server_port") g_cfg.serverPort = std::atoi(val.c_str());
-        else if (key == "player_name") g_cfg.playerName = val;
-        else if (key == "world_sync")
-        {
-            g_cfg.worldSync = !(val == "0" || val == "false" || val == "no" ||
-                                val == "off" || val == "False" || val == "OFF");
-        }
-        else if (key == "action_sync")
-        {
-            g_cfg.actionSync = !(val == "0" || val == "false" || val == "no" ||
-                                 val == "off" || val == "False" || val == "OFF");
-        }
-        else if (key == "vehicle_sync")
-        {
-            g_cfg.vehicleSync = !(val == "0" || val == "false" || val == "no" ||
-                                  val == "off" || val == "False" || val == "OFF");
-        }
-        else if (key == "mission_sync")
-        {
-            g_cfg.missionSync = !(val == "0" || val == "false" || val == "no" ||
-                                  val == "off" || val == "False" || val == "OFF");
-        }
-        else if (key == "mission_credit")
-        {
-            g_cfg.missionCredit = !(val == "0" || val == "false" || val == "no" ||
-                                    val == "off" || val == "False" || val == "OFF");
-        }
-        else if (key == "save_backup")
-        {
-            g_cfg.saveBackup = !(val == "0" || val == "false" || val == "no" ||
-                                 val == "off" || val == "False" || val == "OFF");
-        }
-        else if (key == "mission_reward_log")
-        {
-            g_cfg.missionRewardLog = !(val == "0" || val == "false" || val == "no" ||
-                                       val == "off" || val == "False" || val == "OFF");
-        }
-        else if (key == "ped_model")
-        {
-            // hex (0x...) или десятичное
-            unsigned long long m = 0;
-            if (val.size() > 2 && (val[0] == '0') && (val[1] == 'x' || val[1] == 'X'))
-                m = std::strtoull(val.c_str() + 2, nullptr, 16);
-            else
-                m = std::strtoull(val.c_str(), nullptr, 10);
-            if (m) g_cfg.pedModel = m;
-        }
-    }
-    fclose(f);
+    ParseStream(f, g_cfg);
     return g_cfg;
+}
+
+bool LoadFromFile(const std::string& path, Config& out)
+{
+    std::ifstream f(path);
+    if (!f) return false;
+    return ParseStream(f, out);
 }
 
 Config& Get()

@@ -3753,7 +3753,8 @@ void Tick()
         // и подавляет собственную ambient-популяцию. По умолчанию выключено
         // в ini (world_sync = 1 на ОБОИХ ПК для теста).
         world_sync::Tick(playerPed, s_tickCount, s_amHost,
-                         coopcfg::Get().worldSync);
+                         coopcfg::Get().worldSync,
+                         coopcfg::Get().worldTrains);
 
         // P2: Action v2 — сценарии/сидение/курение/укрытие.
         if (coopcfg::Get().actionSync)

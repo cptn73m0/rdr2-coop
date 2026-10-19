@@ -51,6 +51,7 @@ struct OnlinePlayer {
 };
 
 std::mutex g_mutex;                       // защищает g_online и g_lastPos
+std::mutex g_saveMutex;                   // сериализует SaveAll (tmp+rename)
 std::mutex g_logMutex;                    // защищает вывод в консоль
 std::map<std::string, OnlinePlayer> g_online;   // игроки онлайн (по имени)
 std::map<std::string, OnlinePlayer> g_lastPos;  // последние позиции (персистентность)
@@ -140,8 +141,52 @@ bool LoadSaved(const std::string& name, float& x, float& y, float& z, float& hea
     return false;
 }
 
+// Загрузить ВСЕ сохранённые позиции при старте. Иначе первый SaveAll после
+// входа одного игрока затирает сохранения остальных (они ещё не в g_lastPos).
+void LoadAllSaved()
+{
+    std::ifstream f(kSaveFile);
+    if (!f) return;
+    std::string line;
+    while (std::getline(f, line))
+    {
+        const auto c1 = line.find(':');
+        if (c1 == std::string::npos || c1 == 0) continue;
+        const std::string savedName = line.substr(0, c1);
+        std::string rest = line.substr(c1 + 1);
+        float vals[4] = {0, 0, 0, 0};
+        size_t first = 0;
+        bool ok = true;
+        for (int k = 0; k < 4; ++k)
+        {
+            const size_t c = rest.find(':', first);
+            try
+            {
+                vals[k] = std::stof(rest.substr(first, c - first));
+            }
+            catch (...)
+            {
+                ok = false;
+                break;
+            }
+            first = (c == std::string::npos) ? rest.size() : c + 1;
+        }
+        if (!ok) continue;
+
+        OnlinePlayer p;
+        p.name = savedName;
+        p.x = vals[0]; p.y = vals[1]; p.z = vals[2]; p.heading = vals[3];
+        p.hasLoc = true;
+        std::lock_guard<std::mutex> lk(g_mutex);
+        g_lastPos[savedName] = p;
+    }
+}
+
 void SaveAll()
 {
+    // Несколько клиентских потоков могут отключаться одновременно — без
+    // сериализации они пишут один и тот же .tmp и могут потерять игроков.
+    std::lock_guard<std::mutex> saveLk(g_saveMutex);
     const std::string tmpFile = kSaveFile + ".tmp";
     {
         std::ofstream f(tmpFile, std::ios::trunc);
@@ -774,6 +819,8 @@ int main(int argc, char** argv)
 #endif
 
     if (!netio::Init()) { std::cerr << "socket init failed\n"; return 1; }
+
+    LoadAllSaved();
 
     // Русский вывод в консоли Windows (UTF-8 вместо крякозябров).
 #ifdef _WIN32

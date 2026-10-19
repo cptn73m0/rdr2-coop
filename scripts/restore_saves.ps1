@@ -1,6 +1,8 @@
 param(
     [string]$BackupDir = "",
-    [switch]$Force
+    [switch]$Force,
+    # Для автотестов: переопределить разрешённые корни сейвов.
+    [string[]]$AllowedRoots = @()
 )
 
 # Restore RDR2 co-op save backup created before mission_credit.
@@ -33,12 +35,18 @@ function Get-NormalizedPath([string]$path) {
 }
 
 $allowed = @()
-if ($env:APPDATA) {
-    $allowed += Get-NormalizedPath (Join-Path $env:APPDATA ".1911\Red Dead Redemption 2\profile")
-}
-$allowed += Get-NormalizedPath (Join-Path $docs "Rockstar Games\Red Dead Redemption 2\Profiles")
-if ($env:OneDrive) {
-    $allowed += Get-NormalizedPath (Join-Path $env:OneDrive "Documents\Rockstar Games\Red Dead Redemption 2\Profiles")
+if ($AllowedRoots.Count -gt 0) {
+    foreach ($r in $AllowedRoots) {
+        if ($r) { $allowed += Get-NormalizedPath $r }
+    }
+} else {
+    if ($env:APPDATA) {
+        $allowed += Get-NormalizedPath (Join-Path $env:APPDATA ".1911\Red Dead Redemption 2\profile")
+    }
+    $allowed += Get-NormalizedPath (Join-Path $docs "Rockstar Games\Red Dead Redemption 2\Profiles")
+    if ($env:OneDrive) {
+        $allowed += Get-NormalizedPath (Join-Path $env:OneDrive "Documents\Rockstar Games\Red Dead Redemption 2\Profiles")
+    }
 }
 
 $entries = @()

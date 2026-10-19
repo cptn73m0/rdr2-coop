@@ -50,6 +50,14 @@ if (-not $NoTests) {
     & (Join-Path $testBuild "Release\client_reconnect_test.exe")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    Write-Host "=== Config parser ==="
+    & (Join-Path $testBuild "Release\config_test.exe")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    Write-Host "=== Restore saves ==="
+    powershell -ExecutionPolicy Bypass -File (Join-Path $repo "tests\restore_saves_test.ps1")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     Write-Host "=== Headless integration tests ==="
     $exe = Join-Path $repo "build-server-ci\Release\rdr2_coop_server.exe"
     if (-not (Test-Path -LiteralPath $exe)) {

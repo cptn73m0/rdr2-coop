@@ -33,6 +33,8 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_oversized_and_truncated` | len > 64 КБ и обрезанные кадры не роняют сервер |
 | `test_host_migration` | при выходе хоста гость получает HostChanged(1) и может слать WorldSnapshot |
 | `test_idle_timeout` | молчащий клиент отключается по таймауту (2-й аргумент сервера) |
+| `test_players_txt_recovery` | битые строки и stale `.tmp` не мешают восстановлению двух игроков |
+| `test_concurrent_fuzz` | 3 rogue + 2 sender потока 3 с; сервер жив и отвечает Ping |
 | `test_fuzz_frames` | 300 случайных кадров/типов/размеров + oversize + fragmented Ping |
 | `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта |
 
@@ -43,12 +45,17 @@ cmake -S tests -B tests\build -A x64
 cmake --build tests\build --config Release
 .\tests\build\Release\frame_reader_fuzz.exe
 .\tests\build\Release\client_reconnect_test.exe
+.\tests\build\Release\config_test.exe
+powershell -File tests\restore_saves_test.ps1
 ```
 
 - `frame_reader_fuzz` — фрагментация, пары кадров, мусор, oversize length,
-  truncated frame; `FrameReader` не зависает и восстанавливается.
+  truncated frame, byte-by-byte stream, 4 потока × 20k случайных буферов;
+  `FrameReader` не зависает и восстанавливается.
 - `client_reconnect_test` — фейковый TCP-сервер отвечает JOIN_OK и рвёт
   соединение; клиент должен переподключиться (join ≥ 2, connection-lost ≥ 1).
+- `config_test` — `LoadFromFile`: флаги/hex/битые строки/defaults.
+- `restore_saves_test.ps1` — restore + pre-restore snapshot на temp-каталогах.
 
 ## CI
 

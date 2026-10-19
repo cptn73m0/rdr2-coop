@@ -21,6 +21,13 @@ add_executable(frame_reader_fuzz
 target_include_directories(frame_reader_fuzz PRIVATE ..)
 target_compile_features(frame_reader_fuzz PRIVATE cxx_std_17)
 
+add_executable(config_test
+    config_test.cpp
+    ../src/config.cpp
+)
+target_include_directories(config_test PRIVATE .. ../src)
+target_compile_features(config_test PRIVATE cxx_std_17)
+
 if (WIN32)
     target_link_libraries(client_reconnect_test PRIVATE ws2_32)
     target_link_libraries(frame_reader_fuzz PRIVATE ws2_32)

@@ -297,7 +297,8 @@ unsigned int g_lastHostScanTick = 0;
 unsigned int g_hostSnapshotCount = 0;
 bool g_missingWorldQueriesLogged = false;
 
-void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
+void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
+                      bool includeTrains)
 {
     if (tickCount - g_lastHostScanTick < kSendEveryTicks)
         return;
@@ -371,6 +372,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
     // Vehicle). Поезда пока пропускаем: это длинный движущийся состав,
     // которому нужна отдельная репликация вагонов, а не один прокси.
     unsigned int trainsSkipped = 0;
+    unsigned int trainsIncluded = 0;
     {
         static int vehicleHandles[1024];
         int vehicleCount = sh::worldGetAllVehicles(vehicleHandles, 1024);
@@ -413,8 +415,15 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
                 Push(static_cast<unsigned long long>(model));
                 if (Call())
                 {
-                    ++trainsSkipped; // поезд/вагоны — отдельная подсистема
-                    continue;
+                    // R&D (world_trains=1): поезд/вагоны идут как обычные
+                    // Vehicle-прокси. Это НЕ полноценный состав: нет рельсовой
+                    // привязки/сцепки/скорости — только позиции из снапшота.
+                    if (!includeTrains)
+                    {
+                        ++trainsSkipped;
+                        continue;
+                    }
+                    ++trainsIncluded;
                 }
             }
 
@@ -569,9 +578,10 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
             else ++pedCount;
         }
         sh_log::Write("world: host snapshot n=%u ped=%u veh=%u obj=%u "
-                      "mission=%u trains_skipped=%u bytes=%u\n",
+                      "mission=%u trains_skipped=%u trains_included=%u bytes=%u\n",
                       static_cast<unsigned int>(candidates.size()), pedCount,
                       vehicleCount, objectCount, missionCount, trainsSkipped,
+                      trainsIncluded,
                       static_cast<unsigned int>(payload.size()));
     }
 
@@ -965,7 +975,7 @@ void Reset()
 }
 
 void Tick(unsigned int localPlayerPed, unsigned int tickCount,
-          bool amHost, bool enabled)
+          bool amHost, bool enabled, bool includeTrains)
 {
     if (!enabled)
     {
@@ -989,7 +999,7 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
     {
         if (!g_proxies.empty())
             Reset(); // смена роли: прокси больше не нужны
-        SendHostSnapshot(localPlayerPed, tickCount);
+        SendHostSnapshot(localPlayerPed, tickCount, includeTrains);
         return;
     }
 

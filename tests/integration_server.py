@@ -533,6 +533,151 @@ def test_fuzz_frames(exe, tmp):
         c.close()
 
 
+def test_players_txt_recovery(exe, tmp):
+    log("[test] players.txt malformed recovery")
+    work = tmp / "recovery"
+    srv = Server(exe, work)
+    srv.start()
+    a = connect(srv.port)
+    join(a, "Alice")
+    assert recv_type(a, TYPE_JOIN_OK) is not None
+    a.sendall(frame_bytes(TYPE_FRAME, make_frame_payload(7.5, 8.25, 9.0, 180.0)))
+    a.sendall(frame_bytes(TYPE_PING, b"alice-frame"))
+    assert recv_type(a, TYPE_PONG) == b"alice-frame", "Alice frame must be processed"
+    time.sleep(0.3)
+    b = connect(srv.port)
+    join(b, "Bob")
+    assert recv_type(b, TYPE_JOIN_OK) is not None
+    b.sendall(frame_bytes(TYPE_FRAME, make_frame_payload(-1.5, -2.5, 3.5, 45.0)))
+    b.sendall(frame_bytes(TYPE_PING, b"bob-frame"))
+    assert recv_type(b, TYPE_PONG) == b"bob-frame", "Bob frame must be processed"
+    time.sleep(0.3)
+    recv_msgs(a, 0.2)
+    recv_msgs(b, 0.2)
+    b.close()      # close guest first
+    time.sleep(1.0)
+    a.close()
+    time.sleep(1.5)
+    srv.stop()
+    time.sleep(0.3)
+
+    players = work / "players.txt"
+    original = players.read_text(encoding="utf-8") if players.exists() else ""
+    assert "Alice" in original and "Bob" in original, "both players should be saved"
+    # Add junk lines and a stale .tmp; loader must ignore both.
+    players.write_text(
+        "garbage-without-colons\n"
+        "Broken:not-a-float\n"
+        ":empty-name:1:2:3\n"
+        "\n"
+        + original,
+        encoding="utf-8")
+    (work / "players.txt.tmp").write_text("Stale:1:2:3:4\n", encoding="utf-8")
+
+    srv2 = Server(exe, work)
+    srv2.start()
+    try:
+        ca = connect(srv2.port)
+        join(ca, "Alice")
+        pa = recv_type(ca, TYPE_JOIN_OK)
+        assert pa is not None
+        _, has, coords, _ = parse_join_ok(pa)
+        assert has and coords is not None, "Alice position should survive junk lines"
+        assert abs(coords[0] - 7.5) < 0.01 and abs(coords[1] - 8.25) < 0.01
+        ca.close()
+
+        cb = connect(srv2.port)
+        join(cb, "Bob")
+        pb = recv_type(cb, TYPE_JOIN_OK)
+        assert pb is not None
+        _, hasb, coordsb, _ = parse_join_ok(pb)
+        assert hasb and coordsb is not None, "Bob position should survive junk lines"
+        assert abs(coordsb[0] + 1.5) < 0.01 and abs(coordsb[1] + 2.5) < 0.01
+        cb.close()
+    finally:
+        srv2.stop()
+
+
+def test_concurrent_fuzz(exe, tmp):
+    log("[test] concurrent / long fuzz")
+    import threading
+
+    with Server(exe, tmp / "concurrent") as srv:
+        host = connect(srv.port)
+        join(host, "Alice")
+        assert recv_type(host, TYPE_JOIN_OK) is not None
+        guest = connect(srv.port)
+        join(guest, "Bob")
+        assert recv_type(guest, TYPE_JOIN_OK) is not None
+        recv_msgs(host, 0.3)
+        recv_msgs(guest, 0.3)
+
+        stop = threading.Event()
+        errors = []
+
+        def rogue_worker():
+            # Pre-JOIN sockets get closed by the server; keep flooding until stopped.
+            try:
+                r = connect(srv.port)
+                rng = random.Random()
+                types = [0x04, 0x09, 0x10, 0x11, 0x13, 0x7E]
+                while not stop.is_set():
+                    t = rng.choice(types)
+                    ln = rng.choice([0, 8, 24, 88, 400, 2000])
+                    try:
+                        r.sendall(struct.pack("<I", ln) + bytes([t]) +
+                                  bytes([rng.randrange(256) for _ in range(ln)]))
+                    except OSError:
+                        break
+                    time.sleep(0.005)
+                r.close()
+            except OSError:
+                pass
+
+        def sender_worker(sock):
+            try:
+                rng = random.Random()
+                types = [0x04, 0x0B, 0x11, 0x12, 0x13, 0x14, 0x7E]
+                while not stop.is_set():
+                    t = rng.choice(types)
+                    ln = rng.choice([0, 1, 8, 12, 16, 24, 32, 88, 400, 1500])
+                    try:
+                        sock.sendall(struct.pack("<I", ln) + bytes([t]) +
+                                     bytes([rng.randrange(256) for _ in range(ln)]))
+                    except OSError:
+                        break
+                    time.sleep(0.003)
+            except OSError:
+                pass
+
+        threads = [threading.Thread(target=rogue_worker) for _ in range(3)]
+        threads += [threading.Thread(target=sender_worker, args=(host,)),
+                    threading.Thread(target=sender_worker, args=(guest,))]
+        for th in threads: th.start()
+        time.sleep(3.0)
+        stop.set()
+        for th in threads: th.join(timeout=3.0)
+
+        # Server must still be alive after the storm.
+        recv_msgs(host, 0.3)
+        recv_msgs(guest, 0.3)
+        host.sendall(frame_bytes(TYPE_PING, b"alive-after-storm"))
+        ok = False
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not ok:
+            for t, p in recv_msgs(host, 0.2):
+                if t == TYPE_PONG and p == b"alive-after-storm":
+                    ok = True
+        assert ok, "server should answer Ping after concurrent fuzz"
+        host.close()
+        guest.close()
+        time.sleep(0.5)
+        c = connect(srv.port)
+        join(c, "Survivor")
+        assert recv_type(c, TYPE_JOIN_OK) is not None
+        c.close()
+
+
 def test_persistence(exe, tmp):
     log("[test] players.txt persistence across restart")
     work = tmp / "persist"
@@ -589,6 +734,8 @@ def main():
         test_host_migration,
         test_idle_timeout,
         test_fuzz_frames,
+        test_players_txt_recovery,
+        test_concurrent_fuzz,
         test_persistence,
     ]
     try:
