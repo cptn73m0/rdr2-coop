@@ -1094,6 +1094,10 @@ void PromoteMountToGhost()
     // После посадки движок сбрасывает component variation педа — модель
     // «исчезает», остаются только надетыми одёжки. Возвращаем вариацию и наряд.
     RefreshGhostComponents();
+    // Движок может сбросить variation не сразу, а через несколько кадров
+    // после посадки — держим окно переприменения наряда, иначе одежда
+    // «слетает» и больше не возвращается (наряд-то не менялся).
+    s_outfitRefreshTicks = 240; // ~4 с
     // Снаряжение лошади применяется после посадки (пришло раньше по сети).
     if (s_horseOutfitIn.count)
     {
@@ -1768,17 +1772,8 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
     int categories = static_cast<int>(Call());
     if (categories <= 0)
         return;
-    // Диагностика: сколько категорий реально у педа (если > лимита — хвост
-    // обрезался, и именно это давало рассинхрон одежды).
-    {
-        static int s_lastCats = -1;
-        if (categories != s_lastCats)
-        {
-            s_lastCats = categories;
-            sh_log::Write("coop: outfit categories for ped %u = %d (limit %d)\n",
-                          ped, categories, net::kMaxOutfitComponents);
-        }
-    }
+    // Диагностика количества категорий убрана: она вызывалась каждый кадр
+    // для игрока и лошади и засоряла лог (не влияет на сам наряд).
     if (categories > net::kMaxOutfitComponents)
         categories = net::kMaxOutfitComponents;
 
