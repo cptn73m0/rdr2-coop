@@ -54,6 +54,10 @@ if (-not $NoTests) {
     & (Join-Path $testBuild "Release\config_test.exe")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    Write-Host "=== WorldSnapshot parser stress ==="
+    & (Join-Path $testBuild "Release\world_snapshot_parse_test.exe")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     Write-Host "=== Restore saves ==="
     powershell -ExecutionPolicy Bypass -File (Join-Path $repo "tests\restore_saves_test.ps1")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

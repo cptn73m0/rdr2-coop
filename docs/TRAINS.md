@@ -8,6 +8,10 @@
 - Хост при `world_trains = 1` **не пропускает** поезда/вагоны в скане
   транспорта: они идут через существующий `WorldSnapshot` как обычные
   `Vehicle`-сущности (бюджет до 16 машин).
+- **Consist-добор:** если `worldGetAllVehicles` вернул только локомотив,
+  хост вызывает `_GET_TRAIN_CARRIAGE_TRAILER_NUMBER` и
+  `GET_TRAIN_CARRIAGE(engine, i)`, добавляя вагоны в снапшот (если они ещё
+  не попали туда). В логе: `train: consist engine=… trailerCount=… added=…`.
 - Гость создаёт их тем же `CREATE_VEHICLE`-прокси (mission, без коллизии) и
   двигает по снапшотам 10 Гц.
 - В логе: `trains_included=N` (включено) и `trains_skipped=N` (выключено).
@@ -26,10 +30,12 @@
 
 ## Следующий этап (после игрового теста)
 
-1. Нативы состава:
+1. Нативы состава (частично уже используются):
    - `_GET_TRAIN_CARRIAGE_TRAILER_NUMBER(train)` — число вагонов;
    - `GET_TRAIN_CARRIAGE(train, trailerNumber)` / `_GET_TRAIN_CAR(train)`;
    - `_GET_TRAIN_DIRECTION`, `SET_TRAIN_SPEED`, `SET_MISSION_TRAIN_COORDS`.
+   - Проверить на реальном поезде, с какого индекса начинаются вагоны
+     (0 или 1) и совпадает ли `trailerCount` с числом прокси в снапшоте.
 2. Отдельное сообщение `TrainSnapshot` (engine netId, model, direction,
    speed, режим станции) + список вагонов по порядку.
 3. Создание состава на госте одним `CREATE_MISSION_TRAIN`-подобным путём

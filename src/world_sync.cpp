@@ -6,6 +6,7 @@
 #include "natives.h"
 #include "net/protocol.h"
 #include "script_hook.h"
+#include "world_snapshot_parse.h"
 
 #include <algorithm>
 #include <atomic>
@@ -15,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace coop {
@@ -387,6 +389,60 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             localVehicle = static_cast<unsigned int>(Call());
         }
 
+        std::unordered_set<unsigned int> seenVehicles;
+        std::vector<unsigned int> trainEngines;
+
+        // Добавляет один vehicle-handle как кандидат. Радиус/модель/netId —
+        // те же правила, что и в основном цикле ниже.
+        auto addVehicleCandidate = [&](unsigned int handle) -> bool
+        {
+            if (!handle || handle == localVehicle)
+                return false;
+            if (coop::IsWorldSyncExcluded(handle) || !DoesExist(handle))
+                return false;
+            const Vec3 p = GetCoords(handle);
+            const float dx = p.x - origin.x;
+            const float dy = p.y - origin.y;
+            const float d2 = dx * dx + dy * dy;
+            if (d2 > kRadius2)
+                return false;
+            const unsigned int model = GetModel(handle);
+            if (!model)
+                return false;
+
+            HostIdState& state = g_hostIds[handle];
+            if (state.netId == 0 || state.model != model)
+            {
+                state.netId = g_nextNetId++;
+                state.model = model;
+            }
+            state.lastSeenTick = tickCount;
+
+            net::WorldEntity e{};
+            e.netId = state.netId;
+            e.model = model;
+            e.x = p.x; e.y = p.y; e.z = p.z;
+            e.heading = GetHeading(handle);
+            e.kind = net::kEntityKindVehicle;
+            e.flags = 0;
+            const bool mission = IsMissionEntity(handle);
+            if (mission) e.flags |= net::kEntityFlagMission;
+            {
+                using namespace natives_api;
+                Init(natives::IS_VEHICLE_WRECKED);
+                Push(handle);
+                if (Call()) e.flags |= net::kEntityFlagDead;
+            }
+            e.state = 0;
+
+            Candidate c;
+            c.entity = e;
+            c.distance2 = d2;
+            c.mission = mission;
+            candidates.push_back(c);
+            return true;
+        };
+
         for (int i = 0; i < vehicleCount; ++i)
         {
             const unsigned int handle =
@@ -397,6 +453,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                 continue;
             if (!DoesExist(handle))
                 continue;
+            seenVehicles.insert(handle);
 
             const Vec3 p = GetCoords(handle);
             const float dx = p.x - origin.x;
@@ -424,6 +481,12 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                         continue;
                     }
                     ++trainsIncluded;
+                    // R&D: если это локомотив/головной вагон, запоминаем его,
+                    // чтобы затем добрать вагоны через GET_TRAIN_CARRIAGE.
+                    Init(natives::_GET_TRAIN_CARRIAGE_TRAILER_NUMBER);
+                    Push(handle);
+                    if (static_cast<int>(Call()) > 0)
+                        trainEngines.push_back(handle);
                 }
             }
 
@@ -457,6 +520,37 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             c.distance2 = d2;
             c.mission = mission;
             candidates.push_back(c);
+        }
+
+        // R&D: добрать вагоны состава, даже если worldGetAllVehicles вернул
+        // только локомотив. Сцепка/рельсы/скорость по-прежнему не
+        // моделируются — это только позиции вагонов для прокси.
+        unsigned int trainCarsAdded = 0;
+        for (const unsigned int engine : trainEngines)
+        {
+            using namespace natives_api;
+            Init(natives::_GET_TRAIN_CARRIAGE_TRAILER_NUMBER);
+            Push(engine);
+            const int trailerCount = static_cast<int>(Call());
+            if (trailerCount <= 0)
+                continue;
+            for (int carIndex = 0; carIndex <= trailerCount; ++carIndex)
+            {
+                Init(natives::GET_TRAIN_CARRIAGE);
+                Push(engine);
+                Push(static_cast<unsigned long long>(carIndex));
+                const unsigned int car = static_cast<unsigned int>(Call());
+                if (!car || car == engine || seenVehicles.count(car))
+                    continue;
+                seenVehicles.insert(car);
+                if (addVehicleCandidate(car))
+                {
+                    ++trainCarsAdded;
+                    ++trainsIncluded;
+                }
+            }
+            sh_log::Write("train: consist engine=%u trailerCount=%d added=%u\n",
+                          engine, trailerCount, trainCarsAdded);
         }
     }
 
@@ -819,25 +913,15 @@ void ApplyPendingSnapshot(unsigned int tickCount)
         g_hasPendingSnapshot = false;
     }
 
-    net::WorldSnapshotHeader header{};
-    if (payload.size() < sizeof(header))
-        return;
-    std::memcpy(&header, payload.data(), sizeof(header));
-    if (header.count > net::kMaxWorldEntities)
-        return;
-    const std::size_t need = sizeof(header) +
-        static_cast<std::size_t>(header.count) * sizeof(net::WorldEntity);
-    if (payload.size() < need)
+    ParsedWorldSnapshot snapshot;
+    if (!ParseWorldSnapshot(payload, snapshot))
         return;
 
     ++g_snapshotSeq;
     int spawned = 0;
 
-    for (uint16_t i = 0; i < header.count; ++i)
+    for (const net::WorldEntity& e : snapshot.entities)
     {
-        net::WorldEntity e{};
-        std::memcpy(&e, payload.data() + sizeof(header) + i * sizeof(e), sizeof(e));
-
         auto it = g_proxies.find(e.netId);
         if (it != g_proxies.end() && !DoesExist(it->second.handle))
         {

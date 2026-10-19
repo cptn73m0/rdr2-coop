@@ -28,6 +28,13 @@ add_executable(config_test
 target_include_directories(config_test PRIVATE .. ../src)
 target_compile_features(config_test PRIVATE cxx_std_17)
 
+add_executable(world_snapshot_parse_test
+    world_snapshot_parse_test.cpp
+    ../src/world_snapshot_parse.cpp
+)
+target_include_directories(world_snapshot_parse_test PRIVATE .. ../src)
+target_compile_features(world_snapshot_parse_test PRIVATE cxx_std_17)
+
 if (WIN32)
     target_link_libraries(client_reconnect_test PRIVATE ws2_32)
     target_link_libraries(frame_reader_fuzz PRIVATE ws2_32)

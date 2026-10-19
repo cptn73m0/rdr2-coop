@@ -141,13 +141,17 @@
 - [x] Headless-тест host migration: новый хост принимается для WorldSnapshot
 - [x] Fuzz-тест: 300 случайных кадров/размеров + C++ FrameReader fuzz
 - [x] C++ тест client reconnect с фейковым сервером
+- [x] WorldSnapshot parser stress: 4 потока × 20k, строгий размер/count,
+      вынесен в src/world_snapshot_parse.cpp
+- [x] GitHub Actions badge + build artifacts (asi/server)
 - [x] GitHub Actions workflow: сборка клиента/сервера + все тесты
 - [x] Mission rewards dry-run: каталог 23 записей/17 миссий в логе, без нативов
 - [x] Config-тесты: LoadFromFile, флаги/hex/битые строки/defaults
 - [x] players.txt recovery-тест: битые строки и stale .tmp игнорируются
 - [x] restore_saves.ps1 автотест (restore + pre-restore snapshot)
 - [x] R&D поездов: флаг `world_trains`, Vehicle-прокси из WorldSnapshot,
-      docs/TRAINS.md; состав/рельсы — следующий этап после игры
+      `GET_TRAIN_CARRIAGE`-добор вагонов состава, docs/TRAINS.md
+- [ ] Train consist: сцепка/рельсы/скорость/порядок вагонов (после игры)
 - [ ] Применение наград allow-list после игрового теста
 - [x] CI-скрипт `scripts/ci.ps1`: сборка клиента+сервера и тесты
 - [x] Убрано предупреждение C4005 WIN32_LEAN_AND_MEAN

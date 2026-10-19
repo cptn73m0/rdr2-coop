@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: windows-latest
@@ -43,8 +46,20 @@ jobs:
       - name: Config parser test
         run: .\tests\build\Release\config_test.exe
 
+      - name: WorldSnapshot parser stress
+        run: .\tests\build\Release\world_snapshot_parse_test.exe
+
       - name: Restore saves test
         run: powershell -ExecutionPolicy Bypass -File tests\restore_saves_test.ps1
 
       - name: Server integration tests
         run: python tests/integration_server.py --exe build-server-ci\Release\rdr2_coop_server.exe
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdr2-coop-build
+          path: |
+            build/Release/rdr2_coop.asi
+            build-server-ci/Release/rdr2_coop_server.exe
+          if-no-files-found: error

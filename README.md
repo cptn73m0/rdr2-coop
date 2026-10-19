@@ -1,5 +1,7 @@
 # RDR2 CO-OP — кооперативный мод для одиночного сюжета
 
+[![CI](https://github.com/cptn73m0/rdr2-coop/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cptn73m0/rdr2-coop/actions/workflows/ci.yml)
+
 Кооперативный мод для **Red Dead Redemption 2** (Story Mode): два игрока играют
 по сети, каждый проходит сюжет у себя, а второй игрок виден в мире как
 **пед-призрак** — с синхронизацией движения, анимаций, одежды, оружия, лошади,
@@ -29,7 +31,8 @@ v12 требуют рестарта игры/сервера; см. `docs/TESTING
 - ✅ Смерть и возрождение, труп и снаряжение остаются.
 - ✅ Reconnect с backoff (1→10 с) и **host migration**: при выходе хоста
   гость повышается и продолжает сессию.
-- ✅ Headless-тесты сервера/протокола (12 шт.), C++ reconnect/config/fuzz и CI-скрипт.
+- ✅ Headless-тесты сервера/протокола (12 шт.), C++ reconnect/config/parser/fuzz
+  и CI-скрипт с артефактами сборки.
 
 ### Пед-призрак
 - ✅ Спавн по модели персонажа, обвязка рендера.
@@ -108,7 +111,7 @@ cmake --build build-server --config Release
 # headless-тесты сервера/протокола (без игры)
 python tests\integration_server.py --exe build-server-v12\Release\rdr2_coop_server.exe
 
-# полный CI: клиент + сервер + 12 Python + 3 C++ + restore-тест
+# полный CI: клиент + сервер + 12 Python + 4 C++ + restore-тест
 powershell -ExecutionPolicy Bypass -File scripts\ci.ps1
 ```
 

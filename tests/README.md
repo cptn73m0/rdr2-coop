@@ -46,6 +46,7 @@ cmake --build tests\build --config Release
 .\tests\build\Release\frame_reader_fuzz.exe
 .\tests\build\Release\client_reconnect_test.exe
 .\tests\build\Release\config_test.exe
+.\tests\build\Release\world_snapshot_parse_test.exe
 powershell -File tests\restore_saves_test.ps1
 ```
 
@@ -55,6 +56,8 @@ powershell -File tests\restore_saves_test.ps1
 - `client_reconnect_test` — фейковый TCP-сервер отвечает JOIN_OK и рвёт
   соединение; клиент должен переподключиться (join ≥ 2, connection-lost ≥ 1).
 - `config_test` — `LoadFromFile`: флаги/hex/битые строки/defaults.
+- `world_snapshot_parse_test` — 4 потока × 20k: валидные снапшоты 0..64
+  сущностей и произвольный мусор; строгая проверка размера/count.
 - `restore_saves_test.ps1` — restore + pre-restore snapshot на temp-каталогах.
 
 ## CI
