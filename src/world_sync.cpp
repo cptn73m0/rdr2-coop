@@ -1,6 +1,7 @@
 #include "world_sync.h"
 
 #include "coop.h"
+#include "config.h"
 #include "log.h"
 #include "native_call.h"
 #include "natives.h"
@@ -1136,9 +1137,28 @@ void ApplyPendingTrainSnapshot(unsigned int tickCount)
         Push(static_cast<unsigned long long>(0)); // p16
         Call();
 
-        it->second.trainAttached = true;
-        it->second.trainAttachedTo = engine;
-        ++attachedNow;
+        Init(natives::IS_ENTITY_ATTACHED_TO_ENTITY);
+        Push(it->second.handle);
+        Push(engine);
+        const bool attachedOk = Call() != 0;
+        it->second.trainAttached = attachedOk;
+        it->second.trainAttachedTo = attachedOk ? engine : 0;
+        if (attachedOk)
+            ++attachedNow;
+        if (coopcfg::Get().trainDebug)
+        {
+            sh_log::Write("train: car netId=%u world=(%.1f %.1f %.1f) "
+                          "local=(%.2f %.2f %.2f) rot=%.1f eng=(%.1f %.1f %.1f) "
+                          "engHeading=%.1f attached=%d\n",
+                          car.netId, cp.x, cp.y, cp.z, localX, localY, dz,
+                          localHeading, ep.x, ep.y, ep.z, eh, attachedOk ? 1 : 0);
+        }
+        else if (!attachedOk && (tickCount % kLogEveryTicks) == 1)
+        {
+            sh_log::Write("train: attach FAILED car netId=%u engine=%u "
+                          "(offset %.2f %.2f %.2f)\n",
+                          car.netId, h.engineNetId, localX, localY, dz);
+        }
     }
     if (attachedNow > 0)
     {

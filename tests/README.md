@@ -52,6 +52,7 @@ cmake --build tests\build --config Release
 .\tests\build\Release\world_snapshot_parse_test.exe
 .\tests\build\Release\mission_catalog_test.exe
 .\tests\build\Release\world_entity_budget_test.exe
+.\tests\build\Release\mission_barrier_rules_fuzz.exe
 powershell -File tests\restore_saves_test.ps1
 ```
 
@@ -67,6 +68,8 @@ powershell -File tests\restore_saves_test.ps1
   на 17 миссий, корректные binding/amount, нет дублей.
 - `world_entity_budget_test` — 4 потока × 10k: mission-приоритет, лимиты
   Ped/Vehicle/Object и порядок против независимой reference-реализации.
+- `mission_barrier_rules_fuzz` — 4×100k случайных фаз/ролей/offer/epoch:
+  host/guest события, disjoint role phases; PASS.
 - `restore_saves_test.ps1` — restore + pre-restore snapshot на temp-каталогах.
 
 ## CI

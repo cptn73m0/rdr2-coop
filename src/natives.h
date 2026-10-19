@@ -225,6 +225,7 @@ constexpr unsigned long long _GET_TRAIN_DIRECTION             = 0x3C9628A811CBD7
 // R&D: привязка вагонов-прокси к локомотиву на госте.
 constexpr unsigned long long ATTACH_ENTITY_TO_ENTITY          = 0x6B9BBD38AB0796DFull;
 constexpr unsigned long long DETACH_ENTITY                    = 0x64CDE9D6BF8ECAD3ull;
+constexpr unsigned long long IS_ENTITY_ATTACHED_TO_ENTITY     = 0x154A3C529497053Eull;
 constexpr unsigned long long DELETE_OBJECT                    = 0x931914268722C263ull;
 constexpr unsigned long long GET_VEHICLE_PED_IS_IN            = 0x9A9112A0FE9A4713ull;
 constexpr unsigned long long GET_PED_IN_VEHICLE_SEAT          = 0xBB40DD2270B65366ull;

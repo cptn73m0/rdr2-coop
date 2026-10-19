@@ -9,6 +9,7 @@
 #include "world_sync.h"
 #include "mission_catalog.h"
 #include "mission_rewards.h"
+#include "mission_barrier_rules.h"
 
 #include <algorithm>
 #include <atomic>
@@ -626,6 +627,9 @@ void UpdateHostMissionBarrier(uint32_t activeMissionId)
 // Хост: Ready -> StartWindow, Started -> участие подтверждено.
 void ProcessHostMissionBarrier(const net::MissionBarrierPayload& ev)
 {
+    using namespace coop::missionsbarrier;
+    if (!IsHostEventAllowed(s_hostBarrier.missionId, s_hostBarrier.epoch, ev))
+        return;
     if (ev.phase == net::kMissionBarrierReady)
     {
         if (!s_hostBarrier.missionId || ev.missionId != s_hostBarrier.missionId ||
@@ -673,6 +677,9 @@ void ProcessHostMissionBarrier(const net::MissionBarrierPayload& ev)
 // Гость: Offer -> Ready; StartWindow -> ждём собственный запуск скрипта.
 void ProcessGuestMissionBarrier(const net::MissionBarrierPayload& ev)
 {
+    using namespace coop::missionsbarrier;
+    if (!IsGuestEventAllowed(s_guestBarrier.missionId, s_guestBarrier.epoch, ev))
+        return;
     if (ev.phase == net::kMissionBarrierOffer)
     {
         s_guestBarrier = GuestMissionBarrier{};

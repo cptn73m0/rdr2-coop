@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(rdr2_coop_server
     server.cpp
+    ../src/mission_barrier_rules.cpp
     ../net/socket.cpp
     ../net/frame.cpp
 )
@@ -24,7 +25,7 @@ if(MSVC)
     target_compile_options(rdr2_coop_server PRIVATE /utf-8)
 endif()
 
-target_include_directories(rdr2_coop_server PRIVATE ..)
+target_include_directories(rdr2_coop_server PRIVATE .. ../src)
 
 if(WIN32)
     # Winsock

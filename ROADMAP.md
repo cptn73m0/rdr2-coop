@@ -151,12 +151,14 @@
 - [x] Config-тесты: LoadFromFile, флаги/hex/битые строки/defaults
 - [x] players.txt recovery-тест: битые строки и stale .tmp игнорируются
 - [x] restore_saves.ps1 автотест (restore + pre-restore snapshot)
-- [x] R&D поездов: флаг `world_trains`, Vehicle-прокси из WorldSnapshot,
-      `GET_TRAIN_CARRIAGE`-добор вагонов, direction/speed в логе,
-      `TrainSnapshot` v13 + attach вагонов к локомотиву на госте
+- [x] TrainSnapshot v13 + attach вагонов к локомотиву на госте,
+      `train_debug` offset/attach-логи
 - [x] C++ stress candidate budget: 4×10k против reference-выборки
+- [x] Mission barrier rules fuzz: 4×100k фаз/ролей/offer/epoch
 - [x] Per-IP rate limit (12 новых TCP/сек) + flood-тест
 - [x] Graceful shutdown: Ctrl+C/nonblocking accept + SaveAll; тест-хук
+- [x] Метрики сервера в статусной таблице (active/peak/total/rate/cap/uniqueIPs)
+- [x] GitHub Actions cache для build/server/tests + artifacts
 - [ ] Применение наград allow-list после игрового теста
 - [x] CI-скрипт `scripts/ci.ps1`: сборка клиента+сервера и тесты
 - [x] Убрано предупреждение C4005 WIN32_LEAN_AND_MEAN

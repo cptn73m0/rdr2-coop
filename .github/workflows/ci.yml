@@ -19,6 +19,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Cache CMake builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            build-server-ci
+            tests/build
+          key: ${{ runner.os }}-cmake-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'server/CMakeLists.txt', 'net/**', 'src/**', 'server/**') }}
+          restore-keys: |
+            ${{ runner.os }}-cmake-
+
       - name: Configure client (ASI)
         run: cmake -S . -B build -A x64
 
@@ -54,6 +65,9 @@ jobs:
 
       - name: world_sync candidate budget stress
         run: .\tests\build\Release\world_entity_budget_test.exe
+
+      - name: Mission barrier rules fuzz
+        run: .\tests\build\Release\mission_barrier_rules_fuzz.exe
 
       - name: Restore saves test
         run: powershell -ExecutionPolicy Bypass -File tests\restore_saves_test.ps1

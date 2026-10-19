@@ -83,6 +83,8 @@ void WriteDefaultIni()
     fputs("mission_reward_log = 1\n", f);
     fputs("# R&D: экспериментальная репликация поездов (состав). 0 = выкл.\n", f);
     fputs("world_trains = 0\n", f);
+    fputs("# R&D: подробный лог offset/attach вагонов (диагностика).\n", f);
+    fputs("train_debug = 0\n", f);
     fclose(f);
 }
 
@@ -115,6 +117,7 @@ void ApplyLine(const std::string& raw, Config& out)
     else if (key == "save_backup") out.saveBackup = AsBool(val);
     else if (key == "mission_reward_log") out.missionRewardLog = AsBool(val);
     else if (key == "world_trains") out.worldTrains = AsBool(val);
+    else if (key == "train_debug") out.trainDebug = AsBool(val);
     else if (key == "ped_model")
     {
         unsigned long long m = 0;

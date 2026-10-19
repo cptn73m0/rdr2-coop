@@ -27,6 +27,7 @@
 | `save_backup` | 1 | бэкап сейва перед первым зачётом |
 | `mission_reward_log` | 1 | dry-run лог каталога наград (без применения) |
 | `world_trains` | 0 | R&D: поезда/вагоны в WorldSnapshot (экспериментально) |
+| `train_debug` | 0 | R&D: подробный лог offset/attach вагонов |
 
 Рекомендуемый первый прогон: `world_sync=1`, `action_sync=1`,
 `vehicle_sync=1`, `mission_sync=1`, `mission_credit=0` (только события).

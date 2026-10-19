@@ -36,6 +36,7 @@
 #include "net/frame.h"
 #include "net/protocol.h"
 #include "net/socket.h"
+#include "mission_barrier_rules.h"
 
 using netio::Result;
 
@@ -59,6 +60,10 @@ std::map<std::string, OnlinePlayer> g_online;   // игроки онлайн (п
 std::map<std::string, OnlinePlayer> g_lastPos;  // последние позиции (персистентность)
 std::atomic<bool> g_running{true};
 std::atomic<int> g_activeConnections{0};
+std::atomic<int> g_peakConnections{0};
+std::atomic<uint64_t> g_totalConnections{0};
+std::atomic<uint64_t> g_rejectedRate{0};
+std::atomic<uint64_t> g_rejectedCap{0};
 // Защита от thread/socket flood: больше этого числа TCP-соединений сервер
 // не держит. Легитимных участников максимум двое; остальное — probe/rogue.
 constexpr int kMaxActiveConnections = 32;
@@ -344,7 +349,17 @@ void PrintStatus()
     }
 
     std::ostringstream os;
-    os << "=== Игроков в сети: " << copy.size() << " ===\n";
+    os << "=== Игроков в сети: " << copy.size()
+       << " | TCP active=" << g_activeConnections.load()
+       << " peak=" << g_peakConnections.load()
+       << " total=" << g_totalConnections.load()
+       << " | rate-limited=" << g_rejectedRate.load()
+       << " cap-rejected=" << g_rejectedCap.load();
+    {
+        std::lock_guard<std::mutex> lk(g_rateMutex);
+        os << " uniqueIPs=" << g_ipRates.size();
+    }
+    os << " ===\n";
     if (copy.empty())
     {
         os << "  (нет подключённых игроков)";
@@ -750,13 +765,15 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                     senderIsHost = it != g_online.end() && it->second.isHost;
                 }
                 const bool hostPhase =
-                    ev.phase == net::kMissionBarrierOffer ||
-                    ev.phase == net::kMissionBarrierStartWindow ||
-                    ev.phase == net::kMissionBarrierAbort;
+                    coop::missionsbarrier::IsPhaseAllowedForRole(
+                        coop::missionsbarrier::Role::Host, ev.phase);
                 const bool guestPhase =
-                    ev.phase == net::kMissionBarrierReady ||
-                    ev.phase == net::kMissionBarrierStarted;
-                if ((senderIsHost && !hostPhase) || (!senderIsHost && !guestPhase))
+                    coop::missionsbarrier::IsPhaseAllowedForRole(
+                        coop::missionsbarrier::Role::Guest, ev.phase);
+                const bool phaseAllowed =
+                    coop::missionsbarrier::IsKnownPhase(ev.phase) &&
+                    ((senderIsHost && hostPhase) || (!senderIsHost && guestPhase));
+                if (!phaseAllowed)
                 {
                     LogLine("[!] " + name + ": MissionBarrier phase=" +
                             std::to_string((unsigned)ev.phase) +
@@ -992,9 +1009,11 @@ int main(int argc, char** argv)
         }
         char ipbuf[64] = "unknown";
         inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf));
+        ++g_totalConnections;
 
         if (!AllowConnectionFrom(ipbuf, NowMs()))
         {
+            ++g_rejectedRate;
             LogLine("[!] " + std::string(ipbuf) +
                     ": per-IP rate limit (" +
                     std::to_string(kMaxNewConnectionsPerIpPerSecond) +
@@ -1005,13 +1024,19 @@ int main(int argc, char** argv)
 
         if (g_activeConnections.load() >= kMaxActiveConnections)
         {
+            ++g_rejectedCap;
             LogLine("[!] " + std::string(ipbuf) +
                     ": лимит соединений (" +
                     std::to_string(kMaxActiveConnections) + ") — отклонён");
             closesocket(c);
             continue;
         }
-        ++g_activeConnections;
+        const int activeNow = ++g_activeConnections;
+        int peak = g_peakConnections.load();
+        while (activeNow > peak &&
+               !g_peakConnections.compare_exchange_weak(peak, activeNow))
+        {
+        }
 
         netio::Socket* cs = new netio::Socket(c);
         // Как и на клиенте: без Нагла + неблокирующий сокет.

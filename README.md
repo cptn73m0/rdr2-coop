@@ -32,7 +32,7 @@ v12 требуют рестарта игры/сервера; см. `docs/TESTING
 - ✅ Reconnect с backoff (1→10 с) и **host migration**: при выходе хоста
   гость повышается и продолжает сессию.
 - ✅ Headless-тесты сервера/протокола (15 шт.), C++ reconnect/config/parser/
-  mission-catalog/budget/fuzz и CI-скрипт с артефактами сборки.
+  mission-catalog/budget/barrier/fuzz и CI-скрипт с артефактами и кешем.
 
 ### Пед-призрак
 - ✅ Спавн по модели персонажа, обвязка рендера.
@@ -111,7 +111,7 @@ cmake --build build-server --config Release
 # headless-тесты сервера/протокола (без игры)
 python tests\integration_server.py --exe build-server-v12\Release\rdr2_coop_server.exe
 
-# полный CI: клиент + сервер + 15 Python + 6 C++ + restore-тест
+# полный CI: клиент + сервер + 15 Python + 7 C++ + restore-тест
 powershell -ExecutionPolicy Bypass -File scripts\ci.ps1
 ```
 
@@ -147,6 +147,7 @@ ped_model   = 0xCF7E73BE      ; запасная модель, пока не п�
 | `save_backup` | 1 | бэкап сейва перед первым зачётом |
 | `mission_reward_log` | 1 | dry-run лог плана наград (нативы не вызываются) |
 | `world_trains` | 0 | R&D: поезда/вагоны в WorldSnapshot (экспериментально) |
+| `train_debug` | 0 | R&D: подробный лог offset/attach вагонов |
 
 ## Запуск сервера
 

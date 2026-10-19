@@ -21,6 +21,10 @@
   `UpdateProxy` не перетирает привязанные вагоны позициями из WorldSnapshot.
   При удалении локомотива вагоны отцепляются. Это экспериментально: если
   attachment ведёт себя плохо, `world_trains=0`.
+- **Отладка offset/attach:** `train_debug = 1` логирует по каждому вагону
+  `world/local offset`, heading, позицию локомотива и результат
+  `IS_ENTITY_ATTACHED_TO_ENTITY`; при выключенном debug пишутся только
+  неудачные attach (раз в ~5 с).
 - В логе: `trains_included=N` (включено) и `trains_skipped=N` (выключено).
 - Флаг `world_trains` читается конфигом и покрыт `config_test`.
 

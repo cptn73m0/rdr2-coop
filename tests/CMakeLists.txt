@@ -48,6 +48,13 @@ add_executable(world_entity_budget_test
 target_include_directories(world_entity_budget_test PRIVATE .. ../src)
 target_compile_features(world_entity_budget_test PRIVATE cxx_std_17)
 
+add_executable(mission_barrier_rules_fuzz
+    mission_barrier_rules_fuzz.cpp
+    ../src/mission_barrier_rules.cpp
+)
+target_include_directories(mission_barrier_rules_fuzz PRIVATE .. ../src)
+target_compile_features(mission_barrier_rules_fuzz PRIVATE cxx_std_17)
+
 if (WIN32)
     target_link_libraries(client_reconnect_test PRIVATE ws2_32)
     target_link_libraries(frame_reader_fuzz PRIVATE ws2_32)
