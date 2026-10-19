@@ -326,8 +326,10 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
         candidates.push_back(c);
     }
 
-    // Транспорт: ближайшие 16 машин, кроме машины, в которой сидит хост
-    // (её салон/водителя синхронизирует отдельная система, не P1).
+    // Транспорт RDR2: дилижансы, повозки, лодки, трамваи (в движке это
+    // Vehicle). Поезда пока пропускаем: это длинный движущийся состав,
+    // которому нужна отдельная репликация вагонов, а не один прокси.
+    unsigned int trainsSkipped = 0;
     {
         static int vehicleHandles[1024];
         int vehicleCount = sh::worldGetAllVehicles(vehicleHandles, 1024);
@@ -363,6 +365,17 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
             const unsigned int model = GetModel(handle);
             if (!model)
                 continue;
+
+            {
+                using namespace natives_api;
+                Init(natives::IS_THIS_MODEL_A_TRAIN);
+                Push(static_cast<unsigned long long>(model));
+                if (Call())
+                {
+                    ++trainsSkipped; // поезд/вагоны — отдельная подсистема
+                    continue;
+                }
+            }
 
             HostIdState& state = g_hostIds[handle];
             if (state.netId == 0 || state.model != model)
@@ -448,9 +461,10 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
             if (c.entity.kind == net::kEntityKindVehicle) ++vehicleCount;
             else ++pedCount;
         }
-        sh_log::Write("world: host snapshot n=%u ped=%u veh=%u mission=%u bytes=%u\n",
+        sh_log::Write("world: host snapshot n=%u ped=%u veh=%u mission=%u "
+                      "trains_skipped=%u bytes=%u\n",
                       static_cast<unsigned int>(candidates.size()), pedCount,
-                      vehicleCount, missionCount,
+                      vehicleCount, missionCount, trainsSkipped,
                       static_cast<unsigned int>(payload.size()));
     }
 
@@ -510,7 +524,7 @@ unsigned int CreateProxy(const net::WorldEntity& e)
         Push(e.x); Push(e.y); Push(e.z); Push(e.heading);
         Push(false); // isNetwork
         Push(false); // bScriptHostVeh
-        Push(false); // bDontAutoCreateDraftAnimals
+        Push(true);  // bDontAutoCreateDraftAnimals: тягловых лошадей не плодим
         Push(false); // p8
         const unsigned int veh = static_cast<unsigned int>(Call());
         if (!veh)

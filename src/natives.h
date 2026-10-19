@@ -217,5 +217,6 @@ constexpr unsigned long long CREATE_VEHICLE                   = 0xAF35D0D2583051
 constexpr unsigned long long DELETE_VEHICLE                   = 0xE20A909D8C4A70F8ull;
 constexpr unsigned long long GET_VEHICLE_PED_IS_USING         = 0x6094AD011A2EA87Dull;
 constexpr unsigned long long IS_VEHICLE_WRECKED               = 0xDDBEA5506C848227ull;
+constexpr unsigned long long IS_THIS_MODEL_A_TRAIN            = 0xFC08C8F8C1EDF174ull;
 
 } // namespace natives
