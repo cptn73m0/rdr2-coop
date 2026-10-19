@@ -67,6 +67,10 @@ public:
     using OnMissionState = std::function<void(const net::MissionStatePayload&)>;
     // P3: барьер совместного старта миссии.
     using OnMissionBarrier = std::function<void(const net::MissionBarrierPayload&)>;
+    // Соединение потеряно (не ручной Stop) — клиент уйдёт в reconnect.
+    using OnConnectionLost = std::function<void()>;
+    // Сервер сменил роль (host migration).
+    using OnHostChanged = std::function<void(bool isHost)>;
 
     Client();
     ~Client();
@@ -99,6 +103,8 @@ public:
     void SendMissionState(const net::MissionStatePayload& state);
     // P3: отправить событие барьера миссии.
     void SendMissionBarrier(const net::MissionBarrierPayload& event);
+    // Текущее состояние роли по мнению сервера (обновляется HostChanged).
+    bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
     uint32_t RttMs() const { return rttMs_.load(); }
 
@@ -119,11 +125,14 @@ public:
     void SetMissionEvent(OnMissionEvent cb);
     void SetMissionState(OnMissionState cb);
     void SetMissionBarrier(OnMissionBarrier cb);
+    void SetConnectionLost(OnConnectionLost cb);
+    void SetHostChanged(OnHostChanged cb);
 
     ClientState State() const;
 
 private:
     void Run();
+    bool RunOnce();
     bool SendRaw(const std::vector<uint8_t>& frame);
     void SendPing();
     uint64_t NowMs() const;
@@ -157,6 +166,10 @@ private:
     OnMissionEvent onMissionEvent_;
     OnMissionState onMissionState_;
     OnMissionBarrier onMissionBarrier_;
+    OnConnectionLost onConnectionLost_;
+    OnHostChanged onHostChanged_;
+    std::atomic<bool> joined_{false};
+    std::atomic<bool> isHost_{false};
     std::atomic<uint32_t> rttMs_{0};
 };
 

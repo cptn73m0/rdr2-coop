@@ -852,6 +852,8 @@ bool s_appliedOutfitValid = false;
 // Тиков, в течение которых периодически переприменяем наряд (после
 // посадки/спешивания движок сам сбрасывает variation и внешний вид «слетает»).
 unsigned int s_outfitRefreshTicks = 0;
+// Флаг «соединение потеряно, идёт reconnect» (сетевой колбэк -> Tick).
+bool s_pendingConnectionLost = false;
 // Флаг «игрок вышел»: обработка (удаление педа) произойдёт в Tick().
 bool s_pendingLeave = false;
 char s_leaveName[64] = ""; // имя ушедшего игрока (для надписи «left»)
@@ -3512,6 +3514,19 @@ void InitNetworkClient()
                       static_cast<unsigned>(reason));
     });
 
+    g_netClient.SetConnectionLost([]() {
+        sh_log::Write("net: CONNECTION_LOST -> reconnect with backoff\n");
+        s_pendingConnectionLost = true;
+    });
+
+    g_netClient.SetHostChanged([](bool isHost) {
+        s_amHost = isHost;
+        sh_log::Write("net: HOST_CHANGED isHost=%d\n", isHost ? 1 : 0);
+        std::snprintf(s_joinedName, sizeof(s_joinedName),
+                      isHost ? "You are now HOST" : "You are now GUEST");
+        s_subtitleTicksLeft = 10 * 60;
+    });
+
     // P1: WorldSnapshot от хоста. Сетевой поток только копирует payload;
     // прокси-сущности создаёт/обновляет world_sync из Tick() (игровой поток).
     g_netClient.SetWorldSnapshot([](const std::vector<uint8_t>& payload) {
@@ -3935,6 +3950,20 @@ void Tick()
             s_modelLoadedLogged = true;
         }
         return;
+    }
+
+    // Обработка потери соединения: чистим удалённого педа и ждём reconnect.
+    if (s_pendingConnectionLost)
+    {
+        s_pendingConnectionLost = false;
+        s_pendingJoin = false;
+        s_pendingLeave = false;
+        s_playerJoinedNotified = false;
+        s_amHost = false;
+        CleanupGhost();
+        std::snprintf(s_joinedName, sizeof(s_joinedName),
+                      "Connection lost — reconnecting...");
+        s_subtitleTicksLeft = 10 * 60;
     }
 
     // Обработка выхода игрока (флаг ставит сетевой колбэк, всё удаление —

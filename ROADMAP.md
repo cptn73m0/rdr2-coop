@@ -133,7 +133,13 @@
       защита от пустых/повторных JOIN, host-only сообщения
 - [x] Headless-тесты протокола/сервера (7 integration tests, без игры)
 - [x] Проверка и фикс: probe-подключения больше не затирают players.txt
-- [ ] Reconnect с backoff, состояние/очереди после разрыва
+- [x] Reconnect с backoff (1→10 с), очистка педа, повторный JOIN
+- [x] Host migration: сервер повышает гостя, шлёт HostChanged (v12)
+- [x] Headless-тест host migration: новый хост принимается для WorldSnapshot
+- [x] Fuzz-тест: 300 случайных кадров/размеров, oversize, fragmented Ping
+- [x] CI-скрипт `scripts/ci.ps1`: сборка клиента+сервера и тесты
+- [x] Убрано предупреждение C4005 WIN32_LEAN_AND_MEAN
+- [ ] Проверка reconnect/host migration на двух ПК (нужна игра)
 - [ ] 3+ игроков: `map<sessionId, RemotePeer>`, player id в кадрах
 - [ ] Anti-desync: метрики, resync по запросу, tombstones
 - [ ] Логи: ротация, уровни, без спама outfit categories

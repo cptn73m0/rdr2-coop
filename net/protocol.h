@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v11: MissionBarrier — P3: offer/ready/start-window handshake (host <-> guest).
-constexpr uint16_t kProtocolVersion = 11;
+// v12: HostChanged — сервер повышает гостя до хоста при выходе хоста.
+constexpr uint16_t kProtocolVersion = 12;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -47,7 +47,16 @@ enum class Msg : uint8_t {
     MissionEvent = 0x13,  // хост -> сервер -> гость: миссия завершена/рейтинг
     MissionState = 0x14,  // хост -> сервер -> гость: активная Story-миссия
     MissionBarrier = 0x15,// P3: offer/ready/start-window/started/abort
+    HostChanged = 0x16,   // сервер -> клиент: новый хост / смена роли
 };
+
+// 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
+struct HostChangedPayload {
+    uint8_t isHost = 0;
+    uint8_t pad[3] = {0, 0, 0};
+};
+static_assert(sizeof(HostChangedPayload) == 4,
+              "HostChangedPayload must be 4 bytes");
 
 // Компоненты одежды игрока (наряд): список хэшей одетых shop-предметов.
 // Лимит 96 (а не 32): GET_NUM_COMPONENT_CATEGORIES_IN_PED на реальном педе

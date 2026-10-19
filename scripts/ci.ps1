@@ -1,0 +1,49 @@
+param(
+    [switch]$NoClient,
+    [switch]$NoServer,
+    [switch]$NoTests
+)
+
+$ErrorActionPreference = "Stop"
+$repo = Split-Path -Parent $PSScriptRoot
+$cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+$python = "python"
+
+Write-Host "=== CI: $repo ==="
+
+if (-not $NoClient) {
+    Write-Host "=== Build client (ASI) ==="
+    if (-not (Test-Path -LiteralPath (Join-Path $repo "build\CMakeCache.txt"))) {
+        & $cmake -S $repo -B (Join-Path $repo "build") -G "Visual Studio 16 2019" -A x64
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    & $cmake --build (Join-Path $repo "build") --config Release
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+if (-not $NoServer) {
+    Write-Host "=== Build server ==="
+    $serverBuild = Join-Path $repo "build-server-ci"
+    if (-not (Test-Path -LiteralPath (Join-Path $serverBuild "CMakeCache.txt"))) {
+        & $cmake -S (Join-Path $repo "server") -B $serverBuild -G "Visual Studio 16 2019" -A x64
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    & $cmake --build $serverBuild --config Release
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+if (-not $NoTests) {
+    Write-Host "=== Headless integration tests ==="
+    $exe = Join-Path $repo "build-server-ci\Release\rdr2_coop_server.exe"
+    if (-not (Test-Path -LiteralPath $exe)) {
+        $exe = Join-Path $repo "build-server-v12\Release\rdr2_coop_server.exe"
+    }
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-Host "server executable not found"
+        exit 1
+    }
+    & $python (Join-Path $repo "tests\integration_server.py") --exe $exe
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+Write-Host "=== CI OK ==="

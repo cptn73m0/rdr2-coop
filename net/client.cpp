@@ -63,6 +63,8 @@ void Client::SetPlayerVehicle(OnPlayerVehicle cb) { onPlayerVehicle_ = std::move
 void Client::SetMissionEvent(OnMissionEvent cb) { onMissionEvent_ = std::move(cb); }
 void Client::SetMissionState(OnMissionState cb) { onMissionState_ = std::move(cb); }
 void Client::SetMissionBarrier(OnMissionBarrier cb) { onMissionBarrier_ = std::move(cb); }
+void Client::SetConnectionLost(OnConnectionLost cb) { onConnectionLost_ = std::move(cb); }
+void Client::SetHostChanged(OnHostChanged cb) { onHostChanged_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -205,13 +207,50 @@ void Client::Run()
         return;
     }
 
+    int backoffMs = 1000;
+    while (running_.load())
+    {
+        const bool wasJoined = joined_.load();
+        state_.store(ClientState::Connecting);
+        joined_.store(false);
+        reader_.Reset();
+        sock_.reset();
+
+        RunOnce(); // блокирующий цикл соединения/приёма
+
+        if (!running_.load())
+            break;
+
+        // Потеря связи (не Stop): сообщаем наружу и уходим в reconnect.
+        if (wasJoined && onConnectionLost_)
+            onConnectionLost_();
+
+        state_.store(ClientState::Disconnected);
+        if (joined_.load())
+            backoffMs = 1000; // успешный сеанс — начинаем backoff заново
+
+        // Прерываемый сон: Stop не должен ждать весь backoff.
+        int slept = 0;
+        while (slept < backoffMs && running_.load())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            slept += 100;
+        }
+        backoffMs = (backoffMs < 10000) ? backoffMs * 2 : 10000;
+    }
+    if (state_.load() != ClientState::Error)
+        state_.store(ClientState::Disconnected);
+}
+
+bool Client::RunOnce()
+{
     SOCKET c = INVALID_SOCKET;
 #ifdef _WIN32
     c = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 #else
     c = ::socket(AF_INET, SOCK_STREAM, 0);
 #endif
-    if (c == INVALID_SOCKET) { state_.store(ClientState::Error); running_.store(false); return; }
+    if (c == INVALID_SOCKET) { state_.store(ClientState::Error); return false; }
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -220,16 +259,15 @@ void Client::Run()
     {
         closesocket(c);
         state_.store(ClientState::Error);
-        running_.store(false);
-        return;
+        return false;
     }
 
 #ifdef _WIN32
     if (connect(c, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR)
-    { closesocket(c); state_.store(ClientState::Error); running_.store(false); return; }
+    { closesocket(c); state_.store(ClientState::Connecting); return false; }
 #else
     if (::connect(c, (sockaddr*)&addr, sizeof(addr)) == -1)
-    { ::close(c); state_.store(ClientState::Error); running_.store(false); return; }
+    { ::close(c); state_.store(ClientState::Connecting); return false; }
 #endif
 
     sock_ = std::make_unique<Socket>(c);
@@ -237,7 +275,7 @@ void Client::Run()
     // сокет в неблокирующий режим: Send() только ставит данные в очередь.
     SetNoDelay(c);
     SetNonBlocking(c);
-    state_.store(ClientState::JoinOk); // соединено; JOIN шлём дальше
+    state_.store(ClientState::Connecting); // соединено; JOIN шлём дальше
 
     // Отправить JOIN.
     SendRaw(BuildJoinFrame(name_, pedModel_));
@@ -293,6 +331,8 @@ void Client::Run()
                     jr.isHost = p[9] != 0; // без координат is_host сразу после has_saved
                 }
                 state_.store(ClientState::JoinOk);
+                joined_.store(true);
+                isHost_.store(jr.isHost);
                 if (onJoinOk_) onJoinOk_(jr);
                 break;
             }
@@ -487,6 +527,16 @@ void Client::Run()
                 }
                 break;
             }
+            case net::Msg::HostChanged:
+            {
+                if (!p.empty())
+                {
+                    const bool nowHost = p[0] != 0;
+                    isHost_.store(nowHost);
+                    if (onHostChanged_) onHostChanged_(nowHost);
+                }
+                break;
+            }
             case net::Msg::Pong:
             {
                 if (p.size() >= 8)
@@ -506,11 +556,9 @@ void Client::Run()
         }
     }
 
-    if (onPlayerLeave_) onPlayerLeave_(name_);
     if (sock_) sock_->Close();
     sock_.reset();
-    running_.store(false);
-    state_.store(ClientState::Disconnected);
+    return false;
 }
 
 } // namespace netio

@@ -674,6 +674,12 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
 done:
     if (registered && !name.empty())
     {
+        bool wasHost = false;
+        {
+            std::lock_guard<std::mutex> lk(g_mutex);
+            auto it = g_online.find(name);
+            wasHost = it != g_online.end() && it->second.isHost;
+        }
         // остальным — что игрок ушёл
         BroadcastToOthers(sock, MakeNameMsg((uint8_t)net::Msg::PlayerLeft, name));
         {
@@ -681,6 +687,37 @@ done:
             g_online.erase(name);
         }
         LogLine("[-] " + name + " отключился (" + peerIp + ")");
+
+        // Host migration: если ушёл хост и кто-то остался — повышаем первого
+        // оставшегося и сообщаем каждому его роль (1 = хост).
+        if (wasHost)
+        {
+            std::string newHost;
+            std::vector<std::pair<netio::Socket*, bool>> targets;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                if (!g_online.empty())
+                {
+                    newHost = g_online.begin()->first;
+                    g_online.begin()->second.isHost = true;
+                }
+                for (auto& kv : g_online)
+                    targets.emplace_back(kv.second.sock, kv.first == newHost);
+            }
+            if (!newHost.empty())
+            {
+                LogLine("[HOST] " + newHost + " повышен до хоста");
+                for (auto& t : targets)
+                {
+                    net::HostChangedPayload h{};
+                    h.isHost = t.second ? 1 : 0;
+                    auto msg = MakeMsg((uint8_t)net::Msg::HostChanged,
+                                       reinterpret_cast<const uint8_t*>(&h),
+                                       (uint32_t)sizeof(h));
+                    if (t.first) t.first->Send(msg.data(), (int)msg.size());
+                }
+            }
+        }
     }
     // SaveAll только для реально зарегистрированного игрока: случайные
     // probe-подключения не должны перезаписывать players.txt пустым файлом.

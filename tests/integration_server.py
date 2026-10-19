@@ -22,12 +22,13 @@ import tempfile
 import time
 from pathlib import Path
 
-PROTO = 11
+PROTO = 12
 TYPE_FRAME = 0x04
 TYPE_JOIN = 0x01
 TYPE_JOIN_OK = 0x02
 TYPE_PLAYER_JOINED = 0x03
 TYPE_LEAVE = 0x06
+TYPE_PLAYER_LEFT = 0x06
 TYPE_PING = 0x0C
 TYPE_PONG = 0x0D
 TYPE_JOIN_REJECTED = 0x0F
@@ -37,6 +38,7 @@ TYPE_PLAYER_VEHICLE = 0x12
 TYPE_MISSION_EVENT = 0x13
 TYPE_MISSION_STATE = 0x14
 TYPE_MISSION_BARRIER = 0x15
+TYPE_HOST_CHANGED = 0x16
 TYPE_OUTFIT = 0x09
 TYPE_HORSE_OUTFIT = 0x0A
 TYPE_SHOT = 0x0B
@@ -421,6 +423,88 @@ def test_oversized_and_truncated(exe, tmp):
         c.close()
 
 
+def test_host_migration(exe, tmp):
+    log("[test] host migration")
+    with Server(exe, tmp / "migration") as srv:
+        host = connect(srv.port)
+        join(host, "Alice")
+        assert recv_type(host, TYPE_JOIN_OK) is not None
+        guest = connect(srv.port)
+        join(guest, "Bob")
+        assert recv_type(guest, TYPE_JOIN_OK) is not None
+        recv_msgs(host, 0.3)
+        recv_msgs(guest, 0.3)
+
+        host.close()
+        # Bob must see PlayerLeft(Alice) and HostChanged(isYouHost=1).
+        msgs = recv_msgs(guest, 1.2)
+        assert any(t == TYPE_PLAYER_LEFT for t, _ in msgs), \
+            "guest should get PlayerLeft for departed host"
+        changed = [p for t, p in msgs if t == TYPE_HOST_CHANGED]
+        assert changed and changed[-1][0] == 1, \
+            f"guest should be promoted, got {changed}"
+        recv_msgs(guest, 0.3)
+
+        # Bob is now host: his WorldSnapshot must be accepted and relayed
+        # to a new guest.
+        charlie = connect(srv.port)
+        join(charlie, "Charlie")
+        assert recv_type(charlie, TYPE_JOIN_OK) is not None
+        recv_msgs(charlie, 0.4)
+        snapshot = make_world(1)
+        guest.sendall(frame_bytes(TYPE_WORLD_SNAPSHOT, snapshot))
+        assert recv_type(charlie, TYPE_WORLD_SNAPSHOT) == snapshot, \
+            "promoted host snapshot must relay to new guest"
+
+        # Charlie is still a guest: his snapshot is blocked.
+        charlie.sendall(frame_bytes(TYPE_WORLD_SNAPSHOT, snapshot))
+        assert recv_type(guest, TYPE_WORLD_SNAPSHOT, 0.5) is None
+
+        guest.close()
+        charlie.close()
+
+
+def test_fuzz_frames(exe, tmp):
+    log("[test] fuzz malformed frames")
+    with Server(exe, tmp / "fuzz") as srv:
+        s = connect(srv.port)
+        join(s, "Fuzz")
+        assert recv_type(s, TYPE_JOIN_OK) is not None
+
+        # Random non-control message types/sizes; server must ignore/drop
+        # without crashing or relaying nonsensical messages.
+        rng = random.Random(12345)
+        safe_types = [0x7E, 0x7F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x0B, 0x09]
+        for _ in range(300):
+            t = rng.choice(safe_types + [0x00, 0x08, 0x0A, 0x0C])
+            ln = rng.choice([0, 1, 8, 12, 16, 23, 24, 25, 32, 64, 255,
+                             FRAME_SIZE, OUTFIT_SIZE, 2000])
+            s.sendall(struct.pack("<I", ln) + bytes([t]) + bytes([rng.randrange(256) for _ in range(ln)]))
+        # Oversized length header (internal FrameReader reset, no crash).
+        s.sendall(struct.pack("<I", 0x20000) + b"\x04")
+        # Drain Pong echoes produced by fuzzed Ping frames.
+        recv_msgs(s, 0.4)
+        # Fragmented valid Ping.
+        ping = frame_bytes(TYPE_PING, b"fuzz-ping")
+        s.sendall(ping[:2]); time.sleep(0.02)
+        s.sendall(ping[2:5]); time.sleep(0.02)
+        s.sendall(ping[5:])
+        deadline = time.time() + 2.0
+        pong_ok = False
+        while time.time() < deadline and not pong_ok:
+            for t, p in recv_msgs(s, 0.2):
+                if t == TYPE_PONG and p == b"fuzz-ping":
+                    pong_ok = True
+        assert pong_ok, "server should answer fragmented Ping"
+
+        # A fresh client must still connect and join.
+        c = connect(srv.port)
+        join(c, "AfterFuzz")
+        assert recv_type(c, TYPE_JOIN_OK) is not None
+        s.close()
+        c.close()
+
+
 def test_persistence(exe, tmp):
     log("[test] players.txt persistence across restart")
     work = tmp / "persist"
@@ -474,6 +558,8 @@ def main():
         test_world_host_only,
         test_payload_sizes_and_host_only_messages,
         test_oversized_and_truncated,
+        test_host_migration,
+        test_fuzz_frames,
         test_persistence,
     ]
     try:
