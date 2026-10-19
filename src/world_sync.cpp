@@ -798,6 +798,15 @@ struct Proxy
     // R&D: вагон привязан к локомотиву (позицию ведёт attachment).
     bool trainAttached = false;
     unsigned int trainAttachedTo = 0;
+    // Плавная интерполяция позиции/heading между 10 Гц снапшотами.
+    bool interpReady = false;
+    bool hasInterp = false;
+    Vec3 interpFrom{0.f, 0.f, 0.f};
+    Vec3 interpTo{0.f, 0.f, 0.f};
+    float interpFromHeading = 0.f;
+    float interpToHeading = 0.f;
+    uint64_t interpStartMs = 0;
+    uint64_t interpDurationMs = 100;
 };
 
 std::map<uint64_t, Proxy> g_proxies;
@@ -881,6 +890,25 @@ unsigned int CreateProxy(const net::WorldEntity& e)
     return handle;
 }
 
+constexpr uint64_t kProxyInterpMs = 100; // хост шлёт снапшоты ~10 Гц
+
+float NormalizeAngleDelta(float from, float to)
+{
+    float d = std::fmod(to - from + 540.0f, 360.0f) - 180.0f;
+    return d;
+}
+
+void BeginProxyInterp(Proxy& proxy, const net::WorldEntity& e)
+{
+    proxy.interpFrom = GetCoords(proxy.handle);
+    proxy.interpTo = Vec3{e.x, e.y, e.z};
+    proxy.interpFromHeading = GetHeading(proxy.handle);
+    proxy.interpToHeading = e.heading;
+    proxy.interpStartMs = GetTickCount64();
+    proxy.interpDurationMs = kProxyInterpMs;
+    proxy.hasInterp = true;
+}
+
 void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
 {
     if (!proxy.handle || !DoesExist(proxy.handle))
@@ -892,9 +920,17 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
         // перетираем его позицию из WorldSnapshot каждый тик.
         if (proxy.trainAttached)
             return;
-        // Транспорт/объекты: позиция из снапшота (физика не симулируется).
-        SetCoords(proxy.handle, e.x, e.y, e.z);
-        SetHeading(proxy.handle, e.heading);
+        if (!proxy.interpReady)
+        {
+            // Первое появление: ставим сразу, без интерполяции.
+            SetCoords(proxy.handle, e.x, e.y, e.z);
+            SetHeading(proxy.handle, e.heading);
+            proxy.interpReady = true;
+            return;
+        }
+        // Дальше не телепортируем на каждом снапшоте, а плавно едем к
+        // новой позиции в TickProxyInterpolation().
+        BeginProxyInterp(proxy, e);
         return;
     }
 
@@ -1026,6 +1062,43 @@ void DeleteProxy(Proxy& proxy)
             DeleteEntity(proxy.handle);
     }
     proxy.handle = 0;
+}
+
+// Плавное движение vehicle/object прокси между снапшотами (каждый игровой
+// тик, а не только при приходе 10 Гц снапшота).
+void TickProxyInterpolation()
+{
+    if (g_proxies.empty())
+        return;
+    const uint64_t now = GetTickCount64();
+    for (auto& kv : g_proxies)
+    {
+        Proxy& p = kv.second;
+        if (p.kind == net::kEntityKindPed || !p.hasInterp ||
+            !p.handle || !DoesExist(p.handle) || p.trainAttached)
+            continue;
+        float alpha = 1.0f;
+        if (p.interpDurationMs > 0)
+        {
+            alpha = static_cast<float>(now - p.interpStartMs) /
+                    static_cast<float>(p.interpDurationMs);
+            if (alpha < 0.f) alpha = 0.f;
+            if (alpha > 1.f) alpha = 1.f;
+        }
+        const float x = p.interpFrom.x + (p.interpTo.x - p.interpFrom.x) * alpha;
+        const float y = p.interpFrom.y + (p.interpTo.y - p.interpFrom.y) * alpha;
+        const float z = p.interpFrom.z + (p.interpTo.z - p.interpFrom.z) * alpha;
+        const float heading = p.interpFromHeading +
+            NormalizeAngleDelta(p.interpFromHeading, p.interpToHeading) * alpha;
+        SetCoords(p.handle, x, y, z);
+        SetHeading(p.handle, heading);
+        if (alpha >= 1.0f)
+        {
+            p.hasInterp = false;
+            p.interpFrom = p.interpTo;
+            p.interpFromHeading = p.interpToHeading;
+        }
+    }
 }
 
 void ApplyPendingSnapshot(unsigned int tickCount)
@@ -1358,6 +1431,8 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
 
     if (coopcfg::Get().worldSuppressAmbient)
         SuppressLocalWorld();
+
+    TickProxyInterpolation();
 }
 
 } // namespace world_sync
