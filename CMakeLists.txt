@@ -14,6 +14,7 @@ add_library(rdr2_coop SHARED
     src/log.cpp
     src/persist.cpp
     src/config.cpp
+    src/world_scan.cpp
     net/client.cpp
     net/socket.cpp
     net/frame.cpp

@@ -178,4 +178,8 @@ constexpr unsigned long long SET_PED_MAX_MOVE_BLEND_RATIO   = 0x433083750C5E064A
 // Плавное анимированное движение педа к координатам (walk/run по скорости).
 constexpr unsigned long long TASK_FOLLOW_NAV_MESH_TO_COORD  = 0x15D3A79D4E44B913ull;
 
+// Spike 1 (модель A): признак mission entity — приоритет репликации мира
+// и фильтр для прокси-сущностей на госте.
+constexpr unsigned long long IS_ENTITY_A_MISSION_ENTITY     = 0x138190F64DB4BBD1ull;
+
 } // namespace natives

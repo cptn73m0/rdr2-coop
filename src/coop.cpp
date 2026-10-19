@@ -1,10 +1,11 @@
-﻿#include "coop.h"
+#include "coop.h"
 #include "config.h"
 #include "ghost_frame.h"
 #include "log.h"
 #include "natives.h"
 #include "net/client.h"
 #include "persist.h"
+#include "world_scan.h"
 
 #include <cmath>
 #include <cstdio>
@@ -2513,6 +2514,10 @@ void Tick()
     unsigned int playerPed = GetPlayerPedFor(0);
     if (!playerPed)
         return;
+
+    // Spike 1 (модель A): диагностика мира — пулы сущностей, NPC/транспорт
+    // рядом, mission-entity, FPS. Только чтение, геймплей не меняет.
+    world_scan::Tick(playerPed, s_tickCount);
 
     // Start the network client on first tick (replaces the old offline
     // emulation as the source of join events).

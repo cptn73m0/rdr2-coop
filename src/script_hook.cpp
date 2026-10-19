@@ -10,6 +10,19 @@ FnNativeInit       nativeInit     = nullptr;
 FnNativePush64     nativePush64   = nullptr;
 FnNativeCall       nativeCall     = nullptr;
 FnScriptWait       scriptWait     = nullptr;
+FnGetGlobalPtr     getGlobalPtr   = nullptr;
+FnGetStaticPtr     getStaticPtr   = nullptr;
+FnGetScriptHandleBaseAddress getScriptHandleBaseAddress = nullptr;
+FnWorldGetAll      worldGetAllPeds     = nullptr;
+FnWorldGetAll      worldGetAllVehicles = nullptr;
+FnWorldGetAll      worldGetAllObjects  = nullptr;
+FnWorldGetAll      worldGetAllPickups  = nullptr;
+
+bool HasWorldQueries()
+{
+    return worldGetAllPeds && worldGetAllVehicles &&
+           worldGetAllObjects && worldGetAllPickups;
+}
 
 namespace {
 
@@ -64,6 +77,16 @@ bool Init(LPCWSTR moduleName)
     nativePush64   = (FnNativePush64)FindExport(hook, "nativePush64");
     nativeCall     = (FnNativeCall)FindExport(hook, "nativeCall");
     scriptWait     = (FnScriptWait)FindExport(hook, "scriptWait");
+
+    // Дополнительные экспорты (не обязательны для базовой работы плагина).
+    getGlobalPtr     = (FnGetGlobalPtr)FindExport(hook, "getGlobalPtr");
+    getStaticPtr     = (FnGetStaticPtr)FindExport(hook, "getStaticPtr");
+    getScriptHandleBaseAddress =
+        (FnGetScriptHandleBaseAddress)FindExport(hook, "getScriptHandleBaseAddress");
+    worldGetAllPeds     = (FnWorldGetAll)FindExport(hook, "worldGetAllPeds");
+    worldGetAllVehicles = (FnWorldGetAll)FindExport(hook, "worldGetAllVehicles");
+    worldGetAllObjects  = (FnWorldGetAll)FindExport(hook, "worldGetAllObjects");
+    worldGetAllPickups  = (FnWorldGetAll)FindExport(hook, "worldGetAllPickups");
 
     return scriptRegister && nativeInit && nativePush64 && nativeCall && scriptWait;
 }

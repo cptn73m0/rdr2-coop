@@ -30,11 +30,32 @@ using KeyHandler = void (*)(DWORD key, bool down);
 using FnKeyRegister   = void (*)(KeyHandler handler);
 using FnKeyUnregister = void (*)(KeyHandler handler);
 
+// Дополнительные экспорты ScriptHookRDR2 (Spike 1 — модель A):
+//   getGlobalPtr(int)                  — указатель на script global;
+//   getStaticPtr(name, index)          — указатель на static-переменную скрипта;
+//   getScriptHandleBaseAddress(handle) — базовый адрес сущности;
+//   worldGetAll{Peds,Vehicles,Objects,Pickups}(int*, int) — пулы сущностей.
+// В установленной ScriptHookRDR2.dll эти экспорты есть (проверено dumpbin).
+using FnGetGlobalPtr = uint64_t* (*)(int globalId);
+using FnGetStaticPtr = uint64_t* (*)(const char* scriptName, int staticIndex);
+using FnGetScriptHandleBaseAddress = uint8_t* (*)(int handle);
+using FnWorldGetAll = int (*)(int* arr, int arrSize);
+
 extern FnScriptRegister   scriptRegister;
 extern FnNativeInit       nativeInit;
 extern FnNativePush64     nativePush64;
 extern FnNativeCall       nativeCall;
 extern FnScriptWait       scriptWait;
+extern FnGetGlobalPtr     getGlobalPtr;
+extern FnGetStaticPtr     getStaticPtr;
+extern FnGetScriptHandleBaseAddress getScriptHandleBaseAddress;
+extern FnWorldGetAll      worldGetAllPeds;
+extern FnWorldGetAll      worldGetAllVehicles;
+extern FnWorldGetAll      worldGetAllObjects;
+extern FnWorldGetAll      worldGetAllPickups;
+
+// true, если worldGetAll* удалось разрешить (нужно для диагностики/репликации).
+bool HasWorldQueries();
 
 // Load ScriptHookRDR2.dll exports. Call once before scriptRegister.
 bool Init(LPCWSTR moduleName = L"ScriptHookRDR2.dll");
