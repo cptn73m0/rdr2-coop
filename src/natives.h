@@ -224,4 +224,11 @@ constexpr unsigned long long GET_PED_IN_VEHICLE_SEAT          = 0xBB40DD2270B653
 constexpr unsigned long long IS_PED_IN_VEHICLE                = 0xA3EE4A07279BB9DBull;
 constexpr unsigned long long SET_PED_INTO_VEHICLE             = 0xF75B0D629E1C063Dull;
 
+// P3: MissionData (только чтение/запись зачёта; никаких копий сейва).
+constexpr unsigned long long MISSIONDATA_IS_VALID             = 0xE54DC27571D5EDC5ull;
+constexpr unsigned long long MISSIONDATA_WAS_COMPLETED        = 0xE54DC27571D5EDC4ull;
+constexpr unsigned long long MISSIONDATA_GET_RATING           = 0x57E798B54C45EE1Aull;
+constexpr unsigned long long _MISSIONDATA_SET_MISSION_RATING  = 0xE824CE7D13FCB300ull;
+constexpr unsigned long long _UILOG_MARK_MISSION_COMPLETED    = 0xDE31D66D1E54C471ull;
+
 } // namespace natives

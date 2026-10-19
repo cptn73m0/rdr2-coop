@@ -2,8 +2,9 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 8` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 9` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение.
+- v9: MissionEvent (0x13) — P3: хост завершил миссию, гость пишет свой зачёт.
 - v8: PlayerVehicle (0x12) — посадка удалённого игрока в транспорт.
 - v7: WorldSnapshot до 64 сущностей — 32 Ped + 16 Vehicle + 16 mission Object.
 - v6: WorldSnapshot до 48 сущностей — 32 Ped + 16 Vehicle (P1 транспорт:
@@ -93,6 +94,30 @@ payload: vehicleModel:u32 netId:u32
   сажает призрака через `SET_PED_INTO_VEHICLE` в то же место.
 - Включается в `rdr2-coop.ini`: `vehicle_sync = 1` на обоих ПК.
 - Салоны/анимация посадки приблизительные; точные клипы не передаются.
+
+### 0x13 MISSION_EVENT (P3: MissionData-событие, только хост → гость)
+
+```
+payload: missionId:u32 rating:u8 flags:u8 pad:u16   // ровно 8 байт
+```
+
+- `missionId` — joaat 4/5-символьный MissionData ID из каталога (80 Story-миссий).
+- `flags`: 0x01 completed (новое завершение), 0x02 rating update.
+- `rating`: MISSION_RATING_* (0..5; 0 = incomplete, 1 skipped, 2 complete,
+  3 bronze, 4 silver, 5 gold).
+- Отправляет **только хост**; сервер отбрасывает событие от гостя.
+- Как хост узнаёт: каждую секунду сравнивает `MISSIONDATA_IS_VALID` /
+  `MISSIONDATA_WAS_COMPLETED` / `MISSIONDATA_GET_RATING` для каталога со
+  своим baseline. Новое `false→true` completion (или изменение рейтинга)
+  уходит гостю.
+- Гость всегда логирует событие; при `mission_credit = 1` пишет зачёт в
+  **свой** сейв: `_UILOG_MARK_MISSION_COMPLETED` + `_MISSIONDATA_SET_MISSION_RATING`.
+  Сейв не копируется; автосейва нет — сохраните игру вручную.
+- Опасно при разном прогрессе: зачёт миссии, которую гость ещё не открыл,
+  может сломать его прогрессию. Включать `mission_credit` только при
+  примерно равном сюжетном прогрессе и после бэкапа сейва.
+- Чего пока нет: определения **текущей** миссии и барьера совместного старта
+  (натива «какая миссия идёт» нет); синхронизируются только завершения.
 
 - Этот раздел описывает изменения Spike 1/P1; остальная спецификация ниже
   устарела и будет обновлена отдельным коммитом.

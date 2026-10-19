@@ -60,6 +60,7 @@ void Client::SetJoinRejected(OnJoinRejected cb) { onJoinRejected_ = std::move(cb
 void Client::SetWorldSnapshot(OnWorldSnapshot cb) { onWorldSnapshot_ = std::move(cb); }
 void Client::SetActionState(OnActionState cb) { onActionState_ = std::move(cb); }
 void Client::SetPlayerVehicle(OnPlayerVehicle cb) { onPlayerVehicle_ = std::move(cb); }
+void Client::SetMissionEvent(OnMissionEvent cb) { onMissionEvent_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -157,6 +158,14 @@ void Client::SendPlayerVehicle(const net::PlayerVehicleState& state)
     std::vector<uint8_t> frame = MakeFrame(
         (uint8_t)net::Msg::PlayerVehicle,
         reinterpret_cast<const uint8_t*>(&state), sizeof(state));
+    SendRaw(frame);
+}
+
+void Client::SendMissionEvent(const net::MissionEventPayload& event)
+{
+    std::vector<uint8_t> frame = MakeFrame(
+        (uint8_t)net::Msg::MissionEvent,
+        reinterpret_cast<const uint8_t*>(&event), sizeof(event));
     SendRaw(frame);
 }
 
@@ -312,6 +321,16 @@ void Client::Run()
                     net::PlayerVehicleState st{};
                     std::memcpy(&st, p.data(), sizeof(st));
                     if (onPlayerVehicle_) onPlayerVehicle_(st);
+                }
+                break;
+            }
+            case net::Msg::MissionEvent:
+            {
+                if (p.size() >= sizeof(net::MissionEventPayload))
+                {
+                    net::MissionEventPayload ev{};
+                    std::memcpy(&ev, p.data(), sizeof(ev));
+                    if (onMissionEvent_) onMissionEvent_(ev);
                 }
                 break;
             }

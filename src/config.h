@@ -26,6 +26,10 @@ struct Config {
     bool actionSync = false;
     // P2: посадка в транспорт (дилижанс/повозка) удалённого игрока.
     bool vehicleSync = false;
+    // P3: хост детектит новые завершённые миссии MissionData и шлёт гостю.
+    bool missionSync = false;
+    // P3: писать зачёт миссии в свой сейв гостя (опасно, если прогресс разный).
+    bool missionCredit = false;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —

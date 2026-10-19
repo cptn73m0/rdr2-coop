@@ -7,6 +7,7 @@
 #include "persist.h"
 #include "world_scan.h"
 #include "world_sync.h"
+#include "mission_catalog.h"
 
 #include <algorithm>
 #include <atomic>
@@ -469,6 +470,17 @@ unsigned int s_playerVehicle = 0;
 unsigned int s_playerVehicleModel = 0;
 bool s_remoteInVehicle = false;
 void DeleteRemotePlayerVehicle();
+// P3: MissionData-события (хост -> гость).
+struct MissionBaseline
+{
+    bool initialized = false;
+    bool completed[missions::kMissionCatalogSize]{};
+    int rating[missions::kMissionCatalogSize]{};
+};
+MissionBaseline s_missionBaseline;
+std::mutex s_missionMtx;
+std::vector<net::MissionEventPayload> s_missionEvents;
+unsigned int s_lastMissionPollTick = 0;
 // Последнее применённое время (для лога смены).
 int s_lastAppliedHour = -1, s_lastAppliedMin = -1;
 // Компоненты одежды удалённого игрока (для применения в Tick()).
@@ -3004,6 +3016,135 @@ void ApplyRemotePlayerVehicle(const net::PlayerVehicleState& pv)
     s_remoteInVehicle = true;
 }
 
+// P3: хост сравнивает каталог MissionData со своим baseline. Новое
+// завершение/рейтинг отправляем гостю — он пишет зачёт в СВОЙ сейв.
+void PollHostMissions()
+{
+    using namespace natives_api;
+    int validCount = 0;
+    int completedCount = 0;
+
+    for (int i = 0; i < missions::kMissionCatalogSize; ++i)
+    {
+        const missions::MissionInfo& info = missions::kMissionCatalog[i];
+        Init(natives::MISSIONDATA_IS_VALID);
+        Push(static_cast<unsigned long long>(info.id));
+        if (!Call())
+        {
+            if (s_missionBaseline.initialized)
+            {
+                s_missionBaseline.completed[i] = false;
+                s_missionBaseline.rating[i] = 0;
+            }
+            continue;
+        }
+        ++validCount;
+
+        Init(natives::MISSIONDATA_WAS_COMPLETED);
+        Push(static_cast<unsigned long long>(info.id));
+        const bool completed = Call() != 0;
+
+        Init(natives::MISSIONDATA_GET_RATING);
+        Push(static_cast<unsigned long long>(info.id));
+        const int rating = static_cast<int>(Call());
+
+        if (completed) ++completedCount;
+
+        if (!s_missionBaseline.initialized)
+        {
+            s_missionBaseline.completed[i] = completed;
+            s_missionBaseline.rating[i] = rating;
+            continue;
+        }
+
+        if (completed && !s_missionBaseline.completed[i])
+        {
+            net::MissionEventPayload ev{};
+            ev.missionId = info.id;
+            ev.rating = static_cast<uint8_t>(rating < 0 ? 0 : (rating > 5 ? 5 : rating));
+            ev.flags = net::kMissionFlagCompleted;
+            sh_log::Write("mission: host completed 0x%08X (%s) rating=%d -> guest\n",
+                          info.id, info.code, rating);
+            g_netClient.SendMissionEvent(ev);
+        }
+        else if (s_missionBaseline.completed[i] && rating != s_missionBaseline.rating[i])
+        {
+            net::MissionEventPayload ev{};
+            ev.missionId = info.id;
+            ev.rating = static_cast<uint8_t>(rating < 0 ? 0 : (rating > 5 ? 5 : rating));
+            ev.flags = net::kMissionFlagRatingUpdate;
+            sh_log::Write("mission: host rating update 0x%08X (%s) %d -> %d\n",
+                          info.id, info.code, s_missionBaseline.rating[i], rating);
+            g_netClient.SendMissionEvent(ev);
+        }
+
+        s_missionBaseline.completed[i] = completed;
+        s_missionBaseline.rating[i] = rating;
+    }
+
+    if (!s_missionBaseline.initialized)
+    {
+        s_missionBaseline.initialized = true;
+        sh_log::Write("mission: baseline initialized (valid=%d completed=%d)\n",
+                      validCount, completedCount);
+    }
+}
+
+// P3: гость — лог события всегда; зачёт в свой сейв только при mission_credit.
+void ApplyMissionEventToGuest(const net::MissionEventPayload& ev)
+{
+    using namespace natives_api;
+    const missions::MissionInfo* info = missions::FindMission(ev.missionId);
+    const char* code = info ? info->code : "????";
+    const char* title = info ? info->title : "unknown";
+
+    if (!(ev.flags & (net::kMissionFlagCompleted | net::kMissionFlagRatingUpdate)))
+        return;
+
+    sh_log::Write("mission: host event 0x%08X (%s — %s) rating=%u flags=0x%02X\n",
+                  ev.missionId, code, title, (unsigned)ev.rating, (unsigned)ev.flags);
+
+    if (!coopcfg::Get().missionCredit)
+        return;
+
+    Init(natives::MISSIONDATA_IS_VALID);
+    Push(static_cast<unsigned long long>(ev.missionId));
+    if (!Call())
+    {
+        sh_log::Write("mission: credit skipped — MissionData invalid for this save\n");
+        return;
+    }
+
+    Init(natives::MISSIONDATA_WAS_COMPLETED);
+    Push(static_cast<unsigned long long>(ev.missionId));
+    const bool already = Call() != 0;
+
+    if (already)
+    {
+        // Уже зачтена: обновляем только рейтинг, completion повторно не пишем.
+        Init(natives::_MISSIONDATA_SET_MISSION_RATING);
+        Push(static_cast<unsigned long long>(ev.missionId));
+        Push(static_cast<unsigned long long>(static_cast<unsigned int>(ev.rating)));
+        Call();
+        sh_log::Write("mission: already completed, rating updated to %u\n",
+                      (unsigned)ev.rating);
+        return;
+    }
+
+    Init(natives::_UILOG_MARK_MISSION_COMPLETED);
+    Push(static_cast<unsigned long long>(ev.missionId));
+    Call();
+
+    Init(natives::_MISSIONDATA_SET_MISSION_RATING);
+    Push(static_cast<unsigned long long>(ev.missionId));
+    Push(static_cast<unsigned long long>(static_cast<unsigned int>(ev.rating)));
+    Call();
+
+    sh_log::Write("mission: CREDITED to own save 0x%08X (%s) rating=%u "
+                  "— save the game manually\n",
+                  ev.missionId, code, (unsigned)ev.rating);
+}
+
 // Регистрация колбэков и запуск сетевого клиента.
 // ВАЖНО: колбэки исполняются в фоновом сетевом потоке — они не имеют права
 // трогать нативы/сущности движка; они только буферизуют состояние, которое
@@ -3046,6 +3187,13 @@ void InitNetworkClient()
         std::lock_guard<std::mutex> lk(s_pvMtx);
         s_pvIn = pv;
         s_havePvIn = true;
+    });
+
+    // P3: MissionData-событие от хоста — буферизуем; применит Tick().
+    g_netClient.SetMissionEvent([](const net::MissionEventPayload& ev) {
+        std::lock_guard<std::mutex> lk(s_missionMtx);
+        if (s_missionEvents.size() < 32)
+            s_missionEvents.push_back(ev);
     });
 
     g_netClient.SetPlayerJoin([](const netio::PlayerJoinInfo& ji) {
@@ -3249,6 +3397,28 @@ void Tick()
             if (s_remoteInVehicle || s_playerVehicle)
                 DeleteRemotePlayerVehicle();
             s_lastSentPvValid = false;
+        }
+
+        // P3: MissionData — хост детектит новые завершения, гость применяет.
+        if (coopcfg::Get().missionSync)
+        {
+            if (s_amHost && (s_tickCount - s_lastMissionPollTick) >= 60)
+            {
+                s_lastMissionPollTick = s_tickCount;
+                PollHostMissions();
+            }
+            std::vector<net::MissionEventPayload> events;
+            {
+                std::lock_guard<std::mutex> lk(s_missionMtx);
+                events.swap(s_missionEvents);
+            }
+            for (const net::MissionEventPayload& ev : events)
+                ApplyMissionEventToGuest(ev);
+        }
+        else
+        {
+            std::lock_guard<std::mutex> lk(s_missionMtx);
+            s_missionEvents.clear();
         }
     }
 

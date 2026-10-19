@@ -69,6 +69,11 @@ void WriteDefaultIni()
     fputs("# P2: посадка в транспорт (дилижанс/повозка) удалённого игрока.\n", f);
     fputs("# 0 = выключено (по умолчанию), 1 = включено на ОБОИХ ПК.\n", f);
     fputs("vehicle_sync = 0\n", f);
+    fputs("# P3: хост детектит новые завершённые миссии и шлёт гостю.\n", f);
+    fputs("# 0 = выключено (по умолчанию), 1 = включено на ОБОИХ ПК.\n", f);
+    fputs("mission_sync = 0\n", f);
+    fputs("# P3: писать зачёт миссии в сейв гостя (только при равном прогрессе!).\n", f);
+    fputs("mission_credit = 0\n", f);
     fclose(f);
 }
 
@@ -118,6 +123,16 @@ Config& Load()
         {
             g_cfg.vehicleSync = !(val == "0" || val == "false" || val == "no" ||
                                   val == "off" || val == "False" || val == "OFF");
+        }
+        else if (key == "mission_sync")
+        {
+            g_cfg.missionSync = !(val == "0" || val == "false" || val == "no" ||
+                                  val == "off" || val == "False" || val == "OFF");
+        }
+        else if (key == "mission_credit")
+        {
+            g_cfg.missionCredit = !(val == "0" || val == "false" || val == "no" ||
+                                    val == "off" || val == "False" || val == "OFF");
         }
         else if (key == "ped_model")
         {

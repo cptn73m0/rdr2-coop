@@ -109,12 +109,14 @@
 
 ## Фаза 7 — Миссии, прогресс, сейвы
 
-- [ ] Каталог 80 MissionData ID (взять MIT-каталог с attribution)
-- [ ] Детект миссии у хоста, `MissionOffer`/`MissionState`/`MissionCompleted`
-- [ ] Барьер старта: гость допускается только в свою доступную миссию
-- [ ] Запись completion/rating в **свой** сейв гостя (MissionData natives)
-- [ ] Allow-list наград (17 миссий) + отказ от денег/Honor по умолчанию
-- [ ] Journal + backup/restore сейва гостя (без копирования мира хоста)
+- [x] Каталог 80 Story MissionData ID (MIT-атрибуция rdr2-coop-story)
+- [x] Детект новых завершений хоста: baseline `WAS_COMPLETED` + rating
+- [x] `MissionEvent` (v9): хост → гость, только хост; гость логирует
+- [x] Зачёт в свой сейв гостя по флагу `mission_credit`
+      (`_UILOG_MARK_MISSION_COMPLETED` + rating; без копирования сейва)
+- [ ] Определение текущей миссии и барьер совместного старта
+- [ ] Награды/allow-list 17 миссий, деньги/Honor по умолчанию не трогать
+- [ ] Journal + backup/restore сейва гостя перед зачётом
 - [ ] Миссионные AnimScene/катсцены — capture/replay (R&D, версионно)
 - [ ] Тест: одна миссия (FUD1/HNT1) на двух ПК, save/reload
 

@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v8: PlayerVehicle — посадка удалённого игрока в транспорт (дилижанс/повозку).
-constexpr uint16_t kProtocolVersion = 8;
+// v9: MissionEvent — P3: совместный зачёт завершённой миссии (host -> guest).
+constexpr uint16_t kProtocolVersion = 9;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -44,6 +44,7 @@ enum class Msg : uint8_t {
     WorldSnapshot = 0x10, // хост -> сервер -> гость: сущности мира (P1)
     ActionState = 0x11,   // клиент -> сервер -> остальные: действие/сценарий (P2)
     PlayerVehicle = 0x12, // клиент -> сервер -> остальные: посадка в транспорт
+    MissionEvent = 0x13,  // хост -> сервер -> гость: миссия завершена/рейтинг
 };
 
 // Компоненты одежды игрока (наряд): список хэшей одетых shop-предметов.
@@ -246,6 +247,21 @@ struct PlayerVehicleState {
 };
 static_assert(sizeof(PlayerVehicleState) == 32,
               "PlayerVehicleState must be 32 bytes");
+
+// ---------------- P3: MissionData-событие ----------------
+// Хост сравнивает каталог MissionData со своим baseline и при новом завершении
+// шлёт missionId + рейтинг. Гость пишет зачёт в СВОЙ сейв (без копирования мира).
+constexpr uint8_t kMissionFlagCompleted     = 1u << 0;
+constexpr uint8_t kMissionFlagRatingUpdate  = 1u << 1;
+
+struct MissionEventPayload {
+    uint32_t missionId = 0; // joaat 4-char MissionData ID
+    uint8_t rating = 0;     // MISSION_RATING_* (0..5)
+    uint8_t flags = 0;      // kMissionFlag*
+    uint16_t pad = 0;
+};
+static_assert(sizeof(MissionEventPayload) == 8,
+              "MissionEventPayload must be 8 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

@@ -61,6 +61,8 @@ public:
     using OnActionState = std::function<void(const net::ActionStatePayload&)>;
     // P2: посадка удалённого игрока в транспорт.
     using OnPlayerVehicle = std::function<void(const net::PlayerVehicleState&)>;
+    // P3: событие MissionData (хост завершил миссию).
+    using OnMissionEvent = std::function<void(const net::MissionEventPayload&)>;
 
     Client();
     ~Client();
@@ -87,6 +89,8 @@ public:
     void SendActionState(const net::ActionStatePayload& state);
     // P2: отправить состояние посадки в транспорт своего персонажа.
     void SendPlayerVehicle(const net::PlayerVehicleState& state);
+    // P3: отправить событие завершённой миссии (только хост).
+    void SendMissionEvent(const net::MissionEventPayload& event);
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
     uint32_t RttMs() const { return rttMs_.load(); }
 
@@ -104,6 +108,7 @@ public:
     void SetWorldSnapshot(OnWorldSnapshot cb);
     void SetActionState(OnActionState cb);
     void SetPlayerVehicle(OnPlayerVehicle cb);
+    void SetMissionEvent(OnMissionEvent cb);
 
     ClientState State() const;
 
@@ -139,6 +144,7 @@ private:
     OnWorldSnapshot onWorldSnapshot_;
     OnActionState onActionState_;
     OnPlayerVehicle onPlayerVehicle_;
+    OnMissionEvent onMissionEvent_;
     std::atomic<uint32_t> rttMs_{0};
 };
 
