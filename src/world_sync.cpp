@@ -184,6 +184,30 @@ void StandStill(unsigned int handle)
     Call();
 }
 
+void SetMoveBlend(unsigned int handle, float value)
+{
+    using namespace natives_api;
+    Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
+    Push(handle);
+    Push(value);
+    Call();
+}
+
+void FollowNavmesh(unsigned int handle, float x, float y, float z,
+                   float speedMultiplier)
+{
+    using namespace natives_api;
+    Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
+    Push(handle);
+    Push(x); Push(y); Push(z);
+    Push(speedMultiplier);
+    Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout -1
+    Push(0.5f);                                        // stoppingRange
+    Push(static_cast<unsigned long long>(4));          // flags
+    Push(40000.f);
+    Call();
+}
+
 void RandomizeComponents(unsigned int handle)
 {
     using namespace natives_api;
@@ -570,9 +594,13 @@ struct Proxy
 {
     unsigned int handle = 0;
     unsigned int model = 0;
-    unsigned int kind = 0; // net::kEntityKindPed / kEntityKindVehicle
+    unsigned int kind = 0; // net::kEntityKindPed / kEntityKindVehicle / kEntityKindObject
     bool dead = false;
     unsigned int lastSeenSnapshot = 0;
+    // P1: анимация/движение прокси-педа (чтобы не телепортировался каждый снапшот).
+    uint8_t moveState = net::kEntityStateIdle;
+    bool moveTaskValid = false;
+    Vec3 moveTarget{0.f, 0.f, 0.f};
 };
 
 std::map<uint64_t, Proxy> g_proxies;
@@ -661,19 +689,99 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
     if (!proxy.handle || !DoesExist(proxy.handle))
         return; // будет пересоздан при следующем снапшоте
 
-    SetCoords(proxy.handle, e.x, e.y, e.z);
-    SetHeading(proxy.handle, e.heading);
-
     if (proxy.kind != net::kEntityKindPed)
-        return; // у транспорта/объектов нет состояния «мёртв» для педов
-
-    const bool dead = (e.flags & net::kEntityFlagDead) != 0;
-    if (dead && !proxy.dead)
     {
-        SetInvincible(proxy.handle, false);
-        SetHealthDead(proxy.handle);
-        proxy.dead = true;
+        // Транспорт/объекты: позиция из снапшота (физика не симулируется).
+        SetCoords(proxy.handle, e.x, e.y, e.z);
+        SetHeading(proxy.handle, e.heading);
+        return;
     }
+
+    // Мёртвый пед: фиксируем смерть и позицию, задачи движения не ставим.
+    const bool dead = (e.flags & net::kEntityFlagDead) != 0;
+    if (dead)
+    {
+        if (!proxy.dead)
+        {
+            SetInvincible(proxy.handle, false);
+            SetHealthDead(proxy.handle);
+            proxy.dead = true;
+            proxy.moveTaskValid = false;
+        }
+        SetCoords(proxy.handle, e.x, e.y, e.z);
+        SetHeading(proxy.handle, e.heading);
+        return;
+    }
+    if (proxy.dead)
+    {
+        // Воскрешение/пересоздание — сбрасываем задачу и позицию.
+        proxy.dead = false;
+        proxy.moveTaskValid = false;
+    }
+
+    const Vec3 target{e.x, e.y, e.z};
+    const Vec3 cur = GetCoords(proxy.handle);
+    const float dx = target.x - cur.x;
+    const float dy = target.y - cur.y;
+    const float dxz2 = dx * dx + dy * dy;
+    const float dist = std::sqrt(dxz2);
+
+    // Большой разрыв (спавн/телепорт/лаг) — переносим, иначе пед будет
+    // бесконечно догонять через полкарты.
+    if (dist > 8.0f)
+    {
+        SetCoords(proxy.handle, e.x, e.y, e.z);
+        SetHeading(proxy.handle, e.heading);
+        proxy.moveTaskValid = false;
+    }
+    else
+    {
+        const uint8_t st = e.state;
+        const bool walking = (st == net::kEntityStateWalk);
+        const bool running = (st == net::kEntityStateRun);
+        const bool targetMoved =
+            !proxy.moveTaskValid ||
+            std::fabs(target.x - proxy.moveTarget.x) > 1.0f ||
+            std::fabs(target.y - proxy.moveTarget.y) > 1.0f;
+        if (walking || running)
+        {
+            const float speed = running ? 2.0f : 1.0f;
+            if (targetMoved || proxy.moveState != st)
+            {
+                SetMoveBlend(proxy.handle, speed);
+                FollowNavmesh(proxy.handle, e.x, e.y, e.z, speed);
+                proxy.moveTarget = target;
+                proxy.moveTaskValid = true;
+            }
+        }
+        else
+        {
+            // Idle: если стояли задачей — фиксируем стойку; если отстали
+            // больше 1.5 м, подводим шагом.
+            if (dist > 1.5f)
+            {
+                if (!proxy.moveTaskValid ||
+                    proxy.moveState != net::kEntityStateIdle ||
+                    targetMoved)
+                {
+                    SetMoveBlend(proxy.handle, 1.0f);
+                    FollowNavmesh(proxy.handle, e.x, e.y, e.z, 1.0f);
+                    proxy.moveTarget = target;
+                    proxy.moveTaskValid = true;
+                }
+            }
+            else if (proxy.moveTaskValid)
+            {
+                SetMoveBlend(proxy.handle, 0.0f);
+                StandStill(proxy.handle);
+                proxy.moveTaskValid = false;
+            }
+        }
+        if (dist < 3.0f)
+            SetHeading(proxy.handle, e.heading);
+    }
+
+    proxy.moveState = e.state;
 }
 
 void DeleteProxy(Proxy& proxy)
