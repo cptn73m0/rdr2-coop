@@ -116,7 +116,8 @@
       (`_UILOG_MARK_MISSION_COMPLETED` + rating; без копирования сейва)
 - [ ] Определение текущей миссии и барьер совместного старта
 - [ ] Награды/allow-list 17 миссий, деньги/Honor по умолчанию не трогать
-- [ ] Journal + backup/restore сейва гостя перед зачётом
+- [x] Journal + backup сейва гостя перед зачётом (`save_backup=1`, без restore)
+- [ ] Restore/сравнение сейва и откат зачёта при ошибке
 - [ ] Миссионные AnimScene/катсцены — capture/replay (R&D, версионно)
 - [ ] Тест: одна миссия (FUD1/HNT1) на двух ПК, save/reload
 

@@ -13,8 +13,12 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace coop {
@@ -481,6 +485,104 @@ MissionBaseline s_missionBaseline;
 std::mutex s_missionMtx;
 std::vector<net::MissionEventPayload> s_missionEvents;
 unsigned int s_lastMissionPollTick = 0;
+bool s_saveBackupDone = false;
+
+// P3: бэкап сейва гостя перед первым зачётом миссии. Копирует известные
+// каталоги профилей (repack .1911 и официальный Rockstar) в Documents.
+// Возвращает false, если сейвы не найдены/копирование не удалось — тогда
+// зачёт НЕ пишем (защита от порчи прогресса).
+bool EnsureGuestSaveBackup()
+{
+    if (!coopcfg::Get().saveBackup)
+        return true;
+    if (s_saveBackupDone)
+        return true;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    const char* appData = std::getenv("APPDATA");
+    const char* userProfile = std::getenv("USERPROFILE");
+    const char* oneDrive = std::getenv("OneDrive");
+
+    std::vector<fs::path> roots;
+    if (appData)
+    {
+        roots.emplace_back(fs::path(appData) / ".1911" /
+                           "Red Dead Redemption 2" / "profile");
+    }
+    if (userProfile)
+    {
+        roots.emplace_back(fs::path(userProfile) / "Documents" /
+                           "Rockstar Games" / "Red Dead Redemption 2" / "Profiles");
+    }
+    if (oneDrive)
+    {
+        roots.emplace_back(fs::path(oneDrive) / "Documents" /
+                           "Rockstar Games" / "Red Dead Redemption 2" / "Profiles");
+    }
+
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_s(&tm, &now);
+    char stamp[32] = {0};
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
+
+    fs::path base;
+    if (userProfile)
+        base = fs::path(userProfile) / "Documents" / "rdr2-coop-saves";
+    else
+        base = fs::current_path() / "rdr2-coop-saves";
+    fs::path dest = base / stamp;
+    fs::create_directories(dest, ec);
+
+    int copiedFiles = 0;
+    int copiedRoots = 0;
+    for (const fs::path& root : roots)
+    {
+        if (!fs::exists(root, ec) || !fs::is_directory(root, ec))
+            continue;
+        const fs::path target = dest / root.filename();
+        // root.filename() для .1911/profile = "profile"; добавьте уникальность
+        // по родителю, чтобы не перетереть при совпадении имён.
+        fs::path uniqueTarget = target;
+        int suffix = 1;
+        while (fs::exists(uniqueTarget, ec))
+            uniqueTarget = target.string() + "-" + std::to_string(suffix++);
+        for (auto it = fs::recursive_directory_iterator(
+                 root, fs::directory_options::skip_permission_denied, ec);
+             it != fs::recursive_directory_iterator(); it.increment(ec))
+        {
+            if (ec)
+                break;
+            if (!it->is_regular_file(ec))
+                continue;
+            const fs::path relative = fs::relative(it->path(), root, ec);
+            if (ec)
+                continue;
+            const fs::path out = uniqueTarget / relative;
+            fs::create_directories(out.parent_path(), ec);
+            fs::copy_file(it->path(), out,
+                          fs::copy_options::overwrite_existing, ec);
+            if (!ec)
+                ++copiedFiles;
+            ec.clear();
+        }
+        ++copiedRoots;
+    }
+
+    if (copiedFiles == 0)
+    {
+        sh_log::Write("mission: save backup FAILED — saves not found "
+                      "(mission_credit aborted; set save_backup=0 to override)\n");
+        return false;
+    }
+
+    s_saveBackupDone = true;
+    sh_log::Write("mission: save backup OK -> %s (roots=%d files=%d)\n",
+                  dest.string().c_str(), copiedRoots, copiedFiles);
+    return true;
+}
 // Последнее применённое время (для лога смены).
 int s_lastAppliedHour = -1, s_lastAppliedMin = -1;
 // Компоненты одежды удалённого игрока (для применения в Tick()).
@@ -3105,6 +3207,9 @@ void ApplyMissionEventToGuest(const net::MissionEventPayload& ev)
                   ev.missionId, code, title, (unsigned)ev.rating, (unsigned)ev.flags);
 
     if (!coopcfg::Get().missionCredit)
+        return;
+
+    if (!EnsureGuestSaveBackup())
         return;
 
     Init(natives::MISSIONDATA_IS_VALID);

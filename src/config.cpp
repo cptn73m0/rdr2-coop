@@ -74,6 +74,8 @@ void WriteDefaultIni()
     fputs("mission_sync = 0\n", f);
     fputs("# P3: писать зачёт миссии в сейв гостя (только при равном прогрессе!).\n", f);
     fputs("mission_credit = 0\n", f);
+    fputs("# P3: перед зачётом сделать бэкап сейва гостя (рекомендуется 1).\n", f);
+    fputs("save_backup = 1\n", f);
     fclose(f);
 }
 
@@ -133,6 +135,11 @@ Config& Load()
         {
             g_cfg.missionCredit = !(val == "0" || val == "false" || val == "no" ||
                                     val == "off" || val == "False" || val == "OFF");
+        }
+        else if (key == "save_backup")
+        {
+            g_cfg.saveBackup = !(val == "0" || val == "false" || val == "no" ||
+                                 val == "off" || val == "False" || val == "OFF");
         }
         else if (key == "ped_model")
         {
