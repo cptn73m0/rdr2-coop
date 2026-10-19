@@ -230,5 +230,8 @@ constexpr unsigned long long MISSIONDATA_WAS_COMPLETED        = 0xE54DC27571D5ED
 constexpr unsigned long long MISSIONDATA_GET_RATING           = 0x57E798B54C45EE1Aull;
 constexpr unsigned long long _MISSIONDATA_SET_MISSION_RATING  = 0xE824CE7D13FCB300ull;
 constexpr unsigned long long _UILOG_MARK_MISSION_COMPLETED    = 0xDE31D66D1E54C471ull;
+constexpr unsigned long long GET_MISSION_FLAG                 = 0xB15CD1CF58771DE1ull;
+constexpr unsigned long long GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH =
+    0x2C83A9DA6BFFC4F9ull;
 
 } // namespace natives

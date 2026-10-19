@@ -543,6 +543,27 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 }
                 break;
             }
+            case net::Msg::MissionState:
+            {
+                // P3: активная миссия — только от хоста.
+                bool senderIsHost = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    auto it = g_online.find(name);
+                    senderIsHost = it != g_online.end() && it->second.isHost;
+                }
+                if (!senderIsHost)
+                {
+                    LogLine("[!] " + name + ": MissionState от не-хоста проигнорирован");
+                    break;
+                }
+                if (pay.size() >= sizeof(net::MissionStatePayload))
+                {
+                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::MissionState,
+                                                    pay.data(), (uint32_t)pay.size()));
+                }
+                break;
+            }
             case net::Msg::HorseOutfit:
             {
                 // Снаряжение лошади — ретранслируем остальным (как Outfit).

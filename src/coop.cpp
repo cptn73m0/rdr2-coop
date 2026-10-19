@@ -486,6 +486,34 @@ std::mutex s_missionMtx;
 std::vector<net::MissionEventPayload> s_missionEvents;
 unsigned int s_lastMissionPollTick = 0;
 bool s_saveBackupDone = false;
+// P3: активная миссия хоста (MissionState).
+std::mutex s_missionStateMtx;
+net::MissionStatePayload s_missionStateIn{};
+bool s_haveMissionState = false;
+uint32_t s_remoteMissionId = 0;
+uint32_t s_lastSentHostMissionId = 0;
+unsigned int s_lastMissionStatePollTick = 0;
+unsigned int s_lastMissionStateSendTick = 0;
+
+// P3: активная Story-миссия хоста по факту запущенного runtime-скрипта.
+uint32_t DetectHostActiveMission()
+{
+    using namespace natives_api;
+    Init(natives::GET_MISSION_FLAG);
+    if (!Call())
+        return 0;
+
+    for (int i = 0; i < missions::kMissionCatalogSize; ++i)
+    {
+        const missions::MissionInfo& info = missions::kMissionCatalog[i];
+        const uint32_t runtimeHash = missions::HashMissionId(info.runtime);
+        Init(natives::GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH);
+        Push(static_cast<unsigned long long>(runtimeHash));
+        if (Call() > 0)
+            return info.id;
+    }
+    return 0;
+}
 
 // P3: бэкап сейва гостя перед первым зачётом миссии. Копирует известные
 // каталоги профилей (repack .1911 и официальный Rockstar) в Documents.
@@ -3301,6 +3329,13 @@ void InitNetworkClient()
             s_missionEvents.push_back(ev);
     });
 
+    // P3: активная миссия хоста — буферизуем; применит Tick().
+    g_netClient.SetMissionState([](const net::MissionStatePayload& st) {
+        std::lock_guard<std::mutex> lk(s_missionStateMtx);
+        s_missionStateIn = st;
+        s_haveMissionState = true;
+    });
+
     g_netClient.SetPlayerJoin([](const netio::PlayerJoinInfo& ji) {
         sh_log::Write("net: PLAYER_JOINED %s (model=0x%llX, pos=%d)\n",
                       ji.name.c_str(), ji.model, ji.hasPos ? 1 : 0);
@@ -3512,6 +3547,78 @@ void Tick()
                 s_lastMissionPollTick = s_tickCount;
                 PollHostMissions();
             }
+
+            // Активная миссия хоста (runtime script) — для координированного
+            // старта и подсказки гостю.
+            if (s_amHost && (s_tickCount - s_lastMissionStatePollTick) >= 30)
+            {
+                s_lastMissionStatePollTick = s_tickCount;
+                const uint32_t activeId = DetectHostActiveMission();
+                if (activeId != s_lastSentHostMissionId ||
+                    (s_tickCount - s_lastMissionStateSendTick) >= 120)
+                {
+                    net::MissionStatePayload st{};
+                    st.missionId = activeId;
+                    if (activeId)
+                    {
+                        const missions::MissionInfo* info =
+                            missions::FindMission(activeId);
+                        st.runtimeHash = info ? missions::HashMissionId(info->runtime)
+                                              : 0;
+                        st.state = net::kMissionStateActive;
+                        if (activeId != s_lastSentHostMissionId)
+                        {
+                            sh_log::Write("mission: host ACTIVE 0x%08X (%s — %s)\n",
+                                          activeId, info ? info->code : "????",
+                                          info ? info->title : "unknown");
+                            s_joinedName[0] = '\0';
+                        }
+                    }
+                    else
+                    {
+                        st.state = net::kMissionStateIdle;
+                        if (s_lastSentHostMissionId)
+                            sh_log::Write("mission: host active <- none\n");
+                    }
+                    s_lastSentHostMissionId = activeId;
+                    s_lastMissionStateSendTick = s_tickCount;
+                    g_netClient.SendMissionState(st);
+                }
+            }
+
+            net::MissionStatePayload state{};
+            bool haveState = false;
+            {
+                std::lock_guard<std::mutex> lk(s_missionStateMtx);
+                if (s_haveMissionState)
+                {
+                    state = s_missionStateIn;
+                    s_haveMissionState = false;
+                    haveState = true;
+                }
+            }
+            if (haveState)
+            {
+                if (state.state == net::kMissionStateActive && state.missionId)
+                {
+                    const missions::MissionInfo* info =
+                        missions::FindMission(state.missionId);
+                    sh_log::Write("mission: host is in 0x%08X (%s — %s)\n",
+                                  state.missionId, info ? info->code : "????",
+                                  info ? info->title : "unknown");
+                    std::snprintf(s_joinedName, sizeof(s_joinedName),
+                                  "Host mission: %s",
+                                  info ? info->title : "unknown");
+                    s_subtitleTicksLeft = 8 * 60;
+                    s_remoteMissionId = state.missionId;
+                }
+                else if (s_remoteMissionId)
+                {
+                    sh_log::Write("mission: host mission ended\n");
+                    s_remoteMissionId = 0;
+                }
+            }
+
             std::vector<net::MissionEventPayload> events;
             {
                 std::lock_guard<std::mutex> lk(s_missionMtx);

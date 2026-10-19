@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v9: MissionEvent — P3: совместный зачёт завершённой миссии (host -> guest).
-constexpr uint16_t kProtocolVersion = 9;
+// v10: MissionState — P3: хост сообщает активную Story-миссию (runtime script).
+constexpr uint16_t kProtocolVersion = 10;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -45,6 +45,7 @@ enum class Msg : uint8_t {
     ActionState = 0x11,   // клиент -> сервер -> остальные: действие/сценарий (P2)
     PlayerVehicle = 0x12, // клиент -> сервер -> остальные: посадка в транспорт
     MissionEvent = 0x13,  // хост -> сервер -> гость: миссия завершена/рейтинг
+    MissionState = 0x14,  // хост -> сервер -> гость: активная Story-миссия
 };
 
 // Компоненты одежды игрока (наряд): список хэшей одетых shop-предметов.
@@ -262,6 +263,22 @@ struct MissionEventPayload {
 };
 static_assert(sizeof(MissionEventPayload) == 8,
               "MissionEventPayload must be 8 bytes");
+
+// ---------------- P3: активная миссия ----------------
+// Хост находит активный runtime-скрипт миссии через
+// GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH и сообщает ID/состояние.
+constexpr uint8_t kMissionStateIdle   = 0;
+constexpr uint8_t kMissionStateActive = 1;
+
+struct MissionStatePayload {
+    uint32_t missionId = 0;   // MissionData joaat
+    uint32_t runtimeHash = 0; // joaat runtime script
+    uint8_t state = 0;        // kMissionState*
+    uint8_t flags = 0;
+    uint16_t pad = 0;
+};
+static_assert(sizeof(MissionStatePayload) == 12,
+              "MissionStatePayload must be 12 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

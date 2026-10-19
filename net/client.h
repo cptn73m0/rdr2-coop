@@ -63,6 +63,8 @@ public:
     using OnPlayerVehicle = std::function<void(const net::PlayerVehicleState&)>;
     // P3: событие MissionData (хост завершил миссию).
     using OnMissionEvent = std::function<void(const net::MissionEventPayload&)>;
+    // P3: активная миссия хоста.
+    using OnMissionState = std::function<void(const net::MissionStatePayload&)>;
 
     Client();
     ~Client();
@@ -91,6 +93,8 @@ public:
     void SendPlayerVehicle(const net::PlayerVehicleState& state);
     // P3: отправить событие завершённой миссии (только хост).
     void SendMissionEvent(const net::MissionEventPayload& event);
+    // P3: отправить активную миссию (только хост).
+    void SendMissionState(const net::MissionStatePayload& state);
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
     uint32_t RttMs() const { return rttMs_.load(); }
 
@@ -109,6 +113,7 @@ public:
     void SetActionState(OnActionState cb);
     void SetPlayerVehicle(OnPlayerVehicle cb);
     void SetMissionEvent(OnMissionEvent cb);
+    void SetMissionState(OnMissionState cb);
 
     ClientState State() const;
 
@@ -145,6 +150,7 @@ private:
     OnActionState onActionState_;
     OnPlayerVehicle onPlayerVehicle_;
     OnMissionEvent onMissionEvent_;
+    OnMissionState onMissionState_;
     std::atomic<uint32_t> rttMs_{0};
 };
 
