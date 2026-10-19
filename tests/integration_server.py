@@ -84,10 +84,11 @@ def frame_bytes(type_, payload):
 
 
 class Server:
-    def __init__(self, exe, workdir, port=None):
+    def __init__(self, exe, workdir, port=None, extra_args=None):
         self.exe = str(exe)
         self.workdir = Path(workdir)
         self.port = port or random.randint(21000, 25000)
+        self.extra_args = list(extra_args or [])
         self.proc = None
 
     def start(self):
@@ -96,7 +97,7 @@ class Server:
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self.proc = subprocess.Popen(
-            [self.exe, str(self.port)],
+            [self.exe, str(self.port)] + self.extra_args,
             cwd=str(self.workdir),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -464,6 +465,33 @@ def test_host_migration(exe, tmp):
         charlie.close()
 
 
+def test_idle_timeout(exe, tmp):
+    log("[test] idle timeout")
+    # Second argv = idle timeout seconds. Client joins and goes silent.
+    with Server(exe, tmp / "idle", extra_args=["2"]) as srv:
+        s = connect(srv.port)
+        join(s, "Silent")
+        assert recv_type(s, TYPE_JOIN_OK) is not None
+        deadline = time.time() + 6.0
+        closed = False
+        while time.time() < deadline:
+            try:
+                s.settimeout(0.5)
+                data = s.recv(1024)
+                if data == b"":
+                    closed = True
+                    break
+            except (socket.timeout, OSError):
+                pass
+        assert closed, "silent client should be disconnected by idle timeout"
+        s.close()
+
+        c = connect(srv.port)
+        join(c, "AfterIdle")
+        assert recv_type(c, TYPE_JOIN_OK) is not None
+        c.close()
+
+
 def test_fuzz_frames(exe, tmp):
     log("[test] fuzz malformed frames")
     with Server(exe, tmp / "fuzz") as srv:
@@ -559,6 +587,7 @@ def main():
         test_payload_sizes_and_host_only_messages,
         test_oversized_and_truncated,
         test_host_migration,
+        test_idle_timeout,
         test_fuzz_frames,
         test_persistence,
     ]

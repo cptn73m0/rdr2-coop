@@ -17,6 +17,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -768,6 +769,7 @@ bool EnsureGuestSaveBackup()
 
     int copiedFiles = 0;
     int copiedRoots = 0;
+    std::string manifest;
     for (const fs::path& root : roots)
     {
         if (!fs::exists(root, ec) || !fs::is_directory(root, ec))
@@ -799,6 +801,14 @@ bool EnsureGuestSaveBackup()
             ec.clear();
         }
         ++copiedRoots;
+        {
+            fs::path rel = fs::relative(uniqueTarget, dest, ec);
+            if (ec || rel.empty())
+                rel = uniqueTarget.filename();
+            ec.clear();
+            manifest += "backup=" + rel.generic_string() +
+                        "|root=" + root.generic_string() + "\n";
+        }
     }
 
     if (copiedFiles == 0)
@@ -806,6 +816,14 @@ bool EnsureGuestSaveBackup()
         sh_log::Write("mission: save backup FAILED — saves not found "
                       "(mission_credit aborted; set save_backup=0 to override)\n");
         return false;
+    }
+
+    // Манифест нужен scripts\restore_saves.ps1: куда какой каталог бэкапа
+    // возвращать. Абсолютные пути намеренно не хардкодятся.
+    {
+        std::ofstream mf(dest / "manifest.txt", std::ios::trunc);
+        if (mf)
+            mf << manifest;
     }
 
     s_saveBackupDone = true;

@@ -29,7 +29,7 @@ v12 требуют рестарта игры/сервера; см. `docs/TESTING
 - ✅ Смерть и возрождение, труп и снаряжение остаются.
 - ✅ Reconnect с backoff (1→10 с) и **host migration**: при выходе хоста
   гость повышается и продолжает сессию.
-- ✅ Headless-тесты сервера/протокола (9 шт.) и CI-скрипт.
+- ✅ Headless-тесты сервера/протокола (10 шт.) и CI-скрипт.
 
 ### Пед-призрак
 - ✅ Спавн по модели персонажа, обвязка рендера.
@@ -108,7 +108,7 @@ cmake --build build-server --config Release
 # headless-тесты сервера/протокола (без игры)
 python tests\integration_server.py --exe build-server-v12\Release\rdr2_coop_server.exe
 
-# полный CI: клиент + сервер + 9 тестов
+# полный CI: клиент + сервер + 10 тестов
 powershell -ExecutionPolicy Bypass -File scripts\ci.ps1
 ```
 

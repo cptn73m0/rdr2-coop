@@ -84,7 +84,12 @@
 - [ ] `mission_credit=1` + `save_backup=1`: гость видит
       `mission: save backup OK` → `CREDITED to own save`; сохранить вручную;
       проверить журнал. При ошибке — restore из
-      `Documents\rdr2-coop-saves\<timestamp>`.
+      `Documents\rdr2-coop-saves\<timestamp>`:
+      ```powershell
+      # dry-run (ничего не пишет), затем -Force
+      powershell -File scripts\restore_saves.ps1 -BackupDir "C:\Users\<you>\Documents\rdr2-coop-saves\<timestamp>"
+      powershell -File scripts\restore_saves.ps1 -BackupDir "..." -Force
+      ```
 - [ ] **Не включать** `mission_credit`, если прогресс сильно разный.
 
 ## 7. Сбор логов и откат

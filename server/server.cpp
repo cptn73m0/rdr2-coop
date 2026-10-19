@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <fstream>
@@ -55,6 +56,15 @@ std::map<std::string, OnlinePlayer> g_online;   // игроки онлайн (п
 std::map<std::string, OnlinePlayer> g_lastPos;  // последние позиции (персистентность)
 std::atomic<bool> g_running{true};
 uint64_t g_nextSession = 1;
+// Таймаут молчащего клиента (мс). Настраивается вторым аргументом (сек).
+uint64_t g_idleTimeoutMs = 30000;
+
+uint64_t NowMs()
+{
+    using namespace std::chrono;
+    return static_cast<uint64_t>(
+        duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
 
 // ---------------- Логи ----------------
 // Файл, куда дублируются строки лога (рядом с сервером в рабочей папке).
@@ -132,15 +142,30 @@ bool LoadSaved(const std::string& name, float& x, float& y, float& z, float& hea
 
 void SaveAll()
 {
-    std::ofstream f(kSaveFile);
-    if (!f) return;
-    std::lock_guard<std::mutex> lk(g_mutex);
-    for (auto& kv : g_lastPos)
+    const std::string tmpFile = kSaveFile + ".tmp";
     {
-        const OnlinePlayer& p = kv.second;
-        if (!p.hasLoc) continue;
-        f << p.name << ":" << p.x << ":" << p.y << ":" << p.z << ":" << p.heading << "\n";
+        std::ofstream f(tmpFile, std::ios::trunc);
+        if (!f) return;
+        std::lock_guard<std::mutex> lk(g_mutex);
+        for (auto& kv : g_lastPos)
+        {
+            const OnlinePlayer& p = kv.second;
+            if (!p.hasLoc) continue;
+            f << p.name << ":" << p.x << ":" << p.y << ":" << p.z << ":" << p.heading << "\n";
+        }
     }
+    // Атомарная замена: битый/пустой players.txt не должен оставаться при
+    // падении/обрыве записи.
+#ifdef _WIN32
+    if (!MoveFileExA(tmpFile.c_str(), kSaveFile.c_str(), MOVEFILE_REPLACE_EXISTING))
+    {
+        std::remove(tmpFile.c_str());
+        LogLine("[!] players.txt atomic replace failed");
+    }
+#else
+    if (std::rename(tmpFile.c_str(), kSaveFile.c_str()) != 0)
+        std::remove(tmpFile.c_str());
+#endif
 }
 
 // ---------------- Сборка сообщений ----------------
@@ -273,6 +298,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
     std::string name;
     netio::FrameReader reader;
     bool registered = false;
+    uint64_t lastRecvMs = NowMs();
 
     uint8_t buf[4096];
     for (;;)
@@ -281,8 +307,20 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
         sock->Flush(); // дослать хвост из очереди (неблокирующие сокеты)
         Result r = sock->Recv(buf, sizeof(buf), n);
         if (r == Result::NoData || r == Result::Error) { sock->Close(); break; }
-        if (r == Result::Ok) reader.Feed(buf, n);
+        if (r == Result::Ok)
+        {
+            lastRecvMs = NowMs();
+            reader.Feed(buf, n);
+        }
         else std::this_thread::sleep_for(std::chrono::milliseconds(1)); // не крутим CPU
+
+        if (NowMs() - lastRecvMs > g_idleTimeoutMs)
+        {
+            LogLine("[!] " + peerIp + ": idle timeout (" +
+                    std::to_string(g_idleTimeoutMs / 1000) + " s), закрываю");
+            sock->Close();
+            break;
+        }
 
         uint8_t type; std::vector<uint8_t> pay;
         while (reader.Poll(type, pay))
@@ -744,6 +782,12 @@ int main(int argc, char** argv)
 #endif
 
     int port = argc > 1 ? std::atoi(argv[1]) : 7777;
+    if (argc > 2)
+    {
+        const int idleSec = std::atoi(argv[2]);
+        if (idleSec > 0)
+            g_idleTimeoutMs = static_cast<uint64_t>(idleSec) * 1000;
+    }
 
 #ifdef _WIN32
     SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);

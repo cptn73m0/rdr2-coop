@@ -32,6 +32,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_payload_sizes_and_host_only_messages` | точные размеры Frame/Outfit/Action/Vehicle/Shot/Mission; host-only MissionEvent/State; barrier host-only/guest-only фазы |
 | `test_oversized_and_truncated` | len > 64 КБ и обрезанные кадры не роняют сервер |
 | `test_host_migration` | при выходе хоста гость получает HostChanged(1) и может слать WorldSnapshot |
+| `test_idle_timeout` | молчащий клиент отключается по таймауту (2-й аргумент сервера) |
 | `test_fuzz_frames` | 300 случайных кадров/типов/размеров + oversize + fragmented Ping |
 | `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта |
 
