@@ -179,6 +179,21 @@ void SetNoCollision(unsigned int handle, bool value)
     Call();
 }
 
+void SetFrozen(unsigned int handle, bool frozen)
+{
+    using namespace natives_api;
+    Init(natives::FREEZE_ENTITY_POSITION);
+    Push(handle);
+    Push(static_cast<unsigned long long>(frozen ? 1 : 0));
+    Call();
+}
+
+void FreezeEntitySafely(unsigned int handle, bool frozen)
+{
+    if (handle && DoesExist(handle))
+        SetFrozen(handle, frozen);
+}
+
 void StandStill(unsigned int handle)
 {
     using namespace natives_api;
@@ -900,6 +915,7 @@ unsigned int CreateProxy(const net::WorldEntity& e)
         SetInvincible(obj, true);
         SetVisible(obj);
         SetNoCollision(obj, true);
+        SetFrozen(obj, true);
         return obj;
     }
 
@@ -919,6 +935,7 @@ unsigned int CreateProxy(const net::WorldEntity& e)
         SetInvincible(veh, true);
         SetVisible(veh);
         SetNoCollision(veh, true);
+        SetFrozen(veh, true);
         return veh;
     }
 
@@ -935,6 +952,7 @@ unsigned int CreateProxy(const net::WorldEntity& e)
     RandomizeComponents(handle);
     SetVisible(handle);
     SetNoCollision(handle, true);
+    SetFrozen(handle, true);
     StandStill(handle);
     return handle;
 }
@@ -1001,6 +1019,19 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
     // Crew: посадкой/позицией управляет транспорт; не двигаем педа.
     if (proxy.crewVehicleNetId != 0)
         return;
+
+    // Все прокси двигаются плавной интерполяцией (шаг 10 Гц снапшотов),
+    // а не задачами навигации. Это стабильнее для лошадей/педов в составе.
+    if (!proxy.interpReady)
+    {
+        SetCoords(proxy.handle, e.x, e.y, e.z);
+        SetHeading(proxy.handle, e.heading);
+        proxy.interpReady = true;
+        return;
+    }
+    BeginProxyInterp(proxy, e);
+    return;
+    // Ниже — старый task-путь; оставлен для истории/будущего AI-режима.
     if (proxy.dead)
     {
         // Воскрешение/пересоздание — сбрасываем задачу и позицию.
@@ -1149,6 +1180,7 @@ void ApplyPendingCrew()
             }
             kv.second.crewVehicleNetId = 0;
             kv.second.crewSeat = -1;
+            FreezeEntitySafely(kv.second.handle, true);
         }
         return;
     }
@@ -1187,6 +1219,7 @@ void ApplyPendingCrew()
             Push(false);
             if (!Call())
                 continue; // повторим на следующем снапшоте
+            FreezeEntitySafely(pit->second.handle, false);
             sh_log::Write("vehicle: crew seated ped=%u vehicle=%u seat=%d\n",
                           crew.pedNetId, crew.vehicleNetId, (int)crew.seat);
         }
@@ -1218,6 +1251,7 @@ void ApplyPendingCrew()
         }
         kv.second.crewVehicleNetId = 0;
         kv.second.crewSeat = -1;
+        FreezeEntitySafely(kv.second.handle, true);
     }
 }
 
@@ -1231,8 +1265,10 @@ void TickProxyInterpolation()
     for (auto& kv : g_proxies)
     {
         Proxy& p = kv.second;
-        if (p.kind == net::kEntityKindPed || !p.hasInterp ||
-            !p.handle || !DoesExist(p.handle) || p.trainAttached)
+        if (p.kind == net::kEntityKindPed && p.crewVehicleNetId != 0)
+            continue;
+        if (!p.hasInterp || !p.handle || !DoesExist(p.handle) ||
+            p.trainAttached)
             continue;
         float alpha = 1.0f;
         if (p.interpDurationMs > 0)
