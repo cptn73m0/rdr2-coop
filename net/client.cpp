@@ -62,6 +62,7 @@ void Client::SetActionState(OnActionState cb) { onActionState_ = std::move(cb); 
 void Client::SetPlayerVehicle(OnPlayerVehicle cb) { onPlayerVehicle_ = std::move(cb); }
 void Client::SetMissionEvent(OnMissionEvent cb) { onMissionEvent_ = std::move(cb); }
 void Client::SetMissionState(OnMissionState cb) { onMissionState_ = std::move(cb); }
+void Client::SetMissionBarrier(OnMissionBarrier cb) { onMissionBarrier_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -175,6 +176,14 @@ void Client::SendMissionState(const net::MissionStatePayload& state)
     std::vector<uint8_t> frame = MakeFrame(
         (uint8_t)net::Msg::MissionState,
         reinterpret_cast<const uint8_t*>(&state), sizeof(state));
+    SendRaw(frame);
+}
+
+void Client::SendMissionBarrier(const net::MissionBarrierPayload& event)
+{
+    std::vector<uint8_t> frame = MakeFrame(
+        (uint8_t)net::Msg::MissionBarrier,
+        reinterpret_cast<const uint8_t*>(&event), sizeof(event));
     SendRaw(frame);
 }
 
@@ -350,6 +359,16 @@ void Client::Run()
                     net::MissionStatePayload st{};
                     std::memcpy(&st, p.data(), sizeof(st));
                     if (onMissionState_) onMissionState_(st);
+                }
+                break;
+            }
+            case net::Msg::MissionBarrier:
+            {
+                if (p.size() == sizeof(net::MissionBarrierPayload))
+                {
+                    net::MissionBarrierPayload ev{};
+                    std::memcpy(&ev, p.data(), sizeof(ev));
+                    if (onMissionBarrier_) onMissionBarrier_(ev);
                 }
                 break;
             }

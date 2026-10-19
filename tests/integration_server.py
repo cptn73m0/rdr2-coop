@@ -22,7 +22,7 @@ import tempfile
 import time
 from pathlib import Path
 
-PROTO = 10
+PROTO = 11
 TYPE_FRAME = 0x04
 TYPE_JOIN = 0x01
 TYPE_JOIN_OK = 0x02
@@ -36,6 +36,7 @@ TYPE_ACTION_STATE = 0x11
 TYPE_PLAYER_VEHICLE = 0x12
 TYPE_MISSION_EVENT = 0x13
 TYPE_MISSION_STATE = 0x14
+TYPE_MISSION_BARRIER = 0x15
 TYPE_OUTFIT = 0x09
 TYPE_HORSE_OUTFIT = 0x0A
 TYPE_SHOT = 0x0B
@@ -364,6 +365,34 @@ def test_payload_sizes_and_host_only_messages(exe, tmp):
         guest.sendall(frame_bytes(TYPE_MISSION_STATE, mission_state))
         assert recv_type(host, TYPE_MISSION_EVENT, 0.4) is None
         assert recv_type(host, TYPE_MISSION_STATE, 0.4) is None
+
+        # Mission barrier: host Offer/StartWindow/Abort -> guest; guest Ready/Started -> host.
+        offer = struct.pack("<IIBBH", 0x12345678, 7, 1, 0, 0)  # Offer
+        ready = struct.pack("<IIBBH", 0x12345678, 7, 2, 1, 0)  # Ready eligible
+        started = struct.pack("<IIBBH", 0x12345678, 7, 4, 0, 0)  # Started
+        window = struct.pack("<IIBBH", 0x12345678, 7, 3, 0, 0)  # StartWindow
+        abort = struct.pack("<IIBBH", 0x12345678, 7, 5, 2, 0)  # Abort timeout
+        for msg in (offer, window, abort):
+            host.sendall(frame_bytes(TYPE_MISSION_BARRIER, msg))
+        msgs = recv_msgs(guest, 0.5)
+        assert (TYPE_MISSION_BARRIER, offer) in msgs
+        assert (TYPE_MISSION_BARRIER, window) in msgs
+        assert (TYPE_MISSION_BARRIER, abort) in msgs
+
+        for msg in (ready, started):
+            guest.sendall(frame_bytes(TYPE_MISSION_BARRIER, msg))
+        msgs = recv_msgs(host, 0.5)
+        assert (TYPE_MISSION_BARRIER, ready) in msgs
+        assert (TYPE_MISSION_BARRIER, started) in msgs
+
+        # Wrong role phases are blocked: guest Offer, host Ready.
+        guest.sendall(frame_bytes(TYPE_MISSION_BARRIER, offer))
+        assert recv_type(host, TYPE_MISSION_BARRIER, 0.4) is None
+        host.sendall(frame_bytes(TYPE_MISSION_BARRIER, ready))
+        assert recv_type(guest, TYPE_MISSION_BARRIER, 0.4) is None
+        # Short barrier payload is dropped.
+        host.sendall(frame_bytes(TYPE_MISSION_BARRIER, offer[:-1]))
+        assert recv_type(guest, TYPE_MISSION_BARRIER, 0.4) is None
 
         # Unknown message must not crash or relay.
         host.sendall(frame_bytes(0x7E, b"\x00" * 8))

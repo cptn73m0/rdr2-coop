@@ -65,6 +65,8 @@ public:
     using OnMissionEvent = std::function<void(const net::MissionEventPayload&)>;
     // P3: активная миссия хоста.
     using OnMissionState = std::function<void(const net::MissionStatePayload&)>;
+    // P3: барьер совместного старта миссии.
+    using OnMissionBarrier = std::function<void(const net::MissionBarrierPayload&)>;
 
     Client();
     ~Client();
@@ -95,6 +97,8 @@ public:
     void SendMissionEvent(const net::MissionEventPayload& event);
     // P3: отправить активную миссию (только хост).
     void SendMissionState(const net::MissionStatePayload& state);
+    // P3: отправить событие барьера миссии.
+    void SendMissionBarrier(const net::MissionBarrierPayload& event);
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
     uint32_t RttMs() const { return rttMs_.load(); }
 
@@ -114,6 +118,7 @@ public:
     void SetPlayerVehicle(OnPlayerVehicle cb);
     void SetMissionEvent(OnMissionEvent cb);
     void SetMissionState(OnMissionState cb);
+    void SetMissionBarrier(OnMissionBarrier cb);
 
     ClientState State() const;
 
@@ -151,6 +156,7 @@ private:
     OnPlayerVehicle onPlayerVehicle_;
     OnMissionEvent onMissionEvent_;
     OnMissionState onMissionState_;
+    OnMissionBarrier onMissionBarrier_;
     std::atomic<uint32_t> rttMs_{0};
 };
 

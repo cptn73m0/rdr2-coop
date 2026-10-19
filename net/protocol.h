@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v10: MissionState — P3: хост сообщает активную Story-миссию (runtime script).
-constexpr uint16_t kProtocolVersion = 10;
+// v11: MissionBarrier — P3: offer/ready/start-window handshake (host <-> guest).
+constexpr uint16_t kProtocolVersion = 11;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -46,6 +46,7 @@ enum class Msg : uint8_t {
     PlayerVehicle = 0x12, // клиент -> сервер -> остальные: посадка в транспорт
     MissionEvent = 0x13,  // хост -> сервер -> гость: миссия завершена/рейтинг
     MissionState = 0x14,  // хост -> сервер -> гость: активная Story-миссия
+    MissionBarrier = 0x15,// P3: offer/ready/start-window/started/abort
 };
 
 // Компоненты одежды игрока (наряд): список хэшей одетых shop-предметов.
@@ -279,6 +280,28 @@ struct MissionStatePayload {
 };
 static_assert(sizeof(MissionStatePayload) == 12,
               "MissionStatePayload must be 12 bytes");
+
+// ---------------- P3: барьер совместного старта миссии ----------------
+// Host: Offer -> (guest Ready) -> StartWindow -> (guest Started) -> done.
+// Гость сам запускает свою копию миссии; барьер только координирует окно.
+constexpr uint8_t kMissionBarrierOffer       = 1;
+constexpr uint8_t kMissionBarrierReady       = 2;
+constexpr uint8_t kMissionBarrierStartWindow = 3;
+constexpr uint8_t kMissionBarrierStarted     = 4;
+constexpr uint8_t kMissionBarrierAbort       = 5;
+
+constexpr uint8_t kMissionBarrierFlagEligible = 1u << 0;
+constexpr uint8_t kMissionBarrierFlagTimeout  = 1u << 1;
+
+struct MissionBarrierPayload {
+    uint32_t missionId = 0;
+    uint32_t epoch = 0;   // эпоха барьера у хоста
+    uint8_t phase = 0;    // kMissionBarrier*
+    uint8_t flags = 0;
+    uint16_t pad = 0;
+};
+static_assert(sizeof(MissionBarrierPayload) == 12,
+              "MissionBarrierPayload must be 12 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

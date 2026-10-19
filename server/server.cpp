@@ -606,6 +606,38 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 }
                 break;
             }
+            case net::Msg::MissionBarrier:
+            {
+                // P3: направление фаз фиксировано: host шлёт Offer/StartWindow/
+                // Abort, guest — Ready/Started. Иначе игнорируем.
+                if (pay.size() != sizeof(net::MissionBarrierPayload))
+                    break;
+                net::MissionBarrierPayload ev{};
+                std::memcpy(&ev, pay.data(), sizeof(ev));
+                bool senderIsHost = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    auto it = g_online.find(name);
+                    senderIsHost = it != g_online.end() && it->second.isHost;
+                }
+                const bool hostPhase =
+                    ev.phase == net::kMissionBarrierOffer ||
+                    ev.phase == net::kMissionBarrierStartWindow ||
+                    ev.phase == net::kMissionBarrierAbort;
+                const bool guestPhase =
+                    ev.phase == net::kMissionBarrierReady ||
+                    ev.phase == net::kMissionBarrierStarted;
+                if ((senderIsHost && !hostPhase) || (!senderIsHost && !guestPhase))
+                {
+                    LogLine("[!] " + name + ": MissionBarrier phase=" +
+                            std::to_string((unsigned)ev.phase) +
+                            " не от той роли — проигнорирован");
+                    break;
+                }
+                BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::MissionBarrier,
+                                                pay.data(), (uint32_t)pay.size()));
+                break;
+            }
             case net::Msg::HorseOutfit:
             {
                 // Снаряжение лошади — ретранслируем остальным (как Outfit).

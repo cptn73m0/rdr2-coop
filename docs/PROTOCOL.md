@@ -2,8 +2,9 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 10` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 11` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение.
+- v11: MissionBarrier (0x15) — P3: offer/ready/start-window/started/abort.
 - v10: MissionState (0x14) — P3: хост сообщает активную Story-миссию.
 - v9: MissionEvent (0x13) — P3: хост завершил миссию, гость пишет свой зачёт.
 - v8: PlayerVehicle (0x12) — посадка удалённого игрока в транспорт.
@@ -139,6 +140,26 @@ payload: missionId:u32 runtimeHash:u32 state:u8 flags:u8 pad:u16  // 12 байт
   `Host mission: <название>`; автостарт миссии у гостя не выполняется.
 - Барьер совместного старта (гость должен начать ту же миссию в своём мире)
   ещё не реализован: пока это информационная синхронизация.
+
+### 0x15 MISSION_BARRIER (P3: барьер старта, host ↔ guest)
+
+```
+payload: missionId:u32 epoch:u32 phase:u8 flags:u8 pad:u16  // 12 байт
+```
+
+- Фазы: 1 Offer, 2 Ready, 3 StartWindow, 4 Started, 5 Abort.
+- Host шлёт Offer/StartWindow/Abort; guest — Ready/Started. Сервер проверяет
+  роль и отбрасывает фазу не от той стороны.
+- Host: при появлении активной миссии → Offer; получает Ready с флагом
+  Eligible → StartWindow (окно 45 с) и ждёт Started. Если гость не начал
+  миссию за 45 с — Abort(Timeout). Offer повторяется, пока гость не ответил
+  (поздний Join).
+- Guest: на Offer проверяет **свой** MissionData (valid, required Story,
+  не completed) и отвечает Ready(Eligible); на StartWindow показывает
+  `START NOW: <mission>` и ждёт, пока его собственный runtime-скрипт миссии
+  станет активным → Started. Автостарта миссии нет — игрок запускает её сам.
+- Ограничение: хост детектит миссию уже **после** её старта, поэтому барьер
+  координирует окно, а не удерживает миссию до готовности гостя.
 
 - Этот раздел описывает изменения Spike 1/P1; остальная спецификация ниже
   устарела и будет обновлена отдельным коммитом.

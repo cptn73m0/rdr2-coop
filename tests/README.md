@@ -29,7 +29,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_roles_and_full` | HOST/GUEST, занятый ник, третий игрок отклоняется |
 | `test_prejoin_and_ping` | сообщения до JOIN закрывают соединение; Ping работает до JOIN |
 | `test_world_host_only` | WorldSnapshot 64 ретранслируется, >64 отбрасывается, гость не подменяет мир |
-| `test_payload_sizes_and_host_only_messages` | точные размеры Frame/Outfit/Action/Vehicle/Shot/Mission; host-only MissionEvent/State |
+| `test_payload_sizes_and_host_only_messages` | точные размеры Frame/Outfit/Action/Vehicle/Shot/Mission; host-only MissionEvent/State; barrier host-only/guest-only фазы |
 | `test_oversized_and_truncated` | len > 64 КБ и обрезанные кадры не роняют сервер |
 | `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта |
 

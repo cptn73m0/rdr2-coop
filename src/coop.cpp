@@ -494,6 +494,32 @@ uint32_t s_remoteMissionId = 0;
 uint32_t s_lastSentHostMissionId = 0;
 unsigned int s_lastMissionStatePollTick = 0;
 unsigned int s_lastMissionStateSendTick = 0;
+// P3: барьер совместного старта (offer -> ready -> start window -> started).
+struct HostMissionBarrier
+{
+    uint32_t missionId = 0;
+    uint32_t epoch = 0;
+    bool ready = false;
+    bool started = false;
+    bool windowOpen = false;
+    unsigned int deadlineTick = 0;
+};
+struct GuestMissionBarrier
+{
+    uint32_t missionId = 0;
+    uint32_t epoch = 0;
+    bool windowOpen = false;
+    bool startedSent = false;
+    bool eligible = false;
+    unsigned int deadlineTick = 0;
+};
+HostMissionBarrier s_hostBarrier;
+GuestMissionBarrier s_guestBarrier;
+std::mutex s_barrierMtx;
+std::vector<net::MissionBarrierPayload> s_barrierEvents;
+uint32_t s_barrierEpoch = 1;
+unsigned int s_lastGuestBarrierPollTick = 0;
+unsigned int s_lastHostBarrierOfferTick = 0;
 
 // P3: активная Story-миссия хоста по факту запущенного runtime-скрипта.
 uint32_t DetectHostActiveMission()
@@ -513,6 +539,182 @@ uint32_t DetectHostActiveMission()
             return info.id;
     }
     return 0;
+}
+
+// P3: может ли гость реально начать миссию в своём сейве (по MissionData).
+bool CheckMissionEligible(uint32_t missionId)
+{
+    using namespace natives_api;
+    Init(natives::MISSIONDATA_IS_VALID);
+    Push(static_cast<unsigned long long>(missionId));
+    if (!Call()) return false;
+    Init(natives::MISSIONDATA_IS_REQUIRED_STORY_MISSION);
+    Push(static_cast<unsigned long long>(missionId));
+    if (!Call()) return false;
+    Init(natives::MISSIONDATA_WAS_COMPLETED);
+    Push(static_cast<unsigned long long>(missionId));
+    if (Call()) return false;
+    return true;
+}
+
+void SendMissionBarrier(uint32_t missionId, uint32_t epoch, uint8_t phase,
+                        uint8_t flags)
+{
+    net::MissionBarrierPayload ev{};
+    ev.missionId = missionId;
+    ev.epoch = epoch;
+    ev.phase = phase;
+    ev.flags = flags;
+    g_netClient.SendMissionBarrier(ev);
+}
+
+// Хост: при смене активной миссии — Offer; Ready гостя открывает окно.
+void UpdateHostMissionBarrier(uint32_t activeMissionId)
+{
+    if (activeMissionId != s_hostBarrier.missionId)
+    {
+        if (activeMissionId)
+        {
+            s_hostBarrier = HostMissionBarrier{};
+            s_hostBarrier.missionId = activeMissionId;
+            s_hostBarrier.epoch = ++s_barrierEpoch;
+            SendMissionBarrier(activeMissionId, s_hostBarrier.epoch,
+                               net::kMissionBarrierOffer, 0);
+            s_lastHostBarrierOfferTick = s_tickCount;
+            const missions::MissionInfo* info =
+                missions::FindMission(activeMissionId);
+            sh_log::Write("barrier: offer 0x%08X (%s — %s) epoch=%u\n",
+                          activeMissionId, info ? info->code : "????",
+                          info ? info->title : "unknown",
+                          (unsigned)s_hostBarrier.epoch);
+        }
+        else if (s_hostBarrier.missionId)
+        {
+            const uint32_t oldId = s_hostBarrier.missionId;
+            const uint32_t oldEpoch = s_hostBarrier.epoch;
+            s_hostBarrier = HostMissionBarrier{};
+            SendMissionBarrier(oldId, oldEpoch, net::kMissionBarrierAbort, 0);
+            sh_log::Write("barrier: abort (host mission ended)\n");
+        }
+    }
+
+    if (s_hostBarrier.missionId && s_hostBarrier.windowOpen &&
+        !s_hostBarrier.started && s_tickCount >= s_hostBarrier.deadlineTick)
+    {
+        const uint32_t id = s_hostBarrier.missionId;
+        const uint32_t ep = s_hostBarrier.epoch;
+        s_hostBarrier.windowOpen = false;
+        SendMissionBarrier(id, ep, net::kMissionBarrierAbort,
+                           net::kMissionBarrierFlagTimeout);
+        sh_log::Write("barrier: abort timeout (guest didn't start mission)\n");
+    }
+
+    // Гость мог подключиться позже старта миссии — повторяем Offer, пока
+    // не получили Ready/не открыли окно (TCP надёжен, но Join мог быть позже).
+    if (s_hostBarrier.missionId && !s_hostBarrier.ready &&
+        !s_hostBarrier.windowOpen && !s_hostBarrier.started &&
+        (s_tickCount - s_lastHostBarrierOfferTick) >= 120)
+    {
+        SendMissionBarrier(s_hostBarrier.missionId, s_hostBarrier.epoch,
+                           net::kMissionBarrierOffer, 0);
+        s_lastHostBarrierOfferTick = s_tickCount;
+    }
+}
+
+// Хост: Ready -> StartWindow, Started -> участие подтверждено.
+void ProcessHostMissionBarrier(const net::MissionBarrierPayload& ev)
+{
+    if (ev.phase == net::kMissionBarrierReady)
+    {
+        if (!s_hostBarrier.missionId || ev.missionId != s_hostBarrier.missionId ||
+            ev.epoch != s_hostBarrier.epoch)
+        {
+            sh_log::Write("barrier: Ready без активного offer — игнор\n");
+            return;
+        }
+        if (!(ev.flags & net::kMissionBarrierFlagEligible))
+        {
+            sh_log::Write("barrier: guest NOT eligible — abort\n");
+            const uint32_t id = s_hostBarrier.missionId;
+            const uint32_t ep = s_hostBarrier.epoch;
+            s_hostBarrier = HostMissionBarrier{};
+            SendMissionBarrier(id, ep, net::kMissionBarrierAbort, 0);
+            return;
+        }
+        s_hostBarrier.ready = true;
+        s_hostBarrier.windowOpen = true;
+        s_hostBarrier.deadlineTick = s_tickCount + 45 * 60;
+        SendMissionBarrier(s_hostBarrier.missionId, s_hostBarrier.epoch,
+                           net::kMissionBarrierStartWindow, 0);
+        sh_log::Write("barrier: guest ready -> start window open (45 s)\n");
+        std::snprintf(s_joinedName, sizeof(s_joinedName),
+                      "Guest ready — start the mission!");
+        s_subtitleTicksLeft = 8 * 60;
+    }
+    else if (ev.phase == net::kMissionBarrierStarted)
+    {
+        if (ev.missionId != s_hostBarrier.missionId ||
+            ev.epoch != s_hostBarrier.epoch)
+            return;
+        s_hostBarrier.started = true;
+        s_hostBarrier.windowOpen = false;
+        const missions::MissionInfo* info = missions::FindMission(ev.missionId);
+        sh_log::Write("barrier: guest STARTED 0x%08X (%s)\n",
+                      ev.missionId, info ? info->code : "????");
+        std::snprintf(s_joinedName, sizeof(s_joinedName),
+                      "Guest started: %s",
+                      info ? info->title : "mission");
+        s_subtitleTicksLeft = 8 * 60;
+    }
+}
+
+// Гость: Offer -> Ready; StartWindow -> ждём собственный запуск скрипта.
+void ProcessGuestMissionBarrier(const net::MissionBarrierPayload& ev)
+{
+    if (ev.phase == net::kMissionBarrierOffer)
+    {
+        s_guestBarrier = GuestMissionBarrier{};
+        s_guestBarrier.missionId = ev.missionId;
+        s_guestBarrier.epoch = ev.epoch;
+        s_guestBarrier.eligible = CheckMissionEligible(ev.missionId);
+        const missions::MissionInfo* info = missions::FindMission(ev.missionId);
+        SendMissionBarrier(ev.missionId, ev.epoch, net::kMissionBarrierReady,
+                           s_guestBarrier.eligible
+                               ? net::kMissionBarrierFlagEligible : 0);
+        sh_log::Write("barrier: offer 0x%08X accepted=%d (%s — %s)\n",
+                      ev.missionId, s_guestBarrier.eligible ? 1 : 0,
+                      info ? info->code : "????",
+                      info ? info->title : "unknown");
+        std::snprintf(s_joinedName, sizeof(s_joinedName),
+                      s_guestBarrier.eligible
+                          ? "Host mission offer: %s"
+                          : "Mission unavailable: %s",
+                      info ? info->title : "unknown");
+        s_subtitleTicksLeft = 8 * 60;
+    }
+    else if (ev.phase == net::kMissionBarrierStartWindow)
+    {
+        if (ev.missionId != s_guestBarrier.missionId ||
+            ev.epoch != s_guestBarrier.epoch)
+            return;
+        s_guestBarrier.windowOpen = true;
+        s_guestBarrier.startedSent = false;
+        s_guestBarrier.deadlineTick = s_tickCount + 45 * 60;
+        const missions::MissionInfo* info = missions::FindMission(ev.missionId);
+        sh_log::Write("barrier: START WINDOW open for 0x%08X (%s) — 45 s\n",
+                      ev.missionId, info ? info->code : "????");
+        std::snprintf(s_joinedName, sizeof(s_joinedName),
+                      "START NOW: %s", info ? info->title : "mission");
+        s_subtitleTicksLeft = 8 * 60;
+    }
+    else if (ev.phase == net::kMissionBarrierAbort)
+    {
+        sh_log::Write("barrier: abort (flags=0x%02X)\n", (unsigned)ev.flags);
+        s_guestBarrier = GuestMissionBarrier{};
+        std::snprintf(s_joinedName, sizeof(s_joinedName),
+                      "Mission start window closed");
+        s_subtitleTicksLeft = 6 * 60;
+    }
 }
 
 // P3: бэкап сейва гостя перед первым зачётом миссии. Копирует известные
@@ -2187,6 +2389,10 @@ void CleanupGhost()
     s_appliedTargetNetId = 0;
     s_lastLoggedTargetNetId = 0;
     s_lastCoverTaskTick = 0;
+    s_hostBarrier = HostMissionBarrier{};
+    s_guestBarrier = GuestMissionBarrier{};
+    s_lastHostBarrierOfferTick = 0;
+    s_lastGuestBarrierPollTick = 0;
     DeleteRemotePlayerVehicle();
     s_lastSentPvValid = false;
     {
@@ -2796,6 +3002,10 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     s_appliedTargetNetId = 0;
     s_lastLoggedTargetNetId = 0;
     s_lastCoverTaskTick = 0;
+    s_hostBarrier = HostMissionBarrier{};
+    s_guestBarrier = GuestMissionBarrier{};
+    s_lastHostBarrierOfferTick = 0;
+    s_lastGuestBarrierPollTick = 0;
     DeleteRemotePlayerVehicle();
     s_lastSentPvValid = false;
     {
@@ -3336,6 +3546,13 @@ void InitNetworkClient()
         s_haveMissionState = true;
     });
 
+    // P3: барьер миссии — буферизуем; применит Tick().
+    g_netClient.SetMissionBarrier([](const net::MissionBarrierPayload& ev) {
+        std::lock_guard<std::mutex> lk(s_barrierMtx);
+        if (s_barrierEvents.size() < 32)
+            s_barrierEvents.push_back(ev);
+    });
+
     g_netClient.SetPlayerJoin([](const netio::PlayerJoinInfo& ji) {
         sh_log::Write("net: PLAYER_JOINED %s (model=0x%llX, pos=%d)\n",
                       ji.name.c_str(), ji.model, ji.hasPos ? 1 : 0);
@@ -3554,6 +3771,7 @@ void Tick()
             {
                 s_lastMissionStatePollTick = s_tickCount;
                 const uint32_t activeId = DetectHostActiveMission();
+                UpdateHostMissionBarrier(activeId);
                 if (activeId != s_lastSentHostMissionId ||
                     (s_tickCount - s_lastMissionStateSendTick) >= 120)
                 {
@@ -3626,11 +3844,65 @@ void Tick()
             }
             for (const net::MissionEventPayload& ev : events)
                 ApplyMissionEventToGuest(ev);
+
+            // P3: барьер совместного старта.
+            std::vector<net::MissionBarrierPayload> barrierEvents;
+            {
+                std::lock_guard<std::mutex> lk(s_barrierMtx);
+                barrierEvents.swap(s_barrierEvents);
+            }
+            for (const net::MissionBarrierPayload& ev : barrierEvents)
+            {
+                if (s_amHost)
+                    ProcessHostMissionBarrier(ev);
+                else
+                    ProcessGuestMissionBarrier(ev);
+            }
+
+            if (!s_amHost && s_guestBarrier.windowOpen &&
+                !s_guestBarrier.startedSent &&
+                (s_tickCount - s_lastGuestBarrierPollTick) >= 30)
+            {
+                s_lastGuestBarrierPollTick = s_tickCount;
+                const uint32_t localActive = DetectHostActiveMission();
+                if (localActive == s_guestBarrier.missionId)
+                {
+                    SendMissionBarrier(s_guestBarrier.missionId,
+                                       s_guestBarrier.epoch,
+                                       net::kMissionBarrierStarted, 0);
+                    s_guestBarrier.startedSent = true;
+                    s_guestBarrier.windowOpen = false;
+                    const missions::MissionInfo* info =
+                        missions::FindMission(s_guestBarrier.missionId);
+                    sh_log::Write("barrier: guest STARTED own mission 0x%08X "
+                                  "(%s) — window closed\n",
+                                  s_guestBarrier.missionId,
+                                  info ? info->code : "????");
+                    std::snprintf(s_joinedName, sizeof(s_joinedName),
+                                  "Mission started: %s",
+                                  info ? info->title : "mission");
+                    s_subtitleTicksLeft = 6 * 60;
+                }
+                else if (s_tickCount >= s_guestBarrier.deadlineTick)
+                {
+                    sh_log::Write("barrier: guest start window timeout\n");
+                    s_guestBarrier.windowOpen = false;
+                    std::snprintf(s_joinedName, sizeof(s_joinedName),
+                                  "Mission start window expired");
+                    s_subtitleTicksLeft = 6 * 60;
+                }
+            }
         }
         else
         {
             std::lock_guard<std::mutex> lk(s_missionMtx);
             s_missionEvents.clear();
+            {
+                std::lock_guard<std::mutex> lk2(s_barrierMtx);
+                s_barrierEvents.clear();
+            }
+            s_hostBarrier = HostMissionBarrier{};
+            s_guestBarrier = GuestMissionBarrier{};
         }
     }
 

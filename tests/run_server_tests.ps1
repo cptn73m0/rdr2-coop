@@ -1,5 +1,5 @@
 param(
-    [string]$BuildDir = "build-server-v10",
+    [string]$BuildDir = "build-server-v11",
     [switch]$NoBuild
 )
 
