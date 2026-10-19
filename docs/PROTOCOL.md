@@ -1,13 +1,15 @@
 # Протокол связи — RDR2 CO-OP
 
-## Версия протокола (Spike 1 + P1, модель A)
+## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 4` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 5` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение.
 - v4: `OutfitState` — 400 байт (8 model + 4 count + 96 shop-компонентов).
   Лимит поднят с 32 до 96, потому что `GET_NUM_COMPONENT_CATEGORIES_IN_PED`
   на реальном педе возвращает 47–80 категорий; при 32 хвост одежды обрезался
   и у призрака просвечивали случайные слои/кожа.
+- v5: `ActionState` (0x11) — 24 байта: наблюдаемое действие/сценарий
+  (см. раздел 0x11 ниже).
 - JOIN (0x01): `name_len:u8  name[]  ped_model:u64  protocol_version:u16` (LE).
 - Отказ в JOIN — сообщение **0x0F JoinRejected**: `reason:u8`
   (1 = несовпадение версии, 2 = сервер полон, 3 = ник занят, 4 = пустой ник).
@@ -34,6 +36,28 @@ state: 0 idle, 1 walk, 2 run (грубая локомоция)
   ambient-популяцию. Включается в `rdr2-coop.ini`: `world_sync = 1` на обоих ПК.
 - Это P1-основа: пока реплицируются только Ped; Vehicle/Object — следующими
   коммитами. Катсцены/AI/точные анимации NPC не синхронизируются.
+
+### 0x11 ACTION_STATE (P2: действие/сценарий, клиент → сервер → остальные)
+
+```
+payload: mode:u8 flags:u8 pad:u16
+         scenarioHash:u32  animDictHash:u32  animNameHash:u32
+         phase:f32  targetNetId:u32        // ровно 24 байта
+```
+
+- `mode`: 0 None, 1 Scenario, 2 Cover, 3 Carry, 4 Drag, 5 Hogtie, 6 Loot,
+  7 Fishing.
+- `flags`: 0x01 aiming, 0x02 shooting, 0x04 reloading, 0x08 in-cover,
+  0x10 carrying, 0x20 dragging, 0x40 hogtied, 0x80 fishing.
+- `scenarioHash` — `_GET_ACTIVE_DYNAMIC_SCENARIO` (сидение/курение/еда/питьё
+  и т.п.); получатель запускает `TASK_START_SCENARIO_IN_PLACE_HASH`.
+- `animDictHash`/`animNameHash`/`phase` — резерв под точный клип (публичный
+  SDK не отдаёт текущий клип AnimGraph).
+- `targetNetId` — резерв под цель переноски/лутания (после связки с P1).
+- Каждый клиент шлёт состояние **своего** персонажа; сервер ретранслирует.
+  Включается в `rdr2-coop.ini`: `action_sync = 1` на обоих ПК.
+- Пока полностью применяются сценарии; Cover/Carry/Drag/Hogtie/Fishing
+  передаются флагами и будут доработаны (cover-point/цель из P1).
 
 - Этот раздел описывает изменения Spike 1/P1; остальная спецификация ниже
   устарела и будет обновлена отдельным коммитом.

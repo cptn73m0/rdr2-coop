@@ -62,7 +62,10 @@ void WriteDefaultIni()
     fputs("ped_model = 0xCF7E73BE\n\n", f);
     fputs("# P1: репликация мира/NPC (хост -> гость).\n", f);
     fputs("# 0 = выключено (по умолчанию), 1 = включено на ОБОИХ ПК.\n", f);
-    fputs("world_sync = 0\n", f);
+    fputs("world_sync = 0\n\n", f);
+    fputs("# P2: Action v2 — сценарии/сидение/курение/укрытие.\n", f);
+    fputs("# 0 = выключено (по умолчанию), 1 = включено на ОБОИХ ПК.\n", f);
+    fputs("action_sync = 0\n", f);
     fclose(f);
 }
 
@@ -102,6 +105,11 @@ Config& Load()
         {
             g_cfg.worldSync = !(val == "0" || val == "false" || val == "no" ||
                                 val == "off" || val == "False" || val == "OFF");
+        }
+        else if (key == "action_sync")
+        {
+            g_cfg.actionSync = !(val == "0" || val == "false" || val == "no" ||
+                                 val == "off" || val == "False" || val == "OFF");
         }
         else if (key == "ped_model")
         {

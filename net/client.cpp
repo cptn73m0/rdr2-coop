@@ -58,6 +58,7 @@ void Client::SetShot(OnShot cb)            { onShot_ = std::move(cb); }
 void Client::SetHorseOutfit(OnHorseOutfit cb) { onHorseOutfit_ = std::move(cb); }
 void Client::SetJoinRejected(OnJoinRejected cb) { onJoinRejected_ = std::move(cb); }
 void Client::SetWorldSnapshot(OnWorldSnapshot cb) { onWorldSnapshot_ = std::move(cb); }
+void Client::SetActionState(OnActionState cb) { onActionState_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -139,6 +140,14 @@ void Client::SendWorldSnapshot(const std::vector<uint8_t>& payload)
 {
     std::vector<uint8_t> frame = MakeFrame((uint8_t)net::Msg::WorldSnapshot,
                                            payload.data(), (uint32_t)payload.size());
+    SendRaw(frame);
+}
+
+void Client::SendActionState(const net::ActionStatePayload& state)
+{
+    std::vector<uint8_t> frame = MakeFrame(
+        (uint8_t)net::Msg::ActionState,
+        reinterpret_cast<const uint8_t*>(&state), sizeof(state));
     SendRaw(frame);
 }
 
@@ -274,6 +283,16 @@ void Client::Run()
                     {
                         if (onWorldSnapshot_) onWorldSnapshot_(p);
                     }
+                }
+                break;
+            }
+            case net::Msg::ActionState:
+            {
+                if (p.size() >= sizeof(net::ActionStatePayload))
+                {
+                    net::ActionStatePayload st{};
+                    std::memcpy(&st, p.data(), sizeof(st));
+                    if (onActionState_) onActionState_(st);
                 }
                 break;
             }

@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v4: OutfitState расширен до 96 компонентов (реальные категории педа 47–80).
-constexpr uint16_t kProtocolVersion = 4;
+// v5: ActionState (P2 — действия/сценарии; сценарии/сидение/курение/укрытие).
+constexpr uint16_t kProtocolVersion = 5;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -42,6 +42,7 @@ enum class Msg : uint8_t {
     HorseOutfit = 0x0E, // клиент -> сервер -> остальные: снаряжение лошади
     JoinRejected= 0x0F, // сервер -> клиент: отказ в JOIN (версия/полный/ник)
     WorldSnapshot = 0x10, // хост -> сервер -> гость: сущности мира (P1)
+    ActionState = 0x11,   // клиент -> сервер -> остальные: действие/сценарий (P2)
 };
 
 // Компоненты одежды игрока (наряд): список хэшей одетых shop-предметов.
@@ -188,6 +189,42 @@ static_assert(sizeof(WorldSnapshotHeader) == 4, "WorldSnapshotHeader must be 4 b
 // Полный размер сообщения WorldSnapshot: header + count * WorldEntity.
 constexpr std::size_t kWorldSnapshotMaxSize =
     sizeof(WorldSnapshotHeader) + kMaxWorldEntities * sizeof(WorldEntity);
+
+// ---------------- P2: Action v2 (действия/сценарии) ----------------
+// Каждый клиент шлёт состояние СВОЕГО персонажа; сервер ретранслирует.
+// Клипы/фазы AnimGraph публичным SDK не читаются — передаём наблюдаемые
+// высокоуровневые состояния (сценарий/укрытие/переноска/…) и хэш сценария.
+enum class ActionMode : uint8_t {
+    None     = 0,
+    Scenario = 1,   // сидение/курение/еда/питьё и т.п. (scenarioHash)
+    Cover    = 2,   // в укрытии
+    Carry    = 3,   // несёт тело/предмет
+    Drag     = 4,   // тащит
+    Hogtie   = 5,   // связан
+    Loot     = 6,   // лутает
+    Fishing  = 7,   // рыбачит
+};
+
+constexpr uint16_t kActionFlagAiming   = 1u << 0;
+constexpr uint16_t kActionFlagShooting = 1u << 1;
+constexpr uint16_t kActionFlagReloading= 1u << 2;
+constexpr uint16_t kActionFlagInCover  = 1u << 3;
+constexpr uint16_t kActionFlagCarrying = 1u << 4;
+constexpr uint16_t kActionFlagDragging = 1u << 5;
+constexpr uint16_t kActionFlagHogtied  = 1u << 6;
+constexpr uint16_t kActionFlagFishing  = 1u << 7;
+
+struct ActionStatePayload {
+    uint8_t  mode = 0;         // ActionMode
+    uint8_t  flags = 0;        // kActionFlag*
+    uint16_t pad = 0;
+    uint32_t scenarioHash = 0; // _GET_ACTIVE_DYNAMIC_SCENARIO
+    uint32_t animDictHash = 0; // резерв: точный клип, если появится
+    uint32_t animNameHash = 0; // резерв
+    float    phase = 0.f;      // резерв: 0..1
+    uint32_t targetNetId = 0;  // цель переноски/лутания (позже, из P1)
+};
+static_assert(sizeof(ActionStatePayload) == 24, "ActionStatePayload must be 24 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

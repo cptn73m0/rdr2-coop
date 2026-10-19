@@ -193,4 +193,16 @@ constexpr unsigned long long _SET_AMBIENT_ANIMAL_DENSITY_MULTIPLIER_THIS_FRAME =
 constexpr unsigned long long SET_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME         = 0x606374EBFC27B133ull;
 constexpr unsigned long long SET_RANDOM_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME  = 0x1F91D44490E1EA0Cull;
 
+// P2 (Action v2): наблюдаемые действия/сценарии. Клип/фазу AnimGraph
+// публичный SDK не отдаёт; читаем сценарий/укрытие/переноску/и т.п.
+constexpr unsigned long long _GET_ACTIVE_DYNAMIC_SCENARIO      = 0x569F1E1237508DEBull;
+constexpr unsigned long long _GET_ACTIVE_DYNAMIC_SCENARIO_2    = 0xC22AA08A8ADB87D4ull;
+constexpr unsigned long long IS_PED_CARRYING_SOMETHING         = 0xA911EE21EDF69DAFull;
+constexpr unsigned long long _GET_FIRST_ENTITY_PED_IS_CARRYING = 0xD806CD2A4F2C2996ull;
+constexpr unsigned long long _IS_PED_DRAGGING                  = 0x226CF9B159E38F42ull;
+constexpr unsigned long long IS_PED_HOGTIED                    = 0x3AA24CCC0D451379ull;
+constexpr unsigned long long GET_LOOTING_PICKUP_TARGET_ENTITY  = 0x14169FA823679E41ull;
+constexpr unsigned long long _GET_TASK_FISHING                 = 0xF3735ACD11ACD500ull;
+constexpr unsigned long long TASK_START_SCENARIO_IN_PLACE_HASH = 0x524B54361229154Full;
+
 } // namespace natives

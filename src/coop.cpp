@@ -444,6 +444,17 @@ net::WorldState s_worldState{};
 bool s_haveWorldState = false;
 bool s_amHost = false;              // сервер назначил нас хостом
 unsigned int s_lastWorldSendTick = 0; // троттлинг отправки WorldState
+// P2: Action v2 — действие/сценарий удалённого игрока (из сетевого потока).
+std::mutex s_actionMtx;
+net::ActionStatePayload s_actionIn{};
+bool s_haveActionIn = false;
+// Последнее отправленное действие (чтобы не спамить) + heartbeat.
+net::ActionStatePayload s_lastSentAction{};
+bool s_lastSentActionValid = false;
+unsigned int s_lastActionSendTick = 0;
+// Что уже применено к педу, чтобы не перезапускать сценарий каждый кадр.
+uint8_t  s_appliedActionMode = 0;
+uint32_t s_appliedScenario = 0;
 // Последнее применённое время (для лога смены).
 int s_lastAppliedHour = -1, s_lastAppliedMin = -1;
 // Компоненты одежды удалённого игрока (для применения в Tick()).
@@ -1579,6 +1590,8 @@ void RespawnGhostPed(const net::FramePayload* f)
     s_idleChase = false;
     s_lastPedState = 0xFF;
     s_lastAction = 0xFF;
+    s_appliedActionMode = 0;
+    s_appliedScenario = 0;
     s_moveTargetValid = false;
     // После RESURRECT_PED движок возвращает дефолтные компоненты модели,
     // поэтому наряд надо надеть заново (с полным сбросом слоёв).
@@ -1999,6 +2012,14 @@ void CleanupGhost()
     s_pendingCombatExit = false;
     s_lastAimTaskValid = false;
     s_lastAction = 0xFF;
+    // P2: сброс Action v2 (новый пед/сессия).
+    s_lastSentActionValid = false;
+    s_appliedActionMode = 0;
+    s_appliedScenario = 0;
+    {
+        std::lock_guard<std::mutex> lk(s_actionMtx);
+        s_haveActionIn = false;
+    }
     // Сброс дебаунса move (новый игрок — заново определяем состояние).
     s_moveStable = 0xFF;
     s_moveCandidate = 0xFF;
@@ -2592,8 +2613,118 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     s_lastMoveState = 0xFF;
     s_idleChase = false;
     s_lastPedState = 0xFF;
+    // Педа пересоздали — применённое действие больше не актуально.
+    s_appliedActionMode = 0;
+    s_appliedScenario = 0;
+    {
+        std::lock_guard<std::mutex> lk(s_actionMtx);
+        s_haveActionIn = false;
+    }
     // НОВЫЙ пед создаётся со спавна (рядом с хостом / на сохранённой позиции);
     // наряд из последнего кадра применится автоматически (reserved[1]).
+}
+
+// P2: Action v2 — наблюдение действий локального игрока. Клип/фазу AnimGraph
+// публичный SDK не отдаёт, поэтому передаём сценарий/укрытие/переноску и т.п.
+net::ActionStatePayload DetectLocalActionV2(unsigned int ped)
+{
+    using namespace natives_api;
+    net::ActionStatePayload a{};
+
+    // Сценарий: сидение/курение/еда/питьё/лагерные действия и т.п.
+    uint32_t scenario = 0;
+    Init(natives::_GET_ACTIVE_DYNAMIC_SCENARIO); Push(ped);
+    scenario = static_cast<uint32_t>(Call());
+    if (!scenario)
+    {
+        Init(natives::_GET_ACTIVE_DYNAMIC_SCENARIO_2); Push(ped);
+        scenario = static_cast<uint32_t>(Call());
+    }
+    if (scenario)
+    {
+        a.mode = static_cast<uint8_t>(net::ActionMode::Scenario);
+        a.scenarioHash = scenario;
+    }
+
+    Init(natives::IS_PED_IN_COVER); Push(ped); Push(true); Push(false);
+    if (Call())
+    {
+        if (a.mode == 0) a.mode = static_cast<uint8_t>(net::ActionMode::Cover);
+        a.flags |= net::kActionFlagInCover;
+    }
+    Init(natives::IS_PED_AIMING_FROM_COVER); Push(ped);
+    if (Call()) a.flags |= net::kActionFlagAiming;
+
+    Init(natives::IS_PED_CARRYING_SOMETHING); Push(ped);
+    if (Call())
+    {
+        a.mode = static_cast<uint8_t>(net::ActionMode::Carry);
+        a.flags |= net::kActionFlagCarrying;
+    }
+    Init(natives::_IS_PED_DRAGGING); Push(ped);
+    if (Call())
+    {
+        a.mode = static_cast<uint8_t>(net::ActionMode::Drag);
+        a.flags |= net::kActionFlagDragging;
+    }
+    Init(natives::IS_PED_HOGTIED); Push(ped);
+    if (Call())
+    {
+        a.mode = static_cast<uint8_t>(net::ActionMode::Hogtie);
+        a.flags |= net::kActionFlagHogtied;
+    }
+    unsigned long long fishingOut = 0;
+    Init(natives::_GET_TASK_FISHING); Push(ped);
+    Push(reinterpret_cast<unsigned long long>(&fishingOut));
+    if (Call())
+    {
+        a.mode = static_cast<uint8_t>(net::ActionMode::Fishing);
+        a.flags |= net::kActionFlagFishing;
+    }
+    return a;
+}
+
+// P2: применить действие удалённого игрока к педу-призраку.
+void ApplyRemoteActionV2(const net::ActionStatePayload& a)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost) || s_ghostDead)
+        return;
+    using namespace natives_api;
+
+    const uint8_t mode = a.mode;
+    const bool wasScenario = (s_appliedActionMode ==
+                              static_cast<uint8_t>(net::ActionMode::Scenario));
+
+    if (mode == static_cast<uint8_t>(net::ActionMode::Scenario) && a.scenarioHash)
+    {
+        if (s_appliedActionMode != mode || s_appliedScenario != a.scenarioHash)
+        {
+            const float heading = s_haveFrame ? s_lastFrame.heading
+                                              : GetEntityHeading(s_ghost);
+            Init(natives::TASK_START_SCENARIO_IN_PLACE_HASH);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(a.scenarioHash));
+            Push(static_cast<unsigned long long>(0xFFFFFFFF)); // duration -1
+            Push(static_cast<unsigned long long>(1));          // playEnterAnim
+            Push(static_cast<unsigned long long>(0));          // conditionalHash
+            Push(heading);
+            Push(static_cast<unsigned long long>(0));
+            Call();
+            sh_log::Write("action: scenario 0x%08X applied to ghost\n", a.scenarioHash);
+        }
+    }
+    else if (wasScenario && mode != static_cast<uint8_t>(net::ActionMode::Scenario))
+    {
+        // Сценарий закончился — возвращаем педа в стойку.
+        Init(natives::TASK_STAND_STILL);
+        Push(s_ghost); Push(static_cast<unsigned long long>(0xFFFFFFFF));
+        Call();
+        sh_log::Write("action: scenario finished -> stand still\n");
+    }
+    // Cover/Carry/Drag/Hogtie/Fishing пока только фиксируются в state:
+    // cover требует cover-point, переноска/лутание — репликации цели (P1).
+    s_appliedActionMode = mode;
+    s_appliedScenario = a.scenarioHash;
 }
 
 // Регистрация колбэков и запуск сетевого клиента.
@@ -2624,6 +2755,13 @@ void InitNetworkClient()
     // прокси-сущности создаёт/обновляет world_sync из Tick() (игровой поток).
     g_netClient.SetWorldSnapshot([](const std::vector<uint8_t>& payload) {
         world_sync::OnSnapshot(payload);
+    });
+
+    // P2: ActionState удалённого игрока — только копируем; применит Tick().
+    g_netClient.SetActionState([](const net::ActionStatePayload& a) {
+        std::lock_guard<std::mutex> lk(s_actionMtx);
+        s_actionIn = a;
+        s_haveActionIn = true;
     });
 
     g_netClient.SetPlayerJoin([](const netio::PlayerJoinInfo& ji) {
@@ -2760,6 +2898,37 @@ void Tick()
         // в ini (world_sync = 1 на ОБОИХ ПК для теста).
         world_sync::Tick(playerPed, s_tickCount, s_amHost,
                          coopcfg::Get().worldSync);
+
+        // P2: Action v2 — сценарии/сидение/курение/укрытие.
+        if (coopcfg::Get().actionSync)
+        {
+            if ((s_tickCount % 3) == 0)
+            {
+                net::ActionStatePayload a = DetectLocalActionV2(playerPed);
+                const bool changed = !s_lastSentActionValid ||
+                    std::memcmp(&a, &s_lastSentAction, sizeof(a)) != 0;
+                if (changed || s_tickCount - s_lastActionSendTick >= 15)
+                {
+                    s_lastSentAction = a;
+                    s_lastSentActionValid = true;
+                    s_lastActionSendTick = s_tickCount;
+                    g_netClient.SendActionState(a);
+                }
+            }
+            net::ActionStatePayload in{};
+            bool have = false;
+            {
+                std::lock_guard<std::mutex> lk(s_actionMtx);
+                if (s_haveActionIn)
+                {
+                    in = s_actionIn;
+                    s_haveActionIn = false;
+                    have = true;
+                }
+            }
+            if (have)
+                ApplyRemoteActionV2(in);
+        }
     }
 
     // Модель для педа: чужая (из PLAYER_JOINED), иначе дефолтная.

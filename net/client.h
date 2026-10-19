@@ -57,6 +57,8 @@ public:
     using OnJoinRejected = std::function<void(net::JoinRejectReason)>;
     // P1: сырой payload WorldSnapshot (разбор — в игровом потоке, в coop).
     using OnWorldSnapshot = std::function<void(const std::vector<uint8_t>&)>;
+    // P2: ActionState от удалённого игрока (копия в Tick).
+    using OnActionState = std::function<void(const net::ActionStatePayload&)>;
 
     Client();
     ~Client();
@@ -79,6 +81,8 @@ public:
     void SendHorseOutfit(const net::OutfitState& os);
     // P1: отправить снапшот мира (только хост).
     void SendWorldSnapshot(const std::vector<uint8_t>& payload);
+    // P2: отправить состояние действия/сценария своего персонажа.
+    void SendActionState(const net::ActionStatePayload& state);
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
     uint32_t RttMs() const { return rttMs_.load(); }
 
@@ -94,6 +98,7 @@ public:
     void SetHorseOutfit(OnHorseOutfit cb);
     void SetJoinRejected(OnJoinRejected cb);
     void SetWorldSnapshot(OnWorldSnapshot cb);
+    void SetActionState(OnActionState cb);
 
     ClientState State() const;
 
@@ -127,6 +132,7 @@ private:
     OnHorseOutfit onHorseOutfit_;
     OnJoinRejected onJoinRejected_;
     OnWorldSnapshot onWorldSnapshot_;
+    OnActionState onActionState_;
     std::atomic<uint32_t> rttMs_{0};
 };
 
