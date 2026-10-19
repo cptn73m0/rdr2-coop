@@ -131,7 +131,7 @@
 
 - [x] Сервер: keepalive/timeouts, лимиты очередей, атомарный players.txt,
       защита от пустых/повторных JOIN, host-only сообщения
-- [x] Headless-тесты протокола/сервера (7 integration tests, без игры)
+- [x] Headless-тесты протокола/сервера (9 integration tests, без игры)
 - [x] Проверка и фикс: probe-подключения больше не затирают players.txt
 - [x] Reconnect с backoff (1→10 с), очистка педа, повторный JOIN
 - [x] Host migration: сервер повышает гостя, шлёт HostChanged (v12)
