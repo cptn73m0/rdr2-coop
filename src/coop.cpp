@@ -7,6 +7,7 @@
 #include "persist.h"
 #include "world_scan.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -538,6 +539,12 @@ bool s_haveMountTarget = false;
 // перезадавать её каждый кадр — иначе лошадь дёргается).
 Vec3 s_mountTaskTarget{0.f, 0.f, 0.f};
 bool s_mountTaskValid = false;
+// Предыдущая цель кадра для лошади. Нужна, чтобы отличать НАСТОЯЩИЙ
+// телепорт игрока (респавн/смена локации) от отставания на галопе.
+Vec3 s_prevMountTarget{0.f, 0.f, 0.f};
+bool s_prevMountTargetValid = false;
+// Тик последней попытки пересадить всадника, если он «слетел» с лошади.
+unsigned int s_lastMountReseatTick = 0;
 // «Грация» верховой езды заменена фазовой машиной: кадры move=RideHorse
 // могут кратко мерцать на Walk/Idle (IS_PED_ON_MOUNT дрожит), поэтому
 // спешивание начинаем только после kRideLossTicks подряд «не верхом».
@@ -553,8 +560,13 @@ enum class MountPhase : uint8_t
 };
 MountPhase s_mountPhase = MountPhase::None;
 unsigned int s_mountPhaseTicks = 0;
-// Дистанция, после которой лошадь переносим телепортом (а не задачей).
-constexpr float TELEPORT_DIST_MOUNT = 10.0f;
+// Телепорт лошади — ТОЛЬКО при реальной потере (респавн/смена локации),
+// а не при отставании на галопе. Раньше порог был 10 м, и при быстрой
+// скачке задача не успевала — каждый раз срабатывал телепорт.
+constexpr float TELEPORT_DIST_MOUNT = 60.0f;
+// Скачок цели между соседними кадрами: настоящий телепорт игрока
+// (респавн), а не нормальное движение (на галопе ~0.3–0.5 м за кадр).
+constexpr float TELEPORT_TARGET_JUMP = 15.0f;
 
 // Мета-наряд удалённого игрока: хотим применить к педу призрака.
 // Запрос асинхронный (REQUEST -> ждём -> APPLY), поэтому храним состояние.
@@ -746,10 +758,24 @@ void MoveMountTo(const Vec3& target)
     float dx = target.x - cur.x, dy = target.y - cur.y;
     float dist = std::sqrt(dx * dx + dy * dy);
 
-    // Большой разрыв (респавн, телепорт игрока) — переносим лошадь вместе с
-    // седоком и сажаем заново (иначе задача поведёт её через полкарты).
-    if (dist > TELEPORT_DIST_MOUNT)
+    // Отличаем «настоящий» телепорт цели (респавн/смена локации) от
+    // отставания на галопе. На галопе цель смещается на ~0.3–0.5 м/кадр,
+    // поэтому скачок > 15 м между кадрами — это точно телепорт.
+    float targetJump = 0.f;
+    if (s_prevMountTargetValid)
     {
+        const float tx = target.x - s_prevMountTarget.x;
+        const float ty = target.y - s_prevMountTarget.y;
+        targetJump = std::sqrt(tx * tx + ty * ty);
+    }
+    s_prevMountTarget = target;
+    s_prevMountTargetValid = true;
+
+    const bool realTeleport = (targetJump > TELEPORT_TARGET_JUMP) ||
+                              (dist > TELEPORT_DIST_MOUNT);
+    if (realTeleport)
+    {
+        // Респавн/телепорт: переносим лошадь вместе с седоком и сажаем заново.
         Vec3 at = target;
         float gz = 0.f;
         Init(natives::GET_GROUND_Z_FOR_3D_COORD);
@@ -758,7 +784,22 @@ void MoveMountTo(const Vec3& target)
         if (Call())
             at.z = gz + 0.2f;
         SetEntityCoords(s_mount, at);
-        SetEntityCoords(s_ghost, at);
+        // Если всадник уже в седле, он переедет вместе с лошадью; ручной
+        // перенос педа в этом случае только ломает посадку.
+        if (!IsGhostMounted())
+            SetEntityCoords(s_ghost, at);
+        PromoteMountToGhost();
+        s_mountTaskValid = false;
+        sh_log::Write("coop: mount teleport (dist=%.1f jump=%.1f)\n", dist, targetJump);
+        return;
+    }
+
+    // Страховка: всадник «слетел» (провал задачи посадки) — пересаживаем,
+    // иначе лошадь уедет, а пед останется и будет дёргаться/телепортироваться.
+    if (s_mountPhase == MountPhase::Seated && !IsGhostMounted() &&
+        (s_tickCount - s_lastMountReseatTick) > 60)
+    {
+        s_lastMountReseatTick = s_tickCount;
         PromoteMountToGhost();
         s_mountTaskValid = false;
         return;
@@ -772,7 +813,14 @@ void MoveMountTo(const Vec3& target)
         std::fabs(target.y - s_mountTaskTarget.y) < 0.5f)
         return;
 
-    const float speed = (dist > 3.0f) ? 2.0f : 1.0f;
+    // Догоняем ЗАДАЧЕЙ, а не телепортом: чем больше отставание, тем выше
+    // множитель скорости (3.0 — галоп). Раньше всегда было 2.0, лошадь не
+    // успевала за галопом, разрыв рос и срабатывал телепорт.
+    float speed = 1.0f;
+    if (dist > 12.0f)      speed = 3.0f;
+    else if (dist > 3.0f)  speed = 2.0f;
+    if (targetJump > 0.5f) speed = std::max(speed, 2.0f); // цель быстро уходит
+
     Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
     Push(s_mount);
     Push(target.x); Push(target.y); Push(target.z);
@@ -1671,9 +1719,23 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         {
             s_mountPhase = MountPhase::Seated;
             s_mountTaskValid = false;
+            // Если пед по каким-то причинам не в седле — сажаем. Иначе
+            // лошадь уедет, а пед останется и будет «телепортироваться».
+            if (!IsGhostMounted())
+                PromoteMountToGhost();
         }
         MoveMountTo(p);
-        SetEntityHeading(s_mount, f.heading);
+        // Пока лошадь ведёт задача, НЕ перебиваем heading каждый кадр:
+        // TASK_FOLLOW сам разворачивает корпус, а ручной SetEntityHeading
+        // дёргает лошадь на галопе. Heading правим только когда лошадь
+        // почти на месте кадра (стоячая/медленная езда).
+        {
+            Vec3 mountPos = GetEntityCoords(s_mount);
+            const float mdx = p.x - mountPos.x;
+            const float mdy = p.y - mountPos.y;
+            if (mdx * mdx + mdy * mdy < 1.5f * 1.5f)
+                SetEntityHeading(s_mount, f.heading);
+        }
         DisableMountLocalCollision();
         ApplyPedStateToGhost(f);
         return;
