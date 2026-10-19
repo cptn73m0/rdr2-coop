@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v7: WorldSnapshot до 64 сущностей — 32 Ped + 16 Vehicle + 16 mission Object.
-constexpr uint16_t kProtocolVersion = 7;
+// v8: PlayerVehicle — посадка удалённого игрока в транспорт (дилижанс/повозку).
+constexpr uint16_t kProtocolVersion = 8;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -43,6 +43,7 @@ enum class Msg : uint8_t {
     JoinRejected= 0x0F, // сервер -> клиент: отказ в JOIN (версия/полный/ник)
     WorldSnapshot = 0x10, // хост -> сервер -> гость: сущности мира (P1)
     ActionState = 0x11,   // клиент -> сервер -> остальные: действие/сценарий (P2)
+    PlayerVehicle = 0x12, // клиент -> сервер -> остальные: посадка в транспорт
 };
 
 // Компоненты одежды игрока (наряд): список хэшей одетых shop-предметов.
@@ -226,6 +227,25 @@ struct ActionStatePayload {
     uint32_t targetNetId = 0;  // цель переноски/лутания (позже, из P1)
 };
 static_assert(sizeof(ActionStatePayload) == 24, "ActionStatePayload must be 24 bytes");
+
+// ---------------- P2: посадка игрока в транспорт ----------------
+// Каждый клиент шлёт состояние СВОЕГО персонажа; сервер ретранслирует.
+// Гость по этому сообщению создаёт/двигает транспорт и сажает в него призрака.
+constexpr uint8_t kPlayerVehicleFlagValid  = 1u << 0;
+constexpr uint8_t kPlayerVehicleFlagDriver = 1u << 1;
+
+struct PlayerVehicleState {
+    uint32_t vehicleModel = 0; // 0 = не в транспорте
+    uint32_t netId = 0;        // резерв: мировой netId (P1)
+    float x = 0.f, y = 0.f, z = 0.f;
+    float heading = 0.f;
+    int8_t seat = -1;          // -1 = водитель (как в RDR2/GTA)
+    uint8_t flags = 0;         // kPlayerVehicleFlag*
+    uint16_t pad = 0;
+    uint32_t reserved = 0;     // выравнивание/резерв (итого 32 Б)
+};
+static_assert(sizeof(PlayerVehicleState) == 32,
+              "PlayerVehicleState must be 32 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

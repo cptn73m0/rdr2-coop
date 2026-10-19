@@ -511,6 +511,17 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 }
                 break;
             }
+            case net::Msg::PlayerVehicle:
+            {
+                // P2: посадка в транспорт — ретрансляция остальным.
+                if (pay.size() >= sizeof(net::PlayerVehicleState))
+                {
+                    BroadcastToOthers(sock, MakeMsg(
+                        (uint8_t)net::Msg::PlayerVehicle,
+                        pay.data(), (uint32_t)pay.size()));
+                }
+                break;
+            }
             case net::Msg::HorseOutfit:
             {
                 // Снаряжение лошади — ретранслируем остальным (как Outfit).

@@ -219,5 +219,9 @@ constexpr unsigned long long GET_VEHICLE_PED_IS_USING         = 0x6094AD011A2EA8
 constexpr unsigned long long IS_VEHICLE_WRECKED               = 0xDDBEA5506C848227ull;
 constexpr unsigned long long IS_THIS_MODEL_A_TRAIN            = 0xFC08C8F8C1EDF174ull;
 constexpr unsigned long long DELETE_OBJECT                    = 0x931914268722C263ull;
+constexpr unsigned long long GET_VEHICLE_PED_IS_IN            = 0x9A9112A0FE9A4713ull;
+constexpr unsigned long long GET_PED_IN_VEHICLE_SEAT          = 0xBB40DD2270B65366ull;
+constexpr unsigned long long IS_PED_IN_VEHICLE                = 0xA3EE4A07279BB9DBull;
+constexpr unsigned long long SET_PED_INTO_VEHICLE             = 0xF75B0D629E1C063Dull;
 
 } // namespace natives

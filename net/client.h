@@ -59,6 +59,8 @@ public:
     using OnWorldSnapshot = std::function<void(const std::vector<uint8_t>&)>;
     // P2: ActionState от удалённого игрока (копия в Tick).
     using OnActionState = std::function<void(const net::ActionStatePayload&)>;
+    // P2: посадка удалённого игрока в транспорт.
+    using OnPlayerVehicle = std::function<void(const net::PlayerVehicleState&)>;
 
     Client();
     ~Client();
@@ -83,6 +85,8 @@ public:
     void SendWorldSnapshot(const std::vector<uint8_t>& payload);
     // P2: отправить состояние действия/сценария своего персонажа.
     void SendActionState(const net::ActionStatePayload& state);
+    // P2: отправить состояние посадки в транспорт своего персонажа.
+    void SendPlayerVehicle(const net::PlayerVehicleState& state);
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
     uint32_t RttMs() const { return rttMs_.load(); }
 
@@ -99,6 +103,7 @@ public:
     void SetJoinRejected(OnJoinRejected cb);
     void SetWorldSnapshot(OnWorldSnapshot cb);
     void SetActionState(OnActionState cb);
+    void SetPlayerVehicle(OnPlayerVehicle cb);
 
     ClientState State() const;
 
@@ -133,6 +138,7 @@ private:
     OnJoinRejected onJoinRejected_;
     OnWorldSnapshot onWorldSnapshot_;
     OnActionState onActionState_;
+    OnPlayerVehicle onPlayerVehicle_;
     std::atomic<uint32_t> rttMs_{0};
 };
 

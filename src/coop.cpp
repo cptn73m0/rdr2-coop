@@ -458,6 +458,17 @@ uint32_t s_appliedScenario = 0;
 uint32_t s_appliedTargetNetId = 0;
 uint32_t s_lastLoggedTargetNetId = 0;
 unsigned int s_lastCoverTaskTick = 0;
+// P2: посадка в транспорт удалённого игрока.
+std::mutex s_pvMtx;
+net::PlayerVehicleState s_pvIn{};
+bool s_havePvIn = false;
+net::PlayerVehicleState s_lastSentPv{};
+bool s_lastSentPvValid = false;
+unsigned int s_lastPvSendTick = 0;
+unsigned int s_playerVehicle = 0;
+unsigned int s_playerVehicleModel = 0;
+bool s_remoteInVehicle = false;
+void DeleteRemotePlayerVehicle();
 // Последнее применённое время (для лога смены).
 int s_lastAppliedHour = -1, s_lastAppliedMin = -1;
 // Компоненты одежды удалённого игрока (для применения в Tick()).
@@ -1696,6 +1707,15 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         }
     }
 
+    // P2: удалённый игрок едет в транспорте — позицией и посадкой управляет
+    // PlayerVehicle-сообщение; кадры не должны телепортировать призрака.
+    if (s_remoteInVehicle)
+    {
+        ApplyPedStateToGhost(f);
+        ApplyPlayerOutfitToGhost(f.reserved[1]);
+        return;
+    }
+
     constexpr float LERP_FACTOR = 0.2f; // ~20% за тик при 60 Гц (плавно, без рывков)
     constexpr float TELEPORT_DIST = 10.0f; // больше этой дистанции — телепорт
 
@@ -2025,9 +2045,15 @@ void CleanupGhost()
     s_appliedTargetNetId = 0;
     s_lastLoggedTargetNetId = 0;
     s_lastCoverTaskTick = 0;
+    DeleteRemotePlayerVehicle();
+    s_lastSentPvValid = false;
     {
         std::lock_guard<std::mutex> lk(s_actionMtx);
         s_haveActionIn = false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(s_pvMtx);
+        s_havePvIn = false;
     }
     // Сброс дебаунса move (новый игрок — заново определяем состояние).
     s_moveStable = 0xFF;
@@ -2628,9 +2654,15 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     s_appliedTargetNetId = 0;
     s_lastLoggedTargetNetId = 0;
     s_lastCoverTaskTick = 0;
+    DeleteRemotePlayerVehicle();
+    s_lastSentPvValid = false;
     {
         std::lock_guard<std::mutex> lk(s_actionMtx);
         s_haveActionIn = false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(s_pvMtx);
+        s_havePvIn = false;
     }
     // НОВЫЙ пед создаётся со спавна (рядом с хостом / на сохранённой позиции);
     // наряд из последнего кадра применится автоматически (reserved[1]).
@@ -2840,6 +2872,138 @@ void ApplyRemoteActionV2(const net::ActionStatePayload& a)
     s_appliedScenario = a.scenarioHash;
 }
 
+// P2: посадка в транспорт. Локальный детект: если игрок внутри vehicle —
+// отправляем модель/позицию/место; гость создаёт прокси и сажает призрака.
+net::PlayerVehicleState DetectLocalPlayerVehicle(unsigned int ped)
+{
+    using namespace natives_api;
+    net::PlayerVehicleState pv{};
+    Init(natives::GET_VEHICLE_PED_IS_IN);
+    Push(ped); Push(false);
+    const unsigned int veh = static_cast<unsigned int>(Call());
+    if (!veh)
+        return pv;
+
+    Init(natives::GET_ENTITY_MODEL); Push(veh);
+    pv.vehicleModel = static_cast<unsigned int>(Call());
+    if (!pv.vehicleModel)
+        return net::PlayerVehicleState{};
+
+    const Vec3 pos = GetEntityCoords(veh);
+    pv.x = pos.x; pv.y = pos.y; pv.z = pos.z;
+    pv.heading = GetEntityHeading(veh);
+    pv.flags = net::kPlayerVehicleFlagValid;
+
+    // Ищем реальное место: -1 = водитель, дальше 0..4.
+    int seat = -1;
+    for (int s = -1; s <= 4; ++s)
+    {
+        Init(natives::GET_PED_IN_VEHICLE_SEAT);
+        Push(veh); Push(s);
+        if (static_cast<unsigned int>(Call()) == ped)
+        {
+            seat = s;
+            break;
+        }
+    }
+    pv.seat = static_cast<int8_t>(seat);
+    if (seat == -1)
+        pv.flags |= net::kPlayerVehicleFlagDriver;
+    return pv;
+}
+
+void DeleteRemotePlayerVehicle()
+{
+    if (s_playerVehicle)
+    {
+        using namespace natives_api;
+        int h = static_cast<int>(s_playerVehicle);
+        Init(natives::DELETE_VEHICLE);
+        Push(reinterpret_cast<unsigned long long>(&h));
+        Call();
+        if (DoesEntityExist(s_playerVehicle))
+        {
+            int h2 = static_cast<int>(s_playerVehicle);
+            Init(natives::SET_ENTITY_AS_NO_LONGER_NEEDED);
+            Push(reinterpret_cast<unsigned long long>(&h2));
+            Call();
+        }
+        sh_log::Write("vehicle: proxy deleted\n");
+    }
+    s_playerVehicle = 0;
+    s_playerVehicleModel = 0;
+    s_remoteInVehicle = false;
+}
+
+void ApplyRemotePlayerVehicle(const net::PlayerVehicleState& pv)
+{
+    using namespace natives_api;
+    if (!(pv.flags & net::kPlayerVehicleFlagValid) || !pv.vehicleModel)
+    {
+        if (s_remoteInVehicle || s_playerVehicle)
+        {
+            DeleteRemotePlayerVehicle();
+            sh_log::Write("vehicle: remote exit\n");
+        }
+        return;
+    }
+    if (!s_ghost || !DoesEntityExist(s_ghost) || s_ghostDead)
+        return;
+
+    // Игрок в транспорте — лошадь-призрак больше не нужна.
+    if (s_mount && DoesEntityExist(s_mount))
+        DismountAndRemoveMount();
+
+    if (!s_playerVehicle || !DoesEntityExist(s_playerVehicle) ||
+        s_playerVehicleModel != pv.vehicleModel)
+    {
+        DeleteRemotePlayerVehicle();
+        if (!HasModelLoaded(pv.vehicleModel))
+        {
+            RequestModel(pv.vehicleModel);
+            return;
+        }
+        Init(natives::CREATE_VEHICLE);
+        Push(static_cast<unsigned long long>(pv.vehicleModel));
+        Push(pv.x); Push(pv.y); Push(pv.z); Push(pv.heading);
+        Push(false); // isNetwork
+        Push(false); // bScriptHostVeh
+        Push(true);  // bDontAutoCreateDraftAnimals
+        Push(false); // p8
+        const unsigned int veh = static_cast<unsigned int>(Call());
+        if (!veh)
+            return;
+        Init(natives::SET_ENTITY_AS_MISSION_ENTITY);
+        Push(veh); Push(true); Push(true); Call();
+        Init(natives::SET_ENTITY_INVINCIBLE);
+        Push(veh); Push(true); Call();
+        Init(natives::SET_ENTITY_VISIBLE);
+        Push(veh); Push(true); Call();
+        Init(natives::SET_ENTITY_COLLISION);
+        Push(veh); Push(false); Push(false); Call();
+        s_playerVehicle = veh;
+        s_playerVehicleModel = pv.vehicleModel;
+        sh_log::Write("vehicle: proxy created model=0x%08X seat=%d\n",
+                      pv.vehicleModel, (int)pv.seat);
+    }
+
+    SetEntityCoords(s_playerVehicle, Vec3{pv.x, pv.y, pv.z});
+    SetEntityHeading(s_playerVehicle, pv.heading);
+
+    Init(natives::IS_PED_IN_VEHICLE);
+    Push(s_ghost); Push(s_playerVehicle); Push(false);
+    if (!Call())
+    {
+        Init(natives::SET_PED_INTO_VEHICLE);
+        Push(s_ghost); Push(s_playerVehicle);
+        Push(static_cast<unsigned long long>(
+            static_cast<unsigned int>(static_cast<int>(pv.seat))));
+        Call();
+        sh_log::Write("vehicle: ghost seated at seat=%d\n", (int)pv.seat);
+    }
+    s_remoteInVehicle = true;
+}
+
 // Регистрация колбэков и запуск сетевого клиента.
 // ВАЖНО: колбэки исполняются в фоновом сетевом потоке — они не имеют права
 // трогать нативы/сущности движка; они только буферизуют состояние, которое
@@ -2870,11 +3034,18 @@ void InitNetworkClient()
         world_sync::OnSnapshot(payload);
     });
 
-    // P2: ActionState удалённого игрока — только копируем; применит Tick().
+    // P2: действие/сценарий удалённого игрока — только копируем; применит Tick().
     g_netClient.SetActionState([](const net::ActionStatePayload& a) {
         std::lock_guard<std::mutex> lk(s_actionMtx);
         s_actionIn = a;
         s_haveActionIn = true;
+    });
+
+    // P2: посадка удалённого игрока в транспорт — копируем; применит Tick().
+    g_netClient.SetPlayerVehicle([](const net::PlayerVehicleState& pv) {
+        std::lock_guard<std::mutex> lk(s_pvMtx);
+        s_pvIn = pv;
+        s_havePvIn = true;
     });
 
     g_netClient.SetPlayerJoin([](const netio::PlayerJoinInfo& ji) {
@@ -3041,6 +3212,43 @@ void Tick()
             }
             if (have)
                 ApplyRemoteActionV2(in);
+        }
+
+        // P2: посадка в транспорт удалённого игрока.
+        if (coopcfg::Get().vehicleSync)
+        {
+            if ((s_tickCount % 3) == 0)
+            {
+                net::PlayerVehicleState pv = DetectLocalPlayerVehicle(playerPed);
+                const bool changed = !s_lastSentPvValid ||
+                    std::memcmp(&pv, &s_lastSentPv, sizeof(pv)) != 0;
+                if (changed || s_tickCount - s_lastPvSendTick >= 15)
+                {
+                    s_lastSentPv = pv;
+                    s_lastSentPvValid = true;
+                    s_lastPvSendTick = s_tickCount;
+                    g_netClient.SendPlayerVehicle(pv);
+                }
+            }
+            net::PlayerVehicleState pv{};
+            bool havePv = false;
+            {
+                std::lock_guard<std::mutex> lk(s_pvMtx);
+                if (s_havePvIn)
+                {
+                    pv = s_pvIn;
+                    s_havePvIn = false;
+                    havePv = true;
+                }
+            }
+            if (havePv)
+                ApplyRemotePlayerVehicle(pv);
+        }
+        else
+        {
+            if (s_remoteInVehicle || s_playerVehicle)
+                DeleteRemotePlayerVehicle();
+            s_lastSentPvValid = false;
         }
     }
 

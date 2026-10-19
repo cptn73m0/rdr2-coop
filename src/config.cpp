@@ -66,6 +66,9 @@ void WriteDefaultIni()
     fputs("# P2: Action v2 — сценарии/сидение/курение/укрытие.\n", f);
     fputs("# 0 = выключено (по умолчанию), 1 = включено на ОБОИХ ПК.\n", f);
     fputs("action_sync = 0\n", f);
+    fputs("# P2: посадка в транспорт (дилижанс/повозка) удалённого игрока.\n", f);
+    fputs("# 0 = выключено (по умолчанию), 1 = включено на ОБОИХ ПК.\n", f);
+    fputs("vehicle_sync = 0\n", f);
     fclose(f);
 }
 
@@ -110,6 +113,11 @@ Config& Load()
         {
             g_cfg.actionSync = !(val == "0" || val == "false" || val == "no" ||
                                  val == "off" || val == "False" || val == "OFF");
+        }
+        else if (key == "vehicle_sync")
+        {
+            g_cfg.vehicleSync = !(val == "0" || val == "false" || val == "no" ||
+                                  val == "off" || val == "False" || val == "OFF");
         }
         else if (key == "ped_model")
         {
