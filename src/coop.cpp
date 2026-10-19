@@ -9,6 +9,7 @@
 #include "world_sync.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -435,6 +436,8 @@ std::mutex s_shotMtx;
 Vec3 s_shotQueue[kShotQueueSize];
 int  s_shotQCount = 0;
 int  s_shotDropped = 0;
+std::atomic<bool> s_shotEventsPending{false};
+unsigned int s_lastShotEventTaskTick = 0;
 unsigned int s_lastShotTick = 0; // минимум паузы между задачами выстрела
 // Состояние мира от хоста (время+погода) для применения в Tick().
 net::WorldState s_worldState{};
@@ -1089,9 +1092,14 @@ void ApplyActionToGhost(const net::FramePayload& f)
     // Пока стрельба продолжается — продлеваем задачу. Сериализация: пока
     // предыдущий выстрел доигрывает (hold), задачу НЕ перезадаём — иначе
     // анимация перезапускается и выстрел не «регистрируется».
+    // ВАЖНО: если в очереди есть ТОЧНЫЕ события выстрелов (Shot из сети),
+    // авто-стрельбу по action не делаем — иначе первый выстрел «съедает»
+    // hold, а остальные события ждут и не проигрываются.
     if (isCombat && ac == static_cast<uint8_t>(net::Action::Shooting) &&
         s_shootHoldTicks == 0 &&
-        s_tickCount - s_lastShootTaskTick >= 15)
+        !s_shotEventsPending.load() &&
+        s_tickCount - s_lastShootTaskTick >= 15 &&
+        s_tickCount - s_lastShotEventTaskTick >= 30)
     {
         s_lastShootTaskTick = s_tickCount;
         ShootGhostForward();
@@ -1965,6 +1973,13 @@ void CleanupGhost()
     s_combatActive = false;
     s_lastShootTaskTick = 0;
     s_shootHoldTicks = 0;
+    s_lastShotEventTaskTick = 0;
+    s_shotDropped = 0;
+    {
+        std::lock_guard<std::mutex> lk(s_shotMtx);
+        s_shotQCount = 0;
+    }
+    s_shotEventsPending.store(false);
     s_pendingCombatExit = false;
     s_lastAimTaskValid = false;
     s_lastAction = 0xFF;
@@ -2270,6 +2285,7 @@ Vec3 s_lastImpact{0.f, 0.f, 0.f};
 bool s_localWasShooting = false;
 int  s_lastClipAmmo = -1;
 unsigned long long s_lastClipWeapon = 0;
+bool s_ammoQueryFailLogged = false;
 
 // Реализация ниже (anonymous namespace), нужна здесь для детекта выстрела.
 unsigned long long GetLocalWeaponHash(unsigned int ped);
@@ -2289,6 +2305,12 @@ void UpdateLocalShotEvents(unsigned int ped)
         Push(reinterpret_cast<unsigned long long>(&clipAmmo));
         Push(weapon);
         haveAmmo = Call() != 0;
+    }
+    if (weapon && !haveAmmo && !s_ammoQueryFailLogged)
+    {
+        s_ammoQueryFailLogged = true;
+        sh_log::Write("coop: GET_AMMO_IN_CLIP failed for weapon 0x%llX; "
+                      "using impact/shooting fallback\n", weapon);
     }
     int shots = 0;
     if (haveAmmo)
@@ -2363,7 +2385,7 @@ void UpdateLocalShotEvents(unsigned int ped)
         }
         g_netClient.SendShot(sp);
         sh_log::Write("coop: send shot (%.1f %.1f %.1f)%s\n",
-                      sp.x, sp.y, sp.z, shots > 0 ? "" : " [fallback]");
+                      sp.x, sp.y, sp.z, shots > 0 ? " [ammo]" : " [fallback]");
     }
 }
 
@@ -2635,7 +2657,10 @@ void InitNetworkClient()
         // Сетевой поток: кладём в очередь, задачу стрельбы выдаст Tick().
         std::lock_guard<std::mutex> lk(s_shotMtx);
         if (s_shotQCount < kShotQueueSize)
+        {
             s_shotQueue[s_shotQCount++] = Vec3{sp.x, sp.y, sp.z};
+            s_shotEventsPending.store(true);
+        }
         else
             ++s_shotDropped;
     });
@@ -2865,18 +2890,25 @@ void Tick()
         s_haveFrame = false;
     }
 
-    // Событие выстрела: разбираем очередь по одному. Пока предыдущий выстрел
-    // доигрывает (hold), событие ждёт — иначе задача TASK_SHOOT_AT_COORD
-    // перезапускается и выстрел «глотается». Hold уменьшается каждый тик.
+    // Событие выстрела: разбираем очередь по одному. Это НЕЗАВИСИМЫЙ от
+    // action-hold таймер: иначе кадры Action::Shooting постоянно продлевают
+    // hold=30 и очередь не успевает проигрываться (наблюдали: из магазина
+    // играет только первый выстрел). Интервал 10 тиков ~= 6 выстрелов/с,
+    // очередь на 64 события покрывает длинные серии.
     if (s_shotDropped > 0 && (s_tickCount % 300) == 1)
     {
         sh_log::Write("coop: shot queue overflow, dropped=%d\n", s_shotDropped);
         s_shotDropped = 0;
     }
-    if (s_shootHoldTicks == 0)
+    int shotPending = 0;
+    {
+        std::lock_guard<std::mutex> lk(s_shotMtx);
+        shotPending = s_shotQCount;
+    }
+    if (shotPending > 0 && s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead &&
+        s_tickCount - s_lastShotEventTaskTick >= 10)
     {
         Vec3 t{0.f, 0.f, 0.f};
-        bool have = false;
         {
             std::lock_guard<std::mutex> lk(s_shotMtx);
             if (s_shotQCount > 0)
@@ -2885,20 +2917,20 @@ void Tick()
                 for (int i = 1; i < s_shotQCount; ++i)
                     s_shotQueue[i - 1] = s_shotQueue[i];
                 --s_shotQCount;
-                have = true;
+                if (s_shotQCount == 0)
+                    s_shotEventsPending.store(false);
             }
         }
-        if (have && s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead)
-        {
-            if (t.x == 0.f && t.y == 0.f && t.z == 0.f)
-                t = GhostAimPointAhead(); // нет данных — вперёд
-            ShootGhostAt(t, 150);
-            s_shootHoldTicks = 10; // ~длительность выстрела (очередь больше
-                                   // не теряет пачки событий)
-            s_combatActive = true;
-            s_lastAction = static_cast<uint8_t>(net::Action::Shooting);
-            sh_log::Write("coop: shot event -> (%.1f %.1f %.1f)\n", t.x, t.y, t.z);
-        }
+        if (t.x == 0.f && t.y == 0.f && t.z == 0.f)
+            t = GhostAimPointAhead(); // нет данных — вперёд
+        ShootGhostAt(t, 150);
+        s_lastShotEventTaskTick = s_tickCount;
+        // Небольшой hold, чтобы прицел не перебил анимацию выстрела; очередь
+        // его НЕ ждёт (см. условие выше).
+        s_shootHoldTicks = 10;
+        s_combatActive = true;
+        s_lastAction = static_cast<uint8_t>(net::Action::Shooting);
+        sh_log::Write("coop: shot event -> (%.1f %.1f %.1f)\n", t.x, t.y, t.z);
     }
 
     // Применить компоненты одежды от удалённого игрока (при смене наряда).
