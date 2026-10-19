@@ -152,7 +152,8 @@
 - [x] players.txt recovery-тест: битые строки и stale .tmp игнорируются
 - [x] restore_saves.ps1 автотест (restore + pre-restore snapshot)
 - [x] R&D поездов: флаг `world_trains`, Vehicle-прокси из WorldSnapshot,
-      `GET_TRAIN_CARRIAGE`-добор вагонов, direction/speed в логе, docs/TRAINS.md
+      `GET_TRAIN_CARRIAGE`-добор вагонов, direction/speed в логе,
+      `TrainSnapshot` v13 (гость логирует), docs/TRAINS.md
 - [ ] Train consist: сцепка/рельсы/скорость/порядок вагонов (после игры)
 - [ ] Применение наград allow-list после игрового теста
 - [x] CI-скрипт `scripts/ci.ps1`: сборка клиента+сервера и тесты

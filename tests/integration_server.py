@@ -22,7 +22,7 @@ import tempfile
 import time
 from pathlib import Path
 
-PROTO = 12
+PROTO = 13
 TYPE_FRAME = 0x04
 TYPE_JOIN = 0x01
 TYPE_JOIN_OK = 0x02
@@ -39,6 +39,7 @@ TYPE_MISSION_EVENT = 0x13
 TYPE_MISSION_STATE = 0x14
 TYPE_MISSION_BARRIER = 0x15
 TYPE_HOST_CHANGED = 0x16
+TYPE_TRAIN_SNAPSHOT = 0x17
 TYPE_OUTFIT = 0x09
 TYPE_HORSE_OUTFIT = 0x0A
 TYPE_SHOT = 0x0B
@@ -75,6 +76,15 @@ def make_world(count):
     ents = b"".join(
         struct.pack("<QIffffBBBB", 1000 + i, 0xCF7E73BE + i,
                     1.0 + i, 2.0, 3.0, 90.0, 0, 0, 0, 0)
+        for i in range(count))
+    return header + ents
+
+
+def make_train(count):
+    header = struct.pack("<IIfBBH", 0x1234, 0xCF7E73BE, 12.5, 1, count, 0)
+    ents = b"".join(
+        struct.pack("<QIffffBBBB", 2000 + i, 0xCF7E73BE + i,
+                    5.0 + i, 6.0, 7.0, 30.0, 1, 0, 0, 0)
         for i in range(count))
     return header + ents
 
@@ -396,6 +406,18 @@ def test_payload_sizes_and_host_only_messages(exe, tmp):
         # Short barrier payload is dropped.
         host.sendall(frame_bytes(TYPE_MISSION_BARRIER, offer[:-1]))
         assert recv_type(guest, TYPE_MISSION_BARRIER, 0.4) is None
+
+        # R&D TrainSnapshot: host-only, exact size, carCount <= 16.
+        train = make_train(2)
+        host.sendall(frame_bytes(TYPE_TRAIN_SNAPSHOT, train))
+        assert recv_type(guest, TYPE_TRAIN_SNAPSHOT) == train
+        guest.sendall(frame_bytes(TYPE_TRAIN_SNAPSHOT, train))
+        assert recv_type(host, TYPE_TRAIN_SNAPSHOT, 0.4) is None
+        too_many = make_train(17)
+        host.sendall(frame_bytes(TYPE_TRAIN_SNAPSHOT, too_many))
+        assert recv_type(guest, TYPE_TRAIN_SNAPSHOT, 0.4) is None
+        host.sendall(frame_bytes(TYPE_TRAIN_SNAPSHOT, train[:-1]))
+        assert recv_type(guest, TYPE_TRAIN_SNAPSHOT, 0.4) is None
 
         # Unknown message must not crash or relay.
         host.sendall(frame_bytes(0x7E, b"\x00" * 8))

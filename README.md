@@ -191,6 +191,7 @@ rdr2_coop_server.exe 7777
 | 0x14 | MissionState   | хост → сервер → гость  | активная миссия |
 | 0x15 | MissionBarrier | host ↔ guest           | offer/ready/window/started/abort |
 | 0x16 | HostChanged    | сервер → клиент        | смена роли (host migration) |
+| 0x17 | TrainSnapshot  | хост → сервер → гость  | R&D: engine/direction/speed + вагоны |
 
 Полная спецификация: [docs/PROTOCOL.md](docs/PROTOCOL.md).
 

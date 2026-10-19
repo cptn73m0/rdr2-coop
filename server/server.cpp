@@ -725,6 +725,34 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                                                 pay.data(), (uint32_t)pay.size()));
                 break;
             }
+            case net::Msg::TrainSnapshot:
+            {
+                // R&D: состав принимаем только от хоста и строго по формату.
+                bool senderIsHost = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    auto it = g_online.find(name);
+                    senderIsHost = it != g_online.end() && it->second.isHost;
+                }
+                if (!senderIsHost)
+                {
+                    LogLine("[!] " + name + ": TrainSnapshot от не-хоста проигнорирован");
+                    break;
+                }
+                if (pay.size() >= sizeof(net::TrainSnapshotHeader))
+                {
+                    net::TrainSnapshotHeader h{};
+                    std::memcpy(&h, pay.data(), sizeof(h));
+                    const std::size_t need = sizeof(h) +
+                        static_cast<std::size_t>(h.carCount) * sizeof(net::WorldEntity);
+                    if (h.carCount <= net::kMaxTrainCars && pay.size() == need)
+                    {
+                        BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::TrainSnapshot,
+                                                        pay.data(), (uint32_t)pay.size()));
+                    }
+                }
+                break;
+            }
             case net::Msg::HorseOutfit:
             {
                 // Снаряжение лошади — ретранслируем остальным (как Outfit).

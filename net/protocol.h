@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v12: HostChanged — сервер повышает гостя до хоста при выходе хоста.
-constexpr uint16_t kProtocolVersion = 12;
+// v13: TrainSnapshot — R&D: engine/direction/speed + упорядоченные вагоны.
+constexpr uint16_t kProtocolVersion = 13;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -48,6 +48,7 @@ enum class Msg : uint8_t {
     MissionState = 0x14,  // хост -> сервер -> гость: активная Story-миссия
     MissionBarrier = 0x15,// P3: offer/ready/start-window/started/abort
     HostChanged = 0x16,   // сервер -> клиент: новый хост / смена роли
+    TrainSnapshot = 0x17, // R&D: поезд/состав (engine + вагоны по порядку)
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -203,6 +204,26 @@ static_assert(sizeof(WorldSnapshotHeader) == 4, "WorldSnapshotHeader must be 4 b
 // Полный размер сообщения WorldSnapshot: header + count * WorldEntity.
 constexpr std::size_t kWorldSnapshotMaxSize =
     sizeof(WorldSnapshotHeader) + kMaxWorldEntities * sizeof(WorldEntity);
+
+// ---------------- R&D: поезд/состав ----------------
+// payload = TrainSnapshotHeader + carCount * WorldEntity (kind=Vehicle).
+// В R&D-режиме гость пока только логирует; визуально вагоны идут через
+// обычный WorldSnapshot, если попали в его бюджет.
+constexpr int kMaxTrainCars = 16;
+
+struct TrainSnapshotHeader {
+    uint32_t engineNetId = 0;   // netId локомотива из WorldSnapshot
+    uint32_t engineModel = 0;
+    float speed = 0.f;          // GET_ENTITY_SPEED(engine)
+    uint8_t direction = 0;      // _GET_TRAIN_DIRECTION(engine)
+    uint8_t carCount = 0;       // 0..kMaxTrainCars
+    uint16_t pad = 0;
+};
+static_assert(sizeof(TrainSnapshotHeader) == 16,
+              "TrainSnapshotHeader must be 16 bytes");
+
+constexpr std::size_t kTrainSnapshotMaxSize =
+    sizeof(TrainSnapshotHeader) + kMaxTrainCars * sizeof(WorldEntity);
 
 // ---------------- P2: Action v2 (действия/сценарии) ----------------
 // Каждый клиент шлёт состояние СВОЕГО персонажа; сервер ретранслирует.

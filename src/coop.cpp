@@ -3585,6 +3585,21 @@ void InitNetworkClient()
         world_sync::OnSnapshot(payload);
     });
 
+    // R&D: TrainSnapshot — логируем (визуальные вагоны идут через WorldSnapshot).
+    g_netClient.SetTrainSnapshot([](const std::vector<uint8_t>& payload) {
+        if (payload.size() < sizeof(net::TrainSnapshotHeader))
+            return;
+        net::TrainSnapshotHeader h{};
+        std::memcpy(&h, payload.data(), sizeof(h));
+        static std::atomic<unsigned int> count{0};
+        if ((++count % 300) != 1)
+            return;
+        sh_log::Write("train: snapshot engine=0x%08X model=0x%08X cars=%u "
+                      "dir=%u speed=%.1f\n",
+                      h.engineNetId, h.engineModel, (unsigned)h.carCount,
+                      (unsigned)h.direction, h.speed);
+    });
+
     // P2: действие/сценарий удалённого игрока — только копируем; применит Tick().
     g_netClient.SetActionState([](const net::ActionStatePayload& a) {
         std::lock_guard<std::mutex> lk(s_actionMtx);
@@ -3712,6 +3727,12 @@ void InitNetworkClient()
 void SendWorldSnapshot(const std::vector<uint8_t>& payload)
 {
     g_netClient.SendWorldSnapshot(payload);
+}
+
+// R&D: TrainSnapshot от хоста. Гость пока только логирует.
+void SendTrainSnapshot(const std::vector<uint8_t>& payload)
+{
+    g_netClient.SendTrainSnapshot(payload);
 }
 
 // P1: пед-призрак и его лошадь — не часть мира NPC; их нельзя реплицировать

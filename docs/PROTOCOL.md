@@ -2,8 +2,9 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 12` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 13` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение.
+- v13: TrainSnapshot (0x17) — R&D: engine/direction/speed + вагоны по порядку.
 - v12: HostChanged (0x16) — сервер повышает гостя до хоста при выходе хоста.
 - v11: MissionBarrier (0x15) — P3: offer/ready/start-window/started/abort.
 - v10: MissionState (0x14) — P3: хост сообщает активную Story-миссию.
@@ -177,6 +178,23 @@ payload: isHost:u8 pad[3]   // 4 байта
   и показывает субтитр «You are now HOST/GUEST».
 - После этого бывший гость может слать WorldSnapshot/MissionEvent/MissionState:
   сервер валидирует host-only сообщения по новому хосту.
+
+### 0x17 TRAIN_SNAPSHOT (R&D: поезд/состав, только хост → гость)
+
+```
+payload: TrainSnapshotHeader (16 B)
+         engineNetId:u32 engineModel:u32 speed:f32
+         direction:u8 carCount:u8 pad:u16
+         carCount * WorldEntity (32 B; kind=Vehicle)
+```
+
+- `carCount ≤ 16`; сервер проверяет точный размер и host-only.
+- Хост раз в WorldSnapshot-тик (если `world_trains=1`) дополняет состав через
+  `_GET_TRAIN_CARRIAGE_TRAILER_NUMBER` + `GET_TRAIN_CARRIAGE` и шлёт
+  direction/speed/список вагонов.
+- Гость пока **только логирует** (R&D): `train: snapshot engine=... cars=...`.
+- Визуально вагоны идут обычным WorldSnapshot-пайплайном, если попали в
+  бюджет 16 Vehicle. Сцепка/рельсы/порядок на госте ещё не применяются.
 
 ### Reconnect (клиент)
 

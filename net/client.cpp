@@ -63,6 +63,7 @@ void Client::SetPlayerVehicle(OnPlayerVehicle cb) { onPlayerVehicle_ = std::move
 void Client::SetMissionEvent(OnMissionEvent cb) { onMissionEvent_ = std::move(cb); }
 void Client::SetMissionState(OnMissionState cb) { onMissionState_ = std::move(cb); }
 void Client::SetMissionBarrier(OnMissionBarrier cb) { onMissionBarrier_ = std::move(cb); }
+void Client::SetTrainSnapshot(OnTrainSnapshot cb) { onTrainSnapshot_ = std::move(cb); }
 void Client::SetConnectionLost(OnConnectionLost cb) { onConnectionLost_ = std::move(cb); }
 void Client::SetHostChanged(OnHostChanged cb) { onHostChanged_ = std::move(cb); }
 
@@ -186,6 +187,14 @@ void Client::SendMissionBarrier(const net::MissionBarrierPayload& event)
     std::vector<uint8_t> frame = MakeFrame(
         (uint8_t)net::Msg::MissionBarrier,
         reinterpret_cast<const uint8_t*>(&event), sizeof(event));
+    SendRaw(frame);
+}
+
+void Client::SendTrainSnapshot(const std::vector<uint8_t>& payload)
+{
+    std::vector<uint8_t> frame = MakeFrame(
+        (uint8_t)net::Msg::TrainSnapshot,
+        payload.data(), (uint32_t)payload.size());
     SendRaw(frame);
 }
 
@@ -410,6 +419,11 @@ bool Client::RunOnce()
                     std::memcpy(&ev, p.data(), sizeof(ev));
                     if (onMissionBarrier_) onMissionBarrier_(ev);
                 }
+                break;
+            }
+            case net::Msg::TrainSnapshot:
+            {
+                if (onTrainSnapshot_) onTrainSnapshot_(p);
                 break;
             }
             case net::Msg::PlayerJoined:

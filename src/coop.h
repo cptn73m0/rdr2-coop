@@ -19,6 +19,9 @@ void Tick();
 // P1 (модель A): отправить снапшот мира от хоста (вызывается world_sync).
 void SendWorldSnapshot(const std::vector<uint8_t>& payload);
 
+// R&D: отправить TrainSnapshot от хоста (вызывается world_sync).
+void SendTrainSnapshot(const std::vector<uint8_t>& payload);
+
 // P1: служебные сущности мода (ghost/mount), которые нельзя реплицировать
 // как NPC мира.
 bool IsWorldSyncExcluded(unsigned int handle);

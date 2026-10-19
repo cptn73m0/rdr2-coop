@@ -15,6 +15,10 @@
   dir=… speed=…` (`_GET_TRAIN_DIRECTION` + `GET_ENTITY_SPEED`).
 - Гость создаёт их тем же `CREATE_VEHICLE`-прокси (mission, без коллизии) и
   двигает по снапшотам 10 Гц.
+- **TrainSnapshot (v13):** хост дополнительно шлёт engineNetId/model,
+  direction, speed и вагоны по порядку; гость пока только логирует
+  (`train: snapshot engine=… cars=… dir=… speed=…`). Это заготовка для
+  будущего связывания прокси в состав.
 - В логе: `trains_included=N` (включено) и `trains_skipped=N` (выключено).
 - Флаг `world_trains` читается конфигом и покрыт `config_test`.
 
