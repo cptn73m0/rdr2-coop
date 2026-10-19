@@ -1,4 +1,4 @@
-﻿// RDR2 CO-OP — сервер-релей.
+// RDR2 CO-OP — сервер-релей.
 // Кроссплатформенное консольное приложение (без GUI): слушает TCP-порт,
 // принимает клиентов (ASI-плагины), обрабатывает JOIN/FRAME/LEAVE и
 // пересылает FRAME между клиентами. Хранит last-position игроков.
@@ -171,6 +171,14 @@ std::vector<uint8_t> MakeNameMsg(uint8_t type, const std::string& name)
     return MakeMsg(type, p.data(), static_cast<uint32_t>(p.size()));
 }
 
+// Отказ в JOIN (Spike 1): причина — один байт.
+void SendJoinRejected(netio::Socket* sock, net::JoinRejectReason reason)
+{
+    const uint8_t r = static_cast<uint8_t>(reason);
+    std::vector<uint8_t> msg = MakeMsg((uint8_t)net::Msg::JoinRejected, &r, 1);
+    sock->Send(msg.data(), static_cast<int>(msg.size()));
+}
+
 // Разослать всем онлайн, кроме `except` (может быть nullptr).
 void BroadcastToOthers(netio::Socket* except, const std::vector<uint8_t>& frame)
 {
@@ -280,6 +288,52 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                         model |= (unsigned long long)pay[off + i] << (8 * i);
                 }
 
+                // Spike 1: версия протокола обязательна. Старые клиенты/серверы
+                // несовместимы — отклоняем явно, а не разбираем чужие байты.
+                uint16_t version = 0;
+                if (pay.size() >= off + 10)
+                    version = static_cast<uint16_t>(pay[off + 8] |
+                                                    (pay[off + 9] << 8));
+                if (version != net::kProtocolVersion)
+                {
+                    SendJoinRejected(sock, net::JoinRejectReason::VersionMismatch);
+                    LogLine("[!] " + peerIp + " отклонён: версия протокола " +
+                            std::to_string(version) + " != " +
+                            std::to_string(net::kProtocolVersion));
+                    sock->Close();
+                    goto done;
+                }
+                if (name.empty())
+                {
+                    SendJoinRejected(sock, net::JoinRejectReason::BadName);
+                    LogLine("[!] " + peerIp + " отклонён: пустой ник");
+                    sock->Close();
+                    goto done;
+                }
+
+                // Spike 1: сессия — хост + один гость; третий отклоняется.
+                // (Дубликат ника тоже отклоняем, чтобы не плодить записи
+                //  с одним сокетом — см. аудит.)
+                {
+                    bool full = false;
+                    bool taken = false;
+                    {
+                        std::lock_guard<std::mutex> lk(g_mutex);
+                        full = g_online.size() >= static_cast<std::size_t>(net::kMaxPlayers);
+                        taken = g_online.find(name) != g_online.end();
+                    }
+                    if (full || taken)
+                    {
+                        SendJoinRejected(sock, full ? net::JoinRejectReason::ServerFull
+                                                    : net::JoinRejectReason::NameTaken);
+                        LogLine("[!] " + name + " отклонён: " +
+                                (full ? std::string("сервер полон")
+                                      : std::string("ник занят")));
+                        sock->Close();
+                        goto done;
+                    }
+                }
+
                 float sx = 0, sy = 0, sz = 0, shd = 0;
                 bool has = LoadSaved(name, sx, sy, sz, shd);
 
@@ -300,9 +354,11 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                     pushf(sx); pushf(sy); pushf(sz); pushf(shd);
                 }
                 // is_host: первый подключившийся к пустому серверу — хост.
+                bool isHost = false;
                 {
                     std::lock_guard<std::mutex> lk(g_mutex);
-                    resp.push_back(g_online.empty() ? 1 : 0);
+                    isHost = g_online.empty();
+                    resp.push_back(isHost ? 1 : 0);
                 }
                 std::vector<uint8_t> ok = MakeMsg((uint8_t)net::Msg::JoinOk, resp.data(),
                                                   (uint32_t)resp.size());
@@ -354,6 +410,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 }
 
                 LogLine("[+] " + name + " подключился (" + peerIp + ")" +
+                        (isHost ? " [HOST]" : " [GUEST]") +
                         (has ? " — возврат, позиция восстановлена" : " — новый игрок"));
                 registered = true;
                 break;

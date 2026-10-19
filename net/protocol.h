@@ -8,6 +8,21 @@
 
 namespace net {
 
+// Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
+// сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
+constexpr uint16_t kProtocolVersion = 2;
+
+// Максимум игроков в сессии (Spike 1: хост + один гость).
+constexpr int kMaxPlayers = 2;
+
+// Причины отказа в JOIN (payload Msg::JoinRejected: reason:u8).
+enum class JoinRejectReason : uint8_t {
+    VersionMismatch = 1,
+    ServerFull      = 2,
+    NameTaken       = 3,
+    BadName         = 4,
+};
+
 // Команды (type в кадре).
 enum class Msg : uint8_t {
     Join        = 0x01, // клиент -> сервер: подключиться
@@ -24,6 +39,7 @@ enum class Msg : uint8_t {
     Ping        = 0x0C, // клиент -> сервер: замер задержки (метка времени)
     Pong        = 0x0D, // сервер -> клиент: ответ с той же меткой (RTT)
     HorseOutfit = 0x0E, // клиент -> сервер -> остальные: снаряжение лошади
+    JoinRejected= 0x0F, // сервер -> клиент: отказ в JOIN (версия/полный/ник)
 };
 
 // Компоненты одежды игрока (наряд): список хэшей одетых компонентов

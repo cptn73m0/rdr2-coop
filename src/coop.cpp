@@ -2426,6 +2426,12 @@ void InitNetworkClient()
             s_pendingHeading = jr.heading;
     });
 
+    g_netClient.SetJoinRejected([](net::JoinRejectReason reason) {
+        sh_log::Write("net: JOIN_REJECTED reason=%u "
+                      "(1=version, 2=server full, 3=name taken, 4=bad name)\n",
+                      static_cast<unsigned>(reason));
+    });
+
     g_netClient.SetPlayerJoin([](const netio::PlayerJoinInfo& ji) {
         sh_log::Write("net: PLAYER_JOINED %s (model=0x%llX, pos=%d)\n",
                       ji.name.c_str(), ji.model, ji.hasPos ? 1 : 0);

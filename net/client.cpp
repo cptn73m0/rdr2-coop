@@ -1,4 +1,4 @@
-﻿#include "client.h"
+#include "client.h"
 
 #include <chrono>
 #include <cstring>
@@ -9,7 +9,7 @@
 namespace netio {
 
 namespace {
-// Локальный хелпер: собрать кадр Join (name + ped_model) для отправки.
+// Локальный хелпер: собрать кадр Join (name + ped_model + protocol_version).
 std::vector<uint8_t> BuildJoinFrame(const std::string& name, unsigned long long pedModel)
 {
     std::vector<uint8_t> pay;
@@ -18,6 +18,10 @@ std::vector<uint8_t> BuildJoinFrame(const std::string& name, unsigned long long 
     // ped_model: u64 little-endian
     for (int i = 0; i < 8; ++i)
         pay.push_back(static_cast<uint8_t>((pedModel >> (8 * i)) & 0xFF));
+    // protocol_version: u16 little-endian (Spike 1). Старые серверы без версии
+    // отклонят JOIN, чтобы не разбирать несовместимые сообщения.
+    pay.push_back(static_cast<uint8_t>(net::kProtocolVersion & 0xFF));
+    pay.push_back(static_cast<uint8_t>((net::kProtocolVersion >> 8) & 0xFF));
     return MakeFrame((uint8_t)net::Msg::Join, pay.data(), (uint32_t)pay.size());
 }
 } // namespace
@@ -52,6 +56,7 @@ void Client::SetWorldState(OnWorldState cb){ onWorldState_ = std::move(cb); }
 void Client::SetOutfit(OnOutfit cb)        { onOutfit_ = std::move(cb); }
 void Client::SetShot(OnShot cb)            { onShot_ = std::move(cb); }
 void Client::SetHorseOutfit(OnHorseOutfit cb) { onHorseOutfit_ = std::move(cb); }
+void Client::SetJoinRejected(OnJoinRejected cb) { onJoinRejected_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -236,6 +241,15 @@ void Client::Run()
                 }
                 state_.store(ClientState::JoinOk);
                 if (onJoinOk_) onJoinOk_(jr);
+                break;
+            }
+            case net::Msg::JoinRejected:
+            {
+                const uint8_t reason = p.empty() ? 0u : p[0];
+                if (onJoinRejected_)
+                    onJoinRejected_(static_cast<net::JoinRejectReason>(reason));
+                state_.store(ClientState::Error);
+                running_.store(false);
                 break;
             }
             case net::Msg::PlayerJoined:

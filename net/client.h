@@ -54,6 +54,7 @@ public:
     using OnOutfit     = std::function<void(const net::OutfitState&)>;
     using OnShot       = std::function<void(const net::ShotPayload&)>; // выстрел
     using OnHorseOutfit= std::function<void(const net::OutfitState&)>; // снаряжение лошади
+    using OnJoinRejected = std::function<void(net::JoinRejectReason)>;
 
     Client();
     ~Client();
@@ -87,6 +88,7 @@ public:
     void SetOutfit(OnOutfit cb);
     void SetShot(OnShot cb);
     void SetHorseOutfit(OnHorseOutfit cb);
+    void SetJoinRejected(OnJoinRejected cb);
 
     ClientState State() const;
 
@@ -118,6 +120,7 @@ private:
     OnOutfit onOutfit_;
     OnShot onShot_;
     OnHorseOutfit onHorseOutfit_;
+    OnJoinRejected onJoinRejected_;
     std::atomic<uint32_t> rttMs_{0};
 };
 
