@@ -300,6 +300,7 @@ uint64_t g_nextNetId = 1;
 unsigned int g_lastHostScanTick = 0;
 unsigned int g_hostSnapshotCount = 0;
 bool g_missingWorldQueriesLogged = false;
+unsigned int g_lastTrainConsistLogTick = 0;
 
 void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                       bool includeTrains)
@@ -486,11 +487,11 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                         continue;
                     }
                     ++trainsIncluded;
-                    // R&D: если это локомотив/головной вагон, запоминаем его,
-                    // чтобы затем добрать вагоны через GET_TRAIN_CARRIAGE.
+                    // R&D: берём первый train-vehicle как «головной»; остальные
+                    // train-хендлы могут быть теми же вагонами/локомотивом.
                     Init(natives::_GET_TRAIN_CARRIAGE_TRAILER_NUMBER);
                     Push(handle);
-                    if (static_cast<int>(Call()) > 0)
+                    if (static_cast<int>(Call()) > 0 && trainEngines.empty())
                         trainEngines.push_back(handle);
                 }
             }
@@ -527,52 +528,92 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             candidates.push_back(c);
         }
 
-        // R&D: добрать вагоны состава, даже если worldGetAllVehicles вернул
-        // только локомотив. Сцепка/рельсы/скорость по-прежнему не
-        // моделируются — это только позиции вагонов для прокси.
+        // R&D: собрать вагоны состава. Важно: worldGetAllVehicles обычно уже
+        // содержит вагоны, поэтому НЕ фильтруем по seenVehicles для TrainSnapshot;
+        // добавляем в WorldSnapshot только отсутствовавшие.
         unsigned int trainCarsAdded = 0;
+        unsigned int trainCarsCollected = 0;
+        int trainTrailerCount = 0;
+        bool trainDirection = false;
+        float trainSpeed = 0.f;
         std::vector<net::WorldEntity> trainCarEntities;
-        for (const unsigned int engine : trainEngines)
+        if (!trainEngines.empty())
         {
             using namespace natives_api;
+            const unsigned int engine = trainEngines.front();
             Init(natives::_GET_TRAIN_CARRIAGE_TRAILER_NUMBER);
             Push(engine);
-            const int trailerCount = static_cast<int>(Call());
-            if (trailerCount <= 0)
-                continue;
+            trainTrailerCount = static_cast<int>(Call());
             Init(natives::_GET_TRAIN_DIRECTION);
             Push(engine);
-            const bool trainDirection = Call() != 0;
-            const float trainSpeed = GetSpeed(engine);
-            for (int carIndex = 0; carIndex <= trailerCount; ++carIndex)
+            trainDirection = Call() != 0;
+            trainSpeed = GetSpeed(engine);
+
+            std::unordered_set<unsigned int> consistHandles;
+            for (int carIndex = 0; carIndex <= trainTrailerCount; ++carIndex)
             {
                 Init(natives::GET_TRAIN_CARRIAGE);
                 Push(engine);
                 Push(static_cast<unsigned long long>(carIndex));
                 const unsigned int car = static_cast<unsigned int>(Call());
-                if (!car || car == engine || seenVehicles.count(car))
+                if (!car || car == engine || !consistHandles.insert(car).second)
                     continue;
-                seenVehicles.insert(car);
-                net::WorldEntity carEntity{};
-                if (addVehicleCandidate(car, &carEntity))
+
+                if (!seenVehicles.count(car))
                 {
-                    ++trainCarsAdded;
-                    ++trainsIncluded;
-                    if (trainCarEntities.size() <
-                        static_cast<std::size_t>(net::kMaxTrainCars))
+                    seenVehicles.insert(car);
+                    net::WorldEntity candidateEntity{};
+                    if (addVehicleCandidate(car, &candidateEntity))
                     {
-                        trainCarEntities.push_back(carEntity);
+                        ++trainCarsAdded;
+                        ++trainsIncluded;
                     }
                 }
+
+                // Сущность для TrainSnapshot — даже если вагон уже был в
+                // WorldSnapshot. netId выдаём/переиспользуем через g_hostIds.
+                HostIdState& st = g_hostIds[car];
+                const unsigned int model = GetModel(car);
+                if (!model)
+                    continue;
+                if (st.netId == 0 || st.model != model)
+                {
+                    st.netId = g_nextNetId++;
+                    st.model = model;
+                }
+                st.lastSeenTick = tickCount;
+
+                net::WorldEntity ce{};
+                ce.netId = st.netId;
+                ce.model = model;
+                const Vec3 cp = GetCoords(car);
+                ce.x = cp.x; ce.y = cp.y; ce.z = cp.z;
+                ce.heading = GetHeading(car);
+                ce.kind = net::kEntityKindVehicle;
+                ce.flags = 0;
+                ce.state = 0;
+                if (trainCarEntities.size() <
+                    static_cast<std::size_t>(net::kMaxTrainCars))
+                {
+                    trainCarEntities.push_back(ce);
+                    ++trainCarsCollected;
+                }
             }
-            sh_log::Write("train: consist engine=%u trailerCount=%d added=%u "
-                          "dir=%d speed=%.1f\n",
-                          engine, trailerCount, trainCarsAdded,
-                          trainDirection ? 1 : 0, trainSpeed);
+
+            // Лог не чаще раза в секунду (раньше 10 Гц спамил лог).
+            if ((tickCount - g_lastTrainConsistLogTick) >= 60)
+            {
+                g_lastTrainConsistLogTick = tickCount;
+                sh_log::Write("train: consist engine=%u trailerCount=%d "
+                              "collected=%u added=%u dir=%d speed=%.1f\n",
+                              engine, trainTrailerCount, trainCarsCollected,
+                              trainCarsAdded, trainDirection ? 1 : 0,
+                              trainSpeed);
+            }
         }
 
         // R&D TrainSnapshot: engine netId/model + direction/speed + вагоны
-        // по порядку (только те, что удалось добавить в этом проходе).
+        // по порядку (собранные через GET_TRAIN_CARRIAGE).
         if (!trainEngines.empty())
         {
             using namespace natives_api;
@@ -697,7 +738,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
     coop::SendWorldSnapshot(payload);
     ++g_hostSnapshotCount;
 
-    if ((tickCount % kLogEveryTicks) == 1)
+    if ((g_hostSnapshotCount % 50) == 1)
     {
         unsigned int missionCount = 0;
         unsigned int pedCount = 0;
@@ -719,7 +760,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
     }
 
     // Чистка забытых handle → netId, чтобы не росла карта.
-    if ((tickCount % kLogEveryTicks) == 2)
+    if ((g_hostSnapshotCount % 500) == 0)
     {
         for (auto it = g_hostIds.begin(); it != g_hostIds.end();)
         {
