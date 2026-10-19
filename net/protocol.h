@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v5: ActionState (P2 — действия/сценарии; сценарии/сидение/курение/укрытие).
-constexpr uint16_t kProtocolVersion = 5;
+// v6: WorldSnapshot расширен до 48 сущностей (Ped + Vehicle) — транспорт в P1.
+constexpr uint16_t kProtocolVersion = 6;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -164,7 +164,8 @@ constexpr uint8_t kEntityStateIdle = 0;
 constexpr uint8_t kEntityStateWalk = 1;
 constexpr uint8_t kEntityStateRun  = 2;
 
-constexpr int kMaxWorldEntities = 32;
+// Максимум сущностей в WorldSnapshot: 32 Ped + 16 Vehicle (см. world_sync).
+constexpr int kMaxWorldEntities = 48;
 
 struct WorldEntity {
     uint64_t netId = 0;   // стабильный id (не handle)

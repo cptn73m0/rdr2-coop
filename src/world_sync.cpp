@@ -29,6 +29,11 @@ constexpr int kSpawnBudgetPerTick = 4;       // не более N новых п�
 constexpr unsigned int kProxyGraceSnapshots = 3;
 constexpr unsigned int kHostIdTtlTicks = 300;
 constexpr unsigned int kLogEveryTicks = 300;
+// Бюджет снапшота: 32 ближайших Ped + 16 ближайших Vehicle.
+constexpr int kMaxPeds = 32;
+constexpr int kMaxVehicles = 16;
+static_assert(kMaxPeds + kMaxVehicles == net::kMaxWorldEntities,
+              "world entity budget must match protocol");
 
 // ---------------- общие native-хелперы ----------------
 
@@ -203,6 +208,22 @@ void DeleteEntity(unsigned int handle)
     }
 }
 
+void DeleteVehicleEntity(unsigned int handle)
+{
+    using namespace natives_api;
+    int h = static_cast<int>(handle);
+    Init(natives::DELETE_VEHICLE);
+    Push(reinterpret_cast<unsigned long long>(&h));
+    Call();
+    if (DoesExist(handle))
+    {
+        int h2 = static_cast<int>(handle);
+        Init(natives::SET_ENTITY_AS_NO_LONGER_NEEDED);
+        Push(reinterpret_cast<unsigned long long>(&h2));
+        Call();
+    }
+}
+
 void SetHealthDead(unsigned int handle)
 {
     using namespace natives_api;
@@ -305,14 +326,103 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
         candidates.push_back(c);
     }
 
+    // Транспорт: ближайшие 16 машин, кроме машины, в которой сидит хост
+    // (её салон/водителя синхронизирует отдельная система, не P1).
+    {
+        static int vehicleHandles[1024];
+        int vehicleCount = sh::worldGetAllVehicles(vehicleHandles, 1024);
+        if (vehicleCount < 0) vehicleCount = 0;
+        if (vehicleCount > 1024) vehicleCount = 1024;
+
+        unsigned int localVehicle = 0;
+        {
+            using namespace natives_api;
+            Init(natives::GET_VEHICLE_PED_IS_USING);
+            Push(localPlayerPed);
+            localVehicle = static_cast<unsigned int>(Call());
+        }
+
+        for (int i = 0; i < vehicleCount; ++i)
+        {
+            const unsigned int handle =
+                static_cast<unsigned int>(vehicleHandles[i]);
+            if (!handle || handle == localVehicle)
+                continue;
+            if (coop::IsWorldSyncExcluded(handle))
+                continue;
+            if (!DoesExist(handle))
+                continue;
+
+            const Vec3 p = GetCoords(handle);
+            const float dx = p.x - origin.x;
+            const float dy = p.y - origin.y;
+            const float d2 = dx * dx + dy * dy;
+            if (d2 > kRadius2)
+                continue;
+
+            const unsigned int model = GetModel(handle);
+            if (!model)
+                continue;
+
+            HostIdState& state = g_hostIds[handle];
+            if (state.netId == 0 || state.model != model)
+            {
+                state.netId = g_nextNetId++;
+                state.model = model;
+            }
+            state.lastSeenTick = tickCount;
+
+            net::WorldEntity e{};
+            e.netId = state.netId;
+            e.model = model;
+            e.x = p.x; e.y = p.y; e.z = p.z;
+            e.heading = GetHeading(handle);
+            e.kind = net::kEntityKindVehicle;
+            e.flags = 0;
+            const bool mission = IsMissionEntity(handle);
+            if (mission) e.flags |= net::kEntityFlagMission;
+            {
+                using namespace natives_api;
+                Init(natives::IS_VEHICLE_WRECKED);
+                Push(handle);
+                if (Call()) e.flags |= net::kEntityFlagDead;
+            }
+            e.state = 0;
+
+            Candidate c;
+            c.entity = e;
+            c.distance2 = d2;
+            c.mission = mission;
+            candidates.push_back(c);
+        }
+    }
+
     // Приоритет: mission-entity, затем ближайшие.
     std::sort(candidates.begin(), candidates.end(),
               [](const Candidate& a, const Candidate& b) {
                   if (a.mission != b.mission) return a.mission > b.mission;
                   return a.distance2 < b.distance2;
               });
-    if (static_cast<int>(candidates.size()) > net::kMaxWorldEntities)
-        candidates.resize(net::kMaxWorldEntities);
+    // Отдельные лимиты на Ped/Vehicle, чтобы транспорт не вытеснил людей.
+    std::vector<Candidate> selected;
+    selected.reserve(net::kMaxWorldEntities);
+    int selectedPeds = 0;
+    int selectedVehicles = 0;
+    for (const Candidate& c : candidates)
+    {
+        if (c.entity.kind == net::kEntityKindVehicle)
+        {
+            if (selectedVehicles >= kMaxVehicles) continue;
+            ++selectedVehicles;
+        }
+        else
+        {
+            if (selectedPeds >= kMaxPeds) continue;
+            ++selectedPeds;
+        }
+        selected.push_back(c);
+    }
+    candidates.swap(selected);
 
     net::WorldSnapshotHeader header{};
     header.count = static_cast<uint16_t>(candidates.size());
@@ -330,10 +440,17 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
     if ((tickCount % kLogEveryTicks) == 1)
     {
         unsigned int missionCount = 0;
+        unsigned int pedCount = 0;
+        unsigned int vehicleCount = 0;
         for (const Candidate& c : candidates)
+        {
             if (c.mission) ++missionCount;
-        sh_log::Write("world: host snapshot n=%u mission=%u bytes=%u\n",
-                      static_cast<unsigned int>(candidates.size()), missionCount,
+            if (c.entity.kind == net::kEntityKindVehicle) ++vehicleCount;
+            else ++pedCount;
+        }
+        sh_log::Write("world: host snapshot n=%u ped=%u veh=%u mission=%u bytes=%u\n",
+                      static_cast<unsigned int>(candidates.size()), pedCount,
+                      vehicleCount, missionCount,
                       static_cast<unsigned int>(payload.size()));
     }
 
@@ -356,6 +473,7 @@ struct Proxy
 {
     unsigned int handle = 0;
     unsigned int model = 0;
+    unsigned int kind = 0; // net::kEntityKindPed / kEntityKindVehicle
     bool dead = false;
     unsigned int lastSeenSnapshot = 0;
 };
@@ -385,6 +503,25 @@ void SuppressLocalWorld()
 unsigned int CreateProxy(const net::WorldEntity& e)
 {
     using namespace natives_api;
+    if (e.kind == net::kEntityKindVehicle)
+    {
+        Init(natives::CREATE_VEHICLE);
+        Push(static_cast<unsigned long long>(e.model));
+        Push(e.x); Push(e.y); Push(e.z); Push(e.heading);
+        Push(false); // isNetwork
+        Push(false); // bScriptHostVeh
+        Push(false); // bDontAutoCreateDraftAnimals
+        Push(false); // p8
+        const unsigned int veh = static_cast<unsigned int>(Call());
+        if (!veh)
+            return 0;
+        SetMissionEntity(veh);
+        SetInvincible(veh, true);
+        SetVisible(veh);
+        SetNoCollision(veh, true);
+        return veh;
+    }
+
     Init(natives::CREATE_PED);
     Push(static_cast<unsigned long long>(e.model));
     Push(e.x); Push(e.y); Push(e.z); Push(e.heading);
@@ -410,6 +547,9 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
     SetCoords(proxy.handle, e.x, e.y, e.z);
     SetHeading(proxy.handle, e.heading);
 
+    if (proxy.kind != net::kEntityKindPed)
+        return; // у транспорта нет состояния «мёртв» для педов
+
     const bool dead = (e.flags & net::kEntityFlagDead) != 0;
     if (dead && !proxy.dead)
     {
@@ -422,7 +562,12 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
 void DeleteProxy(Proxy& proxy)
 {
     if (proxy.handle)
-        DeleteEntity(proxy.handle);
+    {
+        if (proxy.kind == net::kEntityKindVehicle)
+            DeleteVehicleEntity(proxy.handle);
+        else
+            DeleteEntity(proxy.handle);
+    }
     proxy.handle = 0;
 }
 
@@ -479,6 +624,7 @@ void ApplyPendingSnapshot(unsigned int tickCount)
             Proxy proxy;
             proxy.handle = handle;
             proxy.model = e.model;
+            proxy.kind = e.kind;
             proxy.lastSeenSnapshot = g_snapshotSeq;
             auto inserted = g_proxies.emplace(e.netId, proxy);
             UpdateProxy(inserted.first->second, e);
@@ -526,24 +672,47 @@ bool GetNetIdForHandle(unsigned int handle, uint64_t& netId)
 {
     if (!handle)
         return false;
+    // Хост: handle своей сущности → netId.
     const auto it = g_hostIds.find(handle);
-    if (it == g_hostIds.end() || it->second.netId == 0)
-        return false;
-    netId = it->second.netId;
-    return true;
+    if (it != g_hostIds.end() && it->second.netId != 0)
+    {
+        netId = it->second.netId;
+        return true;
+    }
+    // Гость: handle прокси → netId (обратное направление целей).
+    for (const auto& kv : g_proxies)
+    {
+        if (kv.second.handle == handle && kv.second.handle)
+        {
+            netId = kv.first;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool GetHandleForNetId(uint64_t netId, unsigned int& handle)
 {
     if (!netId)
         return false;
+    // Гость: netId → свой прокси.
     const auto it = g_proxies.find(netId);
-    if (it == g_proxies.end() || !it->second.handle)
-        return false;
-    if (!DoesExist(it->second.handle))
-        return false;
-    handle = it->second.handle;
-    return true;
+    if (it != g_proxies.end() && it->second.handle &&
+        DoesExist(it->second.handle))
+    {
+        handle = it->second.handle;
+        return true;
+    }
+    // Хост: netId → своя сущность (чтобы принять цель от гостя).
+    for (const auto& kv : g_hostIds)
+    {
+        if (kv.second.netId == netId && kv.first && DoesExist(kv.first))
+        {
+            handle = kv.first;
+            return true;
+        }
+    }
+    return false;
 }
 
 void Reset()

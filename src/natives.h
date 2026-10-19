@@ -212,4 +212,10 @@ constexpr unsigned long long TASK_PICKUP_CARRIABLE_ENTITY     = 0x502EC17B1BED4B
 constexpr unsigned long long TASK_LOOT_ENTITY                 = 0x48FAE038401A2888ull;
 constexpr unsigned long long TASK_HOGTIE_TARGET_PED           = 0x27829AFD3E03AC1Aull;
 
+// P1: транспорт в WorldSnapshot.
+constexpr unsigned long long CREATE_VEHICLE                   = 0xAF35D0D2583051B0ull;
+constexpr unsigned long long DELETE_VEHICLE                   = 0xE20A909D8C4A70F8ull;
+constexpr unsigned long long GET_VEHICLE_PED_IS_USING         = 0x6094AD011A2EA87Dull;
+constexpr unsigned long long IS_VEHICLE_WRECKED               = 0xDDBEA5506C848227ull;
+
 } // namespace natives
