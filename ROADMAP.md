@@ -139,7 +139,11 @@
 - [x] Reconnect с backoff (1→10 с), очистка педа, повторный JOIN
 - [x] Host migration: сервер повышает гостя, шлёт HostChanged (v12)
 - [x] Headless-тест host migration: новый хост принимается для WorldSnapshot
-- [x] Fuzz-тест: 300 случайных кадров/размеров, oversize, fragmented Ping
+- [x] Fuzz-тест: 300 случайных кадров/размеров + C++ FrameReader fuzz
+- [x] C++ тест client reconnect с фейковым сервером
+- [x] GitHub Actions workflow: сборка клиента/сервера + все тесты
+- [x] Mission rewards dry-run: каталог 23 записей/17 миссий в логе, без нативов
+- [ ] Применение наград allow-list после игрового теста
 - [x] CI-скрипт `scripts/ci.ps1`: сборка клиента+сервера и тесты
 - [x] Убрано предупреждение C4005 WIN32_LEAN_AND_MEAN
 - [ ] Проверка reconnect/host migration на двух ПК (нужна игра)

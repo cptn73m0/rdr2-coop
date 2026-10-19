@@ -76,6 +76,8 @@ void WriteDefaultIni()
     fputs("mission_credit = 0\n", f);
     fputs("# P3: перед зачётом сделать бэкап сейва гостя (рекомендуется 1).\n", f);
     fputs("save_backup = 1\n", f);
+    fputs("# P3: dry-run лог плана наград миссии (нативы не вызываются).\n", f);
+    fputs("mission_reward_log = 1\n", f);
     fclose(f);
 }
 
@@ -140,6 +142,11 @@ Config& Load()
         {
             g_cfg.saveBackup = !(val == "0" || val == "false" || val == "no" ||
                                  val == "off" || val == "False" || val == "OFF");
+        }
+        else if (key == "mission_reward_log")
+        {
+            g_cfg.missionRewardLog = !(val == "0" || val == "false" || val == "no" ||
+                                       val == "off" || val == "False" || val == "OFF");
         }
         else if (key == "ped_model")
         {

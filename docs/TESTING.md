@@ -25,6 +25,7 @@
 | `mission_sync` | 0 | активная миссия + завершения/рейтинг |
 | `mission_credit` | 0 | запись зачёта миссии в **свой** сейв гостя |
 | `save_backup` | 1 | бэкап сейва перед первым зачётом |
+| `mission_reward_log` | 1 | dry-run лог каталога наград (без применения) |
 
 Рекомендуемый первый прогон: `world_sync=1`, `action_sync=1`,
 `vehicle_sync=1`, `mission_sync=1`, `mission_credit=0` (только события).
@@ -81,6 +82,8 @@
 - [ ] Гость вручную начинает ту же миссию у себя (автостарта нет).
 - [ ] Хост завершает миссию → у гостя `mission: host event ...`.
 - [ ] `mission_credit=0`: в сейв гостя ничего не пишется.
+- [ ] `mission_reward_log=1`: в логе гостя виден `mission: reward plan ...`
+      (dry-run, нативы не вызываются) для миссий из каталога 17/23.
 - [ ] `mission_credit=1` + `save_backup=1`: гость видит
       `mission: save backup OK` → `CREDITED to own save`; сохранить вручную;
       проверить журнал. При ошибке — restore из

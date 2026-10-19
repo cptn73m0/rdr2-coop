@@ -33,6 +33,23 @@ if (-not $NoServer) {
 }
 
 if (-not $NoTests) {
+    Write-Host "=== Build C++ network tests ==="
+    $testBuild = Join-Path $repo "tests\build"
+    if (-not (Test-Path -LiteralPath (Join-Path $testBuild "CMakeCache.txt"))) {
+        & $cmake -S (Join-Path $repo "tests") -B $testBuild -G "Visual Studio 16 2019" -A x64
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    & $cmake --build $testBuild --config Release
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    Write-Host "=== FrameReader fuzz ==="
+    & (Join-Path $testBuild "Release\frame_reader_fuzz.exe")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    Write-Host "=== Client reconnect ==="
+    & (Join-Path $testBuild "Release\client_reconnect_test.exe")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     Write-Host "=== Headless integration tests ==="
     $exe = Join-Path $repo "build-server-ci\Release\rdr2_coop_server.exe"
     if (-not (Test-Path -LiteralPath $exe)) {

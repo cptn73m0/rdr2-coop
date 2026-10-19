@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure client (ASI)
+        run: cmake -S . -B build -A x64
+
+      - name: Build client
+        run: cmake --build build --config Release
+
+      - name: Configure server
+        run: cmake -S server -B build-server-ci -A x64
+
+      - name: Build server
+        run: cmake --build build-server-ci --config Release
+
+      - name: Configure C++ tests
+        run: cmake -S tests -B tests/build -A x64
+
+      - name: Build C++ tests
+        run: cmake --build tests/build --config Release
+
+      - name: FrameReader fuzz
+        run: .\tests\build\Release\frame_reader_fuzz.exe
+
+      - name: Client reconnect test
+        run: .\tests\build\Release\client_reconnect_test.exe
+
+      - name: Server integration tests
+        run: python tests/integration_server.py --exe build-server-ci\Release\rdr2_coop_server.exe

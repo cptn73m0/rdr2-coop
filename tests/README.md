@@ -36,6 +36,25 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_fuzz_frames` | 300 случайных кадров/типов/размеров + oversize + fragmented Ping |
 | `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта |
 
+## C++ headless-тесты (сеть)
+
+```powershell
+cmake -S tests -B tests\build -A x64
+cmake --build tests\build --config Release
+.\tests\build\Release\frame_reader_fuzz.exe
+.\tests\build\Release\client_reconnect_test.exe
+```
+
+- `frame_reader_fuzz` — фрагментация, пары кадров, мусор, oversize length,
+  truncated frame; `FrameReader` не зависает и восстанавливается.
+- `client_reconnect_test` — фейковый TCP-сервер отвечает JOIN_OK и рвёт
+  соединение; клиент должен переподключиться (join ≥ 2, connection-lost ≥ 1).
+
+## CI
+
+`.github/workflows/ci.yml` на Windows собирает клиент/сервер и запускает все
+тесты. Локально: `powershell -File scripts\ci.ps1`.
+
 ## Важно
 
 - Тесты не запускают игру и не проверяют нативы/визуал.

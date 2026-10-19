@@ -8,6 +8,7 @@
 #include "world_scan.h"
 #include "world_sync.h"
 #include "mission_catalog.h"
+#include "mission_rewards.h"
 
 #include <algorithm>
 #include <atomic>
@@ -3450,6 +3451,37 @@ void PollHostMissions()
     }
 }
 
+// P3: dry-run плана наград миссии. Нативы НЕ вызываются: только лог, чтобы
+// сверить каталог и подготовить безопасное применение после тестов на двух ПК.
+void LogMissionRewardPlan(uint32_t missionId)
+{
+    if (!coopcfg::Get().missionRewardLog)
+        return;
+    int count = 0;
+    for (int i = 0; i < missions::kMissionRewardsSize; ++i)
+    {
+        const missions::MissionRewardPlan& r = missions::kMissionRewards[i];
+        if (r.missionId != missionId)
+            continue;
+        const char* binding = "?";
+        switch (r.binding)
+        {
+        case missions::RewardBinding::WeaponOwnership: binding = "weapon"; break;
+        case missions::RewardBinding::UnlockVisible: binding = "unlock-visible"; break;
+        case missions::RewardBinding::InventoryItem: binding = "inventory"; break;
+        case missions::RewardBinding::RecipeUnlock: binding = "recipe"; break;
+        case missions::RewardBinding::UnlockEntitlement: binding = "entitlement"; break;
+        case missions::RewardBinding::WeaponShopEligibility: binding = "shop-eligibility"; break;
+        }
+        sh_log::Write("mission: reward plan 0x%08X %s record=0x%08X amount=%u "
+                      "(dry-run, NOT applied)\n",
+                      missionId, binding, r.recordHash, r.amount);
+        ++count;
+    }
+    sh_log::Write("mission: reward plan dry-run done: %d record(s) for 0x%08X\n",
+                  count, missionId);
+}
+
 // P3: гость — лог события всегда; зачёт в свой сейв только при mission_credit.
 void ApplyMissionEventToGuest(const net::MissionEventPayload& ev)
 {
@@ -3463,6 +3495,8 @@ void ApplyMissionEventToGuest(const net::MissionEventPayload& ev)
 
     sh_log::Write("mission: host event 0x%08X (%s — %s) rating=%u flags=0x%02X\n",
                   ev.missionId, code, title, (unsigned)ev.rating, (unsigned)ev.flags);
+
+    LogMissionRewardPlan(ev.missionId);
 
     if (!coopcfg::Get().missionCredit)
         return;

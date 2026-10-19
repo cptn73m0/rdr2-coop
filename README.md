@@ -108,7 +108,7 @@ cmake --build build-server --config Release
 # headless-тесты сервера/протокола (без игры)
 python tests\integration_server.py --exe build-server-v12\Release\rdr2_coop_server.exe
 
-# полный CI: клиент + сервер + 10 тестов
+# полный CI: клиент + сервер + 10 Python + 2 C++ теста
 powershell -ExecutionPolicy Bypass -File scripts\ci.ps1
 ```
 
@@ -142,6 +142,7 @@ ped_model   = 0xCF7E73BE      ; запасная модель, пока не п�
 | `mission_sync` | 0 | активная миссия + завершения/рейтинг |
 | `mission_credit` | 0 | зачёт миссии в свой сейв (только при равном прогрессе) |
 | `save_backup` | 1 | бэкап сейва перед первым зачётом |
+| `mission_reward_log` | 1 | dry-run лог плана наград (нативы не вызываются) |
 
 ## Запуск сервера
 
