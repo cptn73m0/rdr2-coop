@@ -126,9 +126,11 @@
 
 ## Фаза 8 — Надёжность, сервер, мультиплеер
 
-- [ ] Reconnect с backoff, состояние/очереди после разрыва
-- [ ] Сервер: keepalive/timeouts, лимиты очередей, атомарный players.txt,
+- [x] Сервер: keepalive/timeouts, лимиты очередей, атомарный players.txt,
       защита от пустых/повторных JOIN, host-only сообщения
+- [x] Headless-тесты протокола/сервера (7 integration tests, без игры)
+- [x] Проверка и фикс: probe-подключения больше не затирают players.txt
+- [ ] Reconnect с backoff, состояние/очереди после разрыва
 - [ ] 3+ игроков: `map<sessionId, RemotePeer>`, player id в кадрах
 - [ ] Anti-desync: метрики, resync по запросу, tombstones
 - [ ] Логи: ротация, уровни, без спама outfit categories

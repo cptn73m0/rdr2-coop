@@ -88,6 +88,23 @@ void LogLine(const std::string& s)
 // Формат строк: name:x:y:z:heading
 const std::string kSaveFile = "players.txt";
 
+// Практический лимит ника: защищает лог/players.txt от мусора и ':' в имени.
+constexpr std::size_t kMaxNameLength = 32;
+
+// Полная валидация WorldSnapshot: header + count*WorldEntity, count в лимите.
+bool IsValidWorldSnapshot(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() < sizeof(net::WorldSnapshotHeader))
+        return false;
+    net::WorldSnapshotHeader h{};
+    std::memcpy(&h, pay.data(), sizeof(h));
+    if (h.count > net::kMaxWorldEntities)
+        return false;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.count) * sizeof(net::WorldEntity);
+    return pay.size() == need;
+}
+
 bool LoadSaved(const std::string& name, float& x, float& y, float& z, float& heading)
 {
     std::ifstream f(kSaveFile);
@@ -270,14 +287,40 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
         uint8_t type; std::vector<uint8_t> pay;
         while (reader.Poll(type, pay))
         {
-            switch (static_cast<net::Msg>(type))
+            const net::Msg msg = static_cast<net::Msg>(type);
+
+            // До JOIN разрешаем только JOIN и Ping. Остальное — закрываем:
+            // клиент, не прошедший регистрацию, не должен ретранслировать мир.
+            if (!registered && msg != net::Msg::Join && msg != net::Msg::Ping)
+            {
+                LogLine("[!] " + peerIp + ": сообщение type=" +
+                        std::to_string((unsigned)type) + " до JOIN — соединение закрыто");
+                sock->Close();
+                goto done;
+            }
+
+            switch (msg)
             {
             case net::Msg::Join:
             {
+                if (registered)
+                {
+                    LogLine("[!] " + peerIp + ": повторный JOIN — соединение закрыто");
+                    sock->Close();
+                    goto done;
+                }
                 if (pay.empty()) { sock->Close(); goto done; }
                 uint8_t nl = pay[0];
-                if (pay.size() < 1u + nl) { sock->Close(); goto done; }
+                if (nl == 0 || nl > kMaxNameLength ||
+                    pay.size() < 1u + nl) { sock->Close(); goto done; }
                 name.assign(reinterpret_cast<char*>(pay.data() + 1), nl);
+                if (name.find(':') != std::string::npos)
+                {
+                    SendJoinRejected(sock, net::JoinRejectReason::BadName);
+                    LogLine("[!] " + peerIp + " отклонён: ':' в нике");
+                    sock->Close();
+                    goto done;
+                }
 
                 // модель персонажа (может отсутствовать в старом клиенте)
                 unsigned long long model = 0;
@@ -310,7 +353,6 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                     sock->Close();
                     goto done;
                 }
-
                 // Spike 1: сессия — хост + один гость; третий отклоняется.
                 // (Дубликат ника тоже отклоняем, чтобы не плодить записи
                 //  с одним сокетом — см. аудит.)
@@ -418,7 +460,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
             }
             case net::Msg::Frame:
             {
-                if (pay.size() >= sizeof(net::FramePayload))
+                if (pay.size() == sizeof(net::FramePayload))
                 {
                     net::FramePayload fp;
                     std::memcpy(&fp, pay.data(), sizeof(fp));
@@ -462,7 +504,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
             {
                 // Состояние мира от хоста — ретранслируем всем, кроме отправителя
                 // (так же, как Frame). Сервер никак не интерпретирует payload.
-                if (pay.size() >= sizeof(net::WorldState))
+                if (pay.size() == sizeof(net::WorldState))
                 {
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::WorldState,
                                                     pay.data(), (uint32_t)pay.size()));
@@ -484,7 +526,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                     LogLine("[!] " + name + ": WorldSnapshot от не-хоста проигнорирован");
                     break;
                 }
-                if (pay.size() >= sizeof(net::WorldSnapshotHeader))
+                if (IsValidWorldSnapshot(pay))
                 {
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::WorldSnapshot,
                                                     pay.data(), (uint32_t)pay.size()));
@@ -494,7 +536,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
             case net::Msg::Outfit:
             {
                 // Компоненты одежды — ретранслируем остальным (как Frame).
-                if (pay.size() >= sizeof(net::OutfitState))
+                if (pay.size() == sizeof(net::OutfitState))
                 {
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::Outfit,
                                                     pay.data(), (uint32_t)pay.size()));
@@ -504,7 +546,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
             case net::Msg::ActionState:
             {
                 // P2: действие/сценарий своего персонажа — просто ретрансляция.
-                if (pay.size() >= sizeof(net::ActionStatePayload))
+                if (pay.size() == sizeof(net::ActionStatePayload))
                 {
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::ActionState,
                                                     pay.data(), (uint32_t)pay.size()));
@@ -514,7 +556,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
             case net::Msg::PlayerVehicle:
             {
                 // P2: посадка в транспорт — ретрансляция остальным.
-                if (pay.size() >= sizeof(net::PlayerVehicleState))
+                if (pay.size() == sizeof(net::PlayerVehicleState))
                 {
                     BroadcastToOthers(sock, MakeMsg(
                         (uint8_t)net::Msg::PlayerVehicle,
@@ -536,7 +578,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                     LogLine("[!] " + name + ": MissionEvent от не-хоста проигнорирован");
                     break;
                 }
-                if (pay.size() >= sizeof(net::MissionEventPayload))
+                if (pay.size() == sizeof(net::MissionEventPayload))
                 {
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::MissionEvent,
                                                     pay.data(), (uint32_t)pay.size()));
@@ -557,7 +599,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                     LogLine("[!] " + name + ": MissionState от не-хоста проигнорирован");
                     break;
                 }
-                if (pay.size() >= sizeof(net::MissionStatePayload))
+                if (pay.size() == sizeof(net::MissionStatePayload))
                 {
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::MissionState,
                                                     pay.data(), (uint32_t)pay.size()));
@@ -567,7 +609,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
             case net::Msg::HorseOutfit:
             {
                 // Снаряжение лошади — ретранслируем остальным (как Outfit).
-                if (pay.size() >= sizeof(net::OutfitState))
+                if (pay.size() == sizeof(net::OutfitState))
                 {
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::HorseOutfit,
                                                     pay.data(), (uint32_t)pay.size()));
@@ -577,7 +619,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
             case net::Msg::Shot:
             {
                 // Событие выстрела — ретранслируем остальным.
-                if (pay.size() >= sizeof(net::ShotPayload))
+                if (pay.size() == sizeof(net::ShotPayload))
                 {
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::Shot,
                                                     pay.data(), (uint32_t)pay.size()));
@@ -608,7 +650,10 @@ done:
         }
         LogLine("[-] " + name + " отключился (" + peerIp + ")");
     }
-    SaveAll();
+    // SaveAll только для реально зарегистрированного игрока: случайные
+    // probe-подключения не должны перезаписывать players.txt пустым файлом.
+    if (registered)
+        SaveAll();
 }
 
 } // namespace
