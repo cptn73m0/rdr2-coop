@@ -488,6 +488,10 @@ bool s_pendingLeave = false;
 char s_leaveName[64] = ""; // имя ушедшего игрока (для надписи «left»)
 // Последнее применённое к педу состояние движения (сброс при выходе).
 uint8_t s_lastMoveState = 0xFF;
+// «Догоняем» ли стоящего игрока: гистерезис для Idle. Без него призрак,
+// стоящий в 0.5–1 м, из-за покачивания корпуса постоянно переходит
+// Idle↔Walk и «пританцовывает» (шаффлит ногами).
+bool s_idleChase = false;
 // Дебаунс определения move: переключаем только после нескольких подряд
 // одинаковых замеров. Иначе стоящий игрок мерцает Walk/Idle (IS_PED_WALKING
 // дрожит + скорость на месте колеблется) → пед-призрак дёргается (задачи
@@ -1572,6 +1576,7 @@ void RespawnGhostPed(const net::FramePayload* f)
     s_ghostDead = false;
     s_reviveGraceTicks = 90; // ~1.5 с: не считаем педа мёртвым сразу
     s_lastMoveState = 0xFF;
+    s_idleChase = false;
     s_lastPedState = 0xFF;
     s_lastAction = 0xFF;
     s_moveTargetValid = false;
@@ -1851,18 +1856,28 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         // Только два исключения:
         //  1) цель очень далеко (>TELEPORT_DIST) — резкий перенос (загрузка);
         //  2) пед висит выше 0.5 м над землёй — опускаем на неё.
-        const float CLOSE = 0.5f;
+        // Покачивание корпуса в покое даёт микро-смещения цели. Если гонять
+        // педа задачей к точке каждый раз, когда dist > 0.5 м, он «шаффлит»
+        // ногами (Idle↔Walk). Поэтому — гистерезис:
+        //   < CLOSE  — стоим (stand still);
+        //   > RESUME — только тогда догоняем.
+        const float CLOSE = 1.5f;
+        const float RESUME = 2.5f;
         float dx = p.x - cur.x, dy = p.y - cur.y;
         float dist = std::sqrt(dx * dx + dy * dy);
         if (dist > TELEPORT_DIST)
         {
             SetEntityCoords(s_ghost, Vec3{p.x, p.y, cur.z});
         }
-        if (dist > CLOSE)
+        if (dist > RESUME)
+            s_idleChase = true;
+        else if (dist < CLOSE)
+            s_idleChase = false;
+
+        if (s_idleChase)
         {
-            // Пед отстал от позиции игрока (тот остановился в другом месте
-            // или пед только что спавнился) — подводим его задачей ходьбы.
-            // Раньше блок был пустым, и пед замирал на месте до телепорта.
+            // Пед реально отстал (спавн/остановился в другом месте) —
+            // подводим задачей ходьбы.
             ApplyMoveToGhost(s_ghost,
                              static_cast<uint8_t>(coop::MoveState::Walk), p);
         }
@@ -1967,6 +1982,7 @@ void CleanupGhost()
     s_modelLoadedLogged = false;
     s_haveFrame = false;
     s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
+    s_idleChase = false;
     s_lastPedState = 0xFF;
     s_lastWeapon = 0;
     s_givenWeapon = 0;
@@ -2043,10 +2059,13 @@ uint8_t DetectLocalMoveState(unsigned int ped)
             // шаг переходим только при ЯВНОМ движении (>1.0 м/с), а из шага
             // в стояние — только когда точно встали (<0.3 м/с). Без этого
             // покачивание корпуса мерцало Walk<->Idle и пед дёргался.
+            // Дополнительно: IS_PED_WALKING бывает истинным от дыхания/
+            // микро-анимации покоя — требуем реальную скорость >0.35 м/с.
             const bool wasWalking =
                 (s_moveStable == static_cast<uint8_t>(coop::MoveState::Walk));
             const float walkThresh = wasWalking ? 0.3f : 1.0f;
-            raw = (walking || speed > walkThresh)
+            const bool realWalking = walking && speed > 0.35f;
+            raw = (realWalking || speed > walkThresh)
                     ? static_cast<uint8_t>(coop::MoveState::Walk)
                     : static_cast<uint8_t>(coop::MoveState::Idle);
         }
@@ -2571,6 +2590,7 @@ void CheckRemoteModelChange(const net::FramePayload& f)
         s_blip = RemoveBlip(s_blip);
     s_ghostDead = false;
     s_lastMoveState = 0xFF;
+    s_idleChase = false;
     s_lastPedState = 0xFF;
     // НОВЫЙ пед создаётся со спавна (рядом с хостом / на сохранённой позиции);
     // наряд из последнего кадра применится автоматически (reserved[1]).

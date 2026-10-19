@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v3: WorldSnapshot (P1 — репликация мира/NPC).
-constexpr uint16_t kProtocolVersion = 3;
+// v4: OutfitState расширен до 96 компонентов (реальные категории педа 47–80).
+constexpr uint16_t kProtocolVersion = 4;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -44,16 +44,19 @@ enum class Msg : uint8_t {
     WorldSnapshot = 0x10, // хост -> сервер -> гость: сущности мира (P1)
 };
 
-// Компоненты одежды игрока (наряд): список хэшей одетых компонентов
-// (_GET_NUM_COMPONENTS_IN_PED / _GET_PED_COMPONENT_CATEGORY_BY_INDEX) + модель.
-// Отправляется при смене наряда (не в каждом кадре). Получатель применяет
-// каждый компонент через _EQUIP_META_PED_OUTFIT + _UPDATE_PED_VARIATION.
-constexpr int kMaxOutfitComponents = 32;
+// Компоненты одежды игрока (наряд): список хэшей одетых shop-предметов.
+// Лимит 96 (а не 32): GET_NUM_COMPONENT_CATEGORIES_IN_PED на реальном педе
+// возвращает 47–80 категорий; при лимите 32 хвост обрезался, часть одежды
+// не передавалась — у призрака были видны случайные слои/кожа.
+constexpr int kMaxOutfitComponents = 96;
 struct OutfitState {
     unsigned long long model = 0;            // модель педа (для проверки)
     uint32_t count = 0;                      // сколько компонентов одето
     uint32_t components[kMaxOutfitComponents] = {0}; // хэши компонентов
 };
+// 8 + 4 + 96*4 = 396, выравнивание до 8 → 400. Формат уходит в сеть как есть;
+// менять только вместе с kProtocolVersion.
+static_assert(sizeof(OutfitState) == 400, "OutfitState must be 400 bytes");
 
 // Состояние мира, транслируемое хостом всем игрокам (время + погода).
 // Хостом считается ПЕРВЫЙ подключившийся игрок; остальные применяют его

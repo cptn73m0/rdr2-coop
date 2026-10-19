@@ -2,8 +2,12 @@
 
 ## Версия протокола (Spike 1 + P1, модель A)
 
-- `net::kProtocolVersion = 3` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 4` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение.
+- v4: `OutfitState` — 400 байт (8 model + 4 count + 96 shop-компонентов).
+  Лимит поднят с 32 до 96, потому что `GET_NUM_COMPONENT_CATEGORIES_IN_PED`
+  на реальном педе возвращает 47–80 категорий; при 32 хвост одежды обрезался
+  и у призрака просвечивали случайные слои/кожа.
 - JOIN (0x01): `name_len:u8  name[]  ped_model:u64  protocol_version:u16` (LE).
 - Отказ в JOIN — сообщение **0x0F JoinRejected**: `reason:u8`
   (1 = несовпадение версии, 2 = сервер полон, 3 = ник занят, 4 = пустой ник).
