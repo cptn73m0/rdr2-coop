@@ -153,8 +153,10 @@
 - [x] restore_saves.ps1 автотест (restore + pre-restore snapshot)
 - [x] R&D поездов: флаг `world_trains`, Vehicle-прокси из WorldSnapshot,
       `GET_TRAIN_CARRIAGE`-добор вагонов, direction/speed в логе,
-      `TrainSnapshot` v13 (гость логирует), docs/TRAINS.md
-- [ ] Train consist: сцепка/рельсы/скорость/порядок вагонов (после игры)
+      `TrainSnapshot` v13 + attach вагонов к локомотиву на госте
+- [x] C++ stress candidate budget: 4×10k против reference-выборки
+- [x] Per-IP rate limit (12 новых TCP/сек) + flood-тест
+- [x] Graceful shutdown: Ctrl+C/nonblocking accept + SaveAll; тест-хук
 - [ ] Применение наград allow-list после игрового теста
 - [x] CI-скрипт `scripts/ci.ps1`: сборка клиента+сервера и тесты
 - [x] Убрано предупреждение C4005 WIN32_LEAN_AND_MEAN

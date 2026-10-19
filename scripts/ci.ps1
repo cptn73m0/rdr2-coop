@@ -62,6 +62,10 @@ if (-not $NoTests) {
     & (Join-Path $testBuild "Release\mission_catalog_test.exe")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    Write-Host "=== world_sync candidate budget ==="
+    & (Join-Path $testBuild "Release\world_entity_budget_test.exe")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     Write-Host "=== Restore saves ==="
     powershell -ExecutionPolicy Bypass -File (Join-Path $repo "tests\restore_saves_test.ps1")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

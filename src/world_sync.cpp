@@ -7,6 +7,7 @@
 #include "net/protocol.h"
 #include "script_hook.h"
 #include "world_snapshot_parse.h"
+#include "world_entity_budget.h"
 
 #include <algorithm>
 #include <atomic>
@@ -654,38 +655,32 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         }
     }
 
-    // Приоритет: mission-entity, затем ближайшие.
-    std::sort(candidates.begin(), candidates.end(),
-              [](const Candidate& a, const Candidate& b) {
-                  if (a.mission != b.mission) return a.mission > b.mission;
-                  return a.distance2 < b.distance2;
-              });
-    // Отдельные лимиты на Ped/Vehicle/Object, чтобы транспорт и объекты
-    // не вытеснили людей.
-    std::vector<Candidate> selected;
-    selected.reserve(net::kMaxWorldEntities);
-    int selectedPeds = 0;
-    int selectedVehicles = 0;
-    int selectedObjects = 0;
+    // Приоритет: mission-entity, затем ближайшие; отдельные лимиты на
+    // Ped/Vehicle/Object (чистая функция покрыта C++ stress-тестом).
+    std::vector<BudgetCandidate> budgetInputs;
+    budgetInputs.reserve(candidates.size());
     for (const Candidate& c : candidates)
     {
+        BudgetCandidate b;
+        b.mission = c.mission;
+        b.distance2 = c.distance2;
         if (c.entity.kind == net::kEntityKindVehicle)
-        {
-            if (selectedVehicles >= kMaxVehicles) continue;
-            ++selectedVehicles;
-        }
+            b.kind = BudgetKind::Vehicle;
         else if (c.entity.kind == net::kEntityKindObject)
-        {
-            if (selectedObjects >= kMaxObjects) continue;
-            ++selectedObjects;
-        }
+            b.kind = BudgetKind::Object;
         else
-        {
-            if (selectedPeds >= kMaxPeds) continue;
-            ++selectedPeds;
-        }
-        selected.push_back(c);
+            b.kind = BudgetKind::Ped;
+        budgetInputs.push_back(b);
     }
+    BudgetCaps caps;
+    caps.peds = kMaxPeds;
+    caps.vehicles = kMaxVehicles;
+    caps.objects = kMaxObjects;
+    const std::vector<int> order = SelectWorldCandidates(budgetInputs, caps);
+    std::vector<Candidate> selected;
+    selected.reserve(order.size());
+    for (const int index : order)
+        selected.push_back(candidates[static_cast<std::size_t>(index)]);
     candidates.swap(selected);
 
     net::WorldSnapshotHeader header{};
@@ -748,6 +743,9 @@ struct Proxy
     uint8_t moveState = net::kEntityStateIdle;
     bool moveTaskValid = false;
     Vec3 moveTarget{0.f, 0.f, 0.f};
+    // R&D: вагон привязан к локомотиву (позицию ведёт attachment).
+    bool trainAttached = false;
+    unsigned int trainAttachedTo = 0;
 };
 
 std::map<uint64_t, Proxy> g_proxies;
@@ -756,6 +754,10 @@ std::vector<uint8_t> g_pendingSnapshot;
 bool g_hasPendingSnapshot = false;
 std::atomic<unsigned long long> g_lastSnapshotMs{0};
 uint64_t g_snapshotSeq = 0;
+// R&D: pending TrainSnapshot (сетевой поток -> игровой).
+std::mutex g_trainMutex;
+std::vector<uint8_t> g_pendingTrain;
+bool g_hasPendingTrain = false;
 
 void SuppressLocalWorld()
 {
@@ -838,6 +840,10 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
 
     if (proxy.kind != net::kEntityKindPed)
     {
+        // R&D: вагон, привязанный к локомотиву, ведёт attachment; не
+        // перетираем его позицию из WorldSnapshot каждый тик.
+        if (proxy.trainAttached)
+            return;
         // Транспорт/объекты: позиция из снапшота (физика не симулируется).
         SetCoords(proxy.handle, e.x, e.y, e.z);
         SetHeading(proxy.handle, e.heading);
@@ -931,10 +937,39 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
     proxy.moveState = e.state;
 }
 
+void DetachEntitySafe(unsigned int handle)
+{
+    if (!handle || !DoesExist(handle))
+        return;
+    using namespace natives_api;
+    Init(natives::DETACH_ENTITY);
+    Push(handle);
+    Push(true);
+    Push(true);
+    Call();
+}
+
 void DeleteProxy(Proxy& proxy)
 {
     if (proxy.handle)
     {
+        // R&D train: сначала отцепляем вагоны, привязанные к этому entity.
+        for (auto& kv : g_proxies)
+        {
+            if (kv.second.trainAttached &&
+                kv.second.trainAttachedTo == proxy.handle)
+            {
+                DetachEntitySafe(kv.second.handle);
+                kv.second.trainAttached = false;
+                kv.second.trainAttachedTo = 0;
+            }
+        }
+        if (proxy.trainAttached)
+        {
+            DetachEntitySafe(proxy.handle);
+            proxy.trainAttached = false;
+            proxy.trainAttachedTo = 0;
+        }
         if (proxy.kind == net::kEntityKindVehicle)
             DeleteVehicleEntity(proxy.handle);
         else if (proxy.kind == net::kEntityKindObject)
@@ -1022,6 +1057,101 @@ void ApplyPendingSnapshot(unsigned int tickCount)
                       static_cast<unsigned long long>(g_snapshotSeq));
 }
 
+// R&D: привязать вагоны-прокси к локомотиву по TrainSnapshot.
+void ApplyPendingTrainSnapshot(unsigned int tickCount)
+{
+    std::vector<uint8_t> payload;
+    {
+        std::lock_guard<std::mutex> lk(g_trainMutex);
+        if (!g_hasPendingTrain)
+            return;
+        payload.swap(g_pendingTrain);
+        g_hasPendingTrain = false;
+    }
+    if (payload.size() < sizeof(net::TrainSnapshotHeader))
+        return;
+    net::TrainSnapshotHeader h{};
+    std::memcpy(&h, payload.data(), sizeof(h));
+    if (h.carCount > net::kMaxTrainCars)
+        return;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.carCount) * sizeof(net::WorldEntity);
+    if (payload.size() != need)
+        return;
+
+    auto engineIt = g_proxies.find(h.engineNetId);
+    if (engineIt == g_proxies.end() || !engineIt->second.handle ||
+        !DoesExist(engineIt->second.handle))
+        return;
+    const unsigned int engine = engineIt->second.handle;
+    const Vec3 ep = GetCoords(engine);
+    const float eh = GetHeading(engine);
+    const float rad = eh * 0.017453292519943295f;
+    const float cs = std::cos(rad);
+    const float sn = std::sin(rad);
+
+    int attachedNow = 0;
+    for (uint16_t i = 0; i < h.carCount; ++i)
+    {
+        net::WorldEntity car{};
+        std::memcpy(&car,
+                    payload.data() + sizeof(h) +
+                        static_cast<std::size_t>(i) * sizeof(net::WorldEntity),
+                    sizeof(car));
+        auto it = g_proxies.find(car.netId);
+        if (it == g_proxies.end() || !it->second.handle ||
+            !DoesExist(it->second.handle))
+            continue;
+        if (it->second.kind == net::kEntityKindPed)
+            continue;
+        if (it->second.trainAttached &&
+            it->second.trainAttachedTo == engine)
+            continue;
+        if (it->second.trainAttached)
+            DetachEntitySafe(it->second.handle);
+
+        const Vec3 cp = GetCoords(it->second.handle);
+        const float dx = cp.x - ep.x;
+        const float dy = cp.y - ep.y;
+        const float dz = cp.z - ep.z;
+        // Перевод мировой дельты в локальную систему локомотива.
+        const float localX = dx * cs - dy * sn;
+        const float localY = dx * sn + dy * cs;
+        const float localHeading = car.heading - eh;
+
+        using namespace natives_api;
+        Init(natives::ATTACH_ENTITY_TO_ENTITY);
+        Push(it->second.handle); // entity1 (вагон)
+        Push(engine);            // entity2 (локомотив)
+        Push(static_cast<unsigned long long>(0)); // boneIndex
+        Push(localX); Push(localY); Push(dz);
+        Push(0.f); Push(0.f); Push(localHeading);
+        Push(static_cast<unsigned long long>(1)); // p9
+        Push(static_cast<unsigned long long>(1)); // useSoftPinning
+        Push(static_cast<unsigned long long>(0)); // collision
+        Push(static_cast<unsigned long long>(0)); // isPed
+        Push(static_cast<unsigned long long>(0)); // vertexIndex
+        Push(static_cast<unsigned long long>(1)); // fixedRot
+        Push(static_cast<unsigned long long>(0)); // p15
+        Push(static_cast<unsigned long long>(0)); // p16
+        Call();
+
+        it->second.trainAttached = true;
+        it->second.trainAttachedTo = engine;
+        ++attachedNow;
+    }
+    if (attachedNow > 0)
+    {
+        sh_log::Write("train: attached %d car proxy(ies) to engine netId=%u\n",
+                      attachedNow, h.engineNetId);
+    }
+    else if ((tickCount % kLogEveryTicks) == 1)
+    {
+        sh_log::Write("train: snapshot engine=%u cars=%u (no new attach)\n",
+                      h.engineNetId, (unsigned)h.carCount);
+    }
+}
+
 } // namespace
 
 void OnSnapshot(const std::vector<uint8_t>& payload)
@@ -1030,6 +1160,13 @@ void OnSnapshot(const std::vector<uint8_t>& payload)
     g_pendingSnapshot = payload;
     g_hasPendingSnapshot = true;
     g_lastSnapshotMs.store(GetTickCount64());
+}
+
+void OnTrainSnapshot(const std::vector<uint8_t>& payload)
+{
+    std::lock_guard<std::mutex> lk(g_trainMutex);
+    g_pendingTrain = payload;
+    g_hasPendingTrain = true;
 }
 
 bool GetNetIdForHandle(unsigned int handle, uint64_t& netId)
@@ -1092,6 +1229,11 @@ void Reset()
         g_hasPendingSnapshot = false;
         g_lastSnapshotMs.store(0);
     }
+    {
+        std::lock_guard<std::mutex> lk(g_trainMutex);
+        g_pendingTrain.clear();
+        g_hasPendingTrain = false;
+    }
     g_snapshotSeq = 0;
     g_hostIds.clear();
     g_lastHostScanTick = 0;
@@ -1132,6 +1274,7 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
 
     // Гость.
     ApplyPendingSnapshot(tickCount);
+    ApplyPendingTrainSnapshot(tickCount);
 
     const unsigned long long last = g_lastSnapshotMs.load();
     if (last == 0)

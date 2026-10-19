@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -23,6 +24,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifdef _WIN32
@@ -60,9 +62,49 @@ std::atomic<int> g_activeConnections{0};
 // Защита от thread/socket flood: больше этого числа TCP-соединений сервер
 // не держит. Легитимных участников максимум двое; остальное — probe/rogue.
 constexpr int kMaxActiveConnections = 32;
+// Per-IP anti-flood: не больше N новых TCP-соединений в секунду с одного IP.
+constexpr int kMaxNewConnectionsPerIpPerSecond = 12;
+std::mutex g_rateMutex;
+struct IpRate
+{
+    uint64_t windowMs = 0;
+    int count = 0;
+};
+std::unordered_map<std::string, IpRate> g_ipRates;
+
+bool AllowConnectionFrom(const std::string& ip, uint64_t nowMs)
+{
+    std::lock_guard<std::mutex> lk(g_rateMutex);
+    IpRate& r = g_ipRates[ip];
+    if (r.windowMs == 0 || nowMs - r.windowMs >= 1000)
+    {
+        r.windowMs = nowMs;
+        r.count = 0;
+    }
+    if (r.count >= kMaxNewConnectionsPerIpPerSecond)
+        return false;
+    ++r.count;
+    return true;
+}
+
+#ifdef _WIN32
+BOOL WINAPI ConsoleCtrlHandler(DWORD)
+{
+    g_running.store(false);
+    return TRUE;
+}
+#else
+void PosixSignalHandler(int)
+{
+    g_running.store(false);
+}
+#endif
+
 uint64_t g_nextSession = 1;
 // Таймаут молчащего клиента (мс). Настраивается вторым аргументом (сек).
 uint64_t g_idleTimeoutMs = 30000;
+// Test-only: если >0, сервер сам инициирует корректную остановку через N мс.
+uint64_t g_testExitAfterMs = 0;
 
 uint64_t NowMs()
 {
@@ -852,6 +894,13 @@ int main(int argc, char** argv)
 
     if (!netio::Init()) { std::cerr << "socket init failed\n"; return 1; }
 
+#ifdef _WIN32
+    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+#else
+    std::signal(SIGINT, PosixSignalHandler);
+    std::signal(SIGTERM, PosixSignalHandler);
+#endif
+
     LoadAllSaved();
 
     // Русский вывод в консоли Windows (UTF-8 вместо крякозябров).
@@ -866,6 +915,12 @@ int main(int argc, char** argv)
         const int idleSec = std::atoi(argv[2]);
         if (idleSec > 0)
             g_idleTimeoutMs = static_cast<uint64_t>(idleSec) * 1000;
+    }
+    if (argc > 3)
+    {
+        const int exitMs = std::atoi(argv[3]);
+        if (exitMs > 0)
+            g_testExitAfterMs = static_cast<uint64_t>(exitMs);
     }
 
 #ifdef _WIN32
@@ -900,24 +955,53 @@ int main(int argc, char** argv)
     std::cout << "RDR2 CO-OP — сервер-релей" << std::endl;
     std::cout << "Порт: " << port << ". Ожидание игроков..." << std::endl;
     std::cout << "(таблица состояния выводится каждые ~10 секунд)" << std::endl;
+    std::cout << "(Ctrl+C — корректная остановка, players.txt сохраняется)" << std::endl;
+
+    // Неблокирующий accept: позволяет корректно выйти по Ctrl+C и сделать SaveAll.
+    netio::SetNonBlocking(ls);
 
     // статусный поток
     std::thread st(StatusThread);
     st.detach();
 
-    for (;;)
+    if (g_testExitAfterMs > 0)
+    {
+        LogLine("[test] graceful exit after " +
+                std::to_string(g_testExitAfterMs) + " ms");
+        std::thread([ms = g_testExitAfterMs]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            g_running.store(false);
+        }).detach();
+    }
+
+    while (g_running.load())
     {
         sockaddr_in peer{};
         int peerLen = sizeof(peer);
 #ifdef _WIN32
         SOCKET c = accept(ls, (sockaddr*)&peer, &peerLen);
-        if (c == INVALID_SOCKET) break;
 #else
         SOCKET c = ::accept(ls, (sockaddr*)&peer, &peerLen);
-        if (c == INVALID_SOCKET) break;
 #endif
+        if (c == INVALID_SOCKET)
+        {
+            if (!g_running.load())
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
         char ipbuf[64] = "unknown";
         inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf));
+
+        if (!AllowConnectionFrom(ipbuf, NowMs()))
+        {
+            LogLine("[!] " + std::string(ipbuf) +
+                    ": per-IP rate limit (" +
+                    std::to_string(kMaxNewConnectionsPerIpPerSecond) +
+                    "/s) — соединение отклонено");
+            closesocket(c);
+            continue;
+        }
 
         if (g_activeConnections.load() >= kMaxActiveConnections)
         {
@@ -942,6 +1026,11 @@ int main(int argc, char** argv)
 
     g_running.store(false);
     SaveAll();
+#ifdef _WIN32
+    closesocket(ls);
+#else
+    ::close(ls);
+#endif
     netio::Shutdown();
     return 0;
 }

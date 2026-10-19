@@ -22,6 +22,9 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
 // Сетевой поток: пришёл WorldSnapshot от хоста (payload уже проверен client).
 void OnSnapshot(const std::vector<uint8_t>& payload);
 
+// R&D: TrainSnapshot от хоста (payload уже проверен client).
+void OnTrainSnapshot(const std::vector<uint8_t>& payload);
+
 // Убрать прокси/сбросить состояние (выход из сессии, смена роли, disable).
 void Reset();
 

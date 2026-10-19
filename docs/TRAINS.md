@@ -16,9 +16,11 @@
 - Гость создаёт их тем же `CREATE_VEHICLE`-прокси (mission, без коллизии) и
   двигает по снапшотам 10 Гц.
 - **TrainSnapshot (v13):** хост дополнительно шлёт engineNetId/model,
-  direction, speed и вагоны по порядку; гость пока только логирует
-  (`train: snapshot engine=… cars=… dir=… speed=…`). Это заготовка для
-  будущего связывания прокси в состав.
+  direction, speed и вагоны по порядку; гость **привязывает** вагоны-прокси
+  к локомотиву через `ATTACH_ENTITY_TO_ENTITY` (локальные offset), а
+  `UpdateProxy` не перетирает привязанные вагоны позициями из WorldSnapshot.
+  При удалении локомотива вагоны отцепляются. Это экспериментально: если
+  attachment ведёт себя плохо, `world_trains=0`.
 - В логе: `trains_included=N` (включено) и `trains_skipped=N` (выключено).
 - Флаг `world_trains` читается конфигом и покрыт `config_test`.
 

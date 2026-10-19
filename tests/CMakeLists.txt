@@ -41,6 +41,13 @@ add_executable(mission_catalog_test
 target_include_directories(mission_catalog_test PRIVATE .. ../src)
 target_compile_features(mission_catalog_test PRIVATE cxx_std_17)
 
+add_executable(world_entity_budget_test
+    world_entity_budget_test.cpp
+    ../src/world_entity_budget.cpp
+)
+target_include_directories(world_entity_budget_test PRIVATE .. ../src)
+target_compile_features(world_entity_budget_test PRIVATE cxx_std_17)
+
 if (WIN32)
     target_link_libraries(client_reconnect_test PRIVATE ws2_32)
     target_link_libraries(frame_reader_fuzz PRIVATE ws2_32)

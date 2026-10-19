@@ -36,6 +36,8 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_players_txt_recovery` | битые строки и stale `.tmp` не мешают восстановлению двух игроков |
 | `test_concurrent_fuzz` | 3 rogue + 2 sender потока 3 с; сервер жив и отвечает Ping |
 | `test_connection_cap` | флуд 40 TCP-соединений; лимит не роняет сервер, новый клиент входит |
+| `test_per_ip_rate_limit` | >12 подключений/с с одного IP отсекаются; после окна вход работает |
+| `test_graceful_shutdown` | сервер корректно завершается по тест-хуку и сохраняет players.txt |
 | `test_fuzz_frames` | 300 случайных кадров/типов/размеров + oversize + fragmented Ping |
 | `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта |
 
@@ -49,6 +51,7 @@ cmake --build tests\build --config Release
 .\tests\build\Release\config_test.exe
 .\tests\build\Release\world_snapshot_parse_test.exe
 .\tests\build\Release\mission_catalog_test.exe
+.\tests\build\Release\world_entity_budget_test.exe
 powershell -File tests\restore_saves_test.ps1
 ```
 
@@ -62,6 +65,8 @@ powershell -File tests\restore_saves_test.ps1
   сущностей и произвольный мусор; строгая проверка размера/count.
 - `mission_catalog_test` — 80 уникальных миссий, runtime/title, 23 награды
   на 17 миссий, корректные binding/amount, нет дублей.
+- `world_entity_budget_test` — 4 потока × 10k: mission-приоритет, лимиты
+  Ped/Vehicle/Object и порядок против независимой reference-реализации.
 - `restore_saves_test.ps1` — restore + pre-restore snapshot на temp-каталогах.
 
 ## CI

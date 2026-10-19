@@ -94,24 +94,39 @@ def frame_bytes(type_, payload):
 
 
 class Server:
-    def __init__(self, exe, workdir, port=None, extra_args=None):
+    def __init__(self, exe, workdir, port=None, extra_args=None,
+                 process_group=False, console=False):
         self.exe = str(exe)
         self.workdir = Path(workdir)
         self.port = port or random.randint(21000, 25000)
         self.extra_args = list(extra_args or [])
+        self.process_group = process_group
+        self.console = console
         self.proc = None
 
     def start(self):
         self.workdir.mkdir(parents=True, exist_ok=True)
         creationflags = 0
+        startupinfo = None
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if self.process_group:
+                creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if self.console:
+                # Hidden console so CTRL_BREAK_EVENT can be delivered to the
+                # process group in the graceful-shutdown test.
+                creationflags &= ~getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                creationflags |= getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
         self.proc = subprocess.Popen(
             [self.exe, str(self.port)] + self.extra_args,
             cwd=str(self.workdir),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,
+            startupinfo=startupinfo,
         )
         deadline = time.time() + 8.0
         while time.time() < deadline:
@@ -124,6 +139,16 @@ class Server:
             except OSError:
                 time.sleep(0.1)
         raise RuntimeError("server did not start listening")
+
+    def send_ctrl_break(self):
+        if os.name != "nt" or not self.proc:
+            return False
+        import signal
+        try:
+            self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+            return True
+        except (OSError, ValueError):
+            return False
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
@@ -726,6 +751,66 @@ def test_connection_cap(exe, tmp):
         c.close()
 
 
+def test_per_ip_rate_limit(exe, tmp):
+    log("[test] per-IP rate limit")
+    with Server(exe, tmp / "rate") as srv:
+        sockets = []
+        for _ in range(30):
+            try:
+                s = socket.create_connection(("127.0.0.1", srv.port), timeout=0.3)
+                sockets.append(s)
+            except OSError:
+                pass
+        time.sleep(0.7)
+        closed = 0
+        for s in sockets:
+            s.settimeout(0.2)
+            try:
+                if s.recv(1) == b"":
+                    closed += 1
+            except (socket.timeout, OSError):
+                pass
+        for s in sockets:
+            try:
+                s.close()
+            except OSError:
+                pass
+        assert closed > 0, "rate limit should close some connections"
+        time.sleep(1.2)  # new rate window
+        c = connect(srv.port)
+        join(c, "AfterRate")
+        assert recv_type(c, TYPE_JOIN_OK) is not None
+        c.close()
+
+
+def test_graceful_shutdown(exe, tmp):
+    log("[test] graceful shutdown (test hook)")
+    work = tmp / "graceful"
+    # 3rd argv: self-initiated graceful stop after 1500 ms.
+    srv = Server(exe, work, extra_args=["30", "1500"])
+    srv.start()
+    try:
+        a = connect(srv.port)
+        join(a, "Shutdown")
+        assert recv_type(a, TYPE_JOIN_OK) is not None
+        a.sendall(frame_bytes(TYPE_FRAME, make_frame_payload(3.5, 4.5, 5.5, 10.0)))
+        a.sendall(frame_bytes(TYPE_PING, b"before-shutdown"))
+        assert recv_type(a, TYPE_PONG) == b"before-shutdown"
+        time.sleep(0.3)
+        a.close()
+
+        deadline = time.time() + 8.0
+        while time.time() < deadline and srv.proc.poll() is None:
+            time.sleep(0.1)
+        assert srv.proc.poll() is not None, "server did not exit on graceful stop"
+        assert srv.proc.returncode == 0, f"exit code {srv.proc.returncode}"
+        players = work / "players.txt"
+        assert players.exists() and "Shutdown" in players.read_text(encoding="utf-8"), \
+            "players.txt should be saved on graceful shutdown"
+    finally:
+        srv.stop()
+
+
 def test_persistence(exe, tmp):
     log("[test] players.txt persistence across restart")
     work = tmp / "persist"
@@ -785,6 +870,8 @@ def main():
         test_players_txt_recovery,
         test_concurrent_fuzz,
         test_connection_cap,
+        test_per_ip_rate_limit,
+        test_graceful_shutdown,
         test_persistence,
     ]
     try:

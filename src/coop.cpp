@@ -3585,19 +3585,9 @@ void InitNetworkClient()
         world_sync::OnSnapshot(payload);
     });
 
-    // R&D: TrainSnapshot — логируем (визуальные вагоны идут через WorldSnapshot).
+    // R&D: TrainSnapshot — привязка вагонов-прокси к локомотиву (игровой поток).
     g_netClient.SetTrainSnapshot([](const std::vector<uint8_t>& payload) {
-        if (payload.size() < sizeof(net::TrainSnapshotHeader))
-            return;
-        net::TrainSnapshotHeader h{};
-        std::memcpy(&h, payload.data(), sizeof(h));
-        static std::atomic<unsigned int> count{0};
-        if ((++count % 300) != 1)
-            return;
-        sh_log::Write("train: snapshot engine=0x%08X model=0x%08X cars=%u "
-                      "dir=%u speed=%.1f\n",
-                      h.engineNetId, h.engineModel, (unsigned)h.carCount,
-                      (unsigned)h.direction, h.speed);
+        world_sync::OnTrainSnapshot(payload);
     });
 
     // P2: действие/сценарий удалённого игрока — только копируем; применит Tick().
