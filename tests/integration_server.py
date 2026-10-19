@@ -678,6 +678,32 @@ def test_concurrent_fuzz(exe, tmp):
         c.close()
 
 
+def test_connection_cap(exe, tmp):
+    log("[test] connection cap / flood")
+    with Server(exe, tmp / "cap") as srv:
+        sockets = []
+        for _ in range(40):
+            try:
+                s = socket.create_connection(("127.0.0.1", srv.port), timeout=0.3)
+                sockets.append(s)
+            except OSError:
+                pass
+        # Server caps active connections; excess must be closed, not crash.
+        time.sleep(0.5)
+        for s in sockets:
+            try:
+                s.close()
+            except OSError:
+                pass
+        time.sleep(1.0)
+
+        c = connect(srv.port)
+        join(c, "AfterFlood")
+        assert recv_type(c, TYPE_JOIN_OK) is not None, \
+            "server must still accept after connection flood"
+        c.close()
+
+
 def test_persistence(exe, tmp):
     log("[test] players.txt persistence across restart")
     work = tmp / "persist"
@@ -736,6 +762,7 @@ def main():
         test_fuzz_frames,
         test_players_txt_recovery,
         test_concurrent_fuzz,
+        test_connection_cap,
         test_persistence,
     ]
     try:

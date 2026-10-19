@@ -49,6 +49,9 @@ jobs:
       - name: WorldSnapshot parser stress
         run: .\tests\build\Release\world_snapshot_parse_test.exe
 
+      - name: Mission catalog/rewards
+        run: .\tests\build\Release\mission_catalog_test.exe
+
       - name: Restore saves test
         run: powershell -ExecutionPolicy Bypass -File tests\restore_saves_test.ps1
 

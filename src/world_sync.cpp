@@ -534,6 +534,10 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             const int trailerCount = static_cast<int>(Call());
             if (trailerCount <= 0)
                 continue;
+            Init(natives::_GET_TRAIN_DIRECTION);
+            Push(engine);
+            const bool trainDirection = Call() != 0;
+            const float trainSpeed = GetSpeed(engine);
             for (int carIndex = 0; carIndex <= trailerCount; ++carIndex)
             {
                 Init(natives::GET_TRAIN_CARRIAGE);
@@ -549,8 +553,10 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                     ++trainsIncluded;
                 }
             }
-            sh_log::Write("train: consist engine=%u trailerCount=%d added=%u\n",
-                          engine, trailerCount, trainCarsAdded);
+            sh_log::Write("train: consist engine=%u trailerCount=%d added=%u "
+                          "dir=%d speed=%.1f\n",
+                          engine, trailerCount, trainCarsAdded,
+                          trainDirection ? 1 : 0, trainSpeed);
         }
     }
 

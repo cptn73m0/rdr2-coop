@@ -131,7 +131,9 @@
 
 - [x] Сервер: keepalive/timeouts, лимиты очередей, атомарный players.txt,
       защита от пустых/повторных JOIN, host-only сообщения
-- [x] Headless-тесты протокола/сервера (12 integration tests, без игры)
+- [x] Headless-тесты протокола/сервера (13 integration tests, без игры)
+- [x] Лимит одновременных соединений сервера (32) + flood-тест
+- [x] Mission catalog/rewards validation test (80 миссий, 23 записи/17)
 - [x] Idle timeout сервера (настраивается 2-м аргументом, по умолчанию 30 с)
 - [x] Атомарная запись players.txt (tmp + MoveFileEx/rename)
 - [x] scripts\restore_saves.ps1: восстановление сейва из бэкапа (dry-run/-Force)
@@ -150,7 +152,7 @@
 - [x] players.txt recovery-тест: битые строки и stale .tmp игнорируются
 - [x] restore_saves.ps1 автотест (restore + pre-restore snapshot)
 - [x] R&D поездов: флаг `world_trains`, Vehicle-прокси из WorldSnapshot,
-      `GET_TRAIN_CARRIAGE`-добор вагонов состава, docs/TRAINS.md
+      `GET_TRAIN_CARRIAGE`-добор вагонов, direction/speed в логе, docs/TRAINS.md
 - [ ] Train consist: сцепка/рельсы/скорость/порядок вагонов (после игры)
 - [ ] Применение наград allow-list после игрового теста
 - [x] CI-скрипт `scripts/ci.ps1`: сборка клиента+сервера и тесты

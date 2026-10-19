@@ -56,6 +56,10 @@ std::mutex g_logMutex;                    // защищает вывод в ко
 std::map<std::string, OnlinePlayer> g_online;   // игроки онлайн (по имени)
 std::map<std::string, OnlinePlayer> g_lastPos;  // последние позиции (персистентность)
 std::atomic<bool> g_running{true};
+std::atomic<int> g_activeConnections{0};
+// Защита от thread/socket flood: больше этого числа TCP-соединений сервер
+// не держит. Легитимных участников максимум двое; остальное — probe/rogue.
+constexpr int kMaxActiveConnections = 32;
 uint64_t g_nextSession = 1;
 // Таймаут молчащего клиента (мс). Настраивается вторым аргументом (сек).
 uint64_t g_idleTimeoutMs = 30000;
@@ -887,6 +891,16 @@ int main(int argc, char** argv)
         char ipbuf[64] = "unknown";
         inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf));
 
+        if (g_activeConnections.load() >= kMaxActiveConnections)
+        {
+            LogLine("[!] " + std::string(ipbuf) +
+                    ": лимит соединений (" +
+                    std::to_string(kMaxActiveConnections) + ") — отклонён");
+            closesocket(c);
+            continue;
+        }
+        ++g_activeConnections;
+
         netio::Socket* cs = new netio::Socket(c);
         // Как и на клиенте: без Нагла + неблокирующий сокет.
         netio::SetNoDelay(c);
@@ -894,6 +908,7 @@ int main(int argc, char** argv)
         std::thread([cs, ip = std::string(ipbuf)]() {
             HandleClient(cs, ip);
             delete cs;
+            --g_activeConnections;
         }).detach();
     }
 

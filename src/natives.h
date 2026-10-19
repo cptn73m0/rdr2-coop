@@ -221,6 +221,7 @@ constexpr unsigned long long IS_THIS_MODEL_A_TRAIN            = 0xFC08C8F8C1EDF1
 constexpr unsigned long long _GET_TRAIN_CARRIAGE_TRAILER_NUMBER = 0x60B7D1DCC312697Dull;
 constexpr unsigned long long GET_TRAIN_CARRIAGE               = 0xD0FB093A4CDB932Cull;
 constexpr unsigned long long _GET_TRAIN_CAR                   = 0x671A07C9A1CD50A5ull;
+constexpr unsigned long long _GET_TRAIN_DIRECTION             = 0x3C9628A811CBD724ull;
 constexpr unsigned long long DELETE_OBJECT                    = 0x931914268722C263ull;
 constexpr unsigned long long GET_VEHICLE_PED_IS_IN            = 0x9A9112A0FE9A4713ull;
 constexpr unsigned long long GET_PED_IN_VEHICLE_SEAT          = 0xBB40DD2270B65366ull;

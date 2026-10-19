@@ -11,7 +11,8 @@
 - **Consist-добор:** если `worldGetAllVehicles` вернул только локомотив,
   хост вызывает `_GET_TRAIN_CARRIAGE_TRAILER_NUMBER` и
   `GET_TRAIN_CARRIAGE(engine, i)`, добавляя вагоны в снапшот (если они ещё
-  не попали туда). В логе: `train: consist engine=… trailerCount=… added=…`.
+  не попали туда). В логе: `train: consist engine=… trailerCount=… added=…
+  dir=… speed=…` (`_GET_TRAIN_DIRECTION` + `GET_ENTITY_SPEED`).
 - Гость создаёт их тем же `CREATE_VEHICLE`-прокси (mission, без коллизии) и
   двигает по снапшотам 10 Гц.
 - В логе: `trains_included=N` (включено) и `trains_skipped=N` (выключено).
