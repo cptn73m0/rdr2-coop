@@ -844,6 +844,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
 
 struct Proxy
 {
+    uint64_t netId = 0;
     unsigned int handle = 0;
     unsigned int model = 0;
     unsigned int kind = 0; // net::kEntityKindPed / kEntityKindVehicle / kEntityKindObject
@@ -974,6 +975,18 @@ void BeginProxyInterp(Proxy& proxy, const net::WorldEntity& e)
     proxy.interpStartMs = GetTickCount64();
     proxy.interpDurationMs = kProxyInterpMs;
     proxy.hasInterp = true;
+    if (coopcfg::Get().worldDebug)
+    {
+        static unsigned int dbgCount = 0;
+        if ((++dbgCount % 90) == 0)
+        {
+            sh_log::Write("world: dbg interp netId=%u kind=%u "
+                          "from=(%.1f %.1f %.1f) to=(%.1f %.1f %.1f)\n",
+                          (unsigned)proxy.netId, proxy.kind,
+                          proxy.interpFrom.x, proxy.interpFrom.y,
+                          proxy.interpFrom.z, e.x, e.y, e.z);
+        }
+    }
 }
 
 void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
@@ -1261,6 +1274,10 @@ void TickProxyInterpolation()
 {
     if (g_proxies.empty())
         return;
+    static unsigned int dbgTick = 0;
+    ++dbgTick;
+    const bool dbgLog = coopcfg::Get().worldDebug && (dbgTick % 30) == 0;
+    bool dbgLogged = false;
     const uint64_t now = GetTickCount64();
     for (auto& kv : g_proxies)
     {
@@ -1285,6 +1302,15 @@ void TickProxyInterpolation()
             NormalizeAngleDelta(p.interpFromHeading, p.interpToHeading) * alpha;
         SetCoords(p.handle, x, y, z);
         SetHeading(p.handle, heading);
+        if (dbgLog && !dbgLogged)
+        {
+            const Vec3 actual = GetCoords(p.handle);
+            sh_log::Write("world: dbg move netId=%u kind=%u alpha=%.2f "
+                          "set=(%.1f %.1f %.1f) actual=(%.1f %.1f %.1f)\n",
+                          (unsigned)p.netId, p.kind, alpha, x, y, z,
+                          actual.x, actual.y, actual.z);
+            dbgLogged = true;
+        }
         if (alpha >= 1.0f)
         {
             p.hasInterp = false;
@@ -1335,6 +1361,7 @@ void ApplyPendingSnapshot(unsigned int tickCount)
             if (!handle)
                 continue;
             Proxy proxy;
+            proxy.netId = e.netId;
             proxy.handle = handle;
             proxy.model = e.model;
             proxy.kind = e.kind;

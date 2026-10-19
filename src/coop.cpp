@@ -844,6 +844,14 @@ int s_lastAppliedHour = -1, s_lastAppliedMin = -1;
 // Компоненты одежды удалённого игрока (для применения в Tick()).
 net::OutfitState s_outfitIn{};
 bool s_haveOutfit = false;
+// Базовая component variation удалённого игрока (drawable/texture/palette).
+net::PedVariationPayload s_variationIn{};
+bool s_haveVariation = false;
+net::PedVariationPayload s_sentVariation{};
+bool s_sentVariationValid = false;
+unsigned int s_lastVariationSendTick = 0;
+net::PedVariationPayload s_appliedVariation{};
+bool s_appliedVariationValid = false;
 // Последний отправленный набор компонентов (чтобы слать при смене).
 net::OutfitState s_sentOutfit{};
 bool s_sentOutfitValid = false;
@@ -1808,6 +1816,91 @@ bool OutfitsEqual(const net::OutfitState& a, const net::OutfitState& b)
     return std::memcmp(a.components, b.components, sizeof(a.components)) == 0;
 }
 
+// Собрать базовую вариацию компонентов педа: категория -> drawable/texture/
+// palette. Это то, что пропадало при репликации: одежда выглядела «не как у
+// оригинала», потому что применялся только список shop-предметов.
+void CollectLocalVariation(unsigned int ped, net::PedVariationPayload& out)
+{
+    using namespace natives_api;
+    out.model = 0;
+    out.count = 0;
+    Init(natives::GET_ENTITY_MODEL); Push(ped);
+    out.model = Call();
+
+    Init(natives::GET_NUM_COMPONENT_CATEGORIES_IN_PED); Push(ped);
+    int categories = static_cast<int>(Call());
+    if (categories <= 0)
+        return;
+    if (categories > net::kMaxVariationCategories)
+        categories = net::kMaxVariationCategories;
+
+    int n = 0;
+    for (int i = 0; i < categories; ++i)
+    {
+        Init(natives::GET_PED_COMPONENT_CATEGORY_BY_INDEX);
+        Push(ped);
+        Push(static_cast<unsigned long long>(i));
+        const uint32_t category = static_cast<uint32_t>(Call());
+        if (!category)
+            continue;
+
+        Init(natives::GET_PED_DRAWABLE_VARIATION);
+        Push(ped); Push(static_cast<unsigned long long>(category));
+        const uint32_t drawable = static_cast<uint32_t>(Call());
+        Init(natives::GET_PED_TEXTURE_VARIATION);
+        Push(ped); Push(static_cast<unsigned long long>(category));
+        const uint32_t texture = static_cast<uint32_t>(Call());
+        Init(natives::GET_PED_PALETTE_VARIATION);
+        Push(ped); Push(static_cast<unsigned long long>(category));
+        const uint32_t palette = static_cast<uint32_t>(Call());
+
+        out.items[n].category = static_cast<uint8_t>(category);
+        out.items[n].drawable = static_cast<uint8_t>(drawable);
+        out.items[n].texture = static_cast<uint8_t>(texture);
+        out.items[n].palette = static_cast<uint8_t>(palette);
+        ++n;
+    }
+    out.count = static_cast<uint16_t>(n);
+}
+
+// Одинаковая ли базовая вариация.
+bool VariationsEqual(const net::PedVariationPayload& a,
+                     const net::PedVariationPayload& b)
+{
+    if (a.count != b.count) return false;
+    if (a.model && b.model && a.model != b.model) return false;
+    return std::memcmp(a.items, b.items, sizeof(a.items)) == 0;
+}
+
+// Применить базовую вариацию к педу-призраку (перед shop-предметами).
+void ApplyVariationToGhost(const net::PedVariationPayload& var)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost) || s_ghostDead)
+        return;
+    using namespace natives_api;
+    for (uint16_t i = 0; i < var.count && i < net::kMaxVariationCategories; ++i)
+    {
+        const auto& it = var.items[i];
+        Init(natives::SET_PED_COMPONENT_VARIATION);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(it.category));
+        Push(static_cast<unsigned long long>(it.drawable));
+        Push(static_cast<unsigned long long>(it.texture));
+        Push(static_cast<unsigned long long>(it.palette));
+        Call();
+    }
+    Init(natives::UPDATE_PED_VARIATION);
+    Push(s_ghost);
+    Push(static_cast<unsigned long long>(0)); // p1=false
+    Push(static_cast<unsigned long long>(1)); // p2=true
+    Push(static_cast<unsigned long long>(1)); // p3=true
+    Push(static_cast<unsigned long long>(1)); // p4=true
+    Push(static_cast<unsigned long long>(0)); // p5=false
+    Call();
+    s_appliedVariation = var;
+    s_appliedVariationValid = true;
+}
+
 // Применить надетые shop-предметы (одежду) удалённого игрока к педу призрака
 // через _APPLY_SHOP_ITEM_TO_PED + _UPDATE_PED_VARIATION (как в rdr2-runtime
 // ApplyShopItemComponents). Вызывается из Tick() (игровой поток).
@@ -1831,17 +1924,27 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     // Уже надет этот же набор — пропускаем. Повторное применение
     // НАСЛАИВАЕТ одежду (нативный APPLY_SHOP_ITEM_TO_PED не заменяет, а
     // добавляет слой) → «сквозь одну одежду видно другую».
-    if (s_appliedOutfitValid && OutfitsEqual(os, s_appliedOutfit))
+    const bool variationOk =
+        s_variationIn.model && s_variationIn.count > 0 &&
+        s_variationIn.model == s_ghostModel;
+    const bool variationSame =
+        s_appliedVariationValid &&
+        VariationsEqual(s_variationIn, s_appliedVariation);
+    if (s_appliedOutfitValid && OutfitsEqual(os, s_appliedOutfit) &&
+        (!variationOk || variationSame))
         return;
-    // Сброс СТАРОГО наряда: иначе предметы, которых нет в новом наборе,
-    // остаются на педе и он выглядит «помесью» старой и новой одежды
-    // (именно так пед на втором ПК сильно отличался от оригинала).
-    // RandomizePedComponents даёт валидную variation и НЕ ломает рендер
-    // тела (в отличие от RESET_PED_COMPONENTS); сразу следом надеваем
-    // новый полный набор — в одном тике случайная одежда не успевает
-    // показаться.
-    RandomizePedComponents(s_ghost);
-    SetEntityVisibleForce(s_ghost);
+    // Базовая вариация (drawable/texture/palette) — это то, что раньше
+    // «слетало»: мы рандомизировали компоненты, и внешность отличалась от
+    // оригинала. Теперь применяем вариацию с хоста; рандом — только fallback.
+    if (variationOk)
+    {
+        ApplyVariationToGhost(s_variationIn);
+    }
+    else
+    {
+        RandomizePedComponents(s_ghost);
+        SetEntityVisibleForce(s_ghost);
+    }
     for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
     {
         uint32_t c = os.components[i];
@@ -1875,13 +1978,17 @@ void RefreshGhostComponents()
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     s_appliedOutfitValid = false;
+    s_appliedVariationValid = false;
     if (s_outfitIn.count)
     {
-        // Вернуть валидную variation (движок сбросил после посадки) и надеть
-        // наряд. Рандомизация и наряд идут в одном тике — не мелькают.
-        RandomizePedComponents(s_ghost);
-        SetEntityVisibleForce(s_ghost);
+        // ApplyOutfitToGhost сам применит базовую вариацию (или fallback)
+        // и shop-предметы в одном тике.
         ApplyOutfitToGhost(s_outfitIn);
+    }
+    else if (s_variationIn.count && s_variationIn.model == s_ghostModel)
+    {
+        ApplyVariationToGhost(s_variationIn);
+        SetEntityVisibleForce(s_ghost);
     }
     else
     {
@@ -1980,6 +2087,7 @@ void RespawnGhostPed(const net::FramePayload* f)
     // После RESURRECT_PED движок возвращает дефолтные компоненты модели,
     // поэтому наряд надо надеть заново (с полным сбросом слоёв).
     s_appliedOutfitValid = false;
+    s_appliedVariationValid = false;
     // Игрок возродился в другом месте — старая лошадь уже не актуальна.
     if (s_mount)
         DismountAndRemoveMount();
@@ -2454,6 +2562,7 @@ void CleanupGhost()
     s_horseOutfitAppliedValid = false;
     // Новый пед — наряд нужно применить заново.
     s_appliedOutfitValid = false;
+    s_appliedVariationValid = false;
 }
 
 // Определить move-состояние локального игрока для кадра (передаётся
@@ -3007,6 +3116,7 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     s_outfitRequestLogged = false;
     // Пед будет создан заново — наряд применяем с чистого листа.
     s_appliedOutfitValid = false;
+    s_appliedVariationValid = false;
     // Пед удалён — лошадь-призрак без седока не нужна.
     if (s_mount)
         DismountAndRemoveMount();
@@ -3672,6 +3782,11 @@ void InitNetworkClient()
         s_haveOutfit = true;
     });
 
+    g_netClient.SetPedVariation([](const net::PedVariationPayload& var) {
+        s_variationIn = var;
+        s_haveVariation = true;
+    });
+
     g_netClient.SetHorseOutfit([](const net::OutfitState& os) {
         // Сетевой поток: копируем; применит Tick().
         s_horseOutfitIn = os;
@@ -4121,7 +4236,8 @@ void Tick()
         if (s_ghost)
         {
             SetEntityMission(s_ghost);
-            s_appliedOutfitValid = false; // новый пед — наряд наденем заново
+            s_appliedOutfitValid = false;
+    s_appliedVariationValid = false; // новый пед — наряд наденем заново
             // ВАЖНО: RandomizePedComponents (SET_PED_RANDOM_COMPONENT_VARIATION)
             // ОБЯЗАТЕЛЕН для рендера модели педа — без него пед невидим
             // (остаются только прикреплённые shop-предметы-одёжки). Наряд из
@@ -4206,6 +4322,18 @@ void Tick()
     {
         s_haveOutfit = false;
         ApplyOutfitToGhost(s_outfitIn);
+    }
+    // Базовая вариация пришла отдельно (или до наряда) — применяем сразу.
+    if (s_haveVariation)
+    {
+        s_haveVariation = false;
+        s_appliedVariationValid = false;
+        if (!s_outfitIn.count && s_ghost && DoesEntityExist(s_ghost) &&
+            s_variationIn.model == s_ghostModel)
+        {
+            ApplyVariationToGhost(s_variationIn);
+            SetEntityVisibleForce(s_ghost);
+        }
     }
     // Снаряжение лошади удалённого игрока — применить к лошади-призраку.
     if (s_haveHorseOutfit)
@@ -4490,6 +4618,26 @@ void Tick()
                               "first[%d]=0x%X->0x%X) [%s]\n",
                               os.count, os.model, diffCount, firstIdx, oldV, newV,
                               comps);
+            }
+        }
+
+        // Базовая вариация компонентов — собираем не каждый кадр (нативы по
+        // ~70 категориям), а раз в 0.25 с; отправляем при изменении.
+        if (g_netStarted && (s_tickCount % 15) == 0)
+        {
+            net::PedVariationPayload var{};
+            CollectLocalVariation(playerPed, var);
+            const bool varChanged = !s_sentVariationValid ||
+                !VariationsEqual(var, s_sentVariation);
+            if (var.count > 0 && varChanged &&
+                (s_tickCount - s_lastVariationSendTick) >= 30)
+            {
+                s_lastVariationSendTick = s_tickCount;
+                s_sentVariation = var;
+                s_sentVariationValid = true;
+                g_netClient.SendPedVariation(var);
+                sh_log::Write("coop: send variation (%u cats, model 0x%llX)\n",
+                              var.count, var.model);
             }
         }
     }

@@ -687,6 +687,22 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 }
                 break;
             }
+            case net::Msg::PedVariation:
+            {
+                // Базовая вариация компонентов педа — ретрансляция остальным.
+                if (pay.size() == sizeof(net::PedVariationPayload))
+                {
+                    net::PedVariationPayload var{};
+                    std::memcpy(&var, pay.data(), sizeof(var));
+                    if (var.count <= net::kMaxVariationCategories)
+                    {
+                        BroadcastToOthers(sock, MakeMsg(
+                            (uint8_t)net::Msg::PedVariation,
+                            pay.data(), (uint32_t)pay.size()));
+                    }
+                }
+                break;
+            }
             case net::Msg::ActionState:
             {
                 // P2: действие/сценарий своего персонажа — просто ретрансляция.

@@ -22,7 +22,7 @@ import tempfile
 import time
 from pathlib import Path
 
-PROTO = 14
+PROTO = 15
 TYPE_FRAME = 0x04
 TYPE_JOIN = 0x01
 TYPE_JOIN_OK = 0x02
@@ -41,6 +41,7 @@ TYPE_MISSION_BARRIER = 0x15
 TYPE_HOST_CHANGED = 0x16
 TYPE_TRAIN_SNAPSHOT = 0x17
 TYPE_VEHICLE_CREW = 0x18
+TYPE_PED_VARIATION = 0x19
 TYPE_OUTFIT = 0x09
 TYPE_HORSE_OUTFIT = 0x0A
 TYPE_SHOT = 0x0B
@@ -456,6 +457,21 @@ def test_payload_sizes_and_host_only_messages(exe, tmp):
         bad_seat = struct.pack("<IIb3s", 0x1234, 0x5678, 20, b"\x00\x00\x00")
         host.sendall(frame_bytes(TYPE_VEHICLE_CREW, bad_seat))
         assert recv_type(guest, TYPE_VEHICLE_CREW, 0.4) is None
+
+        # PedVariation: 400 bytes, relay both directions, count <= 96.
+        var = struct.pack("<QHH", 0xD7114C9, 10, 0) + b"".join(
+            struct.pack("<BBBB", i % 256, (i + 1) % 256, (i + 2) % 256,
+                        (i + 3) % 256)
+            for i in range(96)) + struct.pack("<I", 0)
+        host.sendall(frame_bytes(TYPE_PED_VARIATION, var))
+        assert recv_type(guest, TYPE_PED_VARIATION) == var
+        guest.sendall(frame_bytes(TYPE_PED_VARIATION, var))
+        assert recv_type(host, TYPE_PED_VARIATION) == var
+        host.sendall(frame_bytes(TYPE_PED_VARIATION, var[:-1]))
+        assert recv_type(guest, TYPE_PED_VARIATION, 0.4) is None
+        bad_count = struct.pack("<QHH", 0xD7114C9, 200, 0) + var[12:]
+        host.sendall(frame_bytes(TYPE_PED_VARIATION, bad_count))
+        assert recv_type(guest, TYPE_PED_VARIATION, 0.4) is None
 
         # Unknown message must not crash or relay.
         host.sendall(frame_bytes(0x7E, b"\x00" * 8))

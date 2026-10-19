@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v14: VehicleCrew — водитель/пассажиры: vehicleNetId + pedNetId + seat.
-constexpr uint16_t kProtocolVersion = 14;
+// v15: PedVariation — базовая component variation (drawable/texture/palette).
+constexpr uint16_t kProtocolVersion = 15;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -50,6 +50,7 @@ enum class Msg : uint8_t {
     HostChanged = 0x16,   // сервер -> клиент: новый хост / смена роли
     TrainSnapshot = 0x17, // R&D: поезд/состав (engine + вагоны по порядку)
     VehicleCrew = 0x18,   // хост -> гость: кто сидит в транспорте (seat)
+    PedVariation = 0x19,  // игрок -> игрок: component variation педа
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -239,6 +240,29 @@ struct VehicleCrewPayload {
 };
 static_assert(sizeof(VehicleCrewPayload) == 12,
               "VehicleCrewPayload must be 12 bytes");
+
+// ---------------- PedVariation: базовая вариация компонентов ----------------
+// Одежда педа = базовые компоненты (drawable/texture/palette по категориям) +
+// shop-предметы (OutfitState). Без базовой вариации реплика сохраняет
+// случайную внешность и «слетает» при повторном применении наряда.
+constexpr int kMaxVariationCategories = 96;
+
+struct PedVariationItem {
+    uint8_t category = 0;   // id категории из _GET_PED_COMPONENT_CATEGORY_BY_INDEX
+    uint8_t drawable = 0;
+    uint8_t texture = 0;
+    uint8_t palette = 0;
+};
+
+struct PedVariationPayload {
+    uint64_t model = 0;
+    uint16_t count = 0;
+    uint16_t pad = 0;
+    PedVariationItem items[kMaxVariationCategories];
+    uint32_t tail = 0; // выравнивание до 400
+};
+static_assert(sizeof(PedVariationPayload) == 400,
+              "PedVariationPayload must be 400 bytes");
 
 // ---------------- P2: Action v2 (действия/сценарии) ----------------
 // Каждый клиент шлёт состояние СВОЕГО персонажа; сервер ретранслирует.

@@ -67,6 +67,8 @@ public:
     using OnTrainSnapshot = std::function<void(const std::vector<uint8_t>&)>;
     // Crew: водитель/пассажиры транспорта.
     using OnVehicleCrew = std::function<void(const net::VehicleCrewPayload&)>;
+    // PedVariation: базовая component variation удалённого педа.
+    using OnPedVariation = std::function<void(const net::PedVariationPayload&)>;
     // P3: активная миссия хоста.
     using OnMissionState = std::function<void(const net::MissionStatePayload&)>;
     // P3: барьер совместного старта миссии.
@@ -111,6 +113,8 @@ public:
     void SendTrainSnapshot(const std::vector<uint8_t>& payload);
     // Crew: отправить seat-привязку (только хост).
     void SendVehicleCrew(const net::VehicleCrewPayload& crew);
+    // PedVariation: отправить свою базовую вариацию.
+    void SendPedVariation(const net::PedVariationPayload& var);
     // Текущее состояние роли по мнению сервера (обновляется HostChanged).
     bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
@@ -135,6 +139,7 @@ public:
     void SetMissionBarrier(OnMissionBarrier cb);
     void SetTrainSnapshot(OnTrainSnapshot cb);
     void SetVehicleCrew(OnVehicleCrew cb);
+    void SetPedVariation(OnPedVariation cb);
     void SetConnectionLost(OnConnectionLost cb);
     void SetHostChanged(OnHostChanged cb);
 
@@ -178,6 +183,7 @@ private:
     OnMissionBarrier onMissionBarrier_;
     OnTrainSnapshot onTrainSnapshot_;
     OnVehicleCrew onVehicleCrew_;
+    OnPedVariation onPedVariation_;
     OnConnectionLost onConnectionLost_;
     OnHostChanged onHostChanged_;
     std::atomic<bool> joined_{false};

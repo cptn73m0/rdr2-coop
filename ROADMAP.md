@@ -157,6 +157,9 @@
       10 Гц снапшотами (без телепортов каждый снапшот)
 - [x] P1 crew-sync: водитель/пассажиры транспорта (vehicleNetId+pedNetId+seat),
       протокол v14, host-only validation, mock-тест
+- [x] PedVariation v15: базовая component variation (drawable/texture/palette)
+      синхронизируется — реплика больше не рандомизируется
+- [x] world_debug: логи позиций прокси для отладки телепортов
 - [ ] Crew AI-маршрут/поезда: отдельный rail/consist-слой (R&D)
 - [x] TrainSnapshot v13 + attach вагонов к локомотиву на госте,
       `train_debug` offset/attach-логи

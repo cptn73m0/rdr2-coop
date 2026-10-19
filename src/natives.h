@@ -152,6 +152,11 @@ constexpr unsigned long long RESET_PED_COMPONENTS          = 0x0BFA1BD465CDFEFDu
 constexpr unsigned long long GET_NUM_COMPONENT_CATEGORIES_IN_PED = 0xA622E66EEE92A08Dull;
 constexpr unsigned long long GET_SHOP_ITEM_COMPONENT_AT_INDEX    = 0x77BA37622E22023Bull;
 constexpr unsigned long long APPLY_SHOP_ITEM_TO_PED              = 0xD3A7B003ED343FD9ull;
+// Базовая component variation (drawable/texture/palette по категориям).
+constexpr unsigned long long GET_PED_DRAWABLE_VARIATION      = 0x67F3780DD425D4FCull;
+constexpr unsigned long long GET_PED_TEXTURE_VARIATION       = 0x04A355E041E004E6ull;
+constexpr unsigned long long GET_PED_PALETTE_VARIATION       = 0xE3DD5F2A84B42281ull;
+constexpr unsigned long long SET_PED_COMPONENT_VARIATION     = 0x262B14F48D29F80Aull;
 
 // ДЕЙСТВИЯ: детект кратковременных/контекстных анимаций (стрельба,
 // перезарядка, сидение, сценарий, прицеливание, пьян).

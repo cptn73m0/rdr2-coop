@@ -56,6 +56,7 @@ int main()
         "world_mission_entities = 1\n"
         "world_suppress_ambient = 1\n"
         "vehicle_crew = 1\n"
+        "world_debug = 1\n"
         "unknown_key = whatever\n"
         "no_equals_here\n");
     {
@@ -77,6 +78,7 @@ int main()
         Check(cfg.worldMissionEntities, "world_mission_entities");
         Check(cfg.worldSuppressAmbient, "world_suppress_ambient");
         Check(cfg.vehicleCrew, "vehicle_crew");
+        Check(cfg.worldDebug, "world_debug");
     }
 
     // 2) False variants and decimal model.
@@ -93,6 +95,7 @@ int main()
         "world_mission_entities = false\n"
         "world_suppress_ambient = false\n"
         "vehicle_crew = false\n"
+        "world_debug = false\n"
         "ped_model = 123456\n");
     {
         coopcfg::Config cfg;
@@ -101,7 +104,7 @@ int main()
               !cfg.missionSync && !cfg.missionCredit && !cfg.saveBackup &&
               !cfg.missionRewardLog && !cfg.worldTrains && !cfg.trainDebug &&
               !cfg.worldMissionEntities && !cfg.worldSuppressAmbient &&
-              !cfg.vehicleCrew,
+              !cfg.vehicleCrew && !cfg.worldDebug,
               "all false variants");
         Check(cfg.pedModel == 123456ull, "ped_model decimal");
     }

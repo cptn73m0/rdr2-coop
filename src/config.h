@@ -48,6 +48,8 @@ struct Config {
     bool worldSuppressAmbient = false;
     // Crew: синхронизировать место водителя/пассажиров в транспорте.
     bool vehicleCrew = false;
+    // Диагностика world_sync: логировать позиции прокси (отладка телепортов).
+    bool worldDebug = false;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —

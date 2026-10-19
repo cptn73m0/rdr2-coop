@@ -150,6 +150,7 @@ ped_model   = 0xCF7E73BE      ; запасная модель, пока не п�
 | `world_mission_entities` | 0 | P1 safe: реплицировать mission-peds/objects |
 | `world_suppress_ambient` | 0 | P1 safe: глушить ambient людей на госте (животные/транспорт не глушатся) |
 | `vehicle_crew` | 0 | P1: синхронизировать водителя/пассажиров транспорта (seat) |
+| `world_debug` | 0 | Диагностика: логировать позиции прокси world_sync |
 | `train_debug` | 0 | R&D: подробный лог offset/attach вагонов |
 
 ## Запуск сервера
