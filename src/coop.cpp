@@ -3597,6 +3597,10 @@ void InitNetworkClient()
         world_sync::OnTrainSnapshot(payload);
     });
 
+    g_netClient.SetVehicleCrew([](const net::VehicleCrewPayload& crew) {
+        world_sync::OnVehicleCrew(crew);
+    });
+
     // P2: действие/сценарий удалённого игрока — только копируем; применит Tick().
     g_netClient.SetActionState([](const net::ActionStatePayload& a) {
         std::lock_guard<std::mutex> lk(s_actionMtx);
@@ -3730,6 +3734,11 @@ void SendWorldSnapshot(const std::vector<uint8_t>& payload)
 void SendTrainSnapshot(const std::vector<uint8_t>& payload)
 {
     g_netClient.SendTrainSnapshot(payload);
+}
+
+void SendVehicleCrew(const net::VehicleCrewPayload& crew)
+{
+    g_netClient.SendVehicleCrew(crew);
 }
 
 // P1: пед-призрак и его лошадь — не часть мира NPC; их нельзя реплицировать

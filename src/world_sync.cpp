@@ -397,6 +397,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
 
         std::unordered_set<unsigned int> seenVehicles;
         std::vector<unsigned int> trainEngines;
+        std::vector<unsigned int> scannedVehicles;
 
         // Добавляет один vehicle-handle как кандидат. Радиус/модель/netId —
         // те же правила, что и в основном цикле ниже.
@@ -534,6 +535,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             c.distance2 = d2;
             c.mission = mission;
             candidates.push_back(c);
+            scannedVehicles.push_back(handle);
         }
 
         // R&D: собрать вагоны состава. Важно: worldGetAllVehicles обычно уже
@@ -645,6 +647,47 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                             &trainCarEntities[i], sizeof(net::WorldEntity));
             }
             coop::SendTrainSnapshot(payload);
+        }
+
+        // P1 crew: кто сидит в транспорте (водитель/пассажиры). Шлём привязки
+        // netId-ов; гость сажает уже созданные ped-прокси в vehicle-прокси.
+        if (coopcfg::Get().vehicleCrew)
+        {
+            using namespace natives_api;
+            for (const unsigned int handle : scannedVehicles)
+            {
+                auto vit = g_hostIds.find(handle);
+                if (vit == g_hostIds.end() || vit->second.netId == 0)
+                    continue;
+
+                Init(natives::GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS);
+                Push(handle);
+                int maxPassengers = static_cast<int>(Call());
+                if (maxPassengers < 0) maxPassengers = 0;
+                if (maxPassengers > net::kMaxVehicleSeats - 1)
+                    maxPassengers = net::kMaxVehicleSeats - 1;
+
+                for (int seat = net::kVehicleSeatDriver;
+                     seat < maxPassengers; ++seat)
+                {
+                    Init(natives::GET_PED_IN_VEHICLE_SEAT);
+                    Push(handle);
+                    Push(static_cast<int>(seat));
+                    const unsigned int ped =
+                        static_cast<unsigned int>(Call());
+                    if (!ped || !DoesExist(ped))
+                        continue;
+                    auto pit = g_hostIds.find(ped);
+                    if (pit == g_hostIds.end() || pit->second.netId == 0)
+                        continue;
+
+                    net::VehicleCrewPayload crew{};
+                    crew.vehicleNetId = static_cast<uint32_t>(vit->second.netId);
+                    crew.pedNetId = static_cast<uint32_t>(pit->second.netId);
+                    crew.seat = static_cast<int8_t>(seat);
+                    coop::SendVehicleCrew(crew);
+                }
+            }
         }
     }
 
@@ -807,6 +850,9 @@ struct Proxy
     float interpToHeading = 0.f;
     uint64_t interpStartMs = 0;
     uint64_t interpDurationMs = 100;
+    // Crew: если это водитель/пассажир, позицию ведёт транспорт.
+    int8_t crewSeat = -1;
+    uint32_t crewVehicleNetId = 0;
 };
 
 std::map<uint64_t, Proxy> g_proxies;
@@ -819,6 +865,9 @@ uint64_t g_snapshotSeq = 0;
 std::mutex g_trainMutex;
 std::vector<uint8_t> g_pendingTrain;
 bool g_hasPendingTrain = false;
+std::mutex g_crewMutex;
+std::vector<net::VehicleCrewPayload> g_pendingCrew;
+std::atomic<unsigned long long> g_lastCrewMs{0};
 
 void SuppressLocalWorld()
 {
@@ -949,6 +998,9 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
         SetHeading(proxy.handle, e.heading);
         return;
     }
+    // Crew: посадкой/позицией управляет транспорт; не двигаем педа.
+    if (proxy.crewVehicleNetId != 0)
+        return;
     if (proxy.dead)
     {
         // Воскрешение/пересоздание — сбрасываем задачу и позицию.
@@ -1062,6 +1114,111 @@ void DeleteProxy(Proxy& proxy)
             DeleteEntity(proxy.handle);
     }
     proxy.handle = 0;
+}
+
+// Crew: посадить ped-прокси в vehicle-прокси по сообщению хоста.
+void ApplyPendingCrew()
+{
+    std::vector<net::VehicleCrewPayload> batch;
+    {
+        std::lock_guard<std::mutex> lk(g_crewMutex);
+        batch.swap(g_pendingCrew);
+    }
+    const unsigned long long now = GetTickCount64();
+    const unsigned long long lastCrew = g_lastCrewMs.load();
+    // Никто не сидит в транспорте: через 0.7 с снимаем stale crew-флаги.
+    if (batch.empty())
+    {
+        if (lastCrew != 0 && now - lastCrew < 700)
+            return;
+        for (auto& kv : g_proxies)
+        {
+            if (kv.second.crewVehicleNetId == 0)
+                continue;
+            auto vit = g_proxies.find(kv.second.crewVehicleNetId);
+            if (vit != g_proxies.end() && DoesExist(vit->second.handle) &&
+                DoesExist(kv.second.handle))
+            {
+                using namespace natives_api;
+                Init(natives::TASK_LEAVE_VEHICLE);
+                Push(kv.second.handle);
+                Push(vit->second.handle);
+                Push(0);
+                Push(0);
+                Call();
+            }
+            kv.second.crewVehicleNetId = 0;
+            kv.second.crewSeat = -1;
+        }
+        return;
+    }
+
+    std::unordered_set<uint64_t> active;
+    for (const net::VehicleCrewPayload& crew : batch)
+    {
+        active.insert((static_cast<uint64_t>(crew.vehicleNetId) << 32) |
+                      static_cast<uint64_t>(crew.pedNetId));
+        auto vit = g_proxies.find(crew.vehicleNetId);
+        auto pit = g_proxies.find(crew.pedNetId);
+        if (vit == g_proxies.end() || pit == g_proxies.end())
+            continue;
+        if (!DoesExist(vit->second.handle) || !DoesExist(pit->second.handle))
+            continue;
+        if (pit->second.kind != net::kEntityKindPed ||
+            vit->second.kind == net::kEntityKindPed)
+            continue;
+
+        using namespace natives_api;
+        Init(natives::IS_PED_IN_VEHICLE);
+        Push(pit->second.handle);
+        Push(vit->second.handle);
+        Push(false);
+        if (!Call())
+        {
+            Init(natives::SET_PED_INTO_VEHICLE);
+            Push(pit->second.handle);
+            Push(vit->second.handle);
+            Push(static_cast<int>(crew.seat));
+            Call();
+
+            Init(natives::IS_PED_IN_VEHICLE);
+            Push(pit->second.handle);
+            Push(vit->second.handle);
+            Push(false);
+            if (!Call())
+                continue; // повторим на следующем снапшоте
+            sh_log::Write("vehicle: crew seated ped=%u vehicle=%u seat=%d\n",
+                          crew.pedNetId, crew.vehicleNetId, (int)crew.seat);
+        }
+        pit->second.crewSeat = crew.seat;
+        pit->second.crewVehicleNetId = crew.vehicleNetId;
+    }
+
+    // Снимаем crew с тех, кого больше нет в активном наборе хоста.
+    for (auto& kv : g_proxies)
+    {
+        if (kv.second.crewVehicleNetId == 0)
+            continue;
+        const uint64_t key =
+            (static_cast<uint64_t>(kv.second.crewVehicleNetId) << 32) |
+            static_cast<uint64_t>(kv.first);
+        if (active.count(key))
+            continue;
+        auto vit = g_proxies.find(kv.second.crewVehicleNetId);
+        if (vit != g_proxies.end() && DoesExist(vit->second.handle) &&
+            DoesExist(kv.second.handle))
+        {
+            using namespace natives_api;
+            Init(natives::TASK_LEAVE_VEHICLE);
+            Push(kv.second.handle);
+            Push(vit->second.handle);
+            Push(0);
+            Push(0);
+            Call();
+        }
+        kv.second.crewVehicleNetId = 0;
+        kv.second.crewSeat = -1;
+    }
 }
 
 // Плавное движение vehicle/object прокси между снапшотами (каждый игровой
@@ -1309,6 +1466,22 @@ void OnTrainSnapshot(const std::vector<uint8_t>& payload)
     g_hasPendingTrain = true;
 }
 
+void OnVehicleCrew(const net::VehicleCrewPayload& crew)
+{
+    std::lock_guard<std::mutex> lk(g_crewMutex);
+    g_lastCrewMs.store(GetTickCount64());
+    // Храним последние привязки; повторные снапшоты могут дублироваться.
+    for (const auto& existing : g_pendingCrew)
+    {
+        if (existing.vehicleNetId == crew.vehicleNetId &&
+            existing.pedNetId == crew.pedNetId &&
+            existing.seat == crew.seat)
+            return;
+    }
+    if (g_pendingCrew.size() < 256)
+        g_pendingCrew.push_back(crew);
+}
+
 bool GetNetIdForHandle(unsigned int handle, uint64_t& netId)
 {
     if (!handle)
@@ -1374,6 +1547,11 @@ void Reset()
         g_pendingTrain.clear();
         g_hasPendingTrain = false;
     }
+    {
+        std::lock_guard<std::mutex> lk(g_crewMutex);
+        g_pendingCrew.clear();
+        g_lastCrewMs.store(0);
+    }
     g_snapshotSeq = 0;
     g_hostIds.clear();
     g_lastHostScanTick = 0;
@@ -1415,6 +1593,7 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
     // Гость.
     ApplyPendingSnapshot(tickCount);
     ApplyPendingTrainSnapshot(tickCount);
+    ApplyPendingCrew();
 
     const unsigned long long last = g_lastSnapshotMs.load();
     if (last == 0)

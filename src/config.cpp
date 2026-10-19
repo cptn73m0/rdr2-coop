@@ -89,6 +89,8 @@ void WriteDefaultIni()
     fputs("world_mission_entities = 0\n", f);
     fputs("# P1 safe: глушить ambient людей на госте (животные/транспорт — нет).\n", f);
     fputs("world_suppress_ambient = 0\n", f);
+    fputs("# Crew: синхронизация водителя/пассажиров транспорта (P1).\n", f);
+    fputs("vehicle_crew = 0\n", f);
     fclose(f);
 }
 
@@ -124,6 +126,7 @@ void ApplyLine(const std::string& raw, Config& out)
     else if (key == "train_debug") out.trainDebug = AsBool(val);
     else if (key == "world_mission_entities") out.worldMissionEntities = AsBool(val);
     else if (key == "world_suppress_ambient") out.worldSuppressAmbient = AsBool(val);
+    else if (key == "vehicle_crew") out.vehicleCrew = AsBool(val);
     else if (key == "ped_model")
     {
         unsigned long long m = 0;

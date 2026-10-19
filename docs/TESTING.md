@@ -29,6 +29,7 @@
 | `world_trains` | 0 | R&D: поезда/вагоны в WorldSnapshot (экспериментально) |
 | `world_mission_entities` | 0 | P1 safe: реплицировать mission-peds/objects |
 | `world_suppress_ambient` | 0 | P1 safe: глушить ambient людей (без животных/транспорта) |
+| `vehicle_crew` | 0 | P1: синхронизировать водителя/пассажиров (seat) |
 | `train_debug` | 0 | R&D: подробный лог offset/attach вагонов |
 
 Рекомендуемый первый прогон: `world_sync=1`, `action_sync=1`,

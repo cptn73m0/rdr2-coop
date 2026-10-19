@@ -226,11 +226,14 @@ constexpr unsigned long long _GET_TRAIN_DIRECTION             = 0x3C9628A811CBD7
 constexpr unsigned long long ATTACH_ENTITY_TO_ENTITY          = 0x6B9BBD38AB0796DFull;
 constexpr unsigned long long DETACH_ENTITY                    = 0x64CDE9D6BF8ECAD3ull;
 constexpr unsigned long long IS_ENTITY_ATTACHED_TO_ENTITY     = 0x154A3C529497053Eull;
+// Crew: посадка ped-прокси в транспорт-прокси.
+constexpr unsigned long long GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS = 0xA9C55F1C15E62E06ull;
 constexpr unsigned long long DELETE_OBJECT                    = 0x931914268722C263ull;
 constexpr unsigned long long GET_VEHICLE_PED_IS_IN            = 0x9A9112A0FE9A4713ull;
 constexpr unsigned long long GET_PED_IN_VEHICLE_SEAT          = 0xBB40DD2270B65366ull;
 constexpr unsigned long long IS_PED_IN_VEHICLE                = 0xA3EE4A07279BB9DBull;
 constexpr unsigned long long SET_PED_INTO_VEHICLE             = 0xF75B0D629E1C063Dull;
+constexpr unsigned long long TASK_LEAVE_VEHICLE               = 0xD3DBCE61A490BE02ull;
 
 // P3: MissionData (только чтение/запись зачёта; никаких копий сейва).
 constexpr unsigned long long MISSIONDATA_IS_VALID             = 0xE54DC27571D5EDC5ull;

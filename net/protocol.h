@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v13: TrainSnapshot — R&D: engine/direction/speed + упорядоченные вагоны.
-constexpr uint16_t kProtocolVersion = 13;
+// v14: VehicleCrew — водитель/пассажиры: vehicleNetId + pedNetId + seat.
+constexpr uint16_t kProtocolVersion = 14;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -49,6 +49,7 @@ enum class Msg : uint8_t {
     MissionBarrier = 0x15,// P3: offer/ready/start-window/started/abort
     HostChanged = 0x16,   // сервер -> клиент: новый хост / смена роли
     TrainSnapshot = 0x17, // R&D: поезд/состав (engine + вагоны по порядку)
+    VehicleCrew = 0x18,   // хост -> гость: кто сидит в транспорте (seat)
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -224,6 +225,20 @@ static_assert(sizeof(TrainSnapshotHeader) == 16,
 
 constexpr std::size_t kTrainSnapshotMaxSize =
     sizeof(TrainSnapshotHeader) + kMaxTrainCars * sizeof(WorldEntity);
+
+// ---------------- crew: водитель/пассажиры транспорта ----------------
+// Одно сообщение — одна пара (vehicle, ped). Seat: -1 водитель, 0..N пассажир.
+constexpr int8_t kVehicleSeatDriver = -1;
+constexpr int kMaxVehicleSeats = 16;
+
+struct VehicleCrewPayload {
+    uint32_t vehicleNetId = 0;
+    uint32_t pedNetId = 0;
+    int8_t seat = kVehicleSeatDriver;
+    uint8_t pad[3] = {0, 0, 0};
+};
+static_assert(sizeof(VehicleCrewPayload) == 12,
+              "VehicleCrewPayload must be 12 bytes");
 
 // ---------------- P2: Action v2 (действия/сценарии) ----------------
 // Каждый клиент шлёт состояние СВОЕГО персонажа; сервер ретранслирует.

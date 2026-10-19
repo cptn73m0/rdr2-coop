@@ -64,6 +64,7 @@ void Client::SetMissionEvent(OnMissionEvent cb) { onMissionEvent_ = std::move(cb
 void Client::SetMissionState(OnMissionState cb) { onMissionState_ = std::move(cb); }
 void Client::SetMissionBarrier(OnMissionBarrier cb) { onMissionBarrier_ = std::move(cb); }
 void Client::SetTrainSnapshot(OnTrainSnapshot cb) { onTrainSnapshot_ = std::move(cb); }
+void Client::SetVehicleCrew(OnVehicleCrew cb) { onVehicleCrew_ = std::move(cb); }
 void Client::SetConnectionLost(OnConnectionLost cb) { onConnectionLost_ = std::move(cb); }
 void Client::SetHostChanged(OnHostChanged cb) { onHostChanged_ = std::move(cb); }
 
@@ -195,6 +196,14 @@ void Client::SendTrainSnapshot(const std::vector<uint8_t>& payload)
     std::vector<uint8_t> frame = MakeFrame(
         (uint8_t)net::Msg::TrainSnapshot,
         payload.data(), (uint32_t)payload.size());
+    SendRaw(frame);
+}
+
+void Client::SendVehicleCrew(const net::VehicleCrewPayload& crew)
+{
+    std::vector<uint8_t> frame = MakeFrame(
+        (uint8_t)net::Msg::VehicleCrew,
+        reinterpret_cast<const uint8_t*>(&crew), sizeof(crew));
     SendRaw(frame);
 }
 
@@ -424,6 +433,16 @@ bool Client::RunOnce()
             case net::Msg::TrainSnapshot:
             {
                 if (onTrainSnapshot_) onTrainSnapshot_(p);
+                break;
+            }
+            case net::Msg::VehicleCrew:
+            {
+                if (p.size() >= sizeof(net::VehicleCrewPayload))
+                {
+                    net::VehicleCrewPayload crew{};
+                    std::memcpy(&crew, p.data(), sizeof(crew));
+                    if (onVehicleCrew_) onVehicleCrew_(crew);
+                }
                 break;
             }
             case net::Msg::PlayerJoined:

@@ -2,8 +2,9 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 13` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 14` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение.
+- v14: VehicleCrew (0x18) — водитель/пассажиры: vehicleNetId + pedNetId + seat.
 - v13: TrainSnapshot (0x17) — R&D: engine/direction/speed + вагоны по порядку.
 - v12: HostChanged (0x16) — сервер повышает гостя до хоста при выходе хоста.
 - v11: MissionBarrier (0x15) — P3: offer/ready/start-window/started/abort.
@@ -200,6 +201,19 @@ payload: TrainSnapshotHeader (16 B)
 через `ATTACH_ENTITY_TO_ENTITY` с локальными offset; `UpdateProxy` не
 перетирает привязанные вагоны; при удалении локомотива вагоны отцепляются.
 Это экспериментально и требует игровой проверки.
+
+### 0x18 VEHICLE_CREW (P1: водитель/пассажиры, только хост → гость)
+
+```
+payload: VehicleCrewPayload (12 B)
+         vehicleNetId:u32 pedNetId:u32 seat:i8 pad[3]
+```
+
+- `seat = -1` — водитель, `0..15` — пассажирские места.
+- Сервер: только хост, точный размер 12, seat в диапазоне, netId != 0.
+- Гость находит оба прокси по netId и вызывает `SET_PED_INTO_VEHICLE`.
+- Хост шлёт привязки каждый WorldSnapshot; если привязка пропала, гость
+  снимает ped с транспорта (`TASK_LEAVE_VEHICLE`) и возвращает ему движение.
 
 ### Reconnect (клиент)
 

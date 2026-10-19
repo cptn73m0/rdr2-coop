@@ -22,7 +22,7 @@ import tempfile
 import time
 from pathlib import Path
 
-PROTO = 13
+PROTO = 14
 TYPE_FRAME = 0x04
 TYPE_JOIN = 0x01
 TYPE_JOIN_OK = 0x02
@@ -40,6 +40,7 @@ TYPE_MISSION_STATE = 0x14
 TYPE_MISSION_BARRIER = 0x15
 TYPE_HOST_CHANGED = 0x16
 TYPE_TRAIN_SNAPSHOT = 0x17
+TYPE_VEHICLE_CREW = 0x18
 TYPE_OUTFIT = 0x09
 TYPE_HORSE_OUTFIT = 0x0A
 TYPE_SHOT = 0x0B
@@ -443,6 +444,18 @@ def test_payload_sizes_and_host_only_messages(exe, tmp):
         assert recv_type(guest, TYPE_TRAIN_SNAPSHOT, 0.4) is None
         host.sendall(frame_bytes(TYPE_TRAIN_SNAPSHOT, train[:-1]))
         assert recv_type(guest, TYPE_TRAIN_SNAPSHOT, 0.4) is None
+
+        # Crew: host-only, exact 12 bytes, seat -1..15.
+        crew = struct.pack("<IIb3s", 0x1234, 0x5678, -1, b"\x00\x00\x00")
+        host.sendall(frame_bytes(TYPE_VEHICLE_CREW, crew))
+        assert recv_type(guest, TYPE_VEHICLE_CREW) == crew
+        guest.sendall(frame_bytes(TYPE_VEHICLE_CREW, crew))
+        assert recv_type(host, TYPE_VEHICLE_CREW, 0.4) is None
+        host.sendall(frame_bytes(TYPE_VEHICLE_CREW, crew[:-1]))
+        assert recv_type(guest, TYPE_VEHICLE_CREW, 0.4) is None
+        bad_seat = struct.pack("<IIb3s", 0x1234, 0x5678, 20, b"\x00\x00\x00")
+        host.sendall(frame_bytes(TYPE_VEHICLE_CREW, bad_seat))
+        assert recv_type(guest, TYPE_VEHICLE_CREW, 0.4) is None
 
         # Unknown message must not crash or relay.
         host.sendall(frame_bytes(0x7E, b"\x00" * 8))

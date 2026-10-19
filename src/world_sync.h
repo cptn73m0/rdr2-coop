@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "net/protocol.h"
+
 // P1 (модель A): репликация мира/NPC между хостом и гостем.
 //
 // Хост раз в ~100 мс сканирует пул педов вокруг игроков, присваивает им
@@ -24,6 +26,9 @@ void OnSnapshot(const std::vector<uint8_t>& payload);
 
 // R&D: TrainSnapshot от хоста (payload уже проверен client).
 void OnTrainSnapshot(const std::vector<uint8_t>& payload);
+
+// Crew: хост сообщил, кто сидит в транспорте (vehicleNetId/pedNetId/seat).
+void OnVehicleCrew(const net::VehicleCrewPayload& crew);
 
 // Убрать прокси/сбросить состояние (выход из сессии, смена роли, disable).
 void Reset();
