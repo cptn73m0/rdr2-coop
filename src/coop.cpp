@@ -430,9 +430,11 @@ bool s_remoteAimValid = false;
 // Очередь событий выстрела (несколько могут прийти пачкой по TCP).
 // Один bool перезаписывал точку следующего выстрела, из-за чего часть
 // выстрелов терялась. Сетевой поток добавляет, Tick разбирает по одному.
+constexpr int kShotQueueSize = 64;
 std::mutex s_shotMtx;
-Vec3 s_shotQueue[8];
+Vec3 s_shotQueue[kShotQueueSize];
 int  s_shotQCount = 0;
+int  s_shotDropped = 0;
 unsigned int s_lastShotTick = 0; // минимум паузы между задачами выстрела
 // Состояние мира от хоста (время+погода) для применения в Tick().
 net::WorldState s_worldState{};
@@ -540,6 +542,9 @@ bool s_haveMountTarget = false;
 // перезадавать её каждый кадр — иначе лошадь дёргается).
 Vec3 s_mountTaskTarget{0.f, 0.f, 0.f};
 bool s_mountTaskValid = false;
+// Сколько тиков цель кадра не двигалась — для принудительного «сеттла»
+// лошади, если она отстала, пока сервер/сеть догоняли позицию.
+unsigned int s_mountStillTicks = 0;
 // Предыдущая цель кадра для лошади. Нужна, чтобы отличать НАСТОЯЩИЙ
 // телепорт игрока (респавн/смена локации) от отставания на галопе.
 Vec3 s_prevMountTarget{0.f, 0.f, 0.f};
@@ -772,6 +777,13 @@ void MoveMountTo(const Vec3& target)
     s_prevMountTarget = target;
     s_prevMountTargetValid = true;
 
+    // Считаем, сколько тиков цель стоит на месте: если лошадь отстала, пока
+    // сервер/сеть догоняли позицию, после остановки цели её нужно подтянуть.
+    if (targetJump < 0.05f)
+        ++s_mountStillTicks;
+    else
+        s_mountStillTicks = 0;
+
     const bool realTeleport = (targetJump > TELEPORT_TARGET_JUMP) ||
                               (dist > TELEPORT_DIST_MOUNT);
     if (realTeleport)
@@ -791,6 +803,7 @@ void MoveMountTo(const Vec3& target)
             SetEntityCoords(s_ghost, at);
         PromoteMountToGhost();
         s_mountTaskValid = false;
+        s_mountStillTicks = 0;
         sh_log::Write("coop: mount teleport (dist=%.1f jump=%.1f)\n", dist, targetJump);
         return;
     }
@@ -806,7 +819,36 @@ void MoveMountTo(const Vec3& target)
         return;
     }
 
-    if (dist < 0.5f) return; // почти на месте — задачу не трогаем
+    // Сеттл после лага: цель уже стоит, а лошадь всё ещё не рядом.
+    // Иначе при пропущенных кадрах она остаётся «не на том месте».
+    if (dist > 2.0f && s_mountStillTicks >= 90)
+    {
+        Vec3 at = target;
+        float gz = 0.f;
+        Init(natives::GET_GROUND_Z_FOR_3D_COORD);
+        Push(at.x); Push(at.y); Push(at.z);
+        Push(reinterpret_cast<unsigned long long>(&gz));
+        if (Call())
+            at.z = gz + 0.2f;
+        SetEntityCoords(s_mount, at);
+        if (!IsGhostMounted())
+            SetEntityCoords(s_ghost, at);
+        PromoteMountToGhost();
+        s_mountTaskValid = false;
+        s_mountStillTicks = 0;
+        sh_log::Write("coop: mount settle (dist=%.1f, target stationary)\n", dist);
+        return;
+    }
+
+    if (dist > 5.0f && (s_tickCount % 120) == 0)
+        sh_log::Write("coop: mount lag dist=%.1f jump=%.2f still=%u\n",
+                      dist, targetJump, s_mountStillTicks);
+
+    if (dist < 0.5f)
+    {
+        s_mountStillTicks = 0;
+        return; // почти на месте — задачу не трогаем
+    }
     // Перезадаём задачу только когда цель заметно сдвинулась (0.5 м):
     // частая перезадача дёргает лошадь.
     if (s_mountTaskValid &&
@@ -1005,9 +1047,6 @@ void ApplyActionToGhost(const net::FramePayload& f)
                            ac == static_cast<uint8_t>(net::Action::Reloading) ||
                            ac == static_cast<uint8_t>(net::Action::Aiming));
     s_combatActive = isCombat;
-
-    if (s_shootHoldTicks > 0)
-        --s_shootHoldTicks;
 
     // Выход из боя: снимаем боевую задачу и заставляем движение
     // перепоставить задачу на следующем кадре. Если только что был выстрел —
@@ -2224,18 +2263,51 @@ void UpdateLocalAim(unsigned int ped)
 }
 
 // Выстрел — отдельное событие (опрос состояния в кадре терял выстрелы).
-// Точка — фактическое попадание последнего выстрела (GET_PED_LAST_WEAPON_IMPACT_COORD),
-// иначе текущая точка прицела.
-// Выстрел — отдельное событие. ОСНОВНОЙ триггер — изменение точки попадания
-// последнего выстрела (меняется после каждого выстрела и не «дребезжит»).
-// IS_PED_SHOOTING живёт ~15 тиков на один выстрел: раньше по нему слали
-// дубли, они забивали очередь приёмника, и настоящие выстрелы терялись.
+// ОСНОВНОЙ детект — уменьшение патронов в магазине (GET_AMMO_IN_CLIP):
+// он ловит и повторные попадания в одну точку, где impact coord не меняется.
+// Fallback — изменение точки попадания / начало стрельбы (лук, метательное).
 Vec3 s_lastImpact{0.f, 0.f, 0.f};
+bool s_localWasShooting = false;
+int  s_lastClipAmmo = -1;
+unsigned long long s_lastClipWeapon = 0;
+
+// Реализация ниже (anonymous namespace), нужна здесь для детекта выстрела.
+unsigned long long GetLocalWeaponHash(unsigned int ped);
 
 void UpdateLocalShotEvents(unsigned int ped)
 {
     using namespace natives_api;
-    // Точка попадания последнего выстрела — меняется после каждого выстрела.
+
+    // 1) Надёжный детект: патроны в магазине уменьшились = был выстрел.
+    const unsigned long long weapon = GetLocalWeaponHash(ped);
+    int clipAmmo = 0;
+    bool haveAmmo = false;
+    if (weapon)
+    {
+        Init(natives::GET_AMMO_IN_CLIP);
+        Push(ped);
+        Push(reinterpret_cast<unsigned long long>(&clipAmmo));
+        Push(weapon);
+        haveAmmo = Call() != 0;
+    }
+    int shots = 0;
+    if (haveAmmo)
+    {
+        if (weapon != s_lastClipWeapon || s_lastClipAmmo < 0 ||
+            clipAmmo > s_lastClipAmmo) // смена оружия или перезарядка
+        {
+            s_lastClipWeapon = weapon;
+            s_lastClipAmmo = clipAmmo;
+        }
+        else if (clipAmmo < s_lastClipAmmo)
+        {
+            shots = s_lastClipAmmo - clipAmmo;
+            s_lastClipAmmo = clipAmmo;
+            if (shots > 4) shots = 4; // дробь/дробовик — не спамим
+        }
+    }
+
+    // 2) Точка попадания последнего выстрела (если натив дал данные).
     unsigned long long impactBuf[3] = {0, 0, 0};
     Vec3 impact{0.f, 0.f, 0.f};
     bool haveImpact = false;
@@ -2248,26 +2320,36 @@ void UpdateLocalShotEvents(unsigned int ped)
         haveImpact = true;
     }
 
-    bool send = false;
+    // 3) Fallback для оружия/бросков без магазина.
+    Init(natives::IS_PED_SHOOTING); Push(ped);
+    const bool shooting = Call() != 0;
+    bool fallback = false;
     if (haveImpact)
     {
         if (impact.x != s_lastImpact.x || impact.y != s_lastImpact.y ||
             impact.z != s_lastImpact.z)
         {
             s_lastImpact = impact;
-            send = true;
+            fallback = true;
         }
     }
-    else
+    if (shots == 0 && !fallback)
     {
-        // Нет данных о попадании (натив молчит) — фолбэк на флаг стрельбы,
-        // но не чаще раза в ~100 мс, чтобы не плодить дубли.
-        Init(natives::IS_PED_SHOOTING); Push(ped);
-        if (Call() && s_tickCount - s_lastShotEventTick >= 6)
-            send = true;
+        if (shooting && !s_localWasShooting)
+            fallback = true;
+        else if (!haveAmmo && shooting &&
+                 s_tickCount - s_lastShotEventTick >= 8)
+            fallback = true;
     }
+    s_localWasShooting = shooting;
 
-    if (send && s_tickCount - s_lastShotEventTick >= 2)
+    int count = shots > 0 ? shots : (fallback ? 1 : 0);
+    // Fallback не чаще ~30 Гц; реальные патроны шлём сразу (пачка выстрелов
+    // за тик не теряется).
+    if (shots == 0 && count > 0 && s_tickCount - s_lastShotEventTick < 2)
+        count = 0;
+
+    for (int k = 0; k < count; ++k)
     {
         s_lastShotEventTick = s_tickCount;
         net::ShotPayload sp{};
@@ -2280,7 +2362,8 @@ void UpdateLocalShotEvents(unsigned int ped)
             sp.x = s_localAimX; sp.y = s_localAimY; sp.z = s_localAimZ;
         }
         g_netClient.SendShot(sp);
-        sh_log::Write("coop: send shot (%.1f %.1f %.1f)\n", sp.x, sp.y, sp.z);
+        sh_log::Write("coop: send shot (%.1f %.1f %.1f)%s\n",
+                      sp.x, sp.y, sp.z, shots > 0 ? "" : " [fallback]");
     }
 }
 
@@ -2551,8 +2634,10 @@ void InitNetworkClient()
     g_netClient.SetShot([](const net::ShotPayload& sp) {
         // Сетевой поток: кладём в очередь, задачу стрельбы выдаст Tick().
         std::lock_guard<std::mutex> lk(s_shotMtx);
-        if (s_shotQCount < 8)
+        if (s_shotQCount < kShotQueueSize)
             s_shotQueue[s_shotQCount++] = Vec3{sp.x, sp.y, sp.z};
+        else
+            ++s_shotDropped;
     });
 
     g_netClient.SetPlayerLeave([](const std::string& name) {
@@ -2600,6 +2685,11 @@ bool IsWorldSyncExcluded(unsigned int handle)
 void Tick()
 {
     ++s_tickCount;
+    // P1.1: hold выстрела уменьшаем каждый тик, а не только при приходе кадра
+    // (иначе при паузе/лаге сети очередь выстрелов «замерзает»).
+    if (s_shootHoldTicks > 0)
+        --s_shootHoldTicks;
+
     unsigned int playerPed = GetPlayerPedFor(0);
     if (!playerPed)
         return;
@@ -2777,7 +2867,12 @@ void Tick()
 
     // Событие выстрела: разбираем очередь по одному. Пока предыдущий выстрел
     // доигрывает (hold), событие ждёт — иначе задача TASK_SHOOT_AT_COORD
-    // перезапускается и выстрел «глотается».
+    // перезапускается и выстрел «глотается». Hold уменьшается каждый тик.
+    if (s_shotDropped > 0 && (s_tickCount % 300) == 1)
+    {
+        sh_log::Write("coop: shot queue overflow, dropped=%d\n", s_shotDropped);
+        s_shotDropped = 0;
+    }
     if (s_shootHoldTicks == 0)
     {
         Vec3 t{0.f, 0.f, 0.f};
@@ -2797,9 +2892,9 @@ void Tick()
         {
             if (t.x == 0.f && t.y == 0.f && t.z == 0.f)
                 t = GhostAimPointAhead(); // нет данных — вперёд
-            ShootGhostAt(t, 250);
-            s_shootHoldTicks = 15; // ~длительность выстрела: следующая задача
-                                   // стартует сразу, не копя очередь при фаннинге
+            ShootGhostAt(t, 150);
+            s_shootHoldTicks = 10; // ~длительность выстрела (очередь больше
+                                   // не теряет пачки событий)
             s_combatActive = true;
             s_lastAction = static_cast<uint8_t>(net::Action::Shooting);
             sh_log::Write("coop: shot event -> (%.1f %.1f %.1f)\n", t.x, t.y, t.z);

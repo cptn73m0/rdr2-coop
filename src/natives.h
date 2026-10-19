@@ -102,6 +102,9 @@ constexpr unsigned long long GET_CURRENT_PED_WEAPON        = 0x3A87E44BB9A01D54u
 // с GTA: у GIVE_WEAPON_TO_PED здесь 13 параметров).
 constexpr unsigned long long GIVE_WEAPON_TO_PED            = 0x5E3BDDBCB83F3D84ull;
 constexpr unsigned long long REMOVE_WEAPON_FROM_PED        = 0x4899CB088EDF59B8ull;
+// Патроны в магазине текущего оружия — надёжный детект КАЖДОГО выстрела
+// (в т.ч. повторных попаданий в одну точку, где impact coord не меняется).
+constexpr unsigned long long GET_AMMO_IN_CLIP              = 0x2E1202248937775Cull;
 constexpr unsigned long long TASK_AIM_GUN_AT_COORD         = 0x6671F3EEC681BDA1ull;
 constexpr unsigned long long TASK_SHOOT_AT_COORD           = 0x46A6CC01E0826106ull;
 constexpr unsigned long long TASK_RELOAD_WEAPON            = 0x62D2916F56B9CD2Dull;
