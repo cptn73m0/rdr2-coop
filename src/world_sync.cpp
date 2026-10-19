@@ -29,10 +29,11 @@ constexpr int kSpawnBudgetPerTick = 4;       // не более N новых п�
 constexpr unsigned int kProxyGraceSnapshots = 3;
 constexpr unsigned int kHostIdTtlTicks = 300;
 constexpr unsigned int kLogEveryTicks = 300;
-// Бюджет снапшота: 32 ближайших Ped + 16 ближайших Vehicle.
+// Бюджет снапшота: 32 ближайших Ped + 16 Vehicle + 16 mission Object.
 constexpr int kMaxPeds = 32;
 constexpr int kMaxVehicles = 16;
-static_assert(kMaxPeds + kMaxVehicles == net::kMaxWorldEntities,
+constexpr int kMaxObjects = 16;
+static_assert(kMaxPeds + kMaxVehicles + kMaxObjects == net::kMaxWorldEntities,
               "world entity budget must match protocol");
 
 // ---------------- общие native-хелперы ----------------
@@ -213,6 +214,22 @@ void DeleteVehicleEntity(unsigned int handle)
     using namespace natives_api;
     int h = static_cast<int>(handle);
     Init(natives::DELETE_VEHICLE);
+    Push(reinterpret_cast<unsigned long long>(&h));
+    Call();
+    if (DoesExist(handle))
+    {
+        int h2 = static_cast<int>(handle);
+        Init(natives::SET_ENTITY_AS_NO_LONGER_NEEDED);
+        Push(reinterpret_cast<unsigned long long>(&h2));
+        Call();
+    }
+}
+
+void DeleteObjectEntity(unsigned int handle)
+{
+    using namespace natives_api;
+    int h = static_cast<int>(handle);
+    Init(natives::DELETE_OBJECT);
     Push(reinterpret_cast<unsigned long long>(&h));
     Call();
     if (DoesExist(handle))
@@ -410,23 +427,87 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
         }
     }
 
+    // Объекты: ТОЛЬКО mission-object. Амбиентные пропсы уже есть в мире
+    // гостя (та же карта) — их дублирование дало бы двойные объекты/z-fighting.
+    {
+        static int objectHandles[2048];
+        int objectCount = sh::worldGetAllObjects(objectHandles, 2048);
+        if (objectCount < 0) objectCount = 0;
+        if (objectCount > 2048) objectCount = 2048;
+
+        for (int i = 0; i < objectCount; ++i)
+        {
+            const unsigned int handle =
+                static_cast<unsigned int>(objectHandles[i]);
+            if (!handle)
+                continue;
+            if (coop::IsWorldSyncExcluded(handle))
+                continue;
+            if (!DoesExist(handle))
+                continue;
+            if (!IsMissionEntity(handle))
+                continue; // только миссионные объекты
+
+            const Vec3 p = GetCoords(handle);
+            const float dx = p.x - origin.x;
+            const float dy = p.y - origin.y;
+            const float d2 = dx * dx + dy * dy;
+            if (d2 > kRadius2)
+                continue;
+
+            const unsigned int model = GetModel(handle);
+            if (!model)
+                continue;
+
+            HostIdState& state = g_hostIds[handle];
+            if (state.netId == 0 || state.model != model)
+            {
+                state.netId = g_nextNetId++;
+                state.model = model;
+            }
+            state.lastSeenTick = tickCount;
+
+            net::WorldEntity e{};
+            e.netId = state.netId;
+            e.model = model;
+            e.x = p.x; e.y = p.y; e.z = p.z;
+            e.heading = GetHeading(handle);
+            e.kind = net::kEntityKindObject;
+            e.flags = net::kEntityFlagMission;
+            e.state = 0;
+
+            Candidate c;
+            c.entity = e;
+            c.distance2 = d2;
+            c.mission = true;
+            candidates.push_back(c);
+        }
+    }
+
     // Приоритет: mission-entity, затем ближайшие.
     std::sort(candidates.begin(), candidates.end(),
               [](const Candidate& a, const Candidate& b) {
                   if (a.mission != b.mission) return a.mission > b.mission;
                   return a.distance2 < b.distance2;
               });
-    // Отдельные лимиты на Ped/Vehicle, чтобы транспорт не вытеснил людей.
+    // Отдельные лимиты на Ped/Vehicle/Object, чтобы транспорт и объекты
+    // не вытеснили людей.
     std::vector<Candidate> selected;
     selected.reserve(net::kMaxWorldEntities);
     int selectedPeds = 0;
     int selectedVehicles = 0;
+    int selectedObjects = 0;
     for (const Candidate& c : candidates)
     {
         if (c.entity.kind == net::kEntityKindVehicle)
         {
             if (selectedVehicles >= kMaxVehicles) continue;
             ++selectedVehicles;
+        }
+        else if (c.entity.kind == net::kEntityKindObject)
+        {
+            if (selectedObjects >= kMaxObjects) continue;
+            ++selectedObjects;
         }
         else
         {
@@ -455,16 +536,18 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount)
         unsigned int missionCount = 0;
         unsigned int pedCount = 0;
         unsigned int vehicleCount = 0;
+        unsigned int objectCount = 0;
         for (const Candidate& c : candidates)
         {
             if (c.mission) ++missionCount;
             if (c.entity.kind == net::kEntityKindVehicle) ++vehicleCount;
+            else if (c.entity.kind == net::kEntityKindObject) ++objectCount;
             else ++pedCount;
         }
-        sh_log::Write("world: host snapshot n=%u ped=%u veh=%u mission=%u "
-                      "trains_skipped=%u bytes=%u\n",
+        sh_log::Write("world: host snapshot n=%u ped=%u veh=%u obj=%u "
+                      "mission=%u trains_skipped=%u bytes=%u\n",
                       static_cast<unsigned int>(candidates.size()), pedCount,
-                      vehicleCount, missionCount, trainsSkipped,
+                      vehicleCount, objectCount, missionCount, trainsSkipped,
                       static_cast<unsigned int>(payload.size()));
     }
 
@@ -517,6 +600,26 @@ void SuppressLocalWorld()
 unsigned int CreateProxy(const net::WorldEntity& e)
 {
     using namespace natives_api;
+    if (e.kind == net::kEntityKindObject)
+    {
+        Init(natives::CREATE_OBJECT);
+        Push(static_cast<unsigned long long>(e.model));
+        Push(e.x); Push(e.y); Push(e.z);
+        Push(false); // isNetwork
+        Push(false); // bScriptHostObj
+        Push(false); // dynamic
+        Push(false); // p7
+        Push(false); // p8
+        const unsigned int obj = static_cast<unsigned int>(Call());
+        if (!obj)
+            return 0;
+        SetMissionEntity(obj);
+        SetInvincible(obj, true);
+        SetVisible(obj);
+        SetNoCollision(obj, true);
+        return obj;
+    }
+
     if (e.kind == net::kEntityKindVehicle)
     {
         Init(natives::CREATE_VEHICLE);
@@ -562,7 +665,7 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
     SetHeading(proxy.handle, e.heading);
 
     if (proxy.kind != net::kEntityKindPed)
-        return; // у транспорта нет состояния «мёртв» для педов
+        return; // у транспорта/объектов нет состояния «мёртв» для педов
 
     const bool dead = (e.flags & net::kEntityFlagDead) != 0;
     if (dead && !proxy.dead)
@@ -579,6 +682,8 @@ void DeleteProxy(Proxy& proxy)
     {
         if (proxy.kind == net::kEntityKindVehicle)
             DeleteVehicleEntity(proxy.handle);
+        else if (proxy.kind == net::kEntityKindObject)
+            DeleteObjectEntity(proxy.handle);
         else
             DeleteEntity(proxy.handle);
     }
