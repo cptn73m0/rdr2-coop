@@ -205,4 +205,11 @@ constexpr unsigned long long GET_LOOTING_PICKUP_TARGET_ENTITY  = 0x14169FA823679
 constexpr unsigned long long _GET_TASK_FISHING                 = 0xF3735ACD11ACD500ull;
 constexpr unsigned long long TASK_START_SCENARIO_IN_PLACE_HASH = 0x524B54361229154Full;
 
+// P2: укрытие и действия с целью (переноска/лутание).
+constexpr unsigned long long TASK_ENTER_COVER                 = 0x4972A022AE6DAFA1ull;
+constexpr unsigned long long TASK_EXIT_COVER                  = 0x2BC4A6D92D140112ull;
+constexpr unsigned long long TASK_PICKUP_CARRIABLE_ENTITY     = 0x502EC17B1BED4BFAull;
+constexpr unsigned long long TASK_LOOT_ENTITY                 = 0x48FAE038401A2888ull;
+constexpr unsigned long long TASK_HOGTIE_TARGET_PED           = 0x27829AFD3E03AC1Aull;
+
 } // namespace natives

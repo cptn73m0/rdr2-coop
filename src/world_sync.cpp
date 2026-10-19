@@ -522,6 +522,30 @@ void OnSnapshot(const std::vector<uint8_t>& payload)
     g_lastSnapshotMs.store(GetTickCount64());
 }
 
+bool GetNetIdForHandle(unsigned int handle, uint64_t& netId)
+{
+    if (!handle)
+        return false;
+    const auto it = g_hostIds.find(handle);
+    if (it == g_hostIds.end() || it->second.netId == 0)
+        return false;
+    netId = it->second.netId;
+    return true;
+}
+
+bool GetHandleForNetId(uint64_t netId, unsigned int& handle)
+{
+    if (!netId)
+        return false;
+    const auto it = g_proxies.find(netId);
+    if (it == g_proxies.end() || !it->second.handle)
+        return false;
+    if (!DoesExist(it->second.handle))
+        return false;
+    handle = it->second.handle;
+    return true;
+}
+
 void Reset()
 {
     for (auto& kv : g_proxies)

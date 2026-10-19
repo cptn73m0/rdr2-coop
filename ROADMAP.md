@@ -80,13 +80,14 @@
 - [x] **Action v5:** сообщение `ActionState` (mode, flags, scenarioHash)
 - [ ] Сценарии: сидение/курение/еда/питьё через `_GET_ACTIVE_DYNAMIC_SCENARIO`
       + `TASK_START_SCENARIO_IN_PLACE_HASH`
-- [ ] Укрытие: флаги `IS_PED_IN_COVER` / `IS_PED_AIMING_FROM_COVER`,
-      прицеливание из укрытия задачей
-- [ ] Переноска тела: `IS_PED_CARRYING_SOMETHING` + `_GET_FIRST_ENTITY...`
-      (требует репликации цели из P1)
-- [ ] Таскание/хогтай: `_IS_PED_DRAGGING`, `IS_PED_HOGTIED`
-- [ ] Лутание: `GET_LOOTING_PICKUP_TARGET_ENTITY` + `TASK_LOOT_ENTITY`
-- [ ] Рыбалка: `_GET_TASK_FISHING`
+- [x] Укрытие: флаги `IS_PED_IN_COVER` / `IS_PED_AIMING_FROM_COVER`,
+      `TASK_ENTER_COVER`/`TASK_EXIT_COVER` (cover-point приблизительный)
+- [x] Переноска тела: `IS_PED_CARRYING_SOMETHING` + target netId (host→guest)
+      (guest→host потребует обратного world_sync)
+- [ ] Таскание/хогтай: `_IS_PED_DRAGGING`, `IS_PED_HOGTIED` (флаги есть)
+- [x] Лутание: `GET_LOOTING_PICKUP_TARGET_ENTITY` + `TASK_LOOT_ENTITY`
+      (host→guest, через netId из P1)
+- [ ] Рыбалка: `_GET_TASK_FISHING` (флаг есть, задача позже)
 - [ ] Скиннинг/лагерные действия: сценарии/задачи по таблице
 - [ ] Таблица «детект → задача», fallback в Idle (без «танцев»)
 - [ ] Диагностика неизвестных Actions в лог для расширения таблицы

@@ -25,5 +25,11 @@ void OnSnapshot(const std::vector<uint8_t>& payload);
 // Убрать прокси/сбросить состояние (выход из сессии, смена роли, disable).
 void Reset();
 
+// P1→P2: сопоставление сущности и стабильного netId (только игровой поток).
+// Хост: handle → netId (для ActionState.targetNetId).
+// Гость: netId → handle (чтобы применить переноску/лутание к прокси).
+bool GetNetIdForHandle(unsigned int handle, uint64_t& netId);
+bool GetHandleForNetId(uint64_t netId, unsigned int& handle);
+
 } // namespace world_sync
 } // namespace coop

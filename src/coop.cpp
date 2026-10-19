@@ -455,6 +455,9 @@ unsigned int s_lastActionSendTick = 0;
 // Что уже применено к педу, чтобы не перезапускать сценарий каждый кадр.
 uint8_t  s_appliedActionMode = 0;
 uint32_t s_appliedScenario = 0;
+uint32_t s_appliedTargetNetId = 0;
+uint32_t s_lastLoggedTargetNetId = 0;
+unsigned int s_lastCoverTaskTick = 0;
 // Последнее применённое время (для лога смены).
 int s_lastAppliedHour = -1, s_lastAppliedMin = -1;
 // Компоненты одежды удалённого игрока (для применения в Tick()).
@@ -1592,6 +1595,9 @@ void RespawnGhostPed(const net::FramePayload* f)
     s_lastAction = 0xFF;
     s_appliedActionMode = 0;
     s_appliedScenario = 0;
+    s_appliedTargetNetId = 0;
+    s_lastLoggedTargetNetId = 0;
+    s_lastCoverTaskTick = 0;
     s_moveTargetValid = false;
     // После RESURRECT_PED движок возвращает дефолтные компоненты модели,
     // поэтому наряд надо надеть заново (с полным сбросом слоёв).
@@ -2016,6 +2022,9 @@ void CleanupGhost()
     s_lastSentActionValid = false;
     s_appliedActionMode = 0;
     s_appliedScenario = 0;
+    s_appliedTargetNetId = 0;
+    s_lastLoggedTargetNetId = 0;
+    s_lastCoverTaskTick = 0;
     {
         std::lock_guard<std::mutex> lk(s_actionMtx);
         s_haveActionIn = false;
@@ -2616,6 +2625,9 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     // Педа пересоздали — применённое действие больше не актуально.
     s_appliedActionMode = 0;
     s_appliedScenario = 0;
+    s_appliedTargetNetId = 0;
+    s_lastLoggedTargetNetId = 0;
+    s_lastCoverTaskTick = 0;
     {
         std::lock_guard<std::mutex> lk(s_actionMtx);
         s_haveActionIn = false;
@@ -2660,6 +2672,15 @@ net::ActionStatePayload DetectLocalActionV2(unsigned int ped)
     {
         a.mode = static_cast<uint8_t>(net::ActionMode::Carry);
         a.flags |= net::kActionFlagCarrying;
+        // Цель переноски — тело/предмет. netId нужен гостю, чтобы взять прокси.
+        Init(natives::_GET_FIRST_ENTITY_PED_IS_CARRYING); Push(ped);
+        const unsigned int carried = static_cast<unsigned int>(Call());
+        if (carried)
+        {
+            uint64_t nid = 0;
+            if (world_sync::GetNetIdForHandle(carried, nid))
+                a.targetNetId = static_cast<uint32_t>(nid);
+        }
     }
     Init(natives::_IS_PED_DRAGGING); Push(ped);
     if (Call())
@@ -2672,6 +2693,16 @@ net::ActionStatePayload DetectLocalActionV2(unsigned int ped)
     {
         a.mode = static_cast<uint8_t>(net::ActionMode::Hogtie);
         a.flags |= net::kActionFlagHogtied;
+    }
+    // Лутание: цель — труп/контейнер. netId даст гостю прокси для TASK_LOOT_ENTITY.
+    Init(natives::GET_LOOTING_PICKUP_TARGET_ENTITY); Push(ped);
+    const unsigned int lootTarget = static_cast<unsigned int>(Call());
+    if (lootTarget)
+    {
+        a.mode = static_cast<uint8_t>(net::ActionMode::Loot);
+        uint64_t nid = 0;
+        if (world_sync::GetNetIdForHandle(lootTarget, nid))
+            a.targetNetId = static_cast<uint32_t>(nid);
     }
     unsigned long long fishingOut = 0;
     Init(natives::_GET_TASK_FISHING); Push(ped);
@@ -2692,10 +2723,42 @@ void ApplyRemoteActionV2(const net::ActionStatePayload& a)
     using namespace natives_api;
 
     const uint8_t mode = a.mode;
-    const bool wasScenario = (s_appliedActionMode ==
-                              static_cast<uint8_t>(net::ActionMode::Scenario));
+    const uint8_t scenarioMode = static_cast<uint8_t>(net::ActionMode::Scenario);
+    const uint8_t coverMode    = static_cast<uint8_t>(net::ActionMode::Cover);
+    const uint8_t carryMode    = static_cast<uint8_t>(net::ActionMode::Carry);
+    const uint8_t lootMode     = static_cast<uint8_t>(net::ActionMode::Loot);
+    const bool wasScenario = (s_appliedActionMode == scenarioMode);
+    const bool wasCover = (s_appliedActionMode == coverMode);
+    const bool wasCarryOrLoot =
+        (s_appliedActionMode == carryMode || s_appliedActionMode == lootMode);
 
-    if (mode == static_cast<uint8_t>(net::ActionMode::Scenario) && a.scenarioHash)
+    // 1) Сначала завершаем ПРЕДЫДУЩЕЕ состояние: иначе его exit-задача
+    //    (или TASK_STAND_STILL) перебьёт только что применённое новое действие.
+    if (wasCover && mode != coverMode)
+    {
+        Init(natives::TASK_EXIT_COVER);
+        Push(s_ghost);
+        Call();
+        sh_log::Write("action: cover exit\n");
+    }
+    if (wasScenario && mode != scenarioMode)
+    {
+        Init(natives::TASK_STAND_STILL);
+        Push(s_ghost); Push(static_cast<unsigned long long>(0xFFFFFFFF));
+        Call();
+        sh_log::Write("action: scenario finished -> stand still\n");
+    }
+    if (wasCarryOrLoot && mode != carryMode && mode != lootMode)
+    {
+        Init(natives::TASK_STAND_STILL);
+        Push(s_ghost); Push(static_cast<unsigned long long>(0xFFFFFFFF));
+        Call();
+        s_appliedTargetNetId = 0;
+        sh_log::Write("action: carry/loot finished -> stand still\n");
+    }
+
+    // 2) Применяем текущее состояние.
+    if (mode == scenarioMode && a.scenarioHash)
     {
         if (s_appliedActionMode != mode || s_appliedScenario != a.scenarioHash)
         {
@@ -2713,16 +2776,66 @@ void ApplyRemoteActionV2(const net::ActionStatePayload& a)
             sh_log::Write("action: scenario 0x%08X applied to ghost\n", a.scenarioHash);
         }
     }
-    else if (wasScenario && mode != static_cast<uint8_t>(net::ActionMode::Scenario))
+
+    if (mode == coverMode)
     {
-        // Сценарий закончился — возвращаем педа в стойку.
-        Init(natives::TASK_STAND_STILL);
-        Push(s_ghost); Push(static_cast<unsigned long long>(0xFFFFFFFF));
-        Call();
-        sh_log::Write("action: scenario finished -> stand still\n");
+        if (!wasCover)
+        {
+            Init(natives::TASK_ENTER_COVER);
+            Push(s_ghost);
+            Call();
+            s_lastCoverTaskTick = s_tickCount;
+            sh_log::Write("action: cover enter\n");
+        }
+        else if (!s_combatActive && (s_tickCount - s_lastCoverTaskTick) > 90)
+        {
+            Init(natives::IS_PED_IN_COVER); Push(s_ghost); Push(true); Push(false);
+            if (!Call())
+            {
+                Init(natives::TASK_ENTER_COVER);
+                Push(s_ghost);
+                Call();
+                sh_log::Write("action: cover re-enter (task lost)\n");
+            }
+            s_lastCoverTaskTick = s_tickCount;
+        }
     }
-    // Cover/Carry/Drag/Hogtie/Fishing пока только фиксируются в state:
-    // cover требует cover-point, переноска/лутание — репликации цели (P1).
+
+    if (mode == carryMode || mode == lootMode)
+    {
+        unsigned int target = 0;
+        const bool resolved = a.targetNetId &&
+            world_sync::GetHandleForNetId(a.targetNetId, target) &&
+            target && target != s_ghost;
+        if (resolved && a.targetNetId != s_appliedTargetNetId)
+        {
+            if (mode == carryMode)
+            {
+                Init(natives::TASK_PICKUP_CARRIABLE_ENTITY);
+                Push(s_ghost); Push(target);
+                Call();
+                sh_log::Write("action: carry target netId=%u handle=%u\n",
+                              a.targetNetId, target);
+            }
+            else
+            {
+                Init(natives::TASK_LOOT_ENTITY);
+                Push(s_ghost); Push(target);
+                Call();
+                sh_log::Write("action: loot target netId=%u handle=%u\n",
+                              a.targetNetId, target);
+            }
+            s_appliedTargetNetId = a.targetNetId;
+        }
+        else if (!resolved && a.targetNetId &&
+                 a.targetNetId != s_lastLoggedTargetNetId)
+        {
+            s_lastLoggedTargetNetId = a.targetNetId;
+            sh_log::Write("action: target netId=%u not found on guest "
+                          "(world_sync must be enabled on both)\n", a.targetNetId);
+        }
+    }
+
     s_appliedActionMode = mode;
     s_appliedScenario = a.scenarioHash;
 }
