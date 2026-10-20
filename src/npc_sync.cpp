@@ -5,6 +5,7 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "config.h"
@@ -81,6 +82,8 @@ std::vector<net::NpcSpawnPayload> g_pendingSpawns;
 std::vector<net::NpcFramePayload> g_pendingFrames;
 std::unordered_map<uint32_t, NpcGhost> g_ghosts;
 unsigned int g_lastGuestLogTick = 0;
+// Скрытые ambient-педы гостя (вернём видимость при Reset).
+std::unordered_set<unsigned int> g_hiddenPeds;
 
 bool DoesExist(unsigned int handle)
 {
@@ -562,6 +565,74 @@ void SuppressGuestAmbient()
     Push(0.0f); Call();
 }
 
+// Скрыть существующих ambient-людей гостя, чтобы остались только призраки
+// хоста. Животных/лошадей и миссионных педов не трогаем.
+void HideGuestAmbient(unsigned int localPlayerPed, unsigned int tickCount)
+{
+    static unsigned int s_lastHideTick = 0;
+    if (tickCount - s_lastHideTick < 30)
+        return;
+    s_lastHideTick = tickCount;
+
+    std::unordered_set<unsigned int> keep;
+    keep.insert(localPlayerPed);
+    for (const auto& kv : g_ghosts)
+    {
+        keep.insert(kv.second.ped);
+        keep.insert(kv.second.mount);
+    }
+
+    static int handles[2048];
+    int count = sh::worldGetAllPeds(handles, 2048);
+    if (count < 0) count = 0;
+    if (count > 2048) count = 2048;
+
+    const Vec3 origin = GetCoords(localPlayerPed);
+    using namespace natives_api;
+    for (int i = 0; i < count; ++i)
+    {
+        const unsigned int handle = static_cast<unsigned int>(handles[i]);
+        if (!handle || keep.count(handle))
+            continue;
+        if (coop::IsWorldSyncExcluded(handle))
+            continue;
+        if (IsMissionEntity(handle))
+            continue;
+
+        Init(natives::IS_PED_HUMAN);
+        Push(handle);
+        if (!Call())
+            continue; // животные/лошади остаются
+
+        const Vec3 p = GetCoords(handle);
+        const float dx = p.x - origin.x;
+        const float dy = p.y - origin.y;
+        if (dx * dx + dy * dy > 100.0f * 100.0f)
+            continue;
+
+        Init(natives::SET_ENTITY_VISIBLE);
+        Push(handle); Push(false); Call();
+        Init(natives::SET_ENTITY_COLLISION);
+        Push(handle); Push(false); Push(false); Call();
+        g_hiddenPeds.insert(handle);
+    }
+}
+
+void RestoreHiddenAmbient()
+{
+    using namespace natives_api;
+    for (const unsigned int handle : g_hiddenPeds)
+    {
+        if (!DoesExist(handle))
+            continue;
+        Init(natives::SET_ENTITY_VISIBLE);
+        Push(handle); Push(true); Call();
+        Init(natives::SET_ENTITY_COLLISION);
+        Push(handle); Push(true); Push(false); Call();
+    }
+    g_hiddenPeds.clear();
+}
+
 // ---------------- хост: сканер ----------------
 
 net::NpcSpawnPayload BuildSpawn(const HostNpc& npc)
@@ -750,6 +821,7 @@ void ResetInternal()
     g_roster.clear();
     g_npcNetIds.clear();
     g_sentSpawns.clear();
+    RestoreHiddenAmbient();
     for (auto& kv : g_ghosts)
     {
         DeleteGhostEntity(kv.second.mount);
@@ -787,6 +859,7 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
         GuestDrain(tickCount);
         GuestInterp(tickCount);
         SuppressGuestAmbient();
+        HideGuestAmbient(localPlayerPed, tickCount);
     }
 }
 
