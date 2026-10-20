@@ -876,6 +876,10 @@ bool s_havePendingOutfit = false;
 // сквозь новую (наблюдали у педа после возрождения).
 net::OutfitState s_appliedOutfit{};
 bool s_appliedOutfitValid = false;
+// Базовая вариация педа рандомизируется ОДИН раз при создании призрака.
+// Повторная рандомизация при посадке/спешивании меняла базовые компоненты
+// (волосы/тело/нижние слои), и наряд визуально «расходился» с оригиналом.
+bool s_ghostBaseRandomized = false;
 // Тиков, в течение которых периодически переприменяем наряд (после
 // посадки/спешивания движок сам сбрасывает variation и внешний вид «слетает»).
 unsigned int s_outfitRefreshTicks = 0;
@@ -1805,20 +1809,22 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
         if (comp)
             out.components[n++] = comp;
     }
-    // Категории движок возвращает нестабильно (порядок плывёт между кадрами),
-    // из-за чего наряд «менялся» и переотправлялся. Сортируем хеши — сравнение
-    // и применение становятся детерминированными.
-    if (n > 1)
-        std::sort(out.components, out.components + n);
     out.count = static_cast<uint32_t>(n);
 }
 
 // Одинаковые ли наборы компонентов (с учётом модели, если она известна).
+// Сравниваем БЕЗ учёта порядка: движок возвращает категории в разном порядке
+// между кадрами, из-за чего наряд считался «изменённым» и переотправлялся.
 bool OutfitsEqual(const net::OutfitState& a, const net::OutfitState& b)
 {
     if (a.count != b.count) return false;
     if (a.model && b.model && a.model != b.model) return false;
-    return std::memcmp(a.components, b.components, sizeof(a.components)) == 0;
+    if (a.count == 0) return true;
+    std::vector<uint32_t> ca(a.components, a.components + a.count);
+    std::vector<uint32_t> cb(b.components, b.components + b.count);
+    std::sort(ca.begin(), ca.end());
+    std::sort(cb.begin(), cb.end());
+    return ca == cb;
 }
 
 // Применить надетые shop-предметы (одежду) удалённого игрока к педу призрака
@@ -1846,14 +1852,11 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     // добавляет слой) → «сквозь одну одежду видно другую».
     if (s_appliedOutfitValid && OutfitsEqual(os, s_appliedOutfit))
         return;
-    // Сброс СТАРОГО наряда: иначе предметы, которых нет в новом наборе,
-    // остаются на педе и он выглядит «помесью» старой и новой одежды
-    // (именно так пед на втором ПК сильно отличался от оригинала).
-    // RandomizePedComponents даёт валидную variation и НЕ ломает рендер
-    // тела (в отличие от RESET_PED_COMPONENTS); сразу следом надеваем
-    // новый полный набор — в одном тике случайная одежда не успевает
-    // показаться.
-    RandomizePedComponents(s_ghost);
+    if (!s_ghostBaseRandomized)
+    {
+        RandomizePedComponents(s_ghost);
+        s_ghostBaseRandomized = true;
+    }
     SetEntityVisibleForce(s_ghost);
     for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
     {
@@ -1890,15 +1893,16 @@ void RefreshGhostComponents()
     s_appliedOutfitValid = false;
     if (s_outfitIn.count)
     {
-        // Вернуть валидную variation (движок сбросил после посадки) и надеть
-        // наряд. Рандомизация и наряд идут в одном тике — не мелькают.
-        RandomizePedComponents(s_ghost);
-        SetEntityVisibleForce(s_ghost);
+        // Базу не рандомизируем повторно — только переприменяем наряд.
         ApplyOutfitToGhost(s_outfitIn);
     }
     else
     {
-        RandomizePedComponents(s_ghost);
+        if (!s_ghostBaseRandomized)
+        {
+            RandomizePedComponents(s_ghost);
+            s_ghostBaseRandomized = true;
+        }
         SetEntityVisibleForce(s_ghost);
     }
 }
@@ -1993,6 +1997,7 @@ void RespawnGhostPed(const net::FramePayload* f)
     // После RESURRECT_PED движок возвращает дефолтные компоненты модели,
     // поэтому наряд надо надеть заново (с полным сбросом слоёв).
     s_appliedOutfitValid = false;
+    s_ghostBaseRandomized = false;
     // Игрок возродился в другом месте — старая лошадь уже не актуальна.
     if (s_mount)
         DismountAndRemoveMount();
@@ -2467,6 +2472,7 @@ void CleanupGhost()
     s_horseOutfitAppliedValid = false;
     // Новый пед — наряд нужно применить заново.
     s_appliedOutfitValid = false;
+    s_ghostBaseRandomized = false;
 }
 
 // Определить move-состояние локального игрока для кадра (передаётся
@@ -3020,6 +3026,7 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     s_outfitRequestLogged = false;
     // Пед будет создан заново — наряд применяем с чистого листа.
     s_appliedOutfitValid = false;
+    s_ghostBaseRandomized = false;
     // Пед удалён — лошадь-призрак без седока не нужна.
     if (s_mount)
         DismountAndRemoveMount();
@@ -4148,6 +4155,7 @@ void Tick()
         {
             SetEntityMission(s_ghost);
             s_appliedOutfitValid = false; // новый пед — наряд наденем заново
+            s_ghostBaseRandomized = false;
             // ВАЖНО: RandomizePedComponents (SET_PED_RANDOM_COMPONENT_VARIATION)
             // ОБЯЗАТЕЛЕН для рендера модели педа — без него пед невидим
             // (остаются только прикреплённые shop-предметы-одёжки). Наряд из
@@ -4429,10 +4437,7 @@ void Tick()
                 net::OutfitState ho{};
                 CollectLocalOutfit(m, ho);
                 bool changed = !s_sentHorseOutfitValid ||
-                               ho.model != s_sentHorseOutfit.model ||
-                               ho.count != s_sentHorseOutfit.count ||
-                               std::memcmp(ho.components, s_sentHorseOutfit.components,
-                                           sizeof(ho.components)) != 0;
+                               !OutfitsEqual(ho, s_sentHorseOutfit);
                 if (ho.count > 0 && changed)
                 {
                     s_sentHorseOutfit = ho;
@@ -4459,17 +4464,10 @@ void Tick()
     {
         net::OutfitState os{};
         CollectLocalOutfit(playerPed, os);
-        bool changed = !s_sentOutfitValid ||
-                       os.model != s_sentOutfit.model ||
-                       os.count != s_sentOutfit.count ||
-                       std::memcmp(os.components, s_sentOutfit.components,
-                                   sizeof(os.components)) != 0;
+        bool changed = !s_sentOutfitValid || !OutfitsEqual(os, s_sentOutfit);
         if (os.count > 0 && changed)
         {
-            if (s_haveCandidateOutfit && os.model == s_candidateOutfit.model &&
-                os.count == s_candidateOutfit.count &&
-                std::memcmp(os.components, s_candidateOutfit.components,
-                            sizeof(os.components)) == 0)
+            if (s_haveCandidateOutfit && OutfitsEqual(os, s_candidateOutfit))
             {
                 ++s_candidateOutfitTicks;
             }
