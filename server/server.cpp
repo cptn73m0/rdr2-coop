@@ -687,22 +687,6 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 }
                 break;
             }
-            case net::Msg::PedVariation:
-            {
-                // Базовая вариация компонентов педа — ретрансляция остальным.
-                if (pay.size() == sizeof(net::PedVariationPayload))
-                {
-                    net::PedVariationPayload var{};
-                    std::memcpy(&var, pay.data(), sizeof(var));
-                    if (var.count <= net::kMaxVariationCategories)
-                    {
-                        BroadcastToOthers(sock, MakeMsg(
-                            (uint8_t)net::Msg::PedVariation,
-                            pay.data(), (uint32_t)pay.size()));
-                    }
-                }
-                break;
-            }
             case net::Msg::ActionState:
             {
                 // P2: действие/сценарий своего персонажа — просто ретрансляция.
@@ -826,38 +810,6 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                                                         pay.data(), (uint32_t)pay.size()));
                     }
                 }
-                break;
-            }
-            case net::Msg::VehicleCrew:
-            {
-                // Crew: только хост, строго один 12-байтовый entry.
-                bool senderIsHost = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    senderIsHost = it != g_online.end() && it->second.isHost;
-                }
-                if (!senderIsHost)
-                {
-                    LogLine("[!] " + name + ": VehicleCrew от не-хоста проигнорирован");
-                    break;
-                }
-                if (pay.size() != sizeof(net::VehicleCrewPayload))
-                {
-                    LogLine("[!] " + name + ": VehicleCrew неверный размер — проигнорирован");
-                    break;
-                }
-                net::VehicleCrewPayload crew{};
-                std::memcpy(&crew, pay.data(), sizeof(crew));
-                if (crew.seat < net::kVehicleSeatDriver ||
-                    crew.seat >= net::kMaxVehicleSeats ||
-                    !crew.vehicleNetId || !crew.pedNetId)
-                {
-                    LogLine("[!] " + name + ": VehicleCrew неверные поля — проигнорирован");
-                    break;
-                }
-                BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::VehicleCrew,
-                                                pay.data(), (uint32_t)pay.size()));
                 break;
             }
             case net::Msg::HorseOutfit:

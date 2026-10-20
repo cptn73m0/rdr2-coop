@@ -40,16 +40,6 @@ struct Config {
     bool worldTrains = false;
     // R&D: подробный лог offset/attach для TrainSnapshot (диагностика).
     bool trainDebug = false;
-    // P1 safe mode: по умолчанию НЕ реплицируем mission-peds/objects — они
-    // без миссионного контекста ведут себя как свободные прокси (летают и т.п.).
-    bool worldMissionEntities = false;
-    // P1 safe mode: глушить только ambient людей на госте. Животные и
-    // транспорт НЕ глушатся, иначе пропадают лошади/тягловые.
-    bool worldSuppressAmbient = false;
-    // Crew: синхронизировать место водителя/пассажиров в транспорте.
-    bool vehicleCrew = false;
-    // Диагностика world_sync: логировать позиции прокси (отладка телепортов).
-    bool worldDebug = false;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —

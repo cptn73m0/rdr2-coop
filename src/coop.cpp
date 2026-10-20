@@ -1426,20 +1426,6 @@ void ShootGhostAt(const Vec3& t, int durationMs = 250)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     using namespace natives_api;
-    // Без оружия в руках TASK_SHOOT_AT_COORD молча не стреляет — выстрелы
-    // «не регистрировались». Достаём текущее оружие призрака перед задачей.
-    unsigned long long weapon = s_givenWeapon ? s_givenWeapon : s_lastWeapon;
-    if (weapon)
-    {
-        Init(natives::SET_CURRENT_PED_WEAPON);
-        Push(s_ghost);
-        Push(weapon);
-        Push(static_cast<unsigned long long>(1)); // equipNow
-        Push(static_cast<unsigned long long>(0));
-        Push(static_cast<unsigned long long>(0));
-        Push(static_cast<unsigned long long>(0));
-        Call();
-    }
     Init(natives::TASK_SHOOT_AT_COORD);
     Push(s_ghost);
     Push(t.x); Push(t.y); Push(t.z);
@@ -1447,9 +1433,6 @@ void ShootGhostAt(const Vec3& t, int durationMs = 250)
     Push(static_cast<unsigned long long>(0x5D60E4E0)); // SingleShot
     Push(static_cast<unsigned long long>(0));
     Call();
-    if ((s_tickCount % 30) == 0)
-        sh_log::Write("coop: ghost shot at (%.1f %.1f %.1f) weapon=0x%llX\n",
-                      t.x, t.y, t.z, weapon);
 }
 
 // Применить действие (action) удалённого игрока к педу призрака.

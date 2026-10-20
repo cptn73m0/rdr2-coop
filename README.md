@@ -147,10 +147,6 @@ ped_model   = 0xCF7E73BE      ; запасная модель, пока не п�
 | `save_backup` | 1 | бэкап сейва перед первым зачётом |
 | `mission_reward_log` | 1 | dry-run лог плана наград (нативы не вызываются) |
 | `world_trains` | 0 | R&D: поезда/вагоны в WorldSnapshot (экспериментально) |
-| `world_mission_entities` | 0 | P1 safe: реплицировать mission-peds/objects |
-| `world_suppress_ambient` | 0 | P1 safe: глушить ambient людей на госте (животные/транспорт не глушатся) |
-| `vehicle_crew` | 0 | P1: синхронизировать водителя/пассажиров транспорта (seat) |
-| `world_debug` | 0 | Диагностика: логировать позиции прокси world_sync |
 | `train_debug` | 0 | R&D: подробный лог offset/attach вагонов |
 
 ## Запуск сервера

@@ -151,16 +151,6 @@
 - [x] Config-тесты: LoadFromFile, флаги/hex/битые строки/defaults
 - [x] players.txt recovery-тест: битые строки и stale .tmp игнорируются
 - [x] restore_saves.ps1 автотест (restore + pre-restore snapshot)
-- [x] P1 safe mode: mission-сущности отключены по умолчанию,
-      ambient animals/vehicles больше не глушатся (лошади не пропадают)
-- [x] Плавная интерполяция vehicle/object прокси на госте между
-      10 Гц снапшотами (без телепортов каждый снапшот)
-- [x] P1 crew-sync: водитель/пассажиры транспорта (vehicleNetId+pedNetId+seat),
-      протокол v14, host-only validation, mock-тест
-- [x] PedVariation v15: базовая component variation (drawable/texture/palette)
-      синхронизируется — реплика больше не рандомизируется
-- [x] world_debug: логи позиций прокси для отладки телепортов
-- [ ] Crew AI-маршрут/поезда: отдельный rail/consist-слой (R&D)
 - [x] TrainSnapshot v13 + attach вагонов к локомотиву на госте,
       `train_debug` offset/attach-логи
 - [x] C++ stress candidate budget: 4×10k против reference-выборки

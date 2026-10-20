@@ -300,7 +300,6 @@ uint64_t g_nextNetId = 1;
 unsigned int g_lastHostScanTick = 0;
 unsigned int g_hostSnapshotCount = 0;
 bool g_missingWorldQueriesLogged = false;
-unsigned int g_lastTrainConsistLogTick = 0;
 
 void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                       bool includeTrains)
@@ -342,10 +341,6 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         if (!model)
             continue;
 
-        const bool mission = IsMissionEntity(handle);
-        if (mission && !coopcfg::Get().worldMissionEntities)
-            continue;
-
         HostIdState& state = g_hostIds[handle];
         if (state.netId == 0 || state.model != model)
         {
@@ -361,6 +356,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         e.heading = GetHeading(handle);
         e.kind = net::kEntityKindPed;
         e.flags = 0;
+        const bool mission = IsMissionEntity(handle);
         if (mission) e.flags |= net::kEntityFlagMission;
         if (IsDeadPed(handle)) e.flags |= net::kEntityFlagDead;
 
@@ -416,9 +412,6 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             const unsigned int model = GetModel(handle);
             if (!model)
                 return false;
-            const bool mission = IsMissionEntity(handle);
-            if (mission && !coopcfg::Get().worldMissionEntities)
-                return false;
 
             HostIdState& state = g_hostIds[handle];
             if (state.netId == 0 || state.model != model)
@@ -435,6 +428,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             e.heading = GetHeading(handle);
             e.kind = net::kEntityKindVehicle;
             e.flags = 0;
+            const bool mission = IsMissionEntity(handle);
             if (mission) e.flags |= net::kEntityFlagMission;
             {
                 using namespace natives_api;
@@ -477,10 +471,6 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             if (!model)
                 continue;
 
-            const bool mission = IsMissionEntity(handle);
-            if (mission && !coopcfg::Get().worldMissionEntities)
-                continue;
-
             {
                 using namespace natives_api;
                 Init(natives::IS_THIS_MODEL_A_TRAIN);
@@ -496,11 +486,11 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                         continue;
                     }
                     ++trainsIncluded;
-                    // R&D: берём первый train-vehicle как «головной»; остальные
-                    // train-хендлы могут быть теми же вагонами/локомотивом.
+                    // R&D: если это локомотив/головной вагон, запоминаем его,
+                    // чтобы затем добрать вагоны через GET_TRAIN_CARRIAGE.
                     Init(natives::_GET_TRAIN_CARRIAGE_TRAILER_NUMBER);
                     Push(handle);
-                    if (static_cast<int>(Call()) > 0 && trainEngines.empty())
+                    if (static_cast<int>(Call()) > 0)
                         trainEngines.push_back(handle);
                 }
             }
@@ -520,6 +510,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             e.heading = GetHeading(handle);
             e.kind = net::kEntityKindVehicle;
             e.flags = 0;
+            const bool mission = IsMissionEntity(handle);
             if (mission) e.flags |= net::kEntityFlagMission;
             {
                 using namespace natives_api;
@@ -536,92 +527,52 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             candidates.push_back(c);
         }
 
-        // R&D: собрать вагоны состава. Важно: worldGetAllVehicles обычно уже
-        // содержит вагоны, поэтому НЕ фильтруем по seenVehicles для TrainSnapshot;
-        // добавляем в WorldSnapshot только отсутствовавшие.
+        // R&D: добрать вагоны состава, даже если worldGetAllVehicles вернул
+        // только локомотив. Сцепка/рельсы/скорость по-прежнему не
+        // моделируются — это только позиции вагонов для прокси.
         unsigned int trainCarsAdded = 0;
-        unsigned int trainCarsCollected = 0;
-        int trainTrailerCount = 0;
-        bool trainDirection = false;
-        float trainSpeed = 0.f;
         std::vector<net::WorldEntity> trainCarEntities;
-        if (!trainEngines.empty())
+        for (const unsigned int engine : trainEngines)
         {
             using namespace natives_api;
-            const unsigned int engine = trainEngines.front();
             Init(natives::_GET_TRAIN_CARRIAGE_TRAILER_NUMBER);
             Push(engine);
-            trainTrailerCount = static_cast<int>(Call());
+            const int trailerCount = static_cast<int>(Call());
+            if (trailerCount <= 0)
+                continue;
             Init(natives::_GET_TRAIN_DIRECTION);
             Push(engine);
-            trainDirection = Call() != 0;
-            trainSpeed = GetSpeed(engine);
-
-            std::unordered_set<unsigned int> consistHandles;
-            for (int carIndex = 0; carIndex <= trainTrailerCount; ++carIndex)
+            const bool trainDirection = Call() != 0;
+            const float trainSpeed = GetSpeed(engine);
+            for (int carIndex = 0; carIndex <= trailerCount; ++carIndex)
             {
                 Init(natives::GET_TRAIN_CARRIAGE);
                 Push(engine);
                 Push(static_cast<unsigned long long>(carIndex));
                 const unsigned int car = static_cast<unsigned int>(Call());
-                if (!car || car == engine || !consistHandles.insert(car).second)
+                if (!car || car == engine || seenVehicles.count(car))
                     continue;
-
-                if (!seenVehicles.count(car))
+                seenVehicles.insert(car);
+                net::WorldEntity carEntity{};
+                if (addVehicleCandidate(car, &carEntity))
                 {
-                    seenVehicles.insert(car);
-                    net::WorldEntity candidateEntity{};
-                    if (addVehicleCandidate(car, &candidateEntity))
+                    ++trainCarsAdded;
+                    ++trainsIncluded;
+                    if (trainCarEntities.size() <
+                        static_cast<std::size_t>(net::kMaxTrainCars))
                     {
-                        ++trainCarsAdded;
-                        ++trainsIncluded;
+                        trainCarEntities.push_back(carEntity);
                     }
                 }
-
-                // Сущность для TrainSnapshot — даже если вагон уже был в
-                // WorldSnapshot. netId выдаём/переиспользуем через g_hostIds.
-                HostIdState& st = g_hostIds[car];
-                const unsigned int model = GetModel(car);
-                if (!model)
-                    continue;
-                if (st.netId == 0 || st.model != model)
-                {
-                    st.netId = g_nextNetId++;
-                    st.model = model;
-                }
-                st.lastSeenTick = tickCount;
-
-                net::WorldEntity ce{};
-                ce.netId = st.netId;
-                ce.model = model;
-                const Vec3 cp = GetCoords(car);
-                ce.x = cp.x; ce.y = cp.y; ce.z = cp.z;
-                ce.heading = GetHeading(car);
-                ce.kind = net::kEntityKindVehicle;
-                ce.flags = 0;
-                ce.state = 0;
-                if (trainCarEntities.size() <
-                    static_cast<std::size_t>(net::kMaxTrainCars))
-                {
-                    trainCarEntities.push_back(ce);
-                    ++trainCarsCollected;
-                }
             }
-
-            // Лог не чаще раза в секунду (раньше 10 Гц спамил лог).
-            if ((tickCount - g_lastTrainConsistLogTick) >= 60)
-            {
-                g_lastTrainConsistLogTick = tickCount;
-                sh_log::Write("train: consist engine=%u trailerCount=%d "
-                              "collected=%u added=%u dir=%d speed=%.1f\n",
-                              engine, trainTrailerCount, trainCarsCollected,
-                              trainCarsAdded, trainDirection ? 1 : 0,
-                              trainSpeed);
-            }
+            sh_log::Write("train: consist engine=%u trailerCount=%d added=%u "
+                          "dir=%d speed=%.1f\n",
+                          engine, trailerCount, trainCarsAdded,
+                          trainDirection ? 1 : 0, trainSpeed);
         }
 
         // R&D TrainSnapshot: engine netId/model + direction/speed + вагоны
-        // по порядку (собранные через GET_TRAIN_CARRIAGE).
+        // по порядку (только те, что удалось добавить в этом проходе).
         if (!trainEngines.empty())
         {
             using namespace natives_api;
@@ -668,8 +619,6 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                 continue;
             if (!IsMissionEntity(handle))
                 continue; // только миссионные объекты
-            if (!coopcfg::Get().worldMissionEntities)
-                continue; // safe mode: mission-objects отключены
 
             const Vec3 p = GetCoords(handle);
             const float dx = p.x - origin.x;
@@ -748,7 +697,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
     coop::SendWorldSnapshot(payload);
     ++g_hostSnapshotCount;
 
-    if ((g_hostSnapshotCount % 50) == 1)
+    if ((tickCount % kLogEveryTicks) == 1)
     {
         unsigned int missionCount = 0;
         unsigned int pedCount = 0;
@@ -770,7 +719,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
     }
 
     // Чистка забытых handle → netId, чтобы не росла карта.
-    if ((g_hostSnapshotCount % 500) == 0)
+    if ((tickCount % kLogEveryTicks) == 2)
     {
         for (auto it = g_hostIds.begin(); it != g_hostIds.end();)
         {
@@ -795,11 +744,6 @@ struct Proxy
     uint8_t moveState = net::kEntityStateIdle;
     bool moveTaskValid = false;
     Vec3 moveTarget{0.f, 0.f, 0.f};
-    // Гистерезис смены состояния: хост-сканер шумит walk/idle на стоящем
-    // педе — прокси дёргался задачами. Переключаемся после 3 одинаковых
-    // снапшотов подряд.
-    uint8_t pendingMoveState = 0xFF;
-    unsigned int pendingMoveStateTicks = 0;
     // R&D: вагон привязан к локомотиву (позицию ведёт attachment).
     bool trainAttached = false;
     unsigned int trainAttachedTo = 0;
@@ -818,12 +762,16 @@ bool g_hasPendingTrain = false;
 
 void SuppressLocalWorld()
 {
-    // Safe mode: глушим ТОЛЬКО ambient людей. Животные и транспорт не
-    // глушатся — из-за этого раньше пропадали лошади/тягловые.
     using namespace natives_api;
     Init(natives::_SET_AMBIENT_HUMAN_DENSITY_MULTIPLIER_THIS_FRAME);
     Push(0.0f); Call();
     Init(natives::_SET_AMBIENT_PED_DENSITY_MULTIPLIER_THIS_FRAME);
+    Push(0.0f); Call();
+    Init(natives::_SET_AMBIENT_ANIMAL_DENSITY_MULTIPLIER_THIS_FRAME);
+    Push(0.0f); Call();
+    Init(natives::SET_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME);
+    Push(0.0f); Call();
+    Init(natives::SET_RANDOM_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME);
     Push(0.0f); Call();
 }
 
@@ -934,59 +882,46 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
 
     // Большой разрыв (спавн/телепорт/лаг) — переносим, иначе пед будет
     // бесконечно догонять через полкарты.
-    if (dist > 12.0f)
+    if (dist > 8.0f)
     {
         SetCoords(proxy.handle, e.x, e.y, e.z);
         SetHeading(proxy.handle, e.heading);
         proxy.moveTaskValid = false;
-        proxy.pendingMoveStateTicks = 0;
     }
     else
     {
-        // Гистерезис состояния (снапшоты идут ~10 Гц).
         const uint8_t st = e.state;
-        if (st == proxy.pendingMoveState)
-            ++proxy.pendingMoveStateTicks;
-        else
-        {
-            proxy.pendingMoveState = st;
-            proxy.pendingMoveStateTicks = 1;
-        }
-        const uint8_t effective =
-            (proxy.pendingMoveStateTicks >= 3) ? st : proxy.moveState;
-
-        const bool walking = (effective == net::kEntityStateWalk);
-        const bool running = (effective == net::kEntityStateRun);
+        const bool walking = (st == net::kEntityStateWalk);
+        const bool running = (st == net::kEntityStateRun);
         const bool targetMoved =
             !proxy.moveTaskValid ||
-            std::fabs(target.x - proxy.moveTarget.x) > 2.5f ||
-            std::fabs(target.y - proxy.moveTarget.y) > 2.5f;
+            std::fabs(target.x - proxy.moveTarget.x) > 1.0f ||
+            std::fabs(target.y - proxy.moveTarget.y) > 1.0f;
         if (walking || running)
         {
             const float speed = running ? 2.0f : 1.0f;
-            if (targetMoved || proxy.moveState != effective)
+            if (targetMoved || proxy.moveState != st)
             {
                 SetMoveBlend(proxy.handle, speed);
                 FollowNavmesh(proxy.handle, e.x, e.y, e.z, speed);
                 proxy.moveTarget = target;
                 proxy.moveTaskValid = true;
-                proxy.moveState = effective;
             }
         }
         else
         {
-            // Idle: если стояли задачей — фиксируем стойку; подводим шагом
-            // только при заметном отставании (>3 м, а не 1.5 — меньше дёрганья).
-            if (dist > 3.0f)
+            // Idle: если стояли задачей — фиксируем стойку; если отстали
+            // больше 1.5 м, подводим шагом.
+            if (dist > 1.5f)
             {
-                if (!proxy.moveTaskValid || proxy.moveState != effective ||
+                if (!proxy.moveTaskValid ||
+                    proxy.moveState != net::kEntityStateIdle ||
                     targetMoved)
                 {
                     SetMoveBlend(proxy.handle, 1.0f);
                     FollowNavmesh(proxy.handle, e.x, e.y, e.z, 1.0f);
                     proxy.moveTarget = target;
                     proxy.moveTaskValid = true;
-                    proxy.moveState = effective;
                 }
             }
             else if (proxy.moveTaskValid)
@@ -994,7 +929,6 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
                 SetMoveBlend(proxy.handle, 0.0f);
                 StandStill(proxy.handle);
                 proxy.moveTaskValid = false;
-                proxy.moveState = effective;
             }
         }
         if (dist < 3.0f)
@@ -1375,8 +1309,7 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
         return;
     }
 
-    if (coopcfg::Get().worldSuppressAmbient)
-        SuppressLocalWorld();
+    SuppressLocalWorld();
 }
 
 } // namespace world_sync
