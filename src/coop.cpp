@@ -4156,9 +4156,9 @@ void Tick()
 
     // Событие выстрела: разбираем очередь по одному. Это НЕЗАВИСИМЫЙ от
     // action-hold таймер: иначе кадры Action::Shooting постоянно продлевают
-    // hold=30 и очередь не успевает проигрываться (наблюдали: из магазина
-    // играет только первый выстрел). Интервал 10 тиков ~= 6 выстрелов/с,
-    // очередь на 64 события покрывает длинные серии.
+    // hold=30 и очередь не успевает проигрываться. Интервал 5 тиков ~=
+    // 12 выстрелов/с — покрывает автоматическое оружие (10/с) целиком,
+    // очередь на 64 события страхует длинные серии.
     if (s_shotDropped > 0 && (s_tickCount % 300) == 1)
     {
         sh_log::Write("coop: shot queue overflow, dropped=%d\n", s_shotDropped);
@@ -4170,7 +4170,7 @@ void Tick()
         shotPending = s_shotQCount;
     }
     if (shotPending > 0 && s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead &&
-        s_tickCount - s_lastShotEventTaskTick >= 10)
+        s_tickCount - s_lastShotEventTaskTick >= 5)
     {
         Vec3 t{0.f, 0.f, 0.f};
         {
@@ -4187,7 +4187,7 @@ void Tick()
         }
         if (t.x == 0.f && t.y == 0.f && t.z == 0.f)
             t = GhostAimPointAhead(); // нет данных — вперёд
-        ShootGhostAt(t, 150);
+        ShootGhostAt(t, 100);
         s_lastShotEventTaskTick = s_tickCount;
         // Небольшой hold, чтобы прицел не перебил анимацию выстрела; очередь
         // его НЕ ждёт (см. условие выше).
