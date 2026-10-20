@@ -1772,9 +1772,11 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
     // Диагностика: сколько категорий реально у педа (если > лимита — хвост
     // обрезался, и именно это давало рассинхрон одежды).
     {
+        static unsigned int s_lastPed = 0;
         static int s_lastCats = -1;
-        if (categories != s_lastCats)
+        if (categories != s_lastCats || ped != s_lastPed)
         {
+            s_lastPed = ped;
             s_lastCats = categories;
             sh_log::Write("coop: outfit categories for ped %u = %d (limit %d)\n",
                           ped, categories, net::kMaxOutfitComponents);
@@ -1803,6 +1805,11 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
         if (comp)
             out.components[n++] = comp;
     }
+    // Категории движок возвращает нестабильно (порядок плывёт между кадрами),
+    // из-за чего наряд «менялся» и переотправлялся. Сортируем хеши — сравнение
+    // и применение становятся детерминированными.
+    if (n > 1)
+        std::sort(out.components, out.components + n);
     out.count = static_cast<uint32_t>(n);
 }
 
