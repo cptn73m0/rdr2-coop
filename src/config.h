@@ -40,9 +40,6 @@ struct Config {
     bool worldTrains = false;
     // R&D: подробный лог offset/attach для TrainSnapshot (диагностика).
     bool trainDebug = false;
-    // NPC-призраки (v14): репликация пеших/конных NPC тем же механизмом, что
-    // и призраки игроков. По умолчанию выключено.
-    bool worldNpc = false;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —

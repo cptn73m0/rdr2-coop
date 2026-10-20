@@ -148,7 +148,6 @@ ped_model   = 0xCF7E73BE      ; запасная модель, пока не п�
 | `mission_reward_log` | 1 | dry-run лог плана наград (нативы не вызываются) |
 | `world_trains` | 0 | R&D: поезда/вагоны в WorldSnapshot (экспериментально) |
 | `train_debug` | 0 | R&D: подробный лог offset/attach вагонов |
-| `world_npc` | 0 | NPC-призраки: репликация пеших/конных NPC как призраков игроков |
 
 ## Запуск сервера
 
@@ -194,8 +193,6 @@ rdr2_coop_server.exe 7777
 | 0x15 | MissionBarrier | host ↔ guest           | offer/ready/window/started/abort |
 | 0x16 | HostChanged    | сервер → клиент        | смена роли (host migration) |
 | 0x17 | TrainSnapshot  | хост → сервер → гость  | R&D: engine/direction/speed + вагоны |
-| 0x18 | NpcSpawn       | хост → сервер → гость  | регистрация NPC-призрака (модель/meta-outfit/лошадь/оружие) |
-| 0x19 | NpcFrame       | хост → сервер → гость  | кадр движения NPC-призрака (~10 Гц) |
 
 Полная спецификация: [docs/PROTOCOL.md](docs/PROTOCOL.md).
 

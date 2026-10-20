@@ -67,8 +67,6 @@ constexpr unsigned long long GET_DISTANCE_BETWEEN_COORDS  = 0x0BE7F4E3CDBAFB28ul
 
 // Проверка смерти педа (для метки-крестика и скрытия имени трупа).
 constexpr unsigned long long IS_PED_DEAD_OR_DYING          = 0x3317DEDB88C95038ull;
-// Человек или животное (для очистки только ambient-людей на госте).
-constexpr unsigned long long IS_PED_HUMAN                 = 0xB980061DA992779Dull;
 
 // Определение/применение состояния движения (Фаза 4 — анимации).
 constexpr unsigned long long IS_PED_RUNNING                = 0xC5286FFC176F28A2ull;

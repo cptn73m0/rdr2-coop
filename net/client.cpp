@@ -64,8 +64,6 @@ void Client::SetMissionEvent(OnMissionEvent cb) { onMissionEvent_ = std::move(cb
 void Client::SetMissionState(OnMissionState cb) { onMissionState_ = std::move(cb); }
 void Client::SetMissionBarrier(OnMissionBarrier cb) { onMissionBarrier_ = std::move(cb); }
 void Client::SetTrainSnapshot(OnTrainSnapshot cb) { onTrainSnapshot_ = std::move(cb); }
-void Client::SetNpcSpawn(OnNpcSpawn cb) { onNpcSpawn_ = std::move(cb); }
-void Client::SetNpcFrame(OnNpcFrame cb) { onNpcFrame_ = std::move(cb); }
 void Client::SetConnectionLost(OnConnectionLost cb) { onConnectionLost_ = std::move(cb); }
 void Client::SetHostChanged(OnHostChanged cb) { onHostChanged_ = std::move(cb); }
 
@@ -198,22 +196,6 @@ void Client::SendTrainSnapshot(const std::vector<uint8_t>& payload)
         (uint8_t)net::Msg::TrainSnapshot,
         payload.data(), (uint32_t)payload.size());
     SendRaw(frame);
-}
-
-void Client::SendNpcSpawn(const net::NpcSpawnPayload& spawn)
-{
-    std::vector<uint8_t> frame = MakeFrame(
-        (uint8_t)net::Msg::NpcSpawn,
-        reinterpret_cast<const uint8_t*>(&spawn), sizeof(spawn));
-    SendRaw(frame);
-}
-
-void Client::SendNpcFrame(const net::NpcFramePayload& frame)
-{
-    std::vector<uint8_t> payload = MakeFrame(
-        (uint8_t)net::Msg::NpcFrame,
-        reinterpret_cast<const uint8_t*>(&frame), sizeof(frame));
-    SendRaw(payload);
 }
 
 void Client::SendShot(const net::ShotPayload& sp)
@@ -442,26 +424,6 @@ bool Client::RunOnce()
             case net::Msg::TrainSnapshot:
             {
                 if (onTrainSnapshot_) onTrainSnapshot_(p);
-                break;
-            }
-            case net::Msg::NpcSpawn:
-            {
-                if (p.size() >= sizeof(net::NpcSpawnPayload))
-                {
-                    net::NpcSpawnPayload spawn{};
-                    std::memcpy(&spawn, p.data(), sizeof(spawn));
-                    if (onNpcSpawn_) onNpcSpawn_(spawn);
-                }
-                break;
-            }
-            case net::Msg::NpcFrame:
-            {
-                if (p.size() >= sizeof(net::NpcFramePayload))
-                {
-                    net::NpcFramePayload frame{};
-                    std::memcpy(&frame, p.data(), sizeof(frame));
-                    if (onNpcFrame_) onNpcFrame_(frame);
-                }
                 break;
             }
             case net::Msg::PlayerJoined:

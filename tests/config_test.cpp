@@ -53,7 +53,6 @@ int main()
         "mission_reward_log = off\n"
         "world_trains = 1\n"
         "train_debug = 1\n"
-        "world_npc = 1\n"
         "unknown_key = whatever\n"
         "no_equals_here\n");
     {
@@ -72,7 +71,6 @@ int main()
         Check(!cfg.missionRewardLog, "mission_reward_log off");
         Check(cfg.worldTrains, "world_trains");
         Check(cfg.trainDebug, "train_debug");
-        Check(cfg.worldNpc, "world_npc");
     }
 
     // 2) False variants and decimal model.
@@ -86,15 +84,13 @@ int main()
         "mission_reward_log = 0\n"
         "world_trains = false\n"
         "train_debug = false\n"
-        "world_npc = false\n"
         "ped_model = 123456\n");
     {
         coopcfg::Config cfg;
         Check(coopcfg::LoadFromFile(path.string(), cfg), "false file should load");
         Check(!cfg.worldSync && !cfg.actionSync && !cfg.vehicleSync &&
               !cfg.missionSync && !cfg.missionCredit && !cfg.saveBackup &&
-              !cfg.missionRewardLog && !cfg.worldTrains && !cfg.trainDebug &&
-              !cfg.worldNpc,
+              !cfg.missionRewardLog && !cfg.worldTrains && !cfg.trainDebug,
               "all false variants");
         Check(cfg.pedModel == 123456ull, "ped_model decimal");
     }

@@ -812,33 +812,6 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp)
                 }
                 break;
             }
-            case net::Msg::NpcSpawn:
-            case net::Msg::NpcFrame:
-            {
-                // NPC-призраки: только хост, строго по размеру.
-                bool senderIsHost = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    senderIsHost = it != g_online.end() && it->second.isHost;
-                }
-                if (!senderIsHost)
-                {
-                    LogLine("[!] " + name + ": Npc* от не-хоста проигнорирован");
-                    break;
-                }
-                const std::size_t need =
-                    (msg == net::Msg::NpcSpawn) ? sizeof(net::NpcSpawnPayload)
-                                                : sizeof(net::NpcFramePayload);
-                if (pay.size() != need)
-                {
-                    LogLine("[!] " + name + ": Npc* неверный размер — проигнорирован");
-                    break;
-                }
-                BroadcastToOthers(sock, MakeMsg((uint8_t)msg, pay.data(),
-                                                (uint32_t)pay.size()));
-                break;
-            }
             case net::Msg::HorseOutfit:
             {
                 // Снаряжение лошади — ретранслируем остальным (как Outfit).
