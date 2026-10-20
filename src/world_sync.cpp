@@ -795,6 +795,11 @@ struct Proxy
     uint8_t moveState = net::kEntityStateIdle;
     bool moveTaskValid = false;
     Vec3 moveTarget{0.f, 0.f, 0.f};
+    // Гистерезис смены состояния: хост-сканер шумит walk/idle на стоящем
+    // педе — прокси дёргался задачами. Переключаемся после 3 одинаковых
+    // снапшотов подряд.
+    uint8_t pendingMoveState = 0xFF;
+    unsigned int pendingMoveStateTicks = 0;
     // R&D: вагон привязан к локомотиву (позицию ведёт attachment).
     bool trainAttached = false;
     unsigned int trainAttachedTo = 0;
@@ -929,46 +934,59 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
 
     // Большой разрыв (спавн/телепорт/лаг) — переносим, иначе пед будет
     // бесконечно догонять через полкарты.
-    if (dist > 8.0f)
+    if (dist > 12.0f)
     {
         SetCoords(proxy.handle, e.x, e.y, e.z);
         SetHeading(proxy.handle, e.heading);
         proxy.moveTaskValid = false;
+        proxy.pendingMoveStateTicks = 0;
     }
     else
     {
+        // Гистерезис состояния (снапшоты идут ~10 Гц).
         const uint8_t st = e.state;
-        const bool walking = (st == net::kEntityStateWalk);
-        const bool running = (st == net::kEntityStateRun);
+        if (st == proxy.pendingMoveState)
+            ++proxy.pendingMoveStateTicks;
+        else
+        {
+            proxy.pendingMoveState = st;
+            proxy.pendingMoveStateTicks = 1;
+        }
+        const uint8_t effective =
+            (proxy.pendingMoveStateTicks >= 3) ? st : proxy.moveState;
+
+        const bool walking = (effective == net::kEntityStateWalk);
+        const bool running = (effective == net::kEntityStateRun);
         const bool targetMoved =
             !proxy.moveTaskValid ||
-            std::fabs(target.x - proxy.moveTarget.x) > 1.0f ||
-            std::fabs(target.y - proxy.moveTarget.y) > 1.0f;
+            std::fabs(target.x - proxy.moveTarget.x) > 2.5f ||
+            std::fabs(target.y - proxy.moveTarget.y) > 2.5f;
         if (walking || running)
         {
             const float speed = running ? 2.0f : 1.0f;
-            if (targetMoved || proxy.moveState != st)
+            if (targetMoved || proxy.moveState != effective)
             {
                 SetMoveBlend(proxy.handle, speed);
                 FollowNavmesh(proxy.handle, e.x, e.y, e.z, speed);
                 proxy.moveTarget = target;
                 proxy.moveTaskValid = true;
+                proxy.moveState = effective;
             }
         }
         else
         {
-            // Idle: если стояли задачей — фиксируем стойку; если отстали
-            // больше 1.5 м, подводим шагом.
-            if (dist > 1.5f)
+            // Idle: если стояли задачей — фиксируем стойку; подводим шагом
+            // только при заметном отставании (>3 м, а не 1.5 — меньше дёрганья).
+            if (dist > 3.0f)
             {
-                if (!proxy.moveTaskValid ||
-                    proxy.moveState != net::kEntityStateIdle ||
+                if (!proxy.moveTaskValid || proxy.moveState != effective ||
                     targetMoved)
                 {
                     SetMoveBlend(proxy.handle, 1.0f);
                     FollowNavmesh(proxy.handle, e.x, e.y, e.z, 1.0f);
                     proxy.moveTarget = target;
                     proxy.moveTaskValid = true;
+                    proxy.moveState = effective;
                 }
             }
             else if (proxy.moveTaskValid)
@@ -976,6 +994,7 @@ void UpdateProxy(Proxy& proxy, const net::WorldEntity& e)
                 SetMoveBlend(proxy.handle, 0.0f);
                 StandStill(proxy.handle);
                 proxy.moveTaskValid = false;
+                proxy.moveState = effective;
             }
         }
         if (dist < 3.0f)
