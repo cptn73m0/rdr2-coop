@@ -79,7 +79,7 @@ struct NpcSpawnPayload {
 static_assert(sizeof(NpcSpawnPayload) == 24,
               "NpcSpawnPayload must be 24 bytes");
 
-// Кадр движения NPC-призрака (те же поля, что интерполятор призрака игрока).
+// Кадр движения/боя NPC-призрака (те же поля, что у призрака игрока).
 struct NpcFramePayload {
     uint32_t netId = 0;
     float x = 0.f;
@@ -87,10 +87,15 @@ struct NpcFramePayload {
     float z = 0.f;
     float heading = 0.f;
     uint8_t move = 0;       // coop::MoveState
-    uint8_t pad[3] = {0, 0, 0};
+    uint8_t action = 0;     // net::Action (Shooting/Aiming/Reloading/None)
+    uint16_t pad2 = 0;
+    float aimX = 0.f;       // точка прицела при action != None
+    float aimY = 0.f;
+    float aimZ = 0.f;
+    uint32_t tail = 0;
 };
-static_assert(sizeof(NpcFramePayload) == 24,
-              "NpcFramePayload must be 24 bytes");
+static_assert(sizeof(NpcFramePayload) == 40,
+              "NpcFramePayload must be 40 bytes");
 
 // Компоненты одежды игрока (наряд): список хэшей одетых shop-предметов.
 // Лимит 96 (а не 32): GET_NUM_COMPONENT_CATEGORIES_IN_PED на реальном педе

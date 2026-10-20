@@ -1,4 +1,4 @@
-﻿#include "npc_sync.h"
+#include "npc_sync.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,7 +23,8 @@ namespace {
 constexpr float kRadius2 = 60.0f * 60.0f;
 constexpr unsigned int kSendEveryTicks = 6; // ~10 Гц
 constexpr uint64_t kGhostTimeoutMs = 3000;  // нет кадров 3 с — удаляем призрака
-constexpr uint64_t kInterpMs = 100;         // интерполяция между кадрами 10 Гц
+constexpr float kTeleportDist = 15.0f;      // дальше — телепорт, а не догоняние
+constexpr float kTaskRetargetDist = 1.0f;   // перевыдаём задачу при смещении цели
 
 unsigned int g_lastHostTick = 0;
 std::unordered_map<unsigned int, uint32_t> g_npcNetIds; // handle -> netId
@@ -57,16 +58,22 @@ struct NpcGhost
     uint32_t weapon = 0;
     bool mounted = false;
     bool weaponGiven = false;
+    bool weaponEquipped = false;
 
     bool hasTarget = false;
-    Vec3 from{0.f, 0.f, 0.f};
-    Vec3 to{0.f, 0.f, 0.f};
-    float fromHeading = 0.f;
-    float toHeading = 0.f;
-    uint64_t interpStartMs = 0;
-    uint8_t move = 0;
-    uint8_t lastAppliedMove = 0xFF;
+    Vec3 target{0.f, 0.f, 0.f};
+    float targetHeading = 0.f;
     uint64_t lastFrameMs = 0;
+
+    uint8_t move = 0;
+    uint8_t appliedMove = 0xFF;
+    Vec3 taskTarget{0.f, 0.f, 0.f};
+    bool taskValid = false;
+
+    uint8_t action = 0;
+    Vec3 aim{0.f, 0.f, 0.f};
+    unsigned int lastShootTick = 0;
+    unsigned int lastAimTick = 0;
 };
 
 std::mutex g_mtx;
@@ -132,6 +139,18 @@ uint8_t MoveStateForSpeed(float speed)
     return static_cast<uint8_t>(coop::MoveState::Idle);
 }
 
+uint8_t DetectAction(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_SHOOTING); Push(handle);
+    if (Call()) return static_cast<uint8_t>(net::Action::Shooting);
+    Init(natives::IS_PED_RELOADING); Push(handle);
+    if (Call()) return static_cast<uint8_t>(net::Action::Reloading);
+    Init(natives::IS_PED_WEAPON_READY_TO_SHOOT); Push(handle);
+    if (Call()) return static_cast<uint8_t>(net::Action::Aiming);
+    return static_cast<uint8_t>(net::Action::None);
+}
+
 void SetCoordsLocal(unsigned int handle, const Vec3& p)
 {
     using namespace natives_api;
@@ -149,6 +168,15 @@ void SetHeadingLocal(unsigned int handle, float heading)
     Push(handle);
     Push(heading);
     Call();
+}
+
+float GroundZ(float x, float y, float z)
+{
+    using namespace natives_api;
+    Init(natives::GET_GROUND_Z_FOR_3D_COORD);
+    Push(x); Push(y); Push(z);
+    Push(false);
+    return CallFloat();
 }
 
 bool HasModelLoadedLocal(unsigned int model)
@@ -189,11 +217,6 @@ void DeleteGhostEntity(unsigned int& handle)
     handle = 0;
 }
 
-float AngleDelta(float from, float to)
-{
-    return std::fmod(to - from + 540.0f, 360.0f) - 180.0f;
-}
-
 void EquipMetaOutfit(unsigned int ped, uint32_t outfit)
 {
     if (!outfit || !ped)
@@ -213,18 +236,81 @@ void GiveWeaponLocal(NpcGhost& g)
     Init(natives::GIVE_WEAPON_TO_PED);
     Push(g.ped);
     Push(static_cast<unsigned long long>(g.weapon));
-    Push(static_cast<unsigned long long>(60)); // ammoCount
-    Push(static_cast<unsigned long long>(0));  // bForceInHand
-    Push(static_cast<unsigned long long>(0));  // bForceInHolster
-    Push(static_cast<unsigned long long>(0));  // attachPoint
-    Push(static_cast<unsigned long long>(0));  // bAllowMultipleCopies
+    Push(static_cast<unsigned long long>(60));
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
     Push(0.5f);
     Push(1.0f);
-    Push(static_cast<unsigned long long>(0));  // addReason
-    Push(static_cast<unsigned long long>(1));  // bIgnoreUnlocks
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(1));
     Push(0.5f);
     Call();
     g.weaponGiven = true;
+}
+
+void EquipWeaponInHand(NpcGhost& g)
+{
+    if (!g.ped || !g.weapon || g.weaponEquipped)
+        return;
+    using namespace natives_api;
+    Init(natives::SET_CURRENT_PED_WEAPON);
+    Push(g.ped);
+    Push(static_cast<unsigned long long>(g.weapon));
+    Push(static_cast<unsigned long long>(1)); // equipNow
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Call();
+    g.weaponEquipped = true;
+}
+
+void StandStill(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::TASK_STAND_STILL);
+    Push(ped);
+    Push(static_cast<unsigned long long>(0xFFFFFFFF));
+    Call();
+}
+
+void FollowNavmesh(unsigned int ped, const Vec3& p, float speed)
+{
+    using namespace natives_api;
+    Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
+    Push(ped);
+    Push(p.x); Push(p.y); Push(p.z);
+    Push(speed);
+    Push(static_cast<unsigned long long>(0xFFFFFFFF));
+    Push(0.5f);
+    Push(static_cast<unsigned long long>(4));
+    Push(40000.f);
+    Call();
+}
+
+void AimGunAt(unsigned int ped, const Vec3& t)
+{
+    using namespace natives_api;
+    Init(natives::TASK_AIM_GUN_AT_COORD);
+    Push(ped);
+    Push(t.x); Push(t.y); Push(t.z);
+    Push(static_cast<unsigned long long>(0xFFFFFFFF));
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Call();
+}
+
+void ShootAt(unsigned int ped, const Vec3& t)
+{
+    using namespace natives_api;
+    Init(natives::TASK_SHOOT_AT_COORD);
+    Push(ped);
+    Push(t.x); Push(t.y); Push(t.z);
+    Push(static_cast<unsigned long long>(120));
+    Push(static_cast<unsigned long long>(0x5D60E4E0)); // SingleShot
+    Push(static_cast<unsigned long long>(0));
+    Call();
 }
 
 void CreateGhostPed(NpcGhost& g, const net::NpcFramePayload& f)
@@ -281,6 +367,8 @@ void CreateGhostPed(NpcGhost& g, const net::NpcFramePayload& f)
     }
 
     GiveWeaponLocal(g);
+    if (!g.mounted)
+        StandStill(g.ped);
 
     sh_log::Write("npc: ghost created netId=%u model=0x%08X outfit=0x%08X "
                   "mount=0x%08X weapon=0x%08X\n",
@@ -294,20 +382,139 @@ void ApplyFrameToGhost(NpcGhost& g, const net::NpcFramePayload& f)
         CreateGhostPed(g, f);
         if (!g.ped)
         {
-            g.lastFrameMs = GetTickCount64(); // попробуем создать позже
+            g.lastFrameMs = GetTickCount64();
             return;
         }
     }
-    const unsigned int anchor =
-        (g.mounted && g.mount && DoesExist(g.mount)) ? g.mount : g.ped;
-    g.from = GetCoords(anchor);
-    g.fromHeading = GetHeading(anchor);
-    g.to = Vec3{f.x, f.y, f.z};
-    g.toHeading = f.heading;
-    g.interpStartMs = GetTickCount64();
-    g.hasTarget = true;
+    g.target = Vec3{f.x, f.y, f.z};
+    g.targetHeading = f.heading;
     g.move = f.move;
-    g.lastFrameMs = g.interpStartMs;
+    g.action = f.action;
+    g.aim = Vec3{f.aimX, f.aimY, f.aimZ};
+    g.hasTarget = true;
+    g.lastFrameMs = GetTickCount64();
+}
+
+void UpdateGhostMove(NpcGhost& g, unsigned int tickCount)
+{
+    if (!g.ped || !DoesExist(g.ped))
+        return;
+
+    // Конный: едет лошадь (привязка к земле), всадник следует за ней.
+    if (g.mounted && g.mount && DoesExist(g.mount))
+    {
+        const Vec3 cur = GetCoords(g.mount);
+        const float dz = g.target.z - cur.z;
+        const float dist2 = (g.target.x - cur.x) * (g.target.x - cur.x) +
+                            (g.target.y - cur.y) * (g.target.y - cur.y);
+        if (dist2 > kTeleportDist * kTeleportDist || std::fabs(dz) > 20.f)
+        {
+            const float gz = GroundZ(g.target.x, g.target.y, g.target.z);
+            SetCoordsLocal(g.mount, Vec3{g.target.x, g.target.y, gz});
+        }
+        SetHeadingLocal(g.mount, g.targetHeading);
+        using namespace natives_api;
+        Init(natives::GET_MOUNT);
+        Push(g.ped);
+        if (static_cast<unsigned int>(Call()) != g.mount)
+        {
+            Init(natives::SET_PED_ONTO_MOUNT);
+            Push(g.ped);
+            Push(g.mount);
+            Push(-1);
+            Push(false);
+            Call();
+        }
+        if (g.action == static_cast<uint8_t>(net::Action::Shooting) &&
+            (tickCount - g.lastShootTick) >= 8)
+        {
+            EquipWeaponInHand(g);
+            g.lastShootTick = tickCount;
+            ShootAt(g.ped, g.aim);
+        }
+        else if (g.action == static_cast<uint8_t>(net::Action::Aiming) &&
+                 (tickCount - g.lastAimTick) >= 15)
+        {
+            EquipWeaponInHand(g);
+            g.lastAimTick = tickCount;
+            AimGunAt(g.ped, g.aim);
+        }
+        return;
+    }
+
+    // Пеший: идём/бежим по навмешу, стоим на месте — как призрак игрока.
+    const Vec3 cur = GetCoords(g.ped);
+    const float dx = g.target.x - cur.x;
+    const float dy = g.target.y - cur.y;
+    const float dist2 = dx * dx + dy * dy;
+
+    const bool walking =
+        g.move == static_cast<uint8_t>(coop::MoveState::Walk);
+    const bool running =
+        g.move == static_cast<uint8_t>(coop::MoveState::Run);
+
+    if (dist2 > kTeleportDist * kTeleportDist)
+    {
+        const float gz = GroundZ(g.target.x, g.target.y, g.target.z);
+        SetCoordsLocal(g.ped, Vec3{g.target.x, g.target.y, gz});
+        SetHeadingLocal(g.ped, g.targetHeading);
+        g.taskValid = false;
+    }
+    else if (walking || running)
+    {
+        const float speed = running ? 2.0f : 1.0f;
+        const bool retarget =
+            !g.taskValid ||
+            std::fabs(g.target.x - g.taskTarget.x) > kTaskRetargetDist ||
+            std::fabs(g.target.y - g.taskTarget.y) > kTaskRetargetDist ||
+            g.appliedMove != g.move;
+        if (retarget)
+        {
+            const float gz = GroundZ(g.target.x, g.target.y, g.target.z);
+            FollowNavmesh(g.ped, Vec3{g.target.x, g.target.y, gz}, speed);
+            g.taskTarget = g.target;
+            g.taskValid = true;
+            g.appliedMove = g.move;
+        }
+        SetHeadingLocal(g.ped, g.targetHeading);
+    }
+    else
+    {
+        if (dist2 > 1.5f * 1.5f)
+        {
+            const float gz = GroundZ(g.target.x, g.target.y, g.target.z);
+            if (!g.taskValid ||
+                std::fabs(g.target.x - g.taskTarget.x) > kTaskRetargetDist ||
+                std::fabs(g.target.y - g.taskTarget.y) > kTaskRetargetDist)
+            {
+                FollowNavmesh(g.ped, Vec3{g.target.x, g.target.y, gz}, 1.0f);
+                g.taskTarget = g.target;
+                g.taskValid = true;
+            }
+        }
+        else if (g.taskValid || g.appliedMove != g.move)
+        {
+            StandStill(g.ped);
+            g.taskValid = false;
+            g.appliedMove = g.move;
+        }
+        SetHeadingLocal(g.ped, g.targetHeading);
+    }
+
+    if (g.action == static_cast<uint8_t>(net::Action::Shooting) &&
+        (tickCount - g.lastShootTick) >= 8)
+    {
+        EquipWeaponInHand(g);
+        g.lastShootTick = tickCount;
+        ShootAt(g.ped, g.aim);
+    }
+    else if (g.action == static_cast<uint8_t>(net::Action::Aiming) &&
+             (tickCount - g.lastAimTick) >= 15)
+    {
+        EquipWeaponInHand(g);
+        g.lastAimTick = tickCount;
+        AimGunAt(g.ped, g.aim);
+    }
 }
 
 void GuestInterp(unsigned int tickCount)
@@ -326,7 +533,6 @@ void GuestInterp(unsigned int tickCount)
         }
         if (g.lastFrameMs != 0 && now - g.lastFrameMs > kGhostTimeoutMs)
         {
-            // NPC ушёл из радиуса хоста — убираем призрака.
             if (g.mount)
                 DeleteGhostEntity(g.mount);
             DeleteGhostEntity(g.ped);
@@ -335,68 +541,9 @@ void GuestInterp(unsigned int tickCount)
         }
         if (!g.hasTarget)
             continue;
-
-        float alpha = 1.0f;
-        if (kInterpMs > 0)
-        {
-            alpha = static_cast<float>(now - g.interpStartMs) /
-                    static_cast<float>(kInterpMs);
-            if (alpha < 0.f) alpha = 0.f;
-            if (alpha > 1.f) alpha = 1.f;
-        }
-        const Vec3 p{
-            g.from.x + (g.to.x - g.from.x) * alpha,
-            g.from.y + (g.to.y - g.from.y) * alpha,
-            g.from.z + (g.to.z - g.from.z) * alpha};
-        const float h = g.fromHeading + AngleDelta(g.fromHeading, g.toHeading) * alpha;
-
-        if (g.mounted && g.mount && DoesExist(g.mount))
-        {
-            SetCoordsLocal(g.mount, p);
-            SetHeadingLocal(g.mount, h);
-            using namespace natives_api;
-            Init(natives::GET_MOUNT);
-            Push(g.ped);
-            if (static_cast<unsigned int>(Call()) != g.mount)
-            {
-                Init(natives::SET_PED_ONTO_MOUNT);
-                Push(g.ped);
-                Push(g.mount);
-                Push(-1);
-                Push(false);
-                Call();
-            }
-        }
-        else
-        {
-            SetCoordsLocal(g.ped, p);
-            SetHeadingLocal(g.ped, h);
-        }
-
-        if (g.move != g.lastAppliedMove)
-        {
-            g.lastAppliedMove = g.move;
-            using namespace natives_api;
-            if (g.move == static_cast<uint8_t>(coop::MoveState::Idle))
-            {
-                Init(natives::TASK_STAND_STILL);
-                Push(g.ped);
-                Push(static_cast<unsigned long long>(0xFFFFFFFF));
-                Call();
-            }
-            else
-            {
-                const float ratio =
-                    g.move == static_cast<uint8_t>(coop::MoveState::Run) ? 2.0f : 1.0f;
-                Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
-                Push(g.ped);
-                Push(ratio);
-                Call();
-            }
-        }
+        UpdateGhostMove(g, tickCount);
     }
 
-    // Удаляем записи с невалидными педами.
     for (auto it = g_ghosts.begin(); it != g_ghosts.end();)
     {
         if (it->second.ped == 0)
@@ -404,7 +551,6 @@ void GuestInterp(unsigned int tickCount)
         else
             ++it;
     }
-    (void)tickCount;
 }
 
 void SuppressGuestAmbient()
@@ -531,6 +677,14 @@ void HostSendFrames(unsigned int tickCount)
         f.x = p.x; f.y = p.y; f.z = p.z;
         f.heading = GetHeading(npc.handle);
         f.move = MoveStateForSpeed(GetSpeed(npc.handle));
+        f.action = DetectAction(npc.handle);
+        if (f.action != static_cast<uint8_t>(net::Action::None))
+        {
+            const float h = f.heading * 0.017453292519943295f;
+            f.aimX = p.x - std::sin(h) * 15.0f;
+            f.aimY = p.y + std::cos(h) * 15.0f;
+            f.aimZ = p.z + 1.2f;
+        }
         coop::SendNpcFrame(f);
     }
     (void)tickCount;
@@ -554,7 +708,6 @@ void GuestDrain(unsigned int tickCount)
         g.netId = sp.netId;
         if (g.ped && (g.model != sp.model || g.mounted != ((sp.flags & 1u) != 0)))
         {
-            // Оригинал переродился/сменил модель — пересоздаём.
             DeleteGhostEntity(g.mount);
             DeleteGhostEntity(g.ped);
             g = NpcGhost{};
@@ -568,6 +721,7 @@ void GuestDrain(unsigned int tickCount)
         {
             g.weapon = sp.weaponHash;
             g.weaponGiven = false;
+            g.weaponEquipped = false;
         }
     }
 

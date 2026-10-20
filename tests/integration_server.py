@@ -449,7 +449,8 @@ def test_payload_sizes_and_host_only_messages(exe, tmp):
         # NpcSpawn/NpcFrame: host-only, exact 24 bytes.
         spawn = struct.pack("<IIIIIBBBB", 1, 0x1234, 0x5678, 0x9ABC, 0xDEF0,
                             1, 0, 0, 0)
-        frame = struct.pack("<IffffBBBB", 1, 1.0, 2.0, 3.0, 90.0, 1, 0, 0, 0)
+        frame = struct.pack("<IffffBBHfffI", 1, 1.0, 2.0, 3.0, 90.0, 1, 0,
+                            0, 10.0, 11.0, 12.0, 0)
         host.sendall(frame_bytes(TYPE_NPC_SPAWN, spawn))
         assert recv_type(guest, TYPE_NPC_SPAWN) == spawn
         guest.sendall(frame_bytes(TYPE_NPC_SPAWN, spawn))
