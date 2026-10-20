@@ -1,6 +1,8 @@
-#include "npc_sync.h"
+﻿#include "npc_sync.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -20,6 +22,8 @@ namespace {
 
 constexpr float kRadius2 = 60.0f * 60.0f;
 constexpr unsigned int kSendEveryTicks = 6; // ~10 Гц
+constexpr uint64_t kGhostTimeoutMs = 3000;  // нет кадров 3 с — удаляем призрака
+constexpr uint64_t kInterpMs = 100;         // интерполяция между кадрами 10 Гц
 
 unsigned int g_lastHostTick = 0;
 std::unordered_map<unsigned int, uint32_t> g_npcNetIds; // handle -> netId
@@ -40,11 +44,35 @@ struct HostNpc
 std::vector<HostNpc> g_roster;
 std::unordered_map<uint32_t, net::NpcSpawnPayload> g_sentSpawns;
 
-// Гость: pending (сетевой поток -> игровой). Визуализация будет подключена
-// следующим шагом; пока собираем и логируем.
+// ---------------- гость: призраки NPC ----------------
+
+struct NpcGhost
+{
+    uint32_t netId = 0;
+    unsigned int ped = 0;
+    unsigned int mount = 0;
+    uint32_t model = 0;
+    uint32_t metaOutfit = 0;
+    uint32_t mountModel = 0;
+    uint32_t weapon = 0;
+    bool mounted = false;
+    bool weaponGiven = false;
+
+    bool hasTarget = false;
+    Vec3 from{0.f, 0.f, 0.f};
+    Vec3 to{0.f, 0.f, 0.f};
+    float fromHeading = 0.f;
+    float toHeading = 0.f;
+    uint64_t interpStartMs = 0;
+    uint8_t move = 0;
+    uint8_t lastAppliedMove = 0xFF;
+    uint64_t lastFrameMs = 0;
+};
+
 std::mutex g_mtx;
 std::vector<net::NpcSpawnPayload> g_pendingSpawns;
 std::vector<net::NpcFramePayload> g_pendingFrames;
+std::unordered_map<uint32_t, NpcGhost> g_ghosts;
 unsigned int g_lastGuestLogTick = 0;
 
 bool DoesExist(unsigned int handle)
@@ -103,6 +131,292 @@ uint8_t MoveStateForSpeed(float speed)
     if (speed > 0.3f) return static_cast<uint8_t>(coop::MoveState::Walk);
     return static_cast<uint8_t>(coop::MoveState::Idle);
 }
+
+void SetCoordsLocal(unsigned int handle, const Vec3& p)
+{
+    using namespace natives_api;
+    Init(natives::SET_ENTITY_COORDS);
+    Push(handle);
+    Push(p.x); Push(p.y); Push(p.z);
+    Push(false); Push(false); Push(false); Push(false);
+    Call();
+}
+
+void SetHeadingLocal(unsigned int handle, float heading)
+{
+    using namespace natives_api;
+    Init(natives::SET_ENTITY_HEADING);
+    Push(handle);
+    Push(heading);
+    Call();
+}
+
+bool HasModelLoadedLocal(unsigned int model)
+{
+    using namespace natives_api;
+    Init(natives::HAS_MODEL_LOADED);
+    Push(static_cast<unsigned long long>(model));
+    return Call() != 0;
+}
+
+void RequestModelLocal(unsigned int model)
+{
+    using namespace natives_api;
+    Init(natives::REQUEST_MODEL);
+    Push(static_cast<unsigned long long>(model));
+    Call();
+}
+
+void DeleteGhostEntity(unsigned int& handle)
+{
+    if (!handle)
+        return;
+    if (DoesExist(handle))
+    {
+        using namespace natives_api;
+        int h = static_cast<int>(handle);
+        Init(natives::DELETE_PED);
+        Push(reinterpret_cast<unsigned long long>(&h));
+        Call();
+        if (DoesExist(handle))
+        {
+            int h2 = static_cast<int>(handle);
+            Init(natives::SET_ENTITY_AS_NO_LONGER_NEEDED);
+            Push(reinterpret_cast<unsigned long long>(&h2));
+            Call();
+        }
+    }
+    handle = 0;
+}
+
+float AngleDelta(float from, float to)
+{
+    return std::fmod(to - from + 540.0f, 360.0f) - 180.0f;
+}
+
+void EquipMetaOutfit(unsigned int ped, uint32_t outfit)
+{
+    if (!outfit || !ped)
+        return;
+    using namespace natives_api;
+    Init(natives::EQUIP_META_PED_OUTFIT);
+    Push(ped);
+    Push(static_cast<unsigned long long>(outfit));
+    Call();
+}
+
+void GiveWeaponLocal(NpcGhost& g)
+{
+    if (!g.ped || !g.weapon || g.weaponGiven)
+        return;
+    using namespace natives_api;
+    Init(natives::GIVE_WEAPON_TO_PED);
+    Push(g.ped);
+    Push(static_cast<unsigned long long>(g.weapon));
+    Push(static_cast<unsigned long long>(60)); // ammoCount
+    Push(static_cast<unsigned long long>(0));  // bForceInHand
+    Push(static_cast<unsigned long long>(0));  // bForceInHolster
+    Push(static_cast<unsigned long long>(0));  // attachPoint
+    Push(static_cast<unsigned long long>(0));  // bAllowMultipleCopies
+    Push(0.5f);
+    Push(1.0f);
+    Push(static_cast<unsigned long long>(0));  // addReason
+    Push(static_cast<unsigned long long>(1));  // bIgnoreUnlocks
+    Push(0.5f);
+    Call();
+    g.weaponGiven = true;
+}
+
+void CreateGhostPed(NpcGhost& g, const net::NpcFramePayload& f)
+{
+    RequestModelLocal(g.model);
+    if (g.mounted && g.mountModel)
+        RequestModelLocal(g.mountModel);
+    if (!HasModelLoadedLocal(g.model))
+        return;
+    if (g.mounted && g.mountModel && !HasModelLoadedLocal(g.mountModel))
+        return;
+
+    using namespace natives_api;
+    Init(natives::CREATE_PED);
+    Push(static_cast<unsigned long long>(g.model));
+    Push(f.x); Push(f.y); Push(f.z); Push(f.heading);
+    Push(false); Push(false); Push(false); Push(false);
+    g.ped = static_cast<unsigned int>(Call());
+    if (!g.ped)
+        return;
+
+    Init(natives::SET_ENTITY_AS_MISSION_ENTITY);
+    Push(g.ped); Push(true); Push(true); Call();
+    Init(natives::SET_ENTITY_INVINCIBLE);
+    Push(g.ped); Push(true); Call();
+    Init(natives::SET_ENTITY_VISIBLE);
+    Push(g.ped); Push(true); Call();
+    Init(natives::SET_PED_RANDOM_COMPONENT_VARIATION);
+    Push(g.ped); Call();
+    EquipMetaOutfit(g.ped, g.metaOutfit);
+
+    if (g.mounted && g.mountModel)
+    {
+        Init(natives::CREATE_PED);
+        Push(static_cast<unsigned long long>(g.mountModel));
+        Push(f.x); Push(f.y); Push(f.z); Push(f.heading);
+        Push(false); Push(false); Push(false); Push(false);
+        g.mount = static_cast<unsigned int>(Call());
+        if (g.mount)
+        {
+            Init(natives::SET_ENTITY_AS_MISSION_ENTITY);
+            Push(g.mount); Push(true); Push(true); Call();
+            Init(natives::SET_ENTITY_INVINCIBLE);
+            Push(g.mount); Push(true); Call();
+            Init(natives::SET_ENTITY_VISIBLE);
+            Push(g.mount); Push(true); Call();
+            Init(natives::SET_PED_ONTO_MOUNT);
+            Push(g.ped);
+            Push(g.mount);
+            Push(-1);
+            Push(false);
+            Call();
+        }
+    }
+
+    GiveWeaponLocal(g);
+
+    sh_log::Write("npc: ghost created netId=%u model=0x%08X outfit=0x%08X "
+                  "mount=0x%08X weapon=0x%08X\n",
+                  g.netId, g.model, g.metaOutfit, g.mountModel, g.weapon);
+}
+
+void ApplyFrameToGhost(NpcGhost& g, const net::NpcFramePayload& f)
+{
+    if (!g.ped || !DoesExist(g.ped))
+    {
+        CreateGhostPed(g, f);
+        if (!g.ped)
+        {
+            g.lastFrameMs = GetTickCount64(); // попробуем создать позже
+            return;
+        }
+    }
+    const unsigned int anchor =
+        (g.mounted && g.mount && DoesExist(g.mount)) ? g.mount : g.ped;
+    g.from = GetCoords(anchor);
+    g.fromHeading = GetHeading(anchor);
+    g.to = Vec3{f.x, f.y, f.z};
+    g.toHeading = f.heading;
+    g.interpStartMs = GetTickCount64();
+    g.hasTarget = true;
+    g.move = f.move;
+    g.lastFrameMs = g.interpStartMs;
+}
+
+void GuestInterp(unsigned int tickCount)
+{
+    const uint64_t now = GetTickCount64();
+    for (auto& kv : g_ghosts)
+    {
+        NpcGhost& g = kv.second;
+        if (!g.ped)
+            continue;
+        if (!DoesExist(g.ped))
+        {
+            g.ped = 0;
+            DeleteGhostEntity(g.mount);
+            continue;
+        }
+        if (g.lastFrameMs != 0 && now - g.lastFrameMs > kGhostTimeoutMs)
+        {
+            // NPC ушёл из радиуса хоста — убираем призрака.
+            if (g.mount)
+                DeleteGhostEntity(g.mount);
+            DeleteGhostEntity(g.ped);
+            sh_log::Write("npc: ghost removed netId=%u (timeout)\n", g.netId);
+            continue;
+        }
+        if (!g.hasTarget)
+            continue;
+
+        float alpha = 1.0f;
+        if (kInterpMs > 0)
+        {
+            alpha = static_cast<float>(now - g.interpStartMs) /
+                    static_cast<float>(kInterpMs);
+            if (alpha < 0.f) alpha = 0.f;
+            if (alpha > 1.f) alpha = 1.f;
+        }
+        const Vec3 p{
+            g.from.x + (g.to.x - g.from.x) * alpha,
+            g.from.y + (g.to.y - g.from.y) * alpha,
+            g.from.z + (g.to.z - g.from.z) * alpha};
+        const float h = g.fromHeading + AngleDelta(g.fromHeading, g.toHeading) * alpha;
+
+        if (g.mounted && g.mount && DoesExist(g.mount))
+        {
+            SetCoordsLocal(g.mount, p);
+            SetHeadingLocal(g.mount, h);
+            using namespace natives_api;
+            Init(natives::GET_MOUNT);
+            Push(g.ped);
+            if (static_cast<unsigned int>(Call()) != g.mount)
+            {
+                Init(natives::SET_PED_ONTO_MOUNT);
+                Push(g.ped);
+                Push(g.mount);
+                Push(-1);
+                Push(false);
+                Call();
+            }
+        }
+        else
+        {
+            SetCoordsLocal(g.ped, p);
+            SetHeadingLocal(g.ped, h);
+        }
+
+        if (g.move != g.lastAppliedMove)
+        {
+            g.lastAppliedMove = g.move;
+            using namespace natives_api;
+            if (g.move == static_cast<uint8_t>(coop::MoveState::Idle))
+            {
+                Init(natives::TASK_STAND_STILL);
+                Push(g.ped);
+                Push(static_cast<unsigned long long>(0xFFFFFFFF));
+                Call();
+            }
+            else
+            {
+                const float ratio =
+                    g.move == static_cast<uint8_t>(coop::MoveState::Run) ? 2.0f : 1.0f;
+                Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
+                Push(g.ped);
+                Push(ratio);
+                Call();
+            }
+        }
+    }
+
+    // Удаляем записи с невалидными педами.
+    for (auto it = g_ghosts.begin(); it != g_ghosts.end();)
+    {
+        if (it->second.ped == 0)
+            it = g_ghosts.erase(it);
+        else
+            ++it;
+    }
+    (void)tickCount;
+}
+
+void SuppressGuestAmbient()
+{
+    using namespace natives_api;
+    Init(natives::_SET_AMBIENT_HUMAN_DENSITY_MULTIPLIER_THIS_FRAME);
+    Push(0.0f); Call();
+    Init(natives::_SET_AMBIENT_PED_DENSITY_MULTIPLIER_THIS_FRAME);
+    Push(0.0f); Call();
+}
+
+// ---------------- хост: сканер ----------------
 
 net::NpcSpawnPayload BuildSpawn(const HostNpc& npc)
 {
@@ -173,7 +487,6 @@ void HostScan(unsigned int localPlayerPed, unsigned int tickCount)
         found.push_back(npc);
     }
 
-    // Ближайшие 16 NPC.
     std::stable_sort(found.begin(), found.end(),
         [](const HostNpc& a, const HostNpc& b) {
             return a.distance2 < b.distance2;
@@ -223,6 +536,8 @@ void HostSendFrames(unsigned int tickCount)
     (void)tickCount;
 }
 
+// ---------------- гость: приём ----------------
+
 void GuestDrain(unsigned int tickCount)
 {
     std::vector<net::NpcSpawnPayload> spawns;
@@ -232,16 +547,47 @@ void GuestDrain(unsigned int tickCount)
         spawns.swap(g_pendingSpawns);
         frames.swap(g_pendingFrames);
     }
-    if (spawns.empty() && frames.empty())
-        return;
 
-    // Визуализация призраков подключается следующим шагом; пока считаем и
-    // раз в ~5 с логируем, что поток идёт.
+    for (const net::NpcSpawnPayload& sp : spawns)
+    {
+        NpcGhost& g = g_ghosts[sp.netId];
+        g.netId = sp.netId;
+        if (g.ped && (g.model != sp.model || g.mounted != ((sp.flags & 1u) != 0)))
+        {
+            // Оригинал переродился/сменил модель — пересоздаём.
+            DeleteGhostEntity(g.mount);
+            DeleteGhostEntity(g.ped);
+            g = NpcGhost{};
+            g.netId = sp.netId;
+        }
+        g.model = sp.model;
+        g.metaOutfit = sp.metaOutfit;
+        g.mountModel = sp.mountModel;
+        g.mounted = (sp.flags & 1u) != 0 && sp.mountModel != 0;
+        if (g.weapon != sp.weaponHash)
+        {
+            g.weapon = sp.weaponHash;
+            g.weaponGiven = false;
+        }
+    }
+
+    for (const net::NpcFramePayload& f : frames)
+    {
+        auto it = g_ghosts.find(f.netId);
+        if (it == g_ghosts.end())
+            continue;
+        ApplyFrameToGhost(it->second, f);
+    }
+
     if (tickCount - g_lastGuestLogTick >= 300)
     {
         g_lastGuestLogTick = tickCount;
-        sh_log::Write("npc: guest received spawns=%u frames=%u (visuals: next step)\n",
-                      (unsigned)spawns.size(), (unsigned)frames.size());
+        unsigned int created = 0;
+        for (const auto& kv : g_ghosts)
+            if (kv.second.ped)
+                ++created;
+        sh_log::Write("npc: guest ghosts=%u (spawns=%u frames=%u this batch)\n",
+                      created, (unsigned)spawns.size(), (unsigned)frames.size());
     }
 }
 
@@ -250,6 +596,12 @@ void ResetInternal()
     g_roster.clear();
     g_npcNetIds.clear();
     g_sentSpawns.clear();
+    for (auto& kv : g_ghosts)
+    {
+        DeleteGhostEntity(kv.second.mount);
+        DeleteGhostEntity(kv.second.ped);
+    }
+    g_ghosts.clear();
     {
         std::lock_guard<std::mutex> lk(g_mtx);
         g_pendingSpawns.clear();
@@ -264,7 +616,7 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
 {
     if (!enabled)
     {
-        if (!g_roster.empty() || !g_sentSpawns.empty())
+        if (!g_roster.empty() || !g_sentSpawns.empty() || !g_ghosts.empty())
             ResetInternal();
         return;
     }
@@ -279,6 +631,8 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
     else
     {
         GuestDrain(tickCount);
+        GuestInterp(tickCount);
+        SuppressGuestAmbient();
     }
 }
 
