@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v13: TrainSnapshot — R&D: engine/direction/speed + упорядоченные вагоны.
-constexpr uint16_t kProtocolVersion = 13;
+// v14: NpcSpawn/NpcFrame — репликация NPC как «призраков» (механизм игроков).
+constexpr uint16_t kProtocolVersion = 14;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -49,6 +49,8 @@ enum class Msg : uint8_t {
     MissionBarrier = 0x15,// P3: offer/ready/start-window/started/abort
     HostChanged = 0x16,   // сервер -> клиент: новый хост / смена роли
     TrainSnapshot = 0x17, // R&D: поезд/состав (engine + вагоны по порядку)
+    NpcSpawn = 0x18,      // хост -> гость: регистрация NPC-призрака
+    NpcFrame = 0x19,      // хост -> гость: кадр NPC-призрака (~10 Гц)
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -58,6 +60,37 @@ struct HostChangedPayload {
 };
 static_assert(sizeof(HostChangedPayload) == 4,
               "HostChangedPayload must be 4 bytes");
+
+// ---------------- NPC-призраки: тот же механизм, что у игроков ----------------
+constexpr int kMaxNpcGhosts = 16;
+
+// Регистрация NPC-призрака. metaOutfit — мета-наряд NPC (у мировых педов он
+// есть, поэтому одежда совпадает с оригиналом). mountModel — модель лошади
+// (0 = пеший). weaponHash — текущее оружие.
+struct NpcSpawnPayload {
+    uint32_t netId = 0;
+    uint32_t model = 0;
+    uint32_t metaOutfit = 0;
+    uint32_t mountModel = 0;
+    uint32_t weaponHash = 0;
+    uint8_t flags = 0;      // bit0: верхом (mountModel валиден)
+    uint8_t pad[3] = {0, 0, 0};
+};
+static_assert(sizeof(NpcSpawnPayload) == 24,
+              "NpcSpawnPayload must be 24 bytes");
+
+// Кадр движения NPC-призрака (те же поля, что интерполятор призрака игрока).
+struct NpcFramePayload {
+    uint32_t netId = 0;
+    float x = 0.f;
+    float y = 0.f;
+    float z = 0.f;
+    float heading = 0.f;
+    uint8_t move = 0;       // coop::MoveState
+    uint8_t pad[3] = {0, 0, 0};
+};
+static_assert(sizeof(NpcFramePayload) == 24,
+              "NpcFramePayload must be 24 bytes");
 
 // Компоненты одежды игрока (наряд): список хэшей одетых shop-предметов.
 // Лимит 96 (а не 32): GET_NUM_COMPONENT_CATEGORIES_IN_PED на реальном педе

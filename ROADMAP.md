@@ -151,6 +151,10 @@
 - [x] Config-тесты: LoadFromFile, флаги/hex/битые строки/defaults
 - [x] players.txt recovery-тест: битые строки и stale .tmp игнорируются
 - [x] restore_saves.ps1 автотест (restore + pre-restore snapshot)
+- [x] NPC-призраки (v14): хост-ростер (netId/model/meta-outfit/лошадь/оружие)
+      + кадры ~10 Гц, host-only валидация сервера, mock-тесты
+- [ ] NPC-призраки: гостевая визуализация (пед/лошадь/наряд + интерполяция
+      как у призраков игроков) — следующий шаг
 - [x] TrainSnapshot v13 + attach вагонов к локомотиву на госте,
       `train_debug` offset/attach-логи
 - [x] C++ stress candidate budget: 4×10k против reference-выборки

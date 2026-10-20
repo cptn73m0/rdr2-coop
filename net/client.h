@@ -65,6 +65,9 @@ public:
     using OnMissionEvent = std::function<void(const net::MissionEventPayload&)>;
     // R&D: TrainSnapshot (сырой payload, разбор — в coop).
     using OnTrainSnapshot = std::function<void(const std::vector<uint8_t>&)>;
+    // NPC-призраки: регистрация и кадры движения.
+    using OnNpcSpawn = std::function<void(const net::NpcSpawnPayload&)>;
+    using OnNpcFrame = std::function<void(const net::NpcFramePayload&)>;
     // P3: активная миссия хоста.
     using OnMissionState = std::function<void(const net::MissionStatePayload&)>;
     // P3: барьер совместного старта миссии.
@@ -107,6 +110,9 @@ public:
     void SendMissionBarrier(const net::MissionBarrierPayload& event);
     // R&D: отправить TrainSnapshot (только хост).
     void SendTrainSnapshot(const std::vector<uint8_t>& payload);
+    // NPC-призраки (только хост).
+    void SendNpcSpawn(const net::NpcSpawnPayload& spawn);
+    void SendNpcFrame(const net::NpcFramePayload& frame);
     // Текущее состояние роли по мнению сервера (обновляется HostChanged).
     bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
@@ -130,6 +136,8 @@ public:
     void SetMissionState(OnMissionState cb);
     void SetMissionBarrier(OnMissionBarrier cb);
     void SetTrainSnapshot(OnTrainSnapshot cb);
+    void SetNpcSpawn(OnNpcSpawn cb);
+    void SetNpcFrame(OnNpcFrame cb);
     void SetConnectionLost(OnConnectionLost cb);
     void SetHostChanged(OnHostChanged cb);
 
@@ -172,6 +180,8 @@ private:
     OnMissionState onMissionState_;
     OnMissionBarrier onMissionBarrier_;
     OnTrainSnapshot onTrainSnapshot_;
+    OnNpcSpawn onNpcSpawn_;
+    OnNpcFrame onNpcFrame_;
     OnConnectionLost onConnectionLost_;
     OnHostChanged onHostChanged_;
     std::atomic<bool> joined_{false};

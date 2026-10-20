@@ -2,8 +2,9 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 13` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 14` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение.
+- v14: NpcSpawn (0x18) / NpcFrame (0x19) — NPC-призраки (механизм игроков).
 - v13: TrainSnapshot (0x17) — R&D: engine/direction/speed + вагоны по порядку.
 - v12: HostChanged (0x16) — сервер повышает гостя до хоста при выходе хоста.
 - v11: MissionBarrier (0x15) — P3: offer/ready/start-window/started/abort.
@@ -200,6 +201,21 @@ payload: TrainSnapshotHeader (16 B)
 через `ATTACH_ENTITY_TO_ENTITY` с локальными offset; `UpdateProxy` не
 перетирает привязанные вагоны; при удалении локомотива вагоны отцепляются.
 Это экспериментально и требует игровой проверки.
+
+### 0x18 NPC_SPAWN / 0x19 NPC_FRAME (NPC-призраки, только хост → гость)
+
+```
+NpcSpawnPayload (24 B): netId:u32 model:u32 metaOutfit:u32 mountModel:u32
+                        weaponHash:u32 flags:u8 pad[3]
+NpcFramePayload (24 B): netId:u32 x,y,z,heading:f32 move:u8 pad[3]
+```
+
+- Хост выбирает до 16 ближайших NPC (не mission, не призраки игроков),
+  регистрирует их `NpcSpawn` и шлёт `NpcFrame` ~10 Гц.
+- Гость ведёт тех же «призраков», что и игроки: тот же интерполятор движения,
+  meta-outfit (точная одежда NPC), лошадь как у призрака-игрока.
+- Визуализация гостя подключается поэтапно; сервер принимает оба сообщения
+  только от хоста и проверяет точный размер.
 
 ### Reconnect (клиент)
 

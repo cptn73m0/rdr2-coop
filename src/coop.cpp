@@ -7,6 +7,7 @@
 #include "persist.h"
 #include "world_scan.h"
 #include "world_sync.h"
+#include "npc_sync.h"
 #include "mission_catalog.h"
 #include "mission_rewards.h"
 #include "mission_barrier_rules.h"
@@ -3597,6 +3598,14 @@ void InitNetworkClient()
         world_sync::OnTrainSnapshot(payload);
     });
 
+    // NPC-призраки: регистрация и кадры (применит Tick игровым потоком).
+    g_netClient.SetNpcSpawn([](const net::NpcSpawnPayload& spawn) {
+        npc_sync::OnSpawn(spawn);
+    });
+    g_netClient.SetNpcFrame([](const net::NpcFramePayload& frame) {
+        npc_sync::OnFrame(frame);
+    });
+
     // P2: действие/сценарий удалённого игрока — только копируем; применит Tick().
     g_netClient.SetActionState([](const net::ActionStatePayload& a) {
         std::lock_guard<std::mutex> lk(s_actionMtx);
@@ -3732,6 +3741,16 @@ void SendTrainSnapshot(const std::vector<uint8_t>& payload)
     g_netClient.SendTrainSnapshot(payload);
 }
 
+void SendNpcSpawn(const net::NpcSpawnPayload& spawn)
+{
+    g_netClient.SendNpcSpawn(spawn);
+}
+
+void SendNpcFrame(const net::NpcFramePayload& frame)
+{
+    g_netClient.SendNpcFrame(frame);
+}
+
 // P1: пед-призрак и его лошадь — не часть мира NPC; их нельзя реплицировать
 // как обычные сущности (иначе на госте появятся дубли игрока).
 bool IsWorldSyncExcluded(unsigned int handle)
@@ -3773,6 +3792,10 @@ void Tick()
         world_sync::Tick(playerPed, s_tickCount, s_amHost,
                          coopcfg::Get().worldSync,
                          coopcfg::Get().worldTrains);
+
+        // NPC-призраки: отдельный механизм (независим от world_sync).
+        npc_sync::Tick(playerPed, s_tickCount, s_amHost,
+                       coopcfg::Get().worldNpc);
 
         // P2: Action v2 — сценарии/сидение/курение/укрытие.
         if (coopcfg::Get().actionSync)

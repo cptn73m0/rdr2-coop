@@ -1,6 +1,7 @@
 #pragma once
 
 #include "native_call.h"
+#include "net/protocol.h"
 
 #include <cstdint>
 #include <vector>
@@ -21,6 +22,10 @@ void SendWorldSnapshot(const std::vector<uint8_t>& payload);
 
 // R&D: отправить TrainSnapshot от хоста (вызывается world_sync).
 void SendTrainSnapshot(const std::vector<uint8_t>& payload);
+
+// NPC-призраки (v14): регистрация и кадры движения (хост).
+void SendNpcSpawn(const net::NpcSpawnPayload& spawn);
+void SendNpcFrame(const net::NpcFramePayload& frame);
 
 // P1: служебные сущности мода (ghost/mount), которые нельзя реплицировать
 // как NPC мира.
