@@ -1,7 +1,6 @@
 #pragma once
 
 #include "native_call.h"
-#include "net/protocol.h"
 
 #include <cstdint>
 #include <vector>
@@ -22,9 +21,6 @@ void SendWorldSnapshot(const std::vector<uint8_t>& payload);
 
 // R&D: отправить TrainSnapshot от хоста (вызывается world_sync).
 void SendTrainSnapshot(const std::vector<uint8_t>& payload);
-
-// Crew: отправить seat-привязку водителя/пассажира (хост).
-void SendVehicleCrew(const net::VehicleCrewPayload& crew);
 
 // P1: служебные сущности мода (ghost/mount), которые нельзя реплицировать
 // как NPC мира.
