@@ -23,7 +23,7 @@ namespace {
 
 constexpr float kRadius2 = 60.0f * 60.0f;
 constexpr unsigned int kSendEveryTicks = 6; // ~10 Гц
-constexpr uint64_t kGhostTimeoutMs = 3000;  // нет кадров 3 с — удаляем призрака
+constexpr uint64_t kGhostTimeoutMs = 6000;  // нет кадров 6 с — удаляем призрака
 constexpr float kTeleportDist = 15.0f;      // дальше — телепорт, а не догоняние
 constexpr float kTaskRetargetDist = 1.0f;   // перевыдаём задачу при смещении цели
 
@@ -738,6 +738,8 @@ void HostScan(unsigned int localPlayerPed, unsigned int tickCount)
 
 void HostSendFrames(unsigned int tickCount)
 {
+    static unsigned int s_frameCount = 0;
+    static unsigned int s_lastLogTick = 0;
     for (const HostNpc& npc : g_roster)
     {
         if (!DoesExist(npc.handle))
@@ -757,6 +759,14 @@ void HostSendFrames(unsigned int tickCount)
             f.aimZ = p.z + 1.2f;
         }
         coop::SendNpcFrame(f);
+        ++s_frameCount;
+    }
+    if (tickCount - s_lastLogTick >= 300)
+    {
+        s_lastLogTick = tickCount;
+        sh_log::Write("npc: host frames sent=%u roster=%u\n",
+                      s_frameCount, (unsigned)g_roster.size());
+        s_frameCount = 0;
     }
     (void)tickCount;
 }
@@ -821,6 +831,7 @@ void ResetInternal()
     g_roster.clear();
     g_npcNetIds.clear();
     g_sentSpawns.clear();
+    g_lastHostTick = 0;
     RestoreHiddenAmbient();
     for (auto& kv : g_ghosts)
     {
@@ -872,9 +883,12 @@ void OnSpawn(const net::NpcSpawnPayload& spawn)
 
 void OnFrame(const net::NpcFramePayload& frame)
 {
+    static unsigned int s_dropped = 0;
     std::lock_guard<std::mutex> lk(g_mtx);
     if (g_pendingFrames.size() < 2048)
         g_pendingFrames.push_back(frame);
+    else if (++s_dropped % 60 == 1)
+        sh_log::Write("npc: guest frame queue overflow dropped=%u\n", s_dropped);
 }
 
 void Reset()
