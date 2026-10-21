@@ -3,6 +3,7 @@
 
 #include <windows.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -90,24 +91,44 @@ void WriteDefaultIni()
 
 bool AsBool(const std::string& val)
 {
-    return !(val == "0" || val == "false" || val == "no" ||
-             val == "off" || val == "False" || val == "OFF");
+    std::string v;
+    v.reserve(val.size());
+    for (char c : val)
+        v.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    return !(v == "0" || v == "false" || v == "no" || v == "off");
 }
 
 void ApplyLine(const std::string& raw, Config& out)
 {
-    const std::string s = Trim(raw);
+    std::string s = Trim(raw);
     if (s.empty() || s[0] == '#' || s[0] == ';') return;
 
     const size_t eq = s.find('=');
     if (eq == std::string::npos) return;
 
     const std::string key = Trim(s.substr(0, eq));
-    const std::string val = Trim(s.substr(eq + 1));
+    // Inline-комментарии отрезаем только если перед '#'/';' стоит пробел/таб:
+    // так "server_host = 1.2.3.4  ; сервер" работает, а ник "John#1" не ломается.
+    std::string val = Trim(s.substr(eq + 1));
+    for (size_t i = 0; i < val.size(); ++i)
+    {
+        if ((val[i] == '#' || val[i] == ';') && i > 0 &&
+            (val[i - 1] == ' ' || val[i - 1] == '\t'))
+        {
+            val = Trim(val.substr(0, i));
+            break;
+        }
+    }
     if (val.empty()) return;
 
     if (key == "server_host") out.serverHost = val;
-    else if (key == "server_port") out.serverPort = std::atoi(val.c_str());
+    else if (key == "server_port")
+    {
+        char* end = nullptr;
+        const long port = std::strtol(val.c_str(), &end, 10);
+        if (end != val.c_str() && *end == '\0' && port >= 1 && port <= 65535)
+            out.serverPort = static_cast<int>(port);
+    }
     else if (key == "player_name") out.playerName = val;
     else if (key == "world_sync") out.worldSync = AsBool(val);
     else if (key == "action_sync") out.actionSync = AsBool(val);

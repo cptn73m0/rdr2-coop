@@ -80,8 +80,10 @@ struct PedStats
 PedStats ScanPeds(const Vec3& origin, unsigned int localPed)
 {
     PedStats stats;
-    const int count = sh::worldGetAllPeds(g_peds, kMaxPeds);
-    stats.total = (count > kMaxPeds) ? kMaxPeds : (count > 0 ? count : 0);
+    int count = sh::worldGetAllPeds(g_peds, kMaxPeds);
+    if (count < 0) count = 0;
+    if (count > kMaxPeds) count = kMaxPeds; // защита от OOB: движок может вернуть больше
+    stats.total = count;
     const float r30 = 30.f * 30.f;
     const float r60 = 60.f * 60.f;
     const float r100 = 100.f * 100.f;
@@ -188,9 +190,15 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount)
     const Vec3 origin = EntityCoords(localPlayerPed);
     const PedStats peds = ScanPeds(origin, localPlayerPed);
 
-    const int nVehicles = sh::worldGetAllVehicles(g_vehicles, kMaxVehicles);
-    const int nObjects  = sh::worldGetAllObjects(g_objects, kMaxObjects);
-    const int nPickups  = sh::worldGetAllPickups(g_pickups, kMaxPickups);
+    int nVehicles = sh::worldGetAllVehicles(g_vehicles, kMaxVehicles);
+    int nObjects  = sh::worldGetAllObjects(g_objects, kMaxObjects);
+    int nPickups  = sh::worldGetAllPickups(g_pickups, kMaxPickups);
+    if (nVehicles < 0) nVehicles = 0;
+    if (nObjects < 0) nObjects = 0;
+    if (nPickups < 0) nPickups = 0;
+    if (nVehicles > kMaxVehicles) nVehicles = kMaxVehicles;
+    if (nObjects > kMaxObjects) nObjects = kMaxObjects;
+    if (nPickups > kMaxPickups) nPickups = kMaxPickups;
 
     int missionVehicles = 0;
     const int nearVehicles = CountNear(g_vehicles, nVehicles, origin, 100.f, &missionVehicles);

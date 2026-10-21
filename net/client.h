@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -91,7 +92,7 @@ public:
     void SendOutfit(const net::OutfitState& os);
     // Отправить событие выстрела (точка попадания/прицеливания).
     void SendShot(const net::ShotPayload& sp);
-    // Отправить снаряжение лошади (shop-предметы: седло/поклажа) при смене.
+    // Отправить снаряжение лошади (shop-предметы: седло/поклада) при смене.
     void SendHorseOutfit(const net::OutfitState& os);
     // P1: отправить снапшот мира (только хост).
     void SendWorldSnapshot(const std::vector<uint8_t>& payload);
@@ -138,6 +139,9 @@ public:
 private:
     void Run();
     bool RunOnce();
+    // Текущий сокет (копия shared_ptr под mutex): объект живёт, пока мы его
+    // держим, даже если сетевой поток уже заменил/закрыл соединение.
+    std::shared_ptr<Socket> CurrentSocket();
     bool SendRaw(const std::vector<uint8_t>& frame);
     void SendPing();
     uint64_t NowMs() const;
@@ -151,7 +155,11 @@ private:
     std::atomic<ClientState> state_{ClientState::Disconnected};
     std::thread th_;
 
-    std::unique_ptr<Socket> sock_;
+    // sock_ читается игровым потоком (SendRaw/Stop) и пересоздаётся сетевым
+    // потоком — доступ только под sockMtx_.
+    std::mutex sockMtx_;
+    std::shared_ptr<Socket> sock_;
+
     netio::FrameReader reader_;
 
     OnFrame onFrame_;

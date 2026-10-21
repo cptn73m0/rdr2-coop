@@ -4,6 +4,16 @@ project(rdr2_coop_server CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# P0: static CRT, чтобы серверный exe запускался на чистой Windows без
+# установленного VC++ Redistributable (как и обещает dist/README-server.txt).
+# Политика CMP0091 обязательна, иначе CMAKE_MSVC_RUNTIME_LIBRARY игнорируется.
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endif()
+
 # Сервер — отдельное консольное приложение. Кроссплатформенное: соберётся
 # и на Windows (Winsock), и на Linux (POSIX) одним и тем же кодом.
 

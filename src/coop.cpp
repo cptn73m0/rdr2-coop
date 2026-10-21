@@ -42,6 +42,7 @@ unsigned int s_blip = 0;
 bool s_ghostDead = false;
 bool s_localDiedNotified = false; // отправили ли серверу Died для своего педа
 unsigned long long s_requestedModel = 0; // какая модель уже запрошена у движка
+unsigned long long s_ignoredPedModelHash = 0; // невалидный хэш из сети (лог один раз)
 bool s_modelLoadedLogged = false;
 bool s_playerJoinedNotified = false;
 unsigned int s_tickCount = 0;
@@ -98,11 +99,27 @@ bool HasModelLoaded(unsigned long long model)
     return Call() != 0;
 }
 
+// IS_MODEL_VALID — проверка хэша модели, пришедшего из сети. Раньше битый
+// model hash приводил к DeleteGhostEntity + RequestModel(невалидной модели):
+// HasModelLoaded() навсегда false, Tick() ранний return — и переставали
+// обрабатываться кадры/наряд/выстрелы/connectionLost.
+bool IsModelHashValid(unsigned long long model)
+{
+    if (!model) return false;
+    using namespace natives_api;
+    Init(natives::IS_MODEL_VALID);
+    Push(model);
+    return Call() != 0;
+}
+
 void RequestModel(unsigned long long model)
 {
+    // Центральный предохранитель: невалидный хэш не запрашиваем вообще.
+    if (!IsModelHashValid(model)) return;
     using namespace natives_api;
     Init(natives::REQUEST_MODEL);
     Push(model);
+    Push(static_cast<unsigned long long>(0)); // p1: 2-й аргумент обязателен
     Call();
 }
 
@@ -171,6 +188,22 @@ void PlaceOnGround(unsigned int handle)
     Init(natives::PLACE_OBJECT_ON_GROUND_PROPERLY);
     Push(handle);
     Call();
+}
+
+// GET_GROUND_Z_FOR_3D_COORD(x,y,z,float* groundZ,BOOL p4) — 5 аргументов.
+// Единая обёртка: раньше во всех вызовах передавали 4, и движок читал p4 из
+// мусора буфера invoker'а (запрос земли нестабилен: спавн/лошадь под землёй).
+bool GetGroundZForCoord(const Vec3& at, float& outZ)
+{
+    using namespace natives_api;
+    Init(natives::GET_GROUND_Z_FOR_3D_COORD);
+    Push(at.x);
+    Push(at.y);
+    Push(at.z);
+    outZ = 0.f;
+    Push(reinterpret_cast<unsigned long long>(&outZ));
+    Push(static_cast<unsigned long long>(0)); // p4
+    return Call() != 0;
 }
 
 void SetEntityCoords(unsigned int handle, const Vec3& v)
@@ -414,9 +447,109 @@ void DrawNameAt(const Vec3& worldPos, const char* name)
 netio::Client g_netClient;
 bool g_netStarted = false;
 
-// Состояние для спавна от сервера (заполняется колбэком, который бежит в
-// СЕТЕВОМ потоке — здесь НЕЛЬЗЯ вызывать нативы! Все нативы — в Tick()).
-bool   s_pendingJoin = false;
+// --- Net inbox ----------------------------------------------------------
+// Единственная точка передачи данных из сетевого потока в игровой.
+// Колбэки сети НЕ пишут в общие игровые переменные: они только складывают
+// данные/события сюда под s_inboxMtx. Tick() забирает копию под тем же
+// mutex'ом и дальше работает с локальными/игровыми копиями. Это убирает
+// гонки на 88-байтном FramePayload и 400-байтном OutfitState (рваное чтение
+// давало телепорты и полуприменённый наряд).
+struct InboxEvents
+{
+    bool joinOk = false;
+    bool joinIsHost = false;
+    bool joinHasHeading = false;
+    float joinHeading = 0.f;
+
+    bool playerJoined = false;
+    char playerJoinedName[64] = "";
+    unsigned long long playerJoinedModel = 0;
+    bool playerJoinedHasPos = false;
+    float playerJoinedX = 0.f, playerJoinedY = 0.f, playerJoinedZ = 0.f;
+    float playerJoinedHeading = 0.f;
+
+    bool connectionLost = false;
+
+    bool leave = false;
+    char leaveName[64] = "";
+
+    bool died = false;
+    char diedName[64] = "";
+
+    bool respawned = false;
+    char respawnedName[64] = "";
+
+    bool hostChanged = false;
+    bool hostChangedIsHost = false;
+};
+
+struct NetInbox
+{
+    bool haveFrame = false;
+    net::FramePayload frame{};
+    bool haveOutfit = false;
+    net::OutfitState outfit{};
+    bool haveHorseOutfit = false;
+    net::OutfitState horseOutfit{};
+    bool haveWorldState = false;
+    net::WorldState worldState{};
+    InboxEvents events;
+};
+
+std::mutex s_inboxMtx;
+NetInbox s_inbox;
+
+// Копирование имени вызывается под s_inboxMtx.
+void CopyInboxName(char (&dst)[64], const std::string& src)
+{
+    std::snprintf(dst, sizeof(dst), "%s", src.c_str());
+}
+
+bool TakeInboxFrame(net::FramePayload& out)
+{
+    std::lock_guard<std::mutex> lk(s_inboxMtx);
+    if (!s_inbox.haveFrame) return false;
+    out = s_inbox.frame;
+    s_inbox.haveFrame = false;
+    return true;
+}
+
+bool TakeInboxOutfit(net::OutfitState& out)
+{
+    std::lock_guard<std::mutex> lk(s_inboxMtx);
+    if (!s_inbox.haveOutfit) return false;
+    out = s_inbox.outfit;
+    s_inbox.haveOutfit = false;
+    return true;
+}
+
+bool TakeInboxHorseOutfit(net::OutfitState& out)
+{
+    std::lock_guard<std::mutex> lk(s_inboxMtx);
+    if (!s_inbox.haveHorseOutfit) return false;
+    out = s_inbox.horseOutfit;
+    s_inbox.haveHorseOutfit = false;
+    return true;
+}
+
+bool TakeInboxWorldState(net::WorldState& out)
+{
+    std::lock_guard<std::mutex> lk(s_inboxMtx);
+    if (!s_inbox.haveWorldState) return false;
+    out = s_inbox.worldState;
+    s_inbox.haveWorldState = false;
+    return true;
+}
+
+void TakeInboxEvents(InboxEvents& out)
+{
+    std::lock_guard<std::mutex> lk(s_inboxMtx);
+    out = s_inbox.events;
+    s_inbox.events = InboxEvents{};
+}
+
+// Состояние для спавна от сервера. Пишет/читает только игровой поток
+// (сетевые колбэки складывают данные в inbox выше).
 float  s_pendingHeading = 0;
 char   s_pendingName[64] = "";
 unsigned long long s_remoteModel = 0; // модель удалённого игрока (из PLAYER_JOINED)
@@ -428,9 +561,18 @@ unsigned long long s_ghostModel = 0;
 bool   s_pendingHasPos = false;
 float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0;
 
-// Последний кадр от удалённого игрока (для применения в Tick()).
+// Последний кадр от удалённого игрока (игровой поток: забран из inbox в
+// начале Tick()).
 net::FramePayload s_lastFrame{};
 bool s_haveFrame = false;
+// Последняя известная позиция удалённого игрока — используется респавном,
+// если в этом тике нет свежего кадра (частая причина телепорта: // Respawn
+// раньше брал nullptr и спавнил труп на позиции входа в сессию).
+Vec3  s_lastKnownPos{0.f, 0.f, 0.f};
+float s_lastKnownHeading = 0.f;
+bool  s_lastKnownPosValid = false;
+// Не даём кадру мгновенно «воскресить» педа сразу после Died.
+unsigned int s_deadGuardTicks = 0;
 // Точка прицела удалённого игрока (из последнего кадра): пед целится и
 // стреляет именно туда, а не «вперёд по heading».
 Vec3 s_remoteAim{0.f, 0.f, 0.f};
@@ -443,14 +585,15 @@ constexpr int kShotQueueSize = 64;
 std::mutex s_shotMtx;
 Vec3 s_shotQueue[kShotQueueSize];
 int  s_shotQCount = 0;
-int  s_shotDropped = 0;
+std::atomic<int> s_shotDropped{0}; // пишется сетевым потоком, читается игровым
 std::atomic<bool> s_shotEventsPending{false};
 unsigned int s_lastShotEventTaskTick = 0;
 unsigned int s_lastShotTick = 0; // минимум паузы между задачами выстрела
-// Состояние мира от хоста (время+погода) для применения в Tick().
+// Состояние мира от хоста (время+погода). Игровой поток: забрано из inbox в
+// начале Tick().
 net::WorldState s_worldState{};
 bool s_haveWorldState = false;
-bool s_amHost = false;              // сервер назначил нас хостом
+std::atomic<bool> s_amHost{false};  // сервер назначил нас хостом
 unsigned int s_lastWorldSendTick = 0; // троттлинг отправки WorldState
 // P2: Action v2 — действие/сценарий удалённого игрока (из сетевого потока).
 std::mutex s_actionMtx;
@@ -841,7 +984,8 @@ bool EnsureGuestSaveBackup()
 }
 // Последнее применённое время (для лога смены).
 int s_lastAppliedHour = -1, s_lastAppliedMin = -1;
-// Компоненты одежды удалённого игрока (для применения в Tick()).
+// Компоненты одежды удалённого игрока. Игровой поток: забрано из inbox в
+// начале Tick(); сетевой поток сюда больше не пишет.
 net::OutfitState s_outfitIn{};
 bool s_haveOutfit = false;
 // Последний отправленный набор компонентов (чтобы слать при смене).
@@ -856,12 +1000,13 @@ unsigned int s_candidateOutfitTicks = 0;
 unsigned int s_lastOutfitSendTick = 0;
 constexpr unsigned int kOutfitDebounceTicks = 30; // ~0.5 с при 60 Гц
 constexpr unsigned int kOutfitMinIntervalTicks = 30;
-// Признак «оригинал игрока умер» — педа-призрака надо убить, но НЕ удалять
-// (труп и снаряжение остаются). Обрабатывается в Tick() игровым потоком.
-bool s_remoteDiedPending = false;
-char s_remoteDiedName[64] = "";
+// Heartbeat: даже без смены наряда переотправляем его раз в ~5 с, иначе после
+// реконнекта/пересоздания педа у получателя остаётся случайная одежда
+// (отправитель больше не шлёт, т.к. s_sentOutfitValid уже true).
+constexpr unsigned int kOutfitHeartbeatTicks = 5 * 60;
+unsigned int s_lastHorseOutfitSendTick = 0;
 // Игрок ожил после смерти (сервер прислал Respawned) — возродить педа.
-bool s_remoteRespawnPending = false;
+// Заполняется игровым потоком из inbox; имя использует RespawnGhostPed.
 char s_remoteRespawnName[64] = "";
 // Сколько тиков ждём первый кадр (модель персонажа) перед спавном педа.
 unsigned int s_pendingJoinWaitTicks = 0;
@@ -875,10 +1020,15 @@ bool s_havePendingOutfit = false;
 // сквозь новую (наблюдали у педа после возрождения).
 net::OutfitState s_appliedOutfit{};
 bool s_appliedOutfitValid = false;
+// Базовая вариация педа рандомизируется ОДИН раз на создание/респавн педа.
+// Повторная рандомизация в ApplyOutfitToGhost/RefreshGhostComponents меняла
+// базовые компоненты (и подмешивала случайные вещи в категориях, где у
+// оригинала пусто) — наряд расходился с оригиналом.
+bool s_ghostBaseRandomized = false;
 // Тиков, в течение которых периодически переприменяем наряд (после
 // посадки/спешивания движок сам сбрасывает variation и внешний вид «слетает»).
 unsigned int s_outfitRefreshTicks = 0;
-// Флаг «соединение потеряно, идёт reconnect» (сетевой колбэк -> Tick).
+// Флаг «соединение потеряно, идёт reconnect» (inbox -> Tick, игровой поток).
 bool s_pendingConnectionLost = false;
 // Флаг «игрок вышел»: обработка (удаление педа) произойдёт в Tick().
 bool s_pendingLeave = false;
@@ -915,6 +1065,24 @@ uint8_t s_lastPedState = 0xFF;
 unsigned long long s_lastWeapon = 0;
 // Оружие, реально выданное педу-призраку (чтобы снять при смене на «без оружия»).
 unsigned long long s_givenWeapon = 0;
+// Латч «оружие уже взято в руку». Без него EnsureGhostWeaponInHands дёргал
+// SET_CURRENT_PED_WEAPON(equipNow=1) 10-12 раз/с (на каждый aim/shoot) —
+// это переигрывало анимацию доставания и сбивало TASK_SHOOT_AT_COORD.
+// Сбрасывается в ResetGhostCombatState (смерть/респавн/cleanup/model change),
+// при смене/снятии оружия, выходе из боя и на переходах лошади.
+bool s_weaponEquippedInHands = false;
+unsigned long long s_weaponEquippedHash = 0;
+// 0 = IS_WEAPON_VALID ещё не проверяли, 1 = рабочий, -1 = недоступен/неверен
+// (тогда валидацию оружия не применяем, чтобы не потерять синхронизацию).
+int s_weaponValidProbe = 0;
+
+// Сбросить латч «оружие в руках»: оружие могло уйти в кобуру или смениться
+// (выход из боя, посадка/спешивание, смена/снятие оружия, респавн).
+void InvalidateGhostWeaponLatch()
+{
+    s_weaponEquippedInHands = false;
+    s_weaponEquippedHash = 0;
+}
 // Боевое действие активно (прицеливание/стрельба/перезарядка): пед стоит и
 // держит оружие, задачи движения не ставим (они отменяют боевую задачу).
 bool s_combatActive = false;
@@ -934,11 +1102,37 @@ unsigned int s_lastAimTaskTick = 0;
 // Последнее применённое действие (для применения при смене).
 uint8_t s_lastAction = 0xFF;
 
+// Полный сброс боевого состояния призрака (смерть/респавн/cleanup).
+// Оружие, hold и очередь выстрелов не должны переживать пересоздание педа:
+// иначе после смерти/респавна выстрелы молча не работают (s_lastWeapon
+// считался «уже выданным», а задача стрельбы висела на старом трупе).
+void ResetGhostCombatState()
+{
+    s_lastWeapon = 0;
+    s_givenWeapon = 0;
+    InvalidateGhostWeaponLatch();
+    s_combatActive = false;
+    s_shootHoldTicks = 0;
+    s_lastShootTaskTick = 0;
+    s_lastShotEventTaskTick = 0;
+    s_pendingCombatExit = false;
+    s_lastAimTaskValid = false;
+    s_lastAction = 0xFF;
+    s_lastPedState = 0xFF;
+    {
+        std::lock_guard<std::mutex> lk(s_shotMtx);
+        s_shotQCount = 0;
+    }
+    s_shotEventsPending.store(false);
+    s_shotDropped.store(0);
+}
+
 // Лошадь для верховой езды удалённого игрока (0 = нет).
 unsigned int s_mount = 0;
 bool s_mountModelRequested = false;
 // Модель лошади, которую надо создать (из кадра; 0 = стандартная).
 unsigned long long s_mountWantedModel = 0;
+unsigned long long s_ignoredMountModelHash = 0; // невалидный хэш (лог один раз)
 // Позиция лошади (последняя цель из кадра), чтобы двигать её за педом.
 Vec3 s_mountTarget{0.f, 0.f, 0.f};
 bool s_haveMountTarget = false;
@@ -988,7 +1182,8 @@ bool   s_outfitRequestLogged = false;        // логировали ли ожи
 // Снаряжение лошади удалённого игрока (седло/поклажа): мета-наряд лошади
 // всегда 0, поэтому, как и одежду, синхронизируем shop-предметы через
 // GET_SHOP_ITEM_COMPONENT_AT_INDEX + APPLY_SHOP_ITEM_TO_PED.
-net::OutfitState s_horseOutfitIn{};     // пришло по сети (сетевой поток)
+// s_horseOutfitIn — игровой поток: забрано из inbox в начале Tick().
+net::OutfitState s_horseOutfitIn{};
 bool s_haveHorseOutfit = false;
 net::OutfitState s_horseOutfitApplied{};// фактически надето на лошадь
 bool s_horseOutfitAppliedValid = false;
@@ -1014,11 +1209,24 @@ void RequestMountModel()
     if (s_mount && DoesEntityExist(s_mount)) return; // лошадь уже есть
     unsigned long long model = s_mountWantedModel ? s_mountWantedModel
                                                   : natives::HORSE_MODEL;
+    if (!IsModelHashValid(model))
+    {
+        // Хэш из сети оказался невалидным — откатываемся на стандартную
+        // модель лошади (невалидный REQUEST_MODEL/CREATE_PED не даст лошадь).
+        if (s_mountWantedModel)
+            sh_log::Write("coop: invalid mount model 0x%llX, using default\n",
+                          s_mountWantedModel);
+        s_mountWantedModel = 0;
+        model = natives::HORSE_MODEL;
+        if (!IsModelHashValid(model))
+            return; // нет валидной модели — не залипаем, просто без лошади
+    }
     // Запрашиваем модель КАЖДЫЙ раз, пока она не загрузилась (движок
     // идемпотентен; не полагаемся на однократный флаг — если модель не
     // успела загрузиться к первому кадру, без ретрая лошадь не появится).
     Init(natives::REQUEST_MODEL);
     Push(model);
+    Push(static_cast<unsigned long long>(0)); // p1: 2-й аргумент обязателен
     Call();
     s_mountModelRequested = true;
     if (s_tickCount % (1 * 60) == 1) // лог не чаще раза в секунду
@@ -1040,10 +1248,7 @@ void RequestMountModel()
     }
     {
         float gz = 0.f;
-        Init(natives::GET_GROUND_Z_FOR_3D_COORD);
-        Push(at.x); Push(at.y); Push(at.z);
-        Push(reinterpret_cast<unsigned long long>(&gz));
-        if (Call())
+        if (GetGroundZForCoord(at, gz))
             at.z = gz + 0.2f;
         else
             at.z -= 1.2f; // землю не нашли — хотя бы не в воздухе
@@ -1083,6 +1288,9 @@ void RequestMountModel()
 void PromoteMountToGhost()
 {
     if (!s_ghost || !DoesEntityExist(s_ghost) || !s_mount || !DoesEntityExist(s_mount)) return;
+    // На лошади движок меняет способ отображения оружия — после посадки
+    // переэкипируем один раз (латч сбрасываем).
+    InvalidateGhostWeaponLatch();
     using namespace natives_api;
     Init(natives::SET_PED_ONTO_MOUNT);
     Push(s_ghost);
@@ -1108,6 +1316,8 @@ void StartMounting()
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     if (!s_mount || !DoesEntityExist(s_mount)) return;
+    // Во время посадки/верхом призрак может убрать оружие — латч сбрасываем.
+    InvalidateGhostWeaponLatch();
     using namespace natives_api;
     Init(natives::TASK_MOUNT_ANIMAL);
     Push(s_ghost);
@@ -1130,6 +1340,8 @@ void StartMounting()
 void StartDismounting()
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    // Спешивание тоже может менять/убирать оружие — латч сбрасываем.
+    InvalidateGhostWeaponLatch();
     using namespace natives_api;
     Init(natives::TASK_DISMOUNT_ANIMAL);
     Push(s_ghost);
@@ -1195,10 +1407,7 @@ void MoveMountTo(const Vec3& target)
         // Респавн/телепорт: переносим лошадь вместе с седоком и сажаем заново.
         Vec3 at = target;
         float gz = 0.f;
-        Init(natives::GET_GROUND_Z_FOR_3D_COORD);
-        Push(at.x); Push(at.y); Push(at.z);
-        Push(reinterpret_cast<unsigned long long>(&gz));
-        if (Call())
+        if (GetGroundZForCoord(at, gz))
             at.z = gz + 0.2f;
         SetEntityCoords(s_mount, at);
         // Если всадник уже в седле, он переедет вместе с лошадью; ручной
@@ -1229,10 +1438,7 @@ void MoveMountTo(const Vec3& target)
     {
         Vec3 at = target;
         float gz = 0.f;
-        Init(natives::GET_GROUND_Z_FOR_3D_COORD);
-        Push(at.x); Push(at.y); Push(at.z);
-        Push(reinterpret_cast<unsigned long long>(&gz));
-        if (Call())
+        if (GetGroundZForCoord(at, gz))
             at.z = gz + 0.2f;
         SetEntityCoords(s_mount, at);
         if (!IsGhostMounted())
@@ -1286,6 +1492,8 @@ void MoveMountTo(const Vec3& target)
 // лошади из-под седока движок может сбросить variation (остаются одёжки).
 void DismountAndRemoveMount()
 {
+    // Лошадь удаляется из-под седока — оружие/латч точно неактуальны.
+    InvalidateGhostWeaponLatch();
     if (s_mount && DoesEntityExist(s_mount))
     {
         using namespace natives_api;
@@ -1392,9 +1600,124 @@ Vec3 GhostAimPointAhead()
     return t;
 }
 
+// IS_WEAPON_VALID (0x937C71165CF334B3) — хэш сверен с rdr2-runtime NativeDecl;
+// в src/natives.h его пока нет (зона Lead), поэтому локальная константа.
+constexpr unsigned long long kIsWeaponValid = 0x937C71165CF334B3ull;
+
+// Валидация weaponHash, пришедшего из сети. Чтобы не потерять синхронизацию
+// оружия, если хэш натива окажется неверным/недоступным, один раз проверяем
+// его на оружии, которое заведомо в руках у ЛОКАЛЬНОГО игрока: если натив не
+// подтверждает даже его — валидацию отключаем (пропускаем любой ненулевой хэш).
+bool IsWeaponHashValid(unsigned long long weapon)
+{
+    if (!weapon || weapon == 0xA2719263ull) // 0 / Unarmed
+        return false;
+    using namespace natives_api;
+    if (s_weaponValidProbe == 0)
+    {
+        unsigned int localPed = GetPlayerPedFor(0);
+        unsigned long long current = 0;
+        if (localPed)
+        {
+            Init(natives::GET_CURRENT_PED_WEAPON);
+            Push(localPed);
+            Push(reinterpret_cast<unsigned long long>(&current));
+            Push(static_cast<unsigned long long>(1));
+            Push(static_cast<unsigned long long>(0));
+            Push(static_cast<unsigned long long>(0));
+            Call();
+        }
+        if (current && current != 0xA2719263ull)
+        {
+            Init(kIsWeaponValid);
+            Push(current);
+            s_weaponValidProbe = (Call() != 0) ? 1 : -1;
+            sh_log::Write("coop: IS_WEAPON_VALID probe (%s)\n",
+                          s_weaponValidProbe > 0 ? "ok" : "unavailable; validation off");
+        }
+    }
+    // Натив не подтверждён (нет оружия у локального игрока) или недоступен —
+    // не фильтруем, чтобы не потерять синхронизацию оружия из-за неизвестного
+    // хэша натива (поведение как до валидации).
+    if (s_weaponValidProbe <= 0)
+        return true;
+    Init(kIsWeaponValid);
+    Push(weapon);
+    return Call() != 0;
+}
+
+// Перед боевой задачей убедиться, что у призрака оружие В РУКАХ: без этого
+// TASK_SHOOT_AT_COORD/TASK_AIM_GUN_AT_COORD молча не работают (натив ничего
+// не делает, если оружие в кобуре). Это фикс 2d23c4b, потерянный при откате:
+// призрак убирает оружие после боя/посадки/респавна, и выстрелы «пропадают».
+void EnsureGhostWeaponInHands()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    unsigned long long weapon = s_givenWeapon ? s_givenWeapon : s_lastWeapon;
+    if (!weapon) return;
+    // Битый weaponHash из сети не должен попадать в GIVE/SET_CURRENT.
+    if (!IsWeaponHashValid(weapon))
+        return;
+    using namespace natives_api;
+    if (!s_givenWeapon)
+    {
+        // Оружие ещё не выдавалось (новый пед после смерти/пересоздания) —
+        // выдаём заново, иначе задача стрельбы уйдёт в пустоту.
+        Init(natives::GIVE_WEAPON_TO_PED);
+        Push(s_ghost);
+        Push(weapon);
+        Push(static_cast<unsigned long long>(60)); // ammoCount
+        Push(static_cast<unsigned long long>(0));  // bForceInHand
+        Push(static_cast<unsigned long long>(0));  // bForceInHolster
+        Push(static_cast<unsigned long long>(0));  // attachPoint
+        Push(static_cast<unsigned long long>(0));  // bAllowMultipleCopies
+        Push(0.5f);                                // p7
+        Push(1.0f);                                // p8
+        Push(static_cast<unsigned long long>(0));  // addReason
+        Push(static_cast<unsigned long long>(1));  // bIgnoreUnlocks
+        Push(0.5f);                                // permanentDegradation
+        Push(static_cast<unsigned long long>(0));  // p12
+        Call();
+        s_givenWeapon = weapon;
+        // GIVE с bForceInHand=0 доставание не гарантирует — латч не ставим.
+        s_weaponEquippedInHands = false;
+        s_weaponEquippedHash = 0;
+        Init(natives::SET_PED_INFINITE_AMMO);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(1));
+        Push(weapon);
+        Call();
+        Init(natives::_SET_PED_INFINITE_AMMO_CLIP);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(1));
+        Call();
+        sh_log::Write("coop: weapon 0x%llX re-given (was reset)\n", weapon);
+    }
+    // Латч: оружие уже в руках — SET_CURRENT_PED_WEAPON не дёргаем. Иначе
+    // equipNow=1 на каждый aim/shoot (10-12 раз/с) переигрывает анимацию
+    // доставания и сбивает TASK_SHOOT_AT_COORD/TASK_AIM_GUN_AT_COORD.
+    if (s_weaponEquippedInHands && s_weaponEquippedHash == weapon)
+        return;
+    // Достать в руку ОДИН раз (equipNow=true) — без этого задача стрельбы
+    // не срабатывает; латч сбрасывается только на события, которые реально
+    // могут убрать оружие (бой/лошадь/смена/смерть).
+    Init(natives::SET_CURRENT_PED_WEAPON);
+    Push(s_ghost);
+    Push(weapon);
+    Push(static_cast<unsigned long long>(1)); // equipNow
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Call();
+    s_weaponEquippedInHands = true;
+    s_weaponEquippedHash = weapon;
+    sh_log::Write("coop: weapon 0x%llX equipped in hands\n", weapon);
+}
+
 // Прицеливание: задача «целиться в точку» (time = -1 — до смены задачи).
 void AimGhostForward()
 {
+    EnsureGhostWeaponInHands();
     Vec3 t = GhostAimPointAhead();
     using namespace natives_api;
     Init(natives::TASK_AIM_GUN_AT_COORD);
@@ -1410,6 +1733,7 @@ void AimGhostForward()
 // отдачу, гильзы). duration — сколько стрелять, SingleShot — темп.
 void ShootGhostForward()
 {
+    EnsureGhostWeaponInHands();
     Vec3 t = GhostAimPointAhead();
     using namespace natives_api;
     Init(natives::TASK_SHOOT_AT_COORD);
@@ -1425,6 +1749,7 @@ void ShootGhostForward()
 void ShootGhostAt(const Vec3& t, int durationMs = 250)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    EnsureGhostWeaponInHands();
     using namespace natives_api;
     Init(natives::TASK_SHOOT_AT_COORD);
     Push(s_ghost);
@@ -1468,6 +1793,9 @@ void ApplyActionToGhost(const net::FramePayload& f)
         Call();
         s_moveTargetValid = false;
         s_lastMoveState = 0xFF;
+        // Выход из боя: движок может убрать оружие в кобуру — латч сбрасываем,
+        // чтобы следующий выстрел один раз переэкипировал оружие.
+        InvalidateGhostWeaponLatch();
     }
 
     // Перенаводка прицела: задача TASK_AIM_GUN_AT_COORD с time=-1 держится за
@@ -1581,10 +1909,18 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
         {
         case net::PedState::Ragdoll:
             // Уронить педа в ragdoll.
+            // SET_PED_TO_RAGDOLL: 7 аргументов (timeMin,timeMax,ragdollType,
+            // abortIfInjured,abortIfDead,const char* taskName). Раньше
+            // передавали 6 — движок читал указатель из мусора.
             Init(natives::SET_PED_TO_RAGDOLL);
             Push(s_ghost);
-            Push(static_cast<unsigned long long>(2000));  // время (мс)
-            Push(0); Push(0); Push(0); Push(0);
+            Push(static_cast<unsigned long long>(2000));  // timeMin (мс)
+            Push(static_cast<unsigned long long>(4000));  // timeMax (мс)
+            Push(static_cast<unsigned long long>(0));     // ragdollType
+            Push(static_cast<unsigned long long>(0));     // abortIfInjured
+            Push(static_cast<unsigned long long>(0));     // abortIfDead
+            Push(reinterpret_cast<unsigned long long>(
+                const_cast<char*>("")));                  // p6: имя NM-задачи
             Call();
             sh_log::Write("coop: state=Ragdoll applied\n");
             break;
@@ -1630,7 +1966,15 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
     if (f.weaponHash != s_lastWeapon)
     {
         s_lastWeapon = f.weaponHash;
-        if (f.weaponHash)
+        // weaponHash приходит из сети — в GIVE/SET_CURRENT пускаем только
+        // валидный хэш (мусор/Unarmed игнорируем; текущее оружие не снимаем).
+        const bool weaponValid = (f.weaponHash != 0) && IsWeaponHashValid(f.weaponHash);
+        if (f.weaponHash && !weaponValid)
+        {
+            sh_log::Write("coop: ignoring invalid weapon hash 0x%llX\n",
+                          f.weaponHash);
+        }
+        else if (weaponValid)
         {
             Init(natives::GIVE_WEAPON_TO_PED);
             Push(s_ghost);
@@ -1657,7 +2001,23 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
             Push(static_cast<unsigned long long>(0));
             Call();
             s_givenWeapon = f.weaponHash;
-            sh_log::Write("coop: weapon 0x%llX given+equipped\n", f.weaponHash);
+            // SET_CURRENT_PED_WEAPON(equipNow=1) уже выполнен — ставим латч,
+            // чтобы EnsureGhostWeaponInHands не переигрывал доставание.
+            s_weaponEquippedInHands = true;
+            s_weaponEquippedHash = f.weaponHash;
+            // Бесконечные патроны: каждый реплей выстрела тратит боезапас, и
+            // после ~60 выстрелов призрак замолкал (выстрелы «терялись»).
+            Init(natives::SET_PED_INFINITE_AMMO);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(1));
+            Push(f.weaponHash);
+            Call();
+            Init(natives::_SET_PED_INFINITE_AMMO_CLIP);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(1));
+            Call();
+            sh_log::Write("coop: weapon 0x%llX given+equipped (infinite ammo)\n",
+                          f.weaponHash);
             // Доставание оружия сбрасывает component variation — тело педа
             // перестаёт рисоваться. Возвращаем внешний вид.
             RefreshGhostComponents();
@@ -1674,6 +2034,7 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
             Call();
             sh_log::Write("coop: weapon 0x%llX removed\n", s_givenWeapon);
             s_givenWeapon = 0;
+            InvalidateGhostWeaponLatch();
             RefreshGhostComponents();
             s_outfitRefreshTicks = 60;
         }
@@ -1806,11 +2167,22 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
 }
 
 // Одинаковые ли наборы компонентов (с учётом модели, если она известна).
+// Сравниваем БЕЗ учёта порядка: движок отдаёт категории в разном порядке
+// между кадрами/тиками, из-за чего наряд считался «изменённым»,
+// переотправлялся и переприменялся (лишние слои одежды / случайный вид).
 bool OutfitsEqual(const net::OutfitState& a, const net::OutfitState& b)
 {
     if (a.count != b.count) return false;
     if (a.model && b.model && a.model != b.model) return false;
-    return std::memcmp(a.components, b.components, sizeof(a.components)) == 0;
+    if (a.count > static_cast<uint32_t>(net::kMaxOutfitComponents) ||
+        b.count > static_cast<uint32_t>(net::kMaxOutfitComponents))
+        return false;
+    if (a.count == 0) return true;
+    std::vector<uint32_t> ca(a.components, a.components + a.count);
+    std::vector<uint32_t> cb(b.components, b.components + b.count);
+    std::sort(ca.begin(), ca.end());
+    std::sort(cb.begin(), cb.end());
+    return ca == cb;
 }
 
 // Применить надетые shop-предметы (одежду) удалённого игрока к педу призрака
@@ -1838,14 +2210,15 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     // добавляет слой) → «сквозь одну одежду видно другую».
     if (s_appliedOutfitValid && OutfitsEqual(os, s_appliedOutfit))
         return;
-    // Сброс СТАРОГО наряда: иначе предметы, которых нет в новом наборе,
-    // остаются на педе и он выглядит «помесью» старой и новой одежды
-    // (именно так пед на втором ПК сильно отличался от оригинала).
-    // RandomizePedComponents даёт валидную variation и НЕ ломает рендер
-    // тела (в отличие от RESET_PED_COMPONENTS); сразу следом надеваем
-    // новый полный набор — в одном тике случайная одежда не успевает
-    // показаться.
-    RandomizePedComponents(s_ghost);
+    // Базовая вариация — ОДИН раз на педа (создание/респавн). Повторная
+    // рандомизация при каждом применении наряда/refresh подмешивала случайные
+    // компоненты (в категориях, где у оригинала пусто), и наряд расходился
+    // с оригиналом. Индивидуальные shop-предметы применяем поверх.
+    if (!s_ghostBaseRandomized)
+    {
+        RandomizePedComponents(s_ghost);
+        s_ghostBaseRandomized = true;
+    }
     SetEntityVisibleForce(s_ghost);
     for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
     {
@@ -1880,19 +2253,16 @@ void RefreshGhostComponents()
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     s_appliedOutfitValid = false;
+    // Базу не рандомизируем повторно — только гарантируем, что variation
+    // валидна (после посадки/оружия движок может её сбросить), и надеваем наряд.
+    if (!s_ghostBaseRandomized)
+    {
+        RandomizePedComponents(s_ghost);
+        s_ghostBaseRandomized = true;
+    }
+    SetEntityVisibleForce(s_ghost);
     if (s_outfitIn.count)
-    {
-        // Вернуть валидную variation (движок сбросил после посадки) и надеть
-        // наряд. Рандомизация и наряд идут в одном тике — не мелькают.
-        RandomizePedComponents(s_ghost);
-        SetEntityVisibleForce(s_ghost);
         ApplyOutfitToGhost(s_outfitIn);
-    }
-    else
-    {
-        RandomizePedComponents(s_ghost);
-        SetEntityVisibleForce(s_ghost);
-    }
 }
 
 // Применить отложенный наряд, если модель педа наконец совпала.
@@ -1969,13 +2339,17 @@ void RespawnGhostPed(const net::FramePayload* f)
                     : (s_pendingName[0] ? s_pendingName : "Player");
     using namespace natives_api;
 
-    // Сброс состояний, чтобы задачи/наряд/действия применились заново.
+    // Сброс состояний, чтобы задачи/наряд/действия/оружие применились заново.
+    // ВАЖНО: раньше s_lastWeapon/s_givenWeapon не сбрасывались, и после
+    // RESURRECT_PED (движок мог сбросить оружие) пед оставался без оружия в
+    // руках — выстрелы молча не срабатывали. ResetGhostCombatState чистит и
+    // это, и очередь выстрелов/hold.
+    ResetGhostCombatState();
     s_ghostDead = false;
+    s_deadGuardTicks = 0;
     s_reviveGraceTicks = 90; // ~1.5 с: не считаем педа мёртвым сразу
     s_lastMoveState = 0xFF;
     s_idleChase = false;
-    s_lastPedState = 0xFF;
-    s_lastAction = 0xFF;
     s_appliedActionMode = 0;
     s_appliedScenario = 0;
     s_appliedTargetNetId = 0;
@@ -1983,14 +2357,27 @@ void RespawnGhostPed(const net::FramePayload* f)
     s_lastCoverTaskTick = 0;
     s_moveTargetValid = false;
     // После RESURRECT_PED движок возвращает дефолтные компоненты модели,
-    // поэтому наряд надо надеть заново (с полным сбросом слоёв).
+    // поэтому наряд надо надеть заново (базу рандомизируем один раз).
     s_appliedOutfitValid = false;
+    s_ghostBaseRandomized = false;
     // Игрок возродился в другом месте — старая лошадь уже не актуальна.
     if (s_mount)
         DismountAndRemoveMount();
     s_mountPhase = MountPhase::None;
     s_mountPhaseTicks = 0;
     s_rideLossTicks = 0;
+
+    // Позиция возрождения: свежий кадр этого тика, иначе lastKnownPos (его
+    // обновляет Tick на каждом кадре), а не позиция входа в сессию и не (0,0,0).
+    Vec3 at{0.f, 0.f, 0.f};
+    if (f)
+        at = Vec3{f->x, f->y, f->z};
+    else if (s_lastKnownPosValid)
+        at = s_lastKnownPos;
+    else if (s_ghost && DoesEntityExist(s_ghost))
+        at = GetEntityCoords(s_ghost);
+    else
+        at = GetEntityCoords(GetPlayerPedFor(0));
 
     if (s_ghost && DoesEntityExist(s_ghost))
     {
@@ -2017,16 +2404,8 @@ void RespawnGhostPed(const net::FramePayload* f)
 
         // Перенести к позиции оригинала (после респавна он в другом месте)
         // и поставить на землю.
-        Vec3 at = f ? Vec3{f->x, f->y, f->z}
-                    : Vec3{s_pendingX, s_pendingY, s_pendingZ};
         float groundZ = 0.f;
-        bool hasGround = false;
-        {
-            Init(natives::GET_GROUND_Z_FOR_3D_COORD);
-            Push(at.x); Push(at.y); Push(at.z + 5.0f);
-            Push(reinterpret_cast<unsigned long long>(&groundZ));
-            hasGround = Call() != 0;
-        }
+        const bool hasGround = GetGroundZForCoord(Vec3{at.x, at.y, at.z + 5.0f}, groundZ);
         if (hasGround)
             at.z = groundZ + 0.2f;
         SetEntityCoords(s_ghost, at);
@@ -2036,7 +2415,7 @@ void RespawnGhostPed(const net::FramePayload* f)
         if (!s_pedName[0] && s_pendingName[0])
             std::snprintf(s_pedName, sizeof(s_pedName), "%s", s_pendingName);
         if (s_outfitIn.count)
-            RefreshGhostComponents(); // variation + наряд после воскрешения
+            RefreshGhostComponents(); // variation (1 раз) + наряд после воскрешения
         SetGhostStaminaFull();
 
         sh_log::Write("coop: ghost revived at (%.1f %.1f %.1f) ground=%d\n",
@@ -2044,20 +2423,19 @@ void RespawnGhostPed(const net::FramePayload* f)
     }
     else
     {
-        // Трупа нет — сбрасываем хэндл, спавн-блок создаст педа заново
-        // (позиция — из последнего кадра).
-        if (f)
-        {
-            s_pendingHasPos = true;
-            s_pendingX = f->x; s_pendingY = f->y; s_pendingZ = f->z;
-        }
+        // Трупа нет — сбрасываем хэндл, спавн-блок создаст педа заново в
+        // последней известной позиции.
+        s_pendingHasPos = true;
+        s_pendingX = at.x;
+        s_pendingY = at.y;
+        s_pendingZ = at.z;
+        s_pendingHeading = f ? f->heading : s_lastKnownHeading;
         s_ghost = 0;
         sh_log::Write("coop: ghost corpse gone -> fresh respawn\n");
     }
 
     // Надпись для проверки возрождения.
     std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s is respawn", who);
-    s_playerJoinedNotified = true;
     s_subtitleTicksLeft = 8 * 60;
     s_remoteRespawnName[0] = '\0';
 }
@@ -2066,10 +2444,11 @@ void ApplyRemoteFrame(const net::FramePayload& f)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     // Мёртвый пед: труп лежит там, где умер — не двигаем. НО если оригинал
-    // ожил (в кадре положительное здоровье) — воскрешаем педа.
+    // ожил (в кадре положительное здоровье) — воскрешаем педа. s_deadGuardTicks
+    // не даёт кадру, отправленному ещё до смерти, воскресить труп мгновенно.
     if (s_ghostDead)
     {
-        if (f.health > 0.2f)
+        if (s_deadGuardTicks == 0 && f.health > 0.2f)
         {
             RespawnGhostPed(&f);
         }
@@ -2134,13 +2513,27 @@ void ApplyRemoteFrame(const net::FramePayload& f)
                           s_mountWantedModel, s_mount,
                           f.reserved[0], f.horseOutfitHash,
                           static_cast<int>(s_mountPhase));
-        // Модель коня из кадра (0 = стандартная).
+        // Модель коня из кадра (0 = стандартная). Хэш из сети валидируем:
+        // невалидный не должен удалять текущую лошадь / запрашивать мусор.
         if (f.reserved[0] && f.reserved[0] != s_mountWantedModel)
         {
-            s_mountWantedModel = f.reserved[0];
-            if (s_mount && DoesEntityExist(s_mount))
+            if (!IsModelHashValid(f.reserved[0]))
             {
-                DismountAndRemoveMount(); // модель сменилась — пересоздадим
+                if (f.reserved[0] != s_ignoredMountModelHash)
+                {
+                    s_ignoredMountModelHash = f.reserved[0];
+                    sh_log::Write("coop: ignoring invalid mount model 0x%llX\n",
+                                  f.reserved[0]);
+                }
+            }
+            else
+            {
+                s_ignoredMountModelHash = 0;
+                s_mountWantedModel = f.reserved[0];
+                if (s_mount && DoesEntityExist(s_mount))
+                {
+                    DismountAndRemoveMount(); // модель сменилась — пересоздадим
+                }
             }
         }
         if (!s_mount || !DoesEntityExist(s_mount))
@@ -2296,15 +2689,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         {
             // Стоит рядом с целью: не трогаем XY, только прижим при подвесе.
             float groundZ = 0.f;
-            bool hasGround = false;
-            {
-                using namespace natives_api;
-                Init(natives::GET_GROUND_Z_FOR_3D_COORD);
-                Push(cur.x); Push(cur.y); Push(cur.z);
-                Push(reinterpret_cast<unsigned long long>(&groundZ));
-                unsigned long long ok = Call();
-                hasGround = ok != 0;
-            }
+            const bool hasGround = GetGroundZForCoord(cur, groundZ);
             if (hasGround && (cur.z - groundZ) > 1.0f && groundZ > -100.f
                 && (s_tickCount - s_lastIdleGroundFixTick) > 60)
             {
@@ -2328,7 +2713,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
     // тела игрока может не совпадать с направлением камеры, и наш SetEntityHeading
     // каждый кадр разворачивал педа «строго вперёд», перебивая прицел
     // (задачу TASK_AIM_GUN_AT_COORD). Ориентацией управляет боевая задача.
-    if (!s_combatActive)
+    if (!s_combatActive && s_shootHoldTicks == 0)
     {
         float h = f.heading - GetEntityHeading(s_ghost);
         while (h > 180.f) h -= 360.f;
@@ -2394,22 +2779,9 @@ void CleanupGhost()
     s_haveFrame = false;
     s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
     s_idleChase = false;
-    s_lastPedState = 0xFF;
-    s_lastWeapon = 0;
-    s_givenWeapon = 0;
-    s_combatActive = false;
-    s_lastShootTaskTick = 0;
-    s_shootHoldTicks = 0;
-    s_lastShotEventTaskTick = 0;
-    s_shotDropped = 0;
-    {
-        std::lock_guard<std::mutex> lk(s_shotMtx);
-        s_shotQCount = 0;
-    }
-    s_shotEventsPending.store(false);
-    s_pendingCombatExit = false;
-    s_lastAimTaskValid = false;
-    s_lastAction = 0xFF;
+    ResetGhostCombatState();
+    s_deadGuardTicks = 0;
+    s_lastKnownPosValid = false;
     // P2: сброс Action v2 (новый пед/сессия).
     s_lastSentActionValid = false;
     s_appliedActionMode = 0;
@@ -2446,6 +2818,20 @@ void CleanupGhost()
     }
     s_wantedOutfit = 0;
     s_outfitRequestLogged = false;
+    // Сброс наряда: иначе новый игрок (тот же name/модель) получил бы наряд
+    // предыдущего, а отложенный наряд применился бы к чужому педу.
+    s_haveOutfit = false;
+    s_outfitIn = net::OutfitState{};
+    s_havePendingOutfit = false;
+    s_pendingOutfit = net::OutfitState{};
+    s_outfitRefreshTicks = 0;
+    s_ghostBaseRandomized = false;
+    s_haveCandidateOutfit = false;
+    s_candidateOutfitTicks = 0;
+    // Отправитель: после reconnect/нового пира наряд надо переслать заново.
+    s_sentOutfitValid = false;
+    s_sentHorseOutfitValid = false;
+    s_lastHorseOutfitSendTick = 0;
     // Убрать лошадь (если удалённый игрок был верхом).
     if (s_mount)
         DismountAndRemoveMount();
@@ -2845,11 +3231,14 @@ void UpdateLocalShotEvents(unsigned int ped)
 float GetLocalHealth01(unsigned int ped)
 {
     using namespace natives_api;
+    // GET_ENTITY_HEALTH возвращает int (не float!). CallFloat() читал младшие
+    // 32 бита int как float → health всегда ~0, и авто-возрождение призрака
+    // по кадру (f.health > 0.2) никогда не срабатывало.
     Init(natives::GET_ENTITY_HEALTH); Push(ped);
-    float h = CallFloat();
-    if (h < 0.f) h = 0.f;
-    if (h > 200.f) h = 200.f;
-    return h / 200.f;
+    int h = static_cast<int>(Call());
+    if (h < 0) h = 0;
+    if (h > 200) h = 200; // нормализация как раньше (0..200 -> 0..1)
+    return static_cast<float>(h) / 200.f;
 }
 
 // Применить move-состояние к педу призрака (вызывается из Tick, игровой поток).
@@ -2864,7 +3253,9 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
     // Во время прицеливания/стрельбы/перезарядки пед стоит и держит оружие.
     // Любая задача движения (TASK_FOLLOW/TASK_STAND_STILL) отменила бы
     // боевую задачу (прицел/выстрел) — поэтому движение не трогаем.
-    if (s_combatActive)
+    // s_shootHoldTicks учитываем тоже: кадр с action=None приходит с задержкой
+    // и сбрасывал combat раньше, чем SingleShot успевал выстрелить.
+    if (s_combatActive || s_shootHoldTicks > 0)
     {
         Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
         Push(ped);
@@ -2990,6 +3381,20 @@ unsigned long long GetLocalWeaponHash(unsigned int ped)
 void CheckRemoteModelChange(const net::FramePayload& f)
 {
     if (!f.reserved[2] || f.reserved[2] == s_ghostModel) return;
+    // Модель пришла из сети: невалидный хэш НЕ должен приводить к удалению
+    // текущего педа и RequestModel (иначе HasModelLoaded()==false навсегда и
+    // Tick перестаёт обрабатывать сеть). Невалидную модель просто игнорируем.
+    if (!IsModelHashValid(f.reserved[2]))
+    {
+        if (f.reserved[2] != s_ignoredPedModelHash)
+        {
+            s_ignoredPedModelHash = f.reserved[2];
+            sh_log::Write("coop: ignoring invalid remote model 0x%llX\n",
+                          f.reserved[2]);
+        }
+        return;
+    }
+    s_ignoredPedModelHash = 0;
     sh_log::Write("coop: remote model changed 0x%llX -> 0x%llX\n",
                   s_ghostModel, f.reserved[2]);
     // Запоминаем новую модель и просим её загрузить (в Tick чуть ниже будет
@@ -3010,8 +3415,13 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     }
     s_wantedOutfit = 0;
     s_outfitRequestLogged = false;
-    // Пед будет создан заново — наряд применяем с чистого листа.
+    // Пед будет создан заново — наряд применяем с чистого листа (базу
+    // рандомизируем один раз), отложенный наряд старой модели отбрасываем.
     s_appliedOutfitValid = false;
+    s_ghostBaseRandomized = false;
+    s_havePendingOutfit = false;
+    s_pendingOutfit = net::OutfitState{};
+    s_outfitRefreshTicks = 0;
     // Пед удалён — лошадь-призрак без седока не нужна.
     if (s_mount)
         DismountAndRemoveMount();
@@ -3023,7 +3433,8 @@ void CheckRemoteModelChange(const net::FramePayload& f)
     s_ghostDead = false;
     s_lastMoveState = 0xFF;
     s_idleChase = false;
-    s_lastPedState = 0xFF;
+    ResetGhostCombatState(); // новому педу оружие выдадим заново
+    s_deadGuardTicks = 0;
     // Педа пересоздали — применённое действие больше не актуально.
     s_appliedActionMode = 0;
     s_appliedScenario = 0;
@@ -3561,10 +3972,11 @@ void InitNetworkClient()
     g_netClient.SetJoinOk([](const netio::JoinResult& jr) {
         sh_log::Write("net: JOIN_OK (hasSaved=%d, isHost=%d) from server\n",
                       jr.hasSaved ? 1 : 0, jr.isHost ? 1 : 0);
-        s_pendingJoin = true;
-        s_amHost = jr.isHost;
-        if (jr.hasSaved)
-            s_pendingHeading = jr.heading;
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.events.joinOk = true;
+        s_inbox.events.joinIsHost = jr.isHost;
+        s_inbox.events.joinHasHeading = jr.hasSaved;
+        s_inbox.events.joinHeading = jr.hasSaved ? jr.heading : 0.f;
     });
 
     g_netClient.SetJoinRejected([](net::JoinRejectReason reason) {
@@ -3575,15 +3987,15 @@ void InitNetworkClient()
 
     g_netClient.SetConnectionLost([]() {
         sh_log::Write("net: CONNECTION_LOST -> reconnect with backoff\n");
-        s_pendingConnectionLost = true;
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.events.connectionLost = true;
     });
 
     g_netClient.SetHostChanged([](bool isHost) {
-        s_amHost = isHost;
         sh_log::Write("net: HOST_CHANGED isHost=%d\n", isHost ? 1 : 0);
-        std::snprintf(s_joinedName, sizeof(s_joinedName),
-                      isHost ? "You are now HOST" : "You are now GUEST");
-        s_subtitleTicksLeft = 10 * 60;
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.events.hostChanged = true;
+        s_inbox.events.hostChangedIsHost = isHost;
     });
 
     // P1: WorldSnapshot от хоста. Сетевой поток только копирует payload;
@@ -3635,48 +4047,48 @@ void InitNetworkClient()
     g_netClient.SetPlayerJoin([](const netio::PlayerJoinInfo& ji) {
         sh_log::Write("net: PLAYER_JOINED %s (model=0x%llX, pos=%d)\n",
                       ji.name.c_str(), ji.model, ji.hasPos ? 1 : 0);
-        std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s joined", ji.name.c_str());
-        s_playerJoinedNotified = true;
-        s_pendingJoinWaitTicks = 0; // новый игрок — заново ждём его первый кадр
-        s_subtitleTicksLeft = 8 * 60;
-        std::snprintf(s_pedName, sizeof(s_pedName), "%s", ji.name.c_str());
-        std::snprintf(s_pendingName, sizeof(s_pendingName), "%s", ji.name.c_str());
-        s_remoteModel = ji.model;
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        InboxEvents& ev = s_inbox.events;
+        ev.playerJoined = true;
+        CopyInboxName(ev.playerJoinedName, ji.name);
+        ev.playerJoinedModel = ji.model;
+        ev.playerJoinedHasPos = ji.hasPos;
         if (ji.hasPos)
         {
-            s_pendingHasPos = true;
-            s_pendingX = ji.x; s_pendingY = ji.y; s_pendingZ = ji.z;
-            s_pendingHeading = ji.heading;
-        }
-        else
-        {
-            s_pendingHasPos = false;
+            ev.playerJoinedX = ji.x;
+            ev.playerJoinedY = ji.y;
+            ev.playerJoinedZ = ji.z;
+            ev.playerJoinedHeading = ji.heading;
         }
     });
 
     g_netClient.SetFrame([](const net::FramePayload& f) {
         // Только копируем кадр; нативы применит Tick().
-        s_lastFrame = f;
-        s_haveFrame = true;
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.frame = f;
+        s_inbox.haveFrame = true;
     });
 
     g_netClient.SetWorldState([](const net::WorldState& ws) {
         // Только копируем; нативы (SET_CLOCK_TIME/SET_WEATHER_TYPE) вызовет
         // Tick() в игровом потоке.
-        s_worldState = ws;
-        s_haveWorldState = true;
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.worldState = ws;
+        s_inbox.haveWorldState = true;
     });
 
     g_netClient.SetOutfit([](const net::OutfitState& os) {
         // Только копируем; нативы (EQUIP/UPDATE_VARIATION) вызовет Tick().
-        s_outfitIn = os;
-        s_haveOutfit = true;
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.outfit = os;
+        s_inbox.haveOutfit = true;
     });
 
     g_netClient.SetHorseOutfit([](const net::OutfitState& os) {
         // Сетевой поток: копируем; применит Tick().
-        s_horseOutfitIn = os;
-        s_haveHorseOutfit = true;
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.horseOutfit = os;
+        s_inbox.haveHorseOutfit = true;
     });
 
     g_netClient.SetShot([](const net::ShotPayload& sp) {
@@ -3688,25 +4100,28 @@ void InitNetworkClient()
             s_shotEventsPending.store(true);
         }
         else
-            ++s_shotDropped;
+            s_shotDropped.fetch_add(1);
     });
 
     g_netClient.SetPlayerLeave([](const std::string& name) {
         sh_log::Write("net: PLAYER_LEFT %s\n", name.c_str());
-        std::snprintf(s_leaveName, sizeof(s_leaveName), "%s", name.c_str());
-        s_pendingLeave = true; // физическое удаление сделает Tick()
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.events.leave = true;
+        CopyInboxName(s_inbox.events.leaveName, name);
     });
 
     g_netClient.SetDied([](const std::string& name) {
         sh_log::Write("net: PLAYER_DIED %s\n", name.c_str());
-        std::snprintf(s_remoteDiedName, sizeof(s_remoteDiedName), "%s", name.c_str());
-        s_remoteDiedPending = true; // убить педа-призрака сделает Tick()
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.events.died = true;
+        CopyInboxName(s_inbox.events.diedName, name);
     });
 
     g_netClient.SetRespawned([](const std::string& name) {
         sh_log::Write("net: PLAYER_RESPAWNED %s\n", name.c_str());
-        std::snprintf(s_remoteRespawnName, sizeof(s_remoteRespawnName), "%s", name.c_str());
-        s_remoteRespawnPending = true; // оживить педа сделает Tick()
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        s_inbox.events.respawned = true;
+        CopyInboxName(s_inbox.events.respawnedName, name);
     });
 
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
@@ -3746,10 +4161,44 @@ void Tick()
     // (иначе при паузе/лаге сети очередь выстрелов «замерзает»).
     if (s_shootHoldTicks > 0)
         --s_shootHoldTicks;
+    if (s_deadGuardTicks > 0)
+        --s_deadGuardTicks;
 
     unsigned int playerPed = GetPlayerPedFor(0);
     if (!playerPed)
         return;
+
+    // Забрать из сетевого inbox последние кадр/наряд/состояние мира. Дальше
+    // работаем только с игровыми копиями — гонок с сетевым потоком нет.
+    {
+        net::FramePayload frame{};
+        if (TakeInboxFrame(frame))
+        {
+            s_lastFrame = frame;
+            s_haveFrame = true;
+            s_lastKnownPos = Vec3{frame.x, frame.y, frame.z};
+            s_lastKnownHeading = frame.heading;
+            s_lastKnownPosValid = true;
+        }
+        net::OutfitState os{};
+        if (TakeInboxOutfit(os))
+        {
+            s_outfitIn = os;
+            s_haveOutfit = true;
+        }
+        net::OutfitState ho{};
+        if (TakeInboxHorseOutfit(ho))
+        {
+            s_horseOutfitIn = ho;
+            s_haveHorseOutfit = true;
+        }
+        net::WorldState ws{};
+        if (TakeInboxWorldState(ws))
+        {
+            s_worldState = ws;
+            s_haveWorldState = true;
+        }
+    }
 
     // Spike 1 (модель A): диагностика мира — пулы сущностей, NPC/транспорт
     // рядом, mission-entity, FPS. Только чтение, геймплей не меняет.
@@ -3770,7 +4219,7 @@ void Tick()
         // P1: репликация мира/NPC. Хост шлёт снапшоты, гость применяет их
         // и подавляет собственную ambient-популяцию. По умолчанию выключено
         // в ini (world_sync = 1 на ОБОИХ ПК для теста).
-        world_sync::Tick(playerPed, s_tickCount, s_amHost,
+        world_sync::Tick(playerPed, s_tickCount, s_amHost.load(),
                          coopcfg::Get().worldSync,
                          coopcfg::Get().worldTrains);
 
@@ -3845,7 +4294,7 @@ void Tick()
         // P3: MissionData — хост детектит новые завершения, гость применяет.
         if (coopcfg::Get().missionSync)
         {
-            if (s_amHost && (s_tickCount - s_lastMissionPollTick) >= 60)
+            if (s_amHost.load() && (s_tickCount - s_lastMissionPollTick) >= 60)
             {
                 s_lastMissionPollTick = s_tickCount;
                 PollHostMissions();
@@ -3853,7 +4302,7 @@ void Tick()
 
             // Активная миссия хоста (runtime script) — для координированного
             // старта и подсказки гостю.
-            if (s_amHost && (s_tickCount - s_lastMissionStatePollTick) >= 30)
+            if (s_amHost.load() && (s_tickCount - s_lastMissionStatePollTick) >= 30)
             {
                 s_lastMissionStatePollTick = s_tickCount;
                 const uint32_t activeId = DetectHostActiveMission();
@@ -3939,13 +4388,13 @@ void Tick()
             }
             for (const net::MissionBarrierPayload& ev : barrierEvents)
             {
-                if (s_amHost)
+                if (s_amHost.load())
                     ProcessHostMissionBarrier(ev);
                 else
                     ProcessGuestMissionBarrier(ev);
             }
 
-            if (!s_amHost && s_guestBarrier.windowOpen &&
+            if (!s_amHost.load() && s_guestBarrier.windowOpen &&
                 !s_guestBarrier.startedSent &&
                 (s_tickCount - s_lastGuestBarrierPollTick) >= 30)
             {
@@ -3998,14 +4447,57 @@ void Tick()
     // из кадра, чтобы пед создавался с правильной моделью с первого раза
     // (иначе он создаётся горожанином и тут же пересоздаётся — анимации
     // рвутся, см. «remote model changed 0xCF7E73BE -> 0xD7114C9»).
+    // Хэши моделей приходят из сети — валидируем IS_MODEL_VALID ДО RequestModel
+    // и DeleteGhostEntity. Иначе битый хэш «залипал» в HasModelLoaded()==false,
+    // Tick уходил в ранний return и переставал обрабатывать кадры/наряд/
+    // выстрелы/connectionLost.
+    if (s_requestedModel && !IsModelHashValid(s_requestedModel))
+    {
+        sh_log::Write("coop: ignoring invalid requested ped model 0x%llX\n",
+                      s_requestedModel);
+        s_requestedModel = 0;
+    }
+    if (s_remoteModel && !IsModelHashValid(s_remoteModel))
+    {
+        if (s_remoteModel != s_ignoredPedModelHash)
+        {
+            s_ignoredPedModelHash = s_remoteModel;
+            sh_log::Write("coop: ignoring invalid remote ped model 0x%llX\n",
+                          s_remoteModel);
+        }
+        s_remoteModel = 0;
+    }
     if (s_haveFrame && s_lastFrame.reserved[2] && !s_requestedModel)
     {
-        s_requestedModel = s_lastFrame.reserved[2];
-        RequestModel(s_requestedModel);
-        s_modelLoadedLogged = false;
+        if (IsModelHashValid(s_lastFrame.reserved[2]))
+        {
+            s_requestedModel = s_lastFrame.reserved[2];
+            RequestModel(s_requestedModel);
+            s_modelLoadedLogged = false;
+        }
+        else if (s_lastFrame.reserved[2] != s_ignoredPedModelHash)
+        {
+            s_ignoredPedModelHash = s_lastFrame.reserved[2];
+            sh_log::Write("coop: ignoring invalid frame ped model 0x%llX\n",
+                          s_lastFrame.reserved[2]);
+        }
     }
     unsigned long long wantModel = s_requestedModel ? s_requestedModel
                                   : (s_remoteModel ? s_remoteModel : GHOST_PED_MODEL);
+    if (!IsModelHashValid(wantModel))
+    {
+        // Последний предохранитель: Tick не должен залипнуть в раннем return
+        // навсегда. Берём модель локального игрока (валидна и уже загружена).
+        using namespace natives_api;
+        Init(natives::GET_ENTITY_MODEL);
+        Push(playerPed);
+        wantModel = Call();
+        s_requestedModel = wantModel;
+        RequestModel(wantModel);
+        s_modelLoadedLogged = false;
+        sh_log::Write("coop: invalid ped model -> fallback to local 0x%llX\n",
+                      wantModel);
+    }
     if (s_requestedModel != wantModel)
     {
         RequestModel(wantModel);
@@ -4023,23 +4515,94 @@ void Tick()
         return;
     }
 
+    // Забрать события из net-inbox (игровой поток) и превратить их в игровые
+    // флаги/буферы. Раньше это делали сетевые колбэки напрямую — была гонка
+    // с Tick и запись в общие char[] из чужого потока.
+    InboxEvents ev;
+    TakeInboxEvents(ev);
+
+    if (ev.joinOk)
+    {
+        s_amHost.store(ev.joinIsHost);
+        if (ev.joinHasHeading)
+            s_pendingHeading = ev.joinHeading;
+    }
+    if (ev.hostChanged)
+    {
+        s_amHost.store(ev.hostChangedIsHost);
+        std::snprintf(s_joinedName, sizeof(s_joinedName),
+                      ev.hostChangedIsHost ? "You are now HOST" : "You are now GUEST");
+        s_subtitleTicksLeft = 10 * 60;
+    }
+    // Порядок важен: сначала connectionLost, потом leave, потом playerJoined
+    // (события нового сеанса должны перебить старые).
+    if (ev.connectionLost)
+    {
+        s_pendingConnectionLost = true;
+        // После reconnect наряд/снаряжение надо переслать заново.
+        s_sentOutfitValid = false;
+        s_sentHorseOutfitValid = false;
+    }
+    if (ev.leave)
+    {
+        std::snprintf(s_leaveName, sizeof(s_leaveName), "%s", ev.leaveName);
+        s_pendingLeave = true;
+    }
+    if (ev.playerJoined)
+    {
+        sh_log::Write("coop: PLAYER_JOINED %s (model=0x%llX, pos=%d)\n",
+                      ev.playerJoinedName, ev.playerJoinedModel,
+                      ev.playerJoinedHasPos ? 1 : 0);
+        std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s joined",
+                      ev.playerJoinedName);
+        s_playerJoinedNotified = true;
+        s_pendingJoinWaitTicks = 0; // новый игрок — заново ждём его первый кадр
+        s_subtitleTicksLeft = 8 * 60;
+        std::snprintf(s_pedName, sizeof(s_pedName), "%s", ev.playerJoinedName);
+        std::snprintf(s_pendingName, sizeof(s_pendingName), "%s", ev.playerJoinedName);
+        // Модель из PLAYER_JOINED тоже приходит из сети — валидируем.
+        if (ev.playerJoinedModel && !IsModelHashValid(ev.playerJoinedModel))
+        {
+            sh_log::Write("coop: ignoring invalid join model 0x%llX\n",
+                          ev.playerJoinedModel);
+            s_remoteModel = 0;
+        }
+        else
+        {
+            s_remoteModel = ev.playerJoinedModel;
+        }
+        if (ev.playerJoinedHasPos)
+        {
+            s_pendingHasPos = true;
+            s_pendingX = ev.playerJoinedX;
+            s_pendingY = ev.playerJoinedY;
+            s_pendingZ = ev.playerJoinedZ;
+            s_pendingHeading = ev.playerJoinedHeading;
+        }
+        else
+        {
+            s_pendingHasPos = false;
+        }
+        // Новому пиру наряд/снаряжение лошади надо переслать заново.
+        s_sentOutfitValid = false;
+        s_sentHorseOutfitValid = false;
+    }
+
     // Обработка потери соединения: чистим удалённого педа и ждём reconnect.
     if (s_pendingConnectionLost)
     {
         s_pendingConnectionLost = false;
-        s_pendingJoin = false;
         s_pendingLeave = false;
         s_playerJoinedNotified = false;
-        s_amHost = false;
+        s_amHost.store(false);
         CleanupGhost();
         std::snprintf(s_joinedName, sizeof(s_joinedName),
                       "Connection lost — reconnecting...");
         s_subtitleTicksLeft = 10 * 60;
     }
 
-    // Обработка выхода игрока (флаг ставит сетевой колбэк, всё удаление —
-    // здесь, на игровом потоке). Делаем ДО спавна, чтобы новый JOIN не
-    // перебился LEAVE от старого клиента.
+    // Обработка выхода игрока (всё удаление — здесь, на игровом потоке).
+    // Делаем ДО спавна, чтобы новый JOIN не перебился LEAVE от старого клиента.
     if (s_pendingLeave)
     {
         s_pendingLeave = false;
@@ -4054,6 +4617,51 @@ void Tick()
         std::snprintf(s_joinedName, sizeof(s_joinedName), "%s", leaveText);
         s_subtitleTicksLeft = 8 * 60;
         s_leaveName[0] = '\0';
+    }
+
+    // Смерть удалённого игрока от СЕРВЕРА (оригинал умер в своём мире):
+    // снимаем invincibility, убиваем педа (труп и снаряжение остаются) и
+    // сбрасываем боевое состояние — иначе после респавна выстрелы «висят» на
+    // старом оружии/очереди. Обрабатываем ДО кадра, чтобы труп не двигался.
+    if (ev.died)
+    {
+        const char* who = ev.diedName[0] ? ev.diedName : "Player";
+        if (s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead)
+        {
+            using namespace natives_api;
+            Init(natives::SET_ENTITY_INVINCIBLE);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(0));
+            Call();
+            Init(natives::SET_ENTITY_HEALTH);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(0)); // 0 HP = смерть
+            Push(static_cast<unsigned long long>(0)); // entityKilledBy
+            Call();
+            s_ghostDead = true;
+            s_deadGuardTicks = 120; // ~2 с: не воскрешать кадром health>0.2
+            ResetGhostCombatState();
+            sh_log::Write("coop: [DEAD] %s (killed by server Died)\n", who);
+            if (s_blip)
+                s_blip = RemoveBlip(s_blip);
+            std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s is dead", who);
+            s_subtitleTicksLeft = 8 * 60;
+            s_pedName[0] = '\0'; // имя над головой скрыто
+        }
+        else
+        {
+            sh_log::Write("coop: Died for %s but no ghost\n", who);
+        }
+    }
+
+    // Оригинал ожил после смерти — возрождаем педа. Свежий кадр этого тика
+    // (если уже пришёл) даёт актуальную позицию; иначе RespawnGhostPed берёт
+    // s_lastKnownPos, а не позицию входа в сессию.
+    if (ev.respawned)
+    {
+        std::snprintf(s_remoteRespawnName, sizeof(s_remoteRespawnName), "%s",
+                      ev.respawnedName);
+        RespawnGhostPed(s_haveFrame ? &s_lastFrame : nullptr);
     }
 
     // Спавн педа: только при PLAYER_JOINED (не при своём JOIN_OK).
@@ -4097,14 +4705,7 @@ void Tick()
         // высоты до того, как мы поставим его на землю, и разобьётся
         // (наблюдали: телепорт в небо, падение, смерть педа на ПК2).
         float groundZ = 0.f;
-        bool hasGround = false;
-        {
-            using namespace natives_api;
-            Init(natives::GET_GROUND_Z_FOR_3D_COORD);
-            Push(spawn.x); Push(spawn.y); Push(spawn.z);
-            Push(reinterpret_cast<unsigned long long>(&groundZ));
-            hasGround = Call() != 0;
-        }
+        const bool hasGround = GetGroundZForCoord(spawn, groundZ);
         Vec3 createAt = spawn;
         if (hasGround)
             createAt.z = groundZ + 0.2f; // чуть над землёй
@@ -4118,11 +4719,14 @@ void Tick()
         {
             SetEntityMission(s_ghost);
             s_appliedOutfitValid = false; // новый пед — наряд наденем заново
+            ResetGhostCombatState();      // новому педу оружие выдадим заново
+            s_deadGuardTicks = 0;
             // ВАЖНО: RandomizePedComponents (SET_PED_RANDOM_COMPONENT_VARIATION)
             // ОБЯЗАТЕЛЕН для рендера модели педа — без него пед невидим
-            // (остаются только прикреплённые shop-предметы-одёжки). Наряд из
-            // сети применяется ПОЗЖЕ и перекрывает рандом, так что он не мешает.
+            // (остаются только прикреплённые shop-предметы-одёжки). Делаем это
+            // ОДИН раз на педа; дальше наряд применяется поверх.
             RandomizePedComponents(s_ghost);
+            s_ghostBaseRandomized = true;
             SetEntityVisibleForce(s_ghost);
             PlaceOnGround(s_ghost);
             if (hasGround)
@@ -4132,6 +4736,10 @@ void Tick()
             s_blip = CreateFriendlyBlipAt(spawn);
             sh_log::Write("coop: friendly blip -> %u\n", s_blip);
             std::snprintf(s_pedName, sizeof(s_pedName), "%s", name);
+            // Наряд мог прийти раньше создания педа (не съедаем его в Tick) —
+            // применяем сразу, иначе без следующей смены одежды он потеряется.
+            if (s_outfitIn.count)
+                ApplyOutfitToGhost(s_outfitIn);
         }
         // Применить самый свежий кадр, если уже пришёл (иначе пед «догонит»
         // позицию на следующем кадре).
@@ -4159,10 +4767,11 @@ void Tick()
     // hold=30 и очередь не успевает проигрываться. Интервал 5 тиков ~=
     // 12 выстрелов/с — покрывает автоматическое оружие (10/с) целиком,
     // очередь на 64 события страхует длинные серии.
-    if (s_shotDropped > 0 && (s_tickCount % 300) == 1)
+    if (s_shotDropped.load() > 0 && (s_tickCount % 300) == 1)
     {
-        sh_log::Write("coop: shot queue overflow, dropped=%d\n", s_shotDropped);
-        s_shotDropped = 0;
+        sh_log::Write("coop: shot queue overflow, dropped=%d\n",
+                      s_shotDropped.load());
+        s_shotDropped.store(0);
     }
     int shotPending = 0;
     {
@@ -4198,28 +4807,26 @@ void Tick()
     }
 
     // Применить компоненты одежды от удалённого игрока (при смене наряда).
-    if (s_haveOutfit)
+    // Если педа ещё нет — НЕ съедаем флаг: применим сразу после его создания
+    // (иначе первое сообщение об одежде терялось и призрак оставался рандомным).
+    if (s_haveOutfit && s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead)
     {
         s_haveOutfit = false;
         ApplyOutfitToGhost(s_outfitIn);
     }
     // Снаряжение лошади удалённого игрока — применить к лошади-призраку.
-    if (s_haveHorseOutfit)
+    if (s_haveHorseOutfit && s_mount && DoesEntityExist(s_mount))
     {
         s_haveHorseOutfit = false;
-        if (s_mount && DoesEntityExist(s_mount))
-            ApplyHorseOutfitToMount(s_horseOutfitIn);
+        ApplyHorseOutfitToMount(s_horseOutfitIn);
     }
     // Применить отложенный наряд, если модель педа наконец совпала.
     TryApplyPendingOutfit();
 
     // «Догоняющее» применение наряда после посадки/спешивания: движок в эти
     // моменты несколько раз сбрасывает component variation, и один наш
-    // apply может быть перебит. Пока окно активно — периодически
-    // пересобираем внешний вид через RefreshGhostComponents (рандомизация +
-    // наряд в одном тике): так каждый повтор начинается с чистого variation,
-    // а не наслаивает одни и те же предметы (из-за наслаивания одежда
-    // «слетала» — старая просвечивала сквозь новую).
+    // apply может быть перебит. Базу НЕ рандомизируем повторно — только
+    // переприменяем наряд (случайные слои больше не подмешиваются).
     if (s_outfitRefreshTicks > 0)
     {
         --s_outfitRefreshTicks;
@@ -4254,45 +4861,6 @@ void Tick()
         UpdateBlipCoords(s_blip, gp);
     }
 
-    // Смерть удалённого игрока от СЕРВЕРА (оригинал умер в своём мире):
-    // убиваем педа-призрака, но НЕ удаляем — труп и всё снаряжение остаются
-    // лежать. (От коллизий/бандитов/физики пед не умирает — он invincible.)
-    if (s_remoteDiedPending)
-    {
-        s_remoteDiedPending = false;
-        const char* who = s_remoteDiedName[0] ? s_remoteDiedName : "Player";
-        if (s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead)
-        {
-            using namespace natives_api;
-            Init(natives::SET_ENTITY_HEALTH);
-            Push(s_ghost);
-            Push(static_cast<unsigned long long>(0)); // 0 HP = смерть
-            Push(static_cast<unsigned long long>(0)); // entityKilledBy
-            Call();
-            s_ghostDead = true; // труп не двигаем/не трогаем
-            sh_log::Write("coop: [DEAD] %s (killed by server Died)\n", who);
-            if (s_blip)
-                s_blip = RemoveBlip(s_blip);
-            std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s is dead", who);
-            s_playerJoinedNotified = true; // переиспользуем таймер оповещения
-            s_subtitleTicksLeft = 8 * 60;
-            s_pedName[0] = '\0'; // имя над головой скрыто
-        }
-        else
-        {
-            sh_log::Write("coop: Died for %s but no ghost\n", who);
-        }
-        s_remoteDiedName[0] = '\0';
-    }
-
-    // Оригинал ожил после смерти (сервер прислал Respawned) — возрождаем
-    // педа-призрака (или создаём заново, если трупа уже нет) + надпись.
-    if (s_remoteRespawnPending)
-    {
-        s_remoteRespawnPending = false;
-        RespawnGhostPed(s_haveFrame ? &s_lastFrame : nullptr);
-    }
-
     // Смерть удалённого игрока: метка-крестик, скрыть имя и показать
     // короткое оповещение (однократно). Грация после возрождения — не
     // считаем педа мёртвым, пока RESURRECT_PED не применился.
@@ -4302,13 +4870,20 @@ void Tick()
         && IsPedDeadOrDying(s_ghost) && !s_ghostDead)
     {
         s_ghostDead = true;
+        // Пед призрака invincible; чтобы смерть действительно проигралась,
+        // снимаем флаг, затем (как и по серверному Died) сбрасываем бой.
+        using namespace natives_api;
+        Init(natives::SET_ENTITY_INVINCIBLE);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(0));
+        Call();
+        ResetGhostCombatState();
         sh_log::Write("coop: [DEAD] %s\n", s_pedName[0] ? s_pedName : "Player");
         if (s_blip)
             s_blip = RemoveBlip(s_blip);
         // короткое оповещение, как при подключении
         std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s is dead",
                       s_pedName[0] ? s_pedName : "Player");
-        s_playerJoinedNotified = true; // переиспользуем механизм таймера оповещения
         s_subtitleTicksLeft = 8 * 60;
         s_pedName[0] = '\0'; // имя над головой скрыто
     }
@@ -4398,17 +4973,20 @@ void Tick()
                 // всегда 0, поэтому собираем компоненты как у педа).
                 net::OutfitState ho{};
                 CollectLocalOutfit(m, ho);
-                bool changed = !s_sentHorseOutfitValid ||
-                               ho.model != s_sentHorseOutfit.model ||
-                               ho.count != s_sentHorseOutfit.count ||
-                               std::memcmp(ho.components, s_sentHorseOutfit.components,
-                                           sizeof(ho.components)) != 0;
-                if (ho.count > 0 && changed)
+                // Сравнение order-insensitive + heartbeat (после реконнекта
+                // получатель мог не получить снаряжение вовсе).
+                const bool changed = !s_sentHorseOutfitValid ||
+                                     !OutfitsEqual(ho, s_sentHorseOutfit);
+                const bool heartbeat =
+                    (s_tickCount - s_lastHorseOutfitSendTick) >= kOutfitHeartbeatTicks;
+                if (ho.count > 0 && (changed || heartbeat))
                 {
                     s_sentHorseOutfit = ho;
                     s_sentHorseOutfitValid = true;
+                    s_lastHorseOutfitSendTick = s_tickCount;
                     g_netClient.SendHorseOutfit(ho);
-                    sh_log::Write("coop: send horse outfit (%u comp)\n", ho.count);
+                    sh_log::Write("coop: send horse outfit (%u comp)%s\n",
+                                  ho.count, changed ? "" : " [heartbeat]");
                 }
             }
             else if (s_tickCount % (3 * 60) == 1)
@@ -4425,21 +5003,18 @@ void Tick()
     // GET_PED_META_OUTFIT_HASH = 0, поэтому используем список компонентов.
     // Смена отправляется только если набор продержался ~0.5 с: доставание
     // оружия (кобуры/патронташи) дёргает список и вызывает лишние применения.
+    // Сравнение — order-insensitive (порядок категорий от движка нестабилен),
+    // плюс heartbeat раз в ~5 с: иначе после реконнекта одежда не пересылается.
     if (g_netStarted)
     {
         net::OutfitState os{};
         CollectLocalOutfit(playerPed, os);
-        bool changed = !s_sentOutfitValid ||
-                       os.model != s_sentOutfit.model ||
-                       os.count != s_sentOutfit.count ||
-                       std::memcmp(os.components, s_sentOutfit.components,
-                                   sizeof(os.components)) != 0;
+        const bool changed = !s_sentOutfitValid || !OutfitsEqual(os, s_sentOutfit);
+        bool sendNow = false;
+        bool heartbeat = false;
         if (os.count > 0 && changed)
         {
-            if (s_haveCandidateOutfit && os.model == s_candidateOutfit.model &&
-                os.count == s_candidateOutfit.count &&
-                std::memcmp(os.components, s_candidateOutfit.components,
-                            sizeof(os.components)) == 0)
+            if (s_haveCandidateOutfit && OutfitsEqual(os, s_candidateOutfit))
             {
                 ++s_candidateOutfitTicks;
             }
@@ -4451,48 +5026,56 @@ void Tick()
             }
             if (s_candidateOutfitTicks >= kOutfitDebounceTicks &&
                 s_tickCount - s_lastOutfitSendTick >= kOutfitMinIntervalTicks)
+                sendNow = true;
+        }
+        else if (os.count > 0 &&
+                 (s_tickCount - s_lastOutfitSendTick) >= kOutfitHeartbeatTicks)
+        {
+            sendNow = true;
+            heartbeat = true;
+        }
+        if (sendNow)
+        {
+            // Диагностика: какие позиции изменились (чтобы понять, что
+            // именно дёргает оружие — кобура/патронташ/пояс).
+            int diffCount = 0, firstIdx = -1;
+            unsigned int oldV = 0, newV = 0;
+            for (int i = 0; i < net::kMaxOutfitComponents; ++i)
             {
-                // Диагностика: какие позиции изменились (чтобы понять, что
-                // именно дёргает оружие — кобура/патронташ/пояс).
-                int diffCount = 0, firstIdx = -1;
-                unsigned int oldV = 0, newV = 0;
-                for (int i = 0; i < net::kMaxOutfitComponents; ++i)
+                if (os.components[i] != s_sentOutfit.components[i])
                 {
-                    if (os.components[i] != s_sentOutfit.components[i])
+                    ++diffCount;
+                    if (firstIdx < 0)
                     {
-                        ++diffCount;
-                        if (firstIdx < 0)
-                        {
-                            firstIdx = i;
-                            oldV = s_sentOutfit.components[i];
-                            newV = os.components[i];
-                        }
+                        firstIdx = i;
+                        oldV = s_sentOutfit.components[i];
+                        newV = os.components[i];
                     }
                 }
-                s_lastOutfitSendTick = s_tickCount;
-                s_haveCandidateOutfit = false;
-                s_candidateOutfitTicks = 0;
-                s_sentOutfit = os;
-                s_sentOutfitValid = true;
-                g_netClient.SendOutfit(os);
-                char comps[256] = "";
-                {
-                    int off = 0;
-                    for (uint32_t i = 0; i < os.count && off < 220; ++i)
-                        off += std::snprintf(comps + off, sizeof(comps) - off,
-                                             "%s0x%X", i ? " " : "", os.components[i]);
-                }
-                sh_log::Write("coop: send outfit (%u comp, model 0x%llX, diff=%d "
-                              "first[%d]=0x%X->0x%X) [%s]\n",
-                              os.count, os.model, diffCount, firstIdx, oldV, newV,
-                              comps);
             }
+            s_lastOutfitSendTick = s_tickCount;
+            s_haveCandidateOutfit = false;
+            s_candidateOutfitTicks = 0;
+            s_sentOutfit = os;
+            s_sentOutfitValid = true;
+            g_netClient.SendOutfit(os);
+            char comps[256] = "";
+            {
+                int off = 0;
+                for (uint32_t i = 0; i < os.count && off < 220; ++i)
+                    off += std::snprintf(comps + off, sizeof(comps) - off,
+                                         "%s0x%X", i ? " " : "", os.components[i]);
+            }
+            sh_log::Write("coop: send outfit (%u comp, model 0x%llX, diff=%d "
+                          "first[%d]=0x%X->0x%X)%s [%s]\n",
+                          os.count, os.model, diffCount, firstIdx, oldV, newV,
+                          heartbeat ? " [heartbeat]" : "", comps);
         }
     }
 
     // Синхронизация мира (время + погода): хост шлёт своё состояние каждые
     // ~5 секунд, остальные применяют его у себя (SET_CLOCK_TIME / погода).
-    if (g_netStarted && s_amHost)
+    if (g_netStarted && s_amHost.load())
     {
         // Раз в 5 секунд (300 тиков) отправляем текущее время/погоду.
         if (s_tickCount - s_lastWorldSendTick >= 5 * 60)
@@ -4561,7 +5144,10 @@ void Tick()
 
     // Small "Player X joined" subtitle on screen while a join happened
     // (drawn each frame for a short while proves the text path works).
-    if (s_playerJoinedNotified && s_joinedName[0])
+    // Гейт по тексту/таймеру, а не по s_playerJoinedNotified: этот флаг теперь
+    // означает только «удалённый игрок в сессии» (гейт спавна), а субтитры
+    // показываем и для death/respawn/host-changed/connection-lost.
+    if (s_joinedName[0])
     {
         if (s_subtitleTicksLeft > 0)
         {
@@ -4572,7 +5158,7 @@ void Tick()
         }
         else
         {
-            s_joinedName[0] = '\0'; // hide permanently until next join
+            s_joinedName[0] = '\0'; // hide permanently until next event
         }
     }
 

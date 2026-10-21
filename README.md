@@ -36,7 +36,7 @@
 - Одежда: переносятся **shop-предметы** (куртки, шляпы, патронташи и т.п.).
   Базовая внешность (лицо, волосы, борода, дефолтные слои модели) не
   синхронизируется — в публичном RDR2 SDK нет getter'а этих компонентов.
-- Headless-тесты сервера/протокола (15 шт.), C++ reconnect/config/parser/
+- Headless-тесты сервера/протокола (20 шт.), C++ reconnect/config/parser/
   mission-catalog/budget/barrier/fuzz и CI-скрипт с артефактами и кешем.
 
 ### Отключено / не работает (экспериментальные флаги = 0)
@@ -102,7 +102,7 @@ cmake --build build-server --config Release
 # headless-тесты сервера/протокола (без игры)
 python tests\integration_server.py --exe build-server-ci\Release\rdr2_coop_server.exe
 
-# полный CI: клиент + сервер + 15 Python + 7 C++ + restore-тест
+# полный CI: клиент + сервер + 20 Python + 7 C++ + restore-тест
 powershell -ExecutionPolicy Bypass -File scripts\ci.ps1
 ```
 

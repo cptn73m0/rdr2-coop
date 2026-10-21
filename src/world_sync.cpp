@@ -121,6 +121,7 @@ void RequestModel(unsigned int model)
     using namespace natives_api;
     Init(natives::REQUEST_MODEL);
     Push(static_cast<unsigned long long>(model));
+    Push(false); // p1: 2-й аргумент обязателен (иначе движок читает мусор)
     Call();
 }
 

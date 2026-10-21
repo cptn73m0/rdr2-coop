@@ -1,45 +1,63 @@
 # Headless-тесты сервера (без игры)
 
 `tests/integration_server.py` запускает `rdr2_coop_server.exe` и проверяет протокол
-по TCP: JOIN, роли, host-only сообщения, размеры, WorldSnapshot, мусорные кадры,
-`players.txt` persistence.
+по TCP: JOIN (включая гонку одновременных JOIN), роли/лимиты, host-only
+сообщения, точные размеры, WorldSnapshot, мусорные кадры, ретрансляцию
+Leave/PlayerLeft/Died/Respawned/HorseOutfit, connection cap/per-IP rate limit,
+`players.txt` persistence/recovery, graceful shutdown.
 
 ## Требования
 
-- Python 3.8+
-- собранный `rdr2_coop_server.exe`
+- Python 3.8+ (запускать обычным `python`; режим `-O`/`PYTHONOPTIMIZE` отклоняется —
+  проверки в тестах явные, `require()`, а не `assert`).
+- собранный `rdr2_coop_server.exe` в каноническом каталоге `build-server-ci`
+  (или ином, переданном через `--exe`).
+
+Версия протокола, ID сообщений, размеры payload'ов и лимиты сервера
+(`kMaxNameLength`, `kMaxPreJoinConnections`, `kMaxActiveConnections`,
+`kMaxNewConnectionsPerIpPerSecond`) читаются тестом **из `net/protocol.h` и
+`server/server.cpp`**, а затем сверяются с запиненными значениями
+(32/8/32/12). Случайное ослабление лимита в server.cpp валит suite, а не
+подхватывается тестом автоматически.
 
 ## Запуск
 
 ```powershell
-# из корня репозитория
-python tests\integration_server.py --exe build-server-v10\Release\rdr2_coop_server.exe
+# из корня репозитория (server уже собран в build-server-ci)
+python tests\integration_server.py --exe build-server-ci\Release\rdr2_coop_server.exe
 
-# или через runner (соберёт v10 и запустит)
+# или через runner: при необходимости соберёт build-server-ci и запустит
 powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 ```
 
-Флаг `--keep` сохраняет временную папку с логами/`players.txt` для разбора.
+Опции: `--keep` сохраняет временную папку с логами/`players.txt`;
+`--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
+`KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто
+## Что покрыто (20 сценариев)
 
 | Тест | Проверка |
 |---|---|
-| `test_join_rejections` | версия, пустой/длинный/`:`-ник, сервер жив после отказов |
-| `test_roles_and_full` | HOST/GUEST, занятый ник, третий игрок отклоняется |
-| `test_prejoin_and_ping` | сообщения до JOIN закрывают соединение; Ping работает до JOIN |
+| `test_join_rejections` | несовпадение версии → VersionMismatch; `:`-ник → BadName; сервер жив после отказов |
+| `test_join_name_validation` | пустой/33/40-байтный/control (`\n`,`\r`,`\x01`) ник → JoinRejected(BadName), а не молчаливый close; имя ровно 32 Б принимается; control-ник не инжектится в `players.txt` |
+| `test_roles_and_full` | HOST/GUEST, занятый ник → NameTaken, третий игрок → ServerFull; payload PlayerJoined (имя/модель) |
+| `test_prejoin_and_ping` | до JOIN Frame/Died закрывают соединение; Ping (8 байт) работает до JOIN |
 | `test_world_host_only` | WorldSnapshot 64 ретранслируется, >64 отбрасывается, гость не подменяет мир |
-| `test_payload_sizes_and_host_only_messages` | точные размеры Frame/Outfit/Action/Vehicle/Shot/Mission; host-only MissionEvent/State/barrier/TrainSnapshot; carCount ≤ 16 |
+| `test_payload_sizes_and_host_only_messages` | точные размеры Frame/Outfit/Action/Vehicle/Shot/Mission; Frame +1 байт дропается; host-only MissionEvent/State/barrier/TrainSnapshot, carCount ≤ 16 |
+| `test_relay_misc_messages` | Died/Respawned ретранслируются с ником отправителя; HorseOutfit (400 Б) и Leave/PlayerLeft |
+| `test_worldstate_host_only` | WorldState от хоста ретранслируется, от гостя — блокируется (P0-фикс сервера) |
 | `test_oversized_and_truncated` | len > 64 КБ и обрезанные кадры не роняют сервер |
 | `test_host_migration` | при выходе хоста гость получает HostChanged(1) и может слать WorldSnapshot |
+| `test_join_race` | 50 раундов по 3 одновременных JOIN (threading.Barrier): ровно 2 JOIN_OK, ровно один is_host, третий → ServerFull; после JOIN гость→хост FRAME релеится; сервер чистит сессии |
 | `test_idle_timeout` | молчащий клиент отключается по таймауту (2-й аргумент сервера) |
+| `test_fuzz_frames` | 300 случайных кадров/типов/размеров + oversize + fragmented Ping (8-байтовый payload) |
 | `test_players_txt_recovery` | битые строки и stale `.tmp` не мешают восстановлению двух игроков |
+| `test_players_txt_corrupt_joining_player` | испорченные строки **входящего** игрока (`Alice:junk:...`, `Alice:`, NaN/Inf, мало полей) → сервер не падает, JOIN без сохранённой позиции; валидный Bob восстанавливается |
 | `test_concurrent_fuzz` | 3 rogue + 2 sender потока 3 с; сервер жив и отвечает Ping |
-| `test_connection_cap` | флуд 40 TCP-соединений; лимит не роняет сервер, новый клиент входит |
-| `test_per_ip_rate_limit` | >12 подключений/с с одного IP отсекаются; после окна вход работает |
+| `test_connection_cap` | flood: срабатывает pre-JOIN лимит (`kMaxPreJoinConnections`), принятых «сырых» сокетов не больше лимита, активный cap не срабатывает раньше; после flood валидный клиент входит |
+| `test_per_ip_rate_limit` | 30 быстрых подключений: проверяются записи `per-IP rate limit`, реально закрытые сервером сокеты; после окна вход работает |
 | `test_graceful_shutdown` | сервер корректно завершается по тест-хуку и сохраняет players.txt |
-| `test_fuzz_frames` | 300 случайных кадров/типов/размеров + oversize + fragmented Ping |
-| `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта |
+| `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта; первый игрок = HOST |
 
 ## C++ headless-тесты (сеть)
 
@@ -57,27 +75,40 @@ powershell -File tests\restore_saves_test.ps1
 ```
 
 - `frame_reader_fuzz` — фрагментация, пары кадров, мусор, oversize length,
-  truncated frame, byte-by-byte stream, 4 потока × 20k случайных буферов;
-  `FrameReader` не зависает и восстанавливается.
+  truncated frame, byte-by-byte stream, 4 потока × 20k случайных буферов,
+  **границы `kMaxPayload` (65536 принимается, 65537/0xFFFFFFFF/oversized Feed
+  сбрасываются без выдачи кадра и без зависания)**.
 - `client_reconnect_test` — фейковый TCP-сервер отвечает JOIN_OK и рвёт
   соединение; клиент должен переподключиться (join ≥ 2, connection-lost ≥ 1).
-- `config_test` — `LoadFromFile`: флаги/hex/битые строки/defaults.
+- `config_test` — `LoadFromFile`: дефолты, флаги/hex/битые строки, unknown/
+  дубликаты ключей, регистронезависимые bool и inline `;`-комментарии,
+  порт 0/70000/abc/65535. Все проверки строгие (`Check`): регрессия парсера
+  валит тест, non-fatal pending-механизма нет.
 - `world_snapshot_parse_test` — 4 потока × 20k: валидные снапшоты 0..64
   сущностей и произвольный мусор; строгая проверка размера/count.
 - `mission_catalog_test` — 80 уникальных миссий, runtime/title, 23 награды
   на 17 миссий, корректные binding/amount, нет дублей.
 - `world_entity_budget_test` — 4 потока × 10k: mission-приоритет, лимиты
-  Ped/Vehicle/Object и порядок против независимой reference-реализации.
+  Ped/Vehicle/Object и порядок против reference-реализации.
 - `mission_barrier_rules_fuzz` — 4×100k случайных фаз/ролей/offer/epoch:
-  host/guest события, disjoint role phases; PASS.
+  host/guest события, disjoint role phases.
 - `restore_saves_test.ps1` — restore + pre-restore snapshot на temp-каталогах.
 
 ## CI
 
 `.github/workflows/ci.yml` на Windows собирает клиент/сервер и запускает все
 тесты. Локально: `powershell -File scripts\ci.ps1`.
+Локальный CI использует тот же канонический `build-server-ci`, что и GitHub
+Actions; fallback на старые `build-server-v10/v12` удалён.
 
 ## Важно
 
 - Тесты не запускают игру и не проверяют нативы/визуал.
+- Механизм known-fail (`KNOWN_FAIL_TESTS` + `--strict`) сохранён для будущих
+  ожидаемых падений; сейчас он пуст — все сценарии строгие.
+- Лимит одновременных соединений (`kMaxActiveConnections=32`) после P0
+  недостижим снаружи: сначала срабатывают per-IP rate limit (12/с) и
+  pre-JOIN limit (8 сокетов). Тест проверяет, что cap остаётся
+  defense-in-depth выше достижимого числа сокетов и не срабатывает раньше
+  pre-JOIN лимита.
 - Для игровых проверок см. `docs/TESTING.md` (два ПК).

@@ -257,7 +257,110 @@ int main()
                                  std::ref(threadFailures));
         for (auto& th : threads) th.join();
         failures += threadFailures.load();
-        std::printf("frame_reader_fuzz: long multithreaded pass\n");
+        std::printf("frame_reader_fuzz: long multithreaded pass (failures=%d)\n",
+                    threadFailures.load());
+    }
+
+    // 8) kMaxPayload boundary: exactly kMaxPayload bytes must be accepted.
+    {
+        netio::FrameReader reader;
+        std::vector<uint8_t> payload(net::kMaxPayload, 0x5A);
+        auto frame = netio::MakeFrame(0x30, payload.data(),
+                                      static_cast<uint32_t>(payload.size()));
+        size_t offset = 0;
+        bool got = false;
+        uint8_t t = 0;
+        std::vector<uint8_t> p;
+        while (offset < frame.size())
+        {
+            const size_t chunk = std::min<size_t>(4096, frame.size() - offset);
+            reader.Feed(frame.data() + offset, static_cast<int>(chunk));
+            offset += chunk;
+            while (reader.Poll(t, p))
+                got = true;
+        }
+        if (!got || t != 0x30 || p.size() != payload.size() || p != payload)
+        {
+            std::printf("FAIL: frame with len == kMaxPayload not accepted\n");
+            ++failures;
+        }
+    }
+
+    // 9) kMaxPayload + 1 must reset without output; reader recovers afterwards.
+    {
+        netio::FrameReader reader;
+        const uint32_t badLen = net::kMaxPayload + 1;
+        uint8_t hdr[net::kHeaderSize];
+        hdr[0] = static_cast<uint8_t>(badLen & 0xFF);
+        hdr[1] = static_cast<uint8_t>((badLen >> 8) & 0xFF);
+        hdr[2] = static_cast<uint8_t>((badLen >> 16) & 0xFF);
+        hdr[3] = static_cast<uint8_t>((badLen >> 24) & 0xFF);
+        hdr[4] = 0x04;
+        reader.Feed(hdr, static_cast<int>(sizeof(hdr)));
+        uint8_t t = 0;
+        std::vector<uint8_t> p;
+        if (reader.Poll(t, p))
+        {
+            std::printf("FAIL: len == kMaxPayload+1 produced a frame\n");
+            ++failures;
+        }
+        // Feed some garbage after the reset; any buffered junk must be flushed
+        // without hanging, then a valid frame must be parsed.
+        std::vector<uint8_t> junk(64, 0xAA);
+        reader.Feed(junk.data(), static_cast<int>(junk.size()));
+        while (reader.Poll(t, p))
+        {
+        }
+        std::vector<uint8_t> payload{9, 8, 7, 6};
+        auto frame = netio::MakeFrame(0x31, payload.data(),
+                                      static_cast<uint32_t>(payload.size()));
+        reader.Feed(frame.data(), static_cast<int>(frame.size()));
+        if (!reader.Poll(t, p) || t != 0x31 || p != payload)
+        {
+            std::printf("FAIL: reader did not recover after len == kMaxPayload+1\n");
+            ++failures;
+        }
+    }
+
+    // 10) 0xFFFFFFFF length header resets (no huge allocation, no hang).
+    {
+        netio::FrameReader reader;
+        std::vector<uint8_t> hdr{0xFF, 0xFF, 0xFF, 0xFF, 0x04};
+        reader.Feed(hdr.data(), static_cast<int>(hdr.size()));
+        uint8_t t = 0;
+        std::vector<uint8_t> p;
+        if (reader.Poll(t, p))
+        {
+            std::printf("FAIL: 0xFFFFFFFF length produced a frame\n");
+            ++failures;
+        }
+        std::vector<uint8_t> payload{42};
+        auto frame = netio::MakeFrame(0x32, payload.data(),
+                                      static_cast<uint32_t>(payload.size()));
+        reader.Feed(frame.data(), static_cast<int>(frame.size()));
+        if (!reader.Poll(t, p) || t != 0x32 || p != payload)
+        {
+            std::printf("FAIL: reader did not recover after 0xFFFFFFFF length\n");
+            ++failures;
+        }
+    }
+
+    // 11) A single Feed bigger than kMaxPayload+kHeaderSize resets the buffer.
+    {
+        netio::FrameReader reader;
+        std::vector<uint8_t> huge(net::kMaxPayload + 128, 0x42);
+        reader.Feed(huge.data(), static_cast<int>(huge.size()));
+        std::vector<uint8_t> payload{1, 2, 3};
+        auto frame = netio::MakeFrame(0x33, payload.data(),
+                                      static_cast<uint32_t>(payload.size()));
+        reader.Feed(frame.data(), static_cast<int>(frame.size()));
+        uint8_t t = 0;
+        std::vector<uint8_t> p;
+        if (!reader.Poll(t, p) || t != 0x33 || p != payload)
+        {
+            std::printf("FAIL: reader did not recover after oversized Feed\n");
+            ++failures;
+        }
     }
 
     if (failures == 0)

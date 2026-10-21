@@ -153,6 +153,11 @@ constexpr unsigned long long GET_NUM_COMPONENT_CATEGORIES_IN_PED = 0xA622E66EEE9
 constexpr unsigned long long GET_SHOP_ITEM_COMPONENT_AT_INDEX    = 0x77BA37622E22023Bull;
 constexpr unsigned long long APPLY_SHOP_ITEM_TO_PED              = 0xD3A7B003ED343FD9ull;
 
+// Бесконечные патроны у педа-призрака: иначе после ~60 выстрелов оружие
+// пустеет и TASK_SHOOT_AT_COORD молча ничего не делает.
+constexpr unsigned long long SET_PED_INFINITE_AMMO           = 0x3EDCB0505123623Bull;
+constexpr unsigned long long _SET_PED_INFINITE_AMMO_CLIP     = 0xFBAA1E06B6BCA741ull;
+
 // ДЕЙСТВИЯ: детект кратковременных/контекстных анимаций (стрельба,
 // перезарядка, сидение, сценарий, прицеливание, пьян).
 constexpr unsigned long long IS_PED_SHOOTING             = 0x34616828CD07F1A1ull;
