@@ -1155,6 +1155,14 @@ constexpr unsigned int kOutfitChangeLogTicks = 60;
 // Лог применения wearable states (открытая/закрытая куртка) — редко.
 unsigned int s_lastOutfitWearableLogTick = 0;
 constexpr unsigned int kWearableLogTicks = 5 * 60 * 60; // не чаще 5 минут
+// Heartbeat с идентичным набором НЕ переприменяем (это визуально «пересобирает»
+// стоящего призрака). Лог скипа — редко.
+unsigned int s_lastOutfitHeartbeatSkipLogTick = 0;
+constexpr unsigned int kOutfitHeartbeatSkipLogTicks = 5 * 60 * 60;
+// Отправитель: heartbeat оставляем (ресинк после reconnect/потерь), но лог
+// прореживаем, иначе `send outfit ... [heartbeat]` засоряет лог каждые 5 с.
+unsigned int s_lastOutfitHeartbeatLogTick = 0;
+constexpr unsigned int kOutfitHeartbeatLogTicks = 60 * 60; // ~60 с
 // Дебаунс определения move: переключаем только после нескольких подряд
 // одинаковых замеров. Иначе стоящий игрок мерцает Walk/Idle (IS_PED_WALKING
 // дрожит + скорость на месте колеблется) → пед-призрак дёргается (задачи
@@ -2657,6 +2665,23 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
                          OutfitsEqual(os, s_appliedOutfit);
     if (sameSet)
     {
+        // Набор и wearable идентичны уже надетому. Если НЕТ активного окна
+        // refresh (посадка/спешивание/смена оружия, где движок сбрасывает
+        // variation) — НИЧЕГО не применяем: heartbeat каждые 5 с иначе делал
+        // полный reapply 22-28 shop-предметов + CommitGhostVariation, и
+        // стоящий призрак визуально «пересобирался»/дёргался. Только латч.
+        if (s_outfitRefreshTicks == 0)
+        {
+            s_appliedOutfit = os;
+            s_appliedOutfitValid = true;
+            if (s_tickCount - s_lastOutfitHeartbeatSkipLogTick >=
+                kOutfitHeartbeatSkipLogTicks)
+            {
+                s_lastOutfitHeartbeatSkipLogTick = s_tickCount;
+                sh_log::Write("coop: outfit heartbeat skipped (same set)\n");
+            }
+            return;
+        }
         for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
         {
             const uint32_t c = os.components[i];
@@ -3092,7 +3117,15 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             const float mdx = p.x - mountPos.x;
             const float mdy = p.y - mountPos.y;
             if (mdx * mdx + mdy * mdy < 1.5f * 1.5f)
-                SetEntityHeading(s_mount, f.heading);
+            {
+                // Мёртвая зона 5° — иначе ручной SetEntityHeading каждый кадр
+                // дёргает лошадь мелкими коррекциями.
+                float mh = f.heading - GetEntityHeading(s_mount);
+                while (mh > 180.f) mh -= 360.f;
+                while (mh < -180.f) mh += 360.f;
+                if (std::fabs(mh) > 5.0f)
+                    SetEntityHeading(s_mount, f.heading);
+            }
         }
         DisableMountLocalCollision();
         ApplyPedStateToGhost(f);
@@ -3267,12 +3300,22 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             else
             {
                 // Стоит рядом с целью: не трогаем XY, только прижим при подвесе.
+                // Порог поднят 1.0 -> 2.5 м: раз в секунду SetEntityCoords на
+                // неровностях давал «дёрганье» стоящего призрака. В движении/
+                // бою/верхом/в транспорте/сценарии не двигаем вообще.
                 float groundZ = 0.f;
                 const bool hasGround = GetGroundZForCoord(cur, groundZ);
-                if (hasGround && (cur.z - groundZ) > 1.0f && groundZ > -100.f
-                    && (s_tickCount - s_lastIdleGroundFixTick) > 60)
+                const bool fixAllowed =
+                    !IsGhostMounted() && !s_remoteInVehicle &&
+                    !s_combatActive && !GhostShotReplayActive() &&
+                    s_remoteActionRaw != static_cast<uint8_t>(net::Action::InScenario) &&
+                    s_remoteActionRaw != static_cast<uint8_t>(net::Action::Sitting) &&
+                    s_remoteActionRaw != static_cast<uint8_t>(net::Action::Drunk);
+                if (hasGround && fixAllowed &&
+                    (cur.z - groundZ) > 2.5f && groundZ > -100.f &&
+                    (s_tickCount - s_lastIdleGroundFixTick) > 60)
                 {
-                    // Опускаем на землю, если реально висим НАД ней >1 м.
+                    // Опускаем на землю, если реально висим НАД ней >2.5 м.
                     // Троттлинг (раз в сек): без него на неровной земле пед
                     // «подтягивался» каждый кадр и дрожал.
                     s_lastIdleGroundFixTick = s_tickCount;
@@ -3298,7 +3341,9 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         float h = f.heading - GetEntityHeading(s_ghost);
         while (h > 180.f) h -= 360.f;
         while (h < -180.f) h += 360.f;
-        if (std::fabs(h) > 2.0f)
+        // Мёртвая зона 5°: мелкие колебания heading отправителя (стоя) не
+        // должны каждый кадр доворачивать педа — это микро-дрожь в покое.
+        if (std::fabs(h) > 5.0f)
             SetEntityHeading(s_ghost, GetEntityHeading(s_ghost) + h * LERP_FACTOR);
     }
 
@@ -5440,7 +5485,7 @@ void Tick()
     // ВАЖНО: не спавним сразу с «подставной» моделью из JOIN (горожанин) —
     // через миг прилетит кадр с реальной моделью персонажа (reserved[2]),
     // и пед придётся пересоздавать (Т-поза + слёт одежды). Ждём первый кадр
-    // до ~2 секунд: если пришёл — спавним сразу с моделью персонажа.
+    // до ~4 секунд: если пришёл — спавним сразу с моделью персонажа.
     // Если реальная модель уже известна (reconnect/повторный join) — не ждём:
     // сразу спавним с ней, иначе снова получим fallback+recreate.
     if (!s_ghost && s_playerJoinedNotified && !s_realModelSeen)
@@ -5449,7 +5494,9 @@ void Tick()
         if (!s_haveFrame || !s_lastFrame.reserved[2])
         {
             unsigned int waitTicks = s_pendingJoinWaitTicks++;
-            if (waitTicks < 2 * 60) // до ~2 секунд
+            // Ждём до ~4 с: если кадр с реальной моделью приходит позже 2 с,
+            // спавн fallback-моделью давал одно видимое пересоздание.
+            if (waitTicks < 4 * 60) // до ~4 секунд
                 return;
         }
     }
@@ -6114,17 +6161,27 @@ void Tick()
             s_sentOutfit = os;
             s_sentOutfitValid = true;
             g_netClient.SendOutfit(os);
-            char comps[256] = "";
+            // Лог: обычные смены — всегда; heartbeat — раз в ~60 с (сам
+            // heartbeat оставляем ради ресинка после reconnect/потерь).
+            if (!heartbeat ||
+                (s_tickCount - s_lastOutfitHeartbeatLogTick) >=
+                    kOutfitHeartbeatLogTicks)
             {
-                int off = 0;
-                for (uint32_t i = 0; i < os.count && off < 220; ++i)
-                    off += std::snprintf(comps + off, sizeof(comps) - off,
-                                         "%s0x%X", i ? " " : "", os.components[i]);
+                if (heartbeat)
+                    s_lastOutfitHeartbeatLogTick = s_tickCount;
+                char comps[256] = "";
+                {
+                    int off = 0;
+                    for (uint32_t i = 0; i < os.count && off < 220; ++i)
+                        off += std::snprintf(comps + off, sizeof(comps) - off,
+                                             "%s0x%X", i ? " " : "",
+                                             os.components[i]);
+                }
+                sh_log::Write("coop: send outfit (%u comp, model 0x%llX, diff=%d "
+                              "first[%d]=0x%X->0x%X)%s [%s]\n",
+                              os.count, os.model, diffCount, firstIdx, oldV, newV,
+                              heartbeat ? " [heartbeat]" : "", comps);
             }
-            sh_log::Write("coop: send outfit (%u comp, model 0x%llX, diff=%d "
-                          "first[%d]=0x%X->0x%X)%s [%s]\n",
-                          os.count, os.model, diffCount, firstIdx, oldV, newV,
-                          heartbeat ? " [heartbeat]" : "", comps);
         }
     }
 
@@ -6217,7 +6274,8 @@ void Tick()
         }
     }
 
-    if (s_tickCount % 120 == 1 && s_ghost && DoesEntityExist(s_ghost))
+    // Редкий heartbeat-лог живого педа (раньше раз в 2 с засорял лог).
+    if (s_tickCount % (30 * 60) == 1 && s_ghost && DoesEntityExist(s_ghost))
         sh_log::Write("coop: ghost ped alive, handle=%u\n", s_ghost);
 
     // Задержка до сервера: окно мин/макс обновляется раз в 2 с, но строка
