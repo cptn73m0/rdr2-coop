@@ -553,6 +553,17 @@ void TakeInboxEvents(InboxEvents& out)
 float  s_pendingHeading = 0;
 char   s_pendingName[64] = "";
 unsigned long long s_remoteModel = 0; // модель удалённого игрока (из PLAYER_JOINED)
+// P2: fallback-модель из PLAYER_JOINED (из INI/сервера), реальная модель
+// персонажа приходит только кадром (reserved[2]). Храним их РАЗДЕЛЬНО:
+// после первого получения реальной модели fallback больше не должен её
+// перезаписывать (иначе пед пересоздаётся на каждом join/reconnect).
+unsigned long long s_joinedModel = 0;
+bool s_realModelSeen = false;          // реальная модель хоть раз получена
+unsigned long long s_lastRealModel = 0; // последняя реальная модель персонажа
+// Кулдаун пересоздания педа по смене модели — чтобы не было «дёрганья»
+// пачкой (не чаще ~1.5 с).
+unsigned int s_lastGhostRecreateTick = 0;
+constexpr unsigned int kModelRecreateCooldownTicks = 90;
 // Модель, которой фактически создан текущий пед призрака (0 = ещё нет; будет
 // создан/пересоздан, когда придёт модель персонажа из кадра reserved[2]).
 unsigned long long s_ghostModel = 0;
@@ -1141,6 +1152,9 @@ constexpr unsigned int kOutfitReapplyLogTicks = 5 * 60 * 60; // heartbeat: 5 м�
 // Реальные СМЕНЫ наряда логируем чаще (диагностика расслоения), с дебаунсом:
 // не чаще раза в ~1 с (смена и так дебаунсится 0.5 с у отправителя).
 constexpr unsigned int kOutfitChangeLogTicks = 60;
+// Лог применения wearable states (открытая/закрытая куртка) — редко.
+unsigned int s_lastOutfitWearableLogTick = 0;
+constexpr unsigned int kWearableLogTicks = 5 * 60 * 60; // не чаще 5 минут
 // Дебаунс определения move: переключаем только после нескольких подряд
 // одинаковых замеров. Иначе стоящий игрок мерцает Walk/Idle (IS_PED_WALKING
 // дрожит + скорость на месте колеблется) → пед-призрак дёргается (задачи
@@ -2294,7 +2308,10 @@ void ApplyPlayerOutfitToGhost(unsigned long long outfitHash)
         // наряд запрашивался для неё, а применялся к педу с другой моделью
         // → применялся частично/рандомно (патронташи/кобуры/шляпы не те).
         unsigned long long model = s_ghostModel ? s_ghostModel
-                                  : (s_remoteModel ? s_remoteModel : GHOST_PED_MODEL);
+                                  : ((s_realModelSeen && s_lastRealModel)
+                                        ? s_lastRealModel
+                                        : (s_remoteModel ? s_remoteModel
+                                                         : GHOST_PED_MODEL));
         Init(natives::REQUEST_META_PED_OUTFIT);
         Push(model);
         Push(outfitHash);
@@ -2364,9 +2381,16 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
         categories = net::kMaxOutfitComponents;
 
     // Два script-буфера по 4 слота (8 байт каждый) — их заполняет натив.
-    // Для входа достаточно нулей (структуры «запроса»).
+    // После вызова inA = BOOL outStatus, inB = Hash outWearableState (низкие
+    // 4 байта первого слота) — состояние слоя (открытая/закрытая куртка и
+    // т.п.). Раньше значения не читались, и у призрака был дефолтный слой:
+    // рубашка просвечивала/пропадала не так, как у оригинала.
     static unsigned long long inA[4] = {0, 0, 0, 0};
     static unsigned long long inB[4] = {0, 0, 0, 0};
+
+    // Сначала обнуляем wearable (вызывающий может переиспользовать структуру).
+    for (uint32_t i = 0; i < net::kMaxOutfitComponents; ++i)
+        out.wearable[i] = 0;
 
     int n = 0;
     for (int i = 0; i < categories; ++i)
@@ -2379,9 +2403,14 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
         Push(static_cast<unsigned long long>(1)); // p2 = true (как в rdr2-runtime)
         Push(reinterpret_cast<unsigned long long>(inA));
         Push(reinterpret_cast<unsigned long long>(inB));
-        uint32_t comp = static_cast<uint32_t>(Call());
+        const uint32_t comp = static_cast<uint32_t>(Call());
         if (comp)
-            out.components[n++] = comp;
+        {
+            out.components[n] = comp;
+            // outWearableState — hash в младших 4 байтах первого слота inB.
+            out.wearable[n] = static_cast<uint32_t>(inB[0] & 0xFFFFFFFFull);
+            ++n;
+        }
     }
     out.count = static_cast<uint32_t>(n);
 }
@@ -2504,10 +2533,45 @@ void CommitGhostVariation()
     Call();
 }
 
-// Одинаковые ли наборы компонентов (с учётом модели, если она известна).
+// Применить wearable states (открытая/закрытая куртка, рукава и т.п.) для
+// компонентов наряда: _UPDATE_SHOP_ITEM_WEARABLE_STATE(ped, comp, state, 0,
+// false, 1). Вызывать ПОСЛЕ APPLY_SHOP_ITEM_TO_PED и ДО CommitGhostVariation.
+// Возвращает число применённых состояний.
+uint32_t ApplyGhostWearableStates(const net::OutfitState& os)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return 0;
+    using namespace natives_api;
+    uint32_t applied = 0;
+    for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
+    {
+        const uint32_t comp = os.components[i];
+        const uint32_t wearable = os.wearable[i];
+        if (!comp || !wearable) continue;
+        Init(natives::_UPDATE_SHOP_ITEM_WEARABLE_STATE);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(comp));
+        Push(static_cast<unsigned long long>(wearable));
+        Push(static_cast<unsigned long long>(0)); // p3
+        Push(static_cast<unsigned long long>(0)); // p4 = false
+        Push(static_cast<unsigned long long>(1)); // p5 = 1
+        Call();
+        ++applied;
+    }
+    if (applied > 0 &&
+        (s_tickCount - s_lastOutfitWearableLogTick) >= kWearableLogTicks)
+    {
+        s_lastOutfitWearableLogTick = s_tickCount;
+        sh_log::Write("coop: outfit wearable applied=%u\n", applied);
+    }
+    return applied;
+}
+
+// Одинаковые ли наборы компонентов (с учётом модели и wearable states).
 // Сравниваем БЕЗ учёта порядка: движок отдаёт категории в разном порядке
 // между кадрами/тиками, из-за чего наряд считался «изменённым»,
 // переотправлялся и переприменялся (лишние слои одежды / случайный вид).
+// Wearable (открытая/закрытая куртка и т.п.) сравниваем парой с компонентом:
+// иначе изменения состояния слоя не отправятся/не применятся.
 bool OutfitsEqual(const net::OutfitState& a, const net::OutfitState& b)
 {
     if (a.count != b.count) return false;
@@ -2516,8 +2580,13 @@ bool OutfitsEqual(const net::OutfitState& a, const net::OutfitState& b)
         b.count > static_cast<uint32_t>(net::kMaxOutfitComponents))
         return false;
     if (a.count == 0) return true;
-    std::vector<uint32_t> ca(a.components, a.components + a.count);
-    std::vector<uint32_t> cb(b.components, b.components + b.count);
+    std::vector<std::pair<uint32_t, uint32_t>> ca, cb;
+    ca.reserve(a.count);
+    cb.reserve(b.count);
+    for (uint32_t i = 0; i < a.count; ++i)
+        ca.emplace_back(a.components[i], a.wearable[i]);
+    for (uint32_t i = 0; i < b.count; ++i)
+        cb.emplace_back(b.components[i], b.wearable[i]);
     std::sort(ca.begin(), ca.end());
     std::sort(cb.begin(), cb.end());
     return ca == cb;
@@ -2602,6 +2671,8 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
             ++applied;
         }
         // Heartbeat/refresh: только reapply, без scrub/remove.
+        // Wearable states (куртка открыта/закрыта) применяем до UPDATE.
+        ApplyGhostWearableStates(os);
         CommitGhostVariation();
         s_appliedOutfit = os;
         s_appliedOutfitValid = true;
@@ -2654,6 +2725,8 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     }
     // Один UPDATE в конце — без повторной RandomizePedComponents; пара
     // _SET_ACTIVE_META_PED_COMPONENTS_UPDATED + UPDATE_PED_VARIATION из nativedb.
+    // Wearable states (открытая/закрытая куртка) — до финального UPDATE.
+    ApplyGhostWearableStates(os);
     CommitGhostVariation();
     if (didBaseScrub)
     {
@@ -4000,32 +4073,78 @@ unsigned long long GetLocalWeaponHash(unsigned int ped)
 }
 
 // Обработка входящего кадра: модель персонажа удалённого игрока (reserved[2]).
-// Если отличается от текущей модели педа — пересоздаём педа (удаляем старый,
-// новый заспавнится в Tick по wantModel). Модель 0 — не трогаем.
+// Реальная модель отличается от модели текущего педа → пересоздаём педа
+// (удаляем старый, новый заспавнится в Tick по wantModel), но только при
+// РЕАЛЬНОМ изменении и не чаще kModelRecreateCooldownTicks. Fallback-модель из
+// PLAYER_JOINED сюда не попадает — она хранится отдельно (s_joinedModel),
+// поэтому join/reconnect больше не вызывает пересоздания. Модель 0 не трогаем.
 void CheckRemoteModelChange(const net::FramePayload& f)
 {
-    if (!f.reserved[2] || f.reserved[2] == s_ghostModel) return;
+    const unsigned long long realModel = f.reserved[2];
+    if (!realModel) return;
     // Модель пришла из сети: невалидный хэш НЕ должен приводить к удалению
     // текущего педа и RequestModel (иначе HasModelLoaded()==false навсегда и
     // Tick перестаёт обрабатывать сеть). Невалидную модель просто игнорируем.
-    if (!IsModelHashValid(f.reserved[2]))
+    if (!IsModelHashValid(realModel))
     {
-        if (f.reserved[2] != s_ignoredPedModelHash)
+        if (realModel != s_ignoredPedModelHash)
         {
-            s_ignoredPedModelHash = f.reserved[2];
+            s_ignoredPedModelHash = realModel;
             sh_log::Write("coop: ignoring invalid remote model 0x%llX\n",
-                          f.reserved[2]);
+                          realModel);
         }
         return;
     }
     s_ignoredPedModelHash = 0;
-    sh_log::Write("coop: remote model changed 0x%llX -> 0x%llX\n",
-                  s_ghostModel, f.reserved[2]);
+    // Первая реальная модель персонажа: запоминаем её. После этого fallback из
+    // PLAYER_JOINED не перезаписывает модель (см. обработчик PlayerJoined), а
+    // спавн после reconnect сразу идёт по реальной модели.
+    const bool firstReal = !s_realModelSeen;
+    s_realModelSeen = true;
+    s_lastRealModel = realModel;
+    if (realModel == s_ghostModel)
+    {
+        s_requestedModel = realModel; // пед уже с этой моделью
+        return;
+    }
+    if (!s_ghost || !DoesEntityExist(s_ghost))
+    {
+        // Педа ещё нет — удалять нечего: просто просим правильную модель,
+        // спавн ниже использует s_requestedModel/s_lastRealModel.
+        s_requestedModel = realModel;
+        RequestModel(realModel);
+        s_modelLoadedLogged = false;
+        if (firstReal)
+            sh_log::Write("coop: real remote model 0x%llX known\n", realModel);
+        return;
+    }
+    // Кулдаун пересоздания: защита от серии событий/дёрганья (не чаще ~1.5 с).
+    if (s_lastGhostRecreateTick != 0 &&
+        (s_tickCount - s_lastGhostRecreateTick) < kModelRecreateCooldownTicks)
+    {
+        sh_log::Write("coop: remote model change 0x%llX -> 0x%llX deferred "
+                      "(recreate cooldown)\n", s_ghostModel, realModel);
+        return;
+    }
+    sh_log::Write("coop: remote model changed 0x%llX -> 0x%llX "
+                  "(real model, recreate)\n", s_ghostModel, realModel);
+    s_lastGhostRecreateTick = s_tickCount;
     // Запоминаем новую модель и просим её загрузить (в Tick чуть ниже будет
     // использована при спавне). Старого педа удаляем — новый появится сразу.
-    s_requestedModel = f.reserved[2];
-    RequestModel(f.reserved[2]);
-    s_ghostModel = f.reserved[2];
+    // Позицию для респавна берём АКТУАЛЬНУЮ (последний кадр/known pos), а не
+    // позицию входа в сессию — иначе пед «прыгает» назад при пересоздании.
+    if (s_lastKnownPosValid)
+    {
+        s_pendingHasPos = true;
+        s_pendingX = s_lastKnownPos.x;
+        s_pendingY = s_lastKnownPos.y;
+        s_pendingZ = s_lastKnownPos.z;
+        s_pendingHeading = s_lastKnownHeading;
+    }
+    s_requestedModel = realModel;
+    RequestModel(realModel);
+    s_modelLoadedLogged = false;
+    s_ghostModel = realModel;
     DeleteGhostEntity();
     // Сброс состояния наряда: старый запрос относился к прежней модели и
     // старому педу. Новый пед применит наряд заново (по новой модели).
@@ -5121,8 +5240,14 @@ void Tick()
                           s_lastFrame.reserved[2]);
         }
     }
+    // Приоритет модели: кадровая (уже запрошенная) → последняя РЕАЛЬНАЯ
+    // модель (переживает reconnect: спавним сразу правильную, без пересоздания)
+    // → fallback из PLAYER_JOINED → дефолт из конфига.
     unsigned long long wantModel = s_requestedModel ? s_requestedModel
-                                  : (s_remoteModel ? s_remoteModel : GHOST_PED_MODEL);
+                                  : ((s_realModelSeen && s_lastRealModel)
+                                        ? s_lastRealModel
+                                        : (s_remoteModel ? s_remoteModel
+                                                         : GHOST_PED_MODEL));
     if (!IsModelHashValid(wantModel))
     {
         // Последний предохранитель: Tick не должен залипнуть в раннем return
@@ -5199,17 +5324,25 @@ void Tick()
         s_subtitleTicksLeft = 8 * 60;
         std::snprintf(s_pedName, sizeof(s_pedName), "%s", ev.playerJoinedName);
         std::snprintf(s_pendingName, sizeof(s_pendingName), "%s", ev.playerJoinedName);
-        // Модель из PLAYER_JOINED тоже приходит из сети — валидируем.
+        // Модель из PLAYER_JOINED — это НЕ модель персонажа, а fallback из
+        // INI/сервера. Валидируем и храним отдельно в s_joinedModel; реальную
+        // модель (кадр reserved[2]) никогда не перезаписываем fallback'ом.
+        s_joinedModel = 0;
         if (ev.playerJoinedModel && !IsModelHashValid(ev.playerJoinedModel))
         {
             sh_log::Write("coop: ignoring invalid join model 0x%llX\n",
                           ev.playerJoinedModel);
-            s_remoteModel = 0;
         }
         else
         {
-            s_remoteModel = ev.playerJoinedModel;
+            s_joinedModel = ev.playerJoinedModel;
         }
+        if (!s_realModelSeen)
+            s_remoteModel = s_joinedModel;
+        else if (s_joinedModel && s_joinedModel != s_lastRealModel)
+            sh_log::Write("coop: join fallback model 0x%llX ignored "
+                          "(real 0x%llX known)\n",
+                          s_joinedModel, s_lastRealModel);
         if (ev.playerJoinedHasPos)
         {
             s_pendingHasPos = true;
@@ -5308,7 +5441,9 @@ void Tick()
     // через миг прилетит кадр с реальной моделью персонажа (reserved[2]),
     // и пед придётся пересоздавать (Т-поза + слёт одежды). Ждём первый кадр
     // до ~2 секунд: если пришёл — спавним сразу с моделью персонажа.
-    if (!s_ghost && s_playerJoinedNotified)
+    // Если реальная модель уже известна (reconnect/повторный join) — не ждём:
+    // сразу спавним с ней, иначе снова получим fallback+recreate.
+    if (!s_ghost && s_playerJoinedNotified && !s_realModelSeen)
     {
         // Если кадр с моделью персонажа ещё не получен — ждём (но не вечно).
         if (!s_haveFrame || !s_lastFrame.reserved[2])
@@ -5953,19 +6088,23 @@ void Tick()
         if (sendNow)
         {
             // Диагностика: какие позиции изменились (чтобы понять, что
-            // именно дёргает оружие — кобура/патронташ/пояс).
+            // именно дёргает оружие — кобура/патронташ/пояс). Wearable тоже
+            // считаем изменением (открытая/закрытая куртка и т.п.).
             int diffCount = 0, firstIdx = -1;
             unsigned int oldV = 0, newV = 0;
             for (int i = 0; i < net::kMaxOutfitComponents; ++i)
             {
-                if (os.components[i] != s_sentOutfit.components[i])
+                if (os.components[i] != s_sentOutfit.components[i] ||
+                    os.wearable[i] != s_sentOutfit.wearable[i])
                 {
                     ++diffCount;
                     if (firstIdx < 0)
                     {
                         firstIdx = i;
-                        oldV = s_sentOutfit.components[i];
-                        newV = os.components[i];
+                        oldV = os.components[i] != s_sentOutfit.components[i]
+                            ? s_sentOutfit.components[i] : s_sentOutfit.wearable[i];
+                        newV = os.components[i] != s_sentOutfit.components[i]
+                            ? os.components[i] : os.wearable[i];
                     }
                 }
             }

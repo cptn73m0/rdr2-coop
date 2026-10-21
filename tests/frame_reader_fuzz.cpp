@@ -148,7 +148,7 @@ int main()
     for (int trial = 0; trial < 300; ++trial)
     {
         netio::FrameReader reader;
-        const int len = static_cast<int>(rng() % 400);
+        const int len = static_cast<int>(rng() % 512);
         std::vector<uint8_t> garbage(len);
         for (auto& b : garbage) b = static_cast<uint8_t>(rng());
         reader.Feed(garbage.data(), len);

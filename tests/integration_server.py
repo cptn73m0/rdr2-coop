@@ -152,7 +152,15 @@ REJECT_NAME_TAKEN = REJECT["NameTaken"]
 REJECT_BAD_NAME = REJECT["BadName"]
 
 FRAME_SIZE = _struct_size("FramePayload")
+# Protocol v14 contract: OutfitState can no longer shrink back to the v13 400 B
+# layout (model u64 + count u32 + components[96] u32); v14 adds wearable[96]
+# u32 for wearable states => 784 B. A deliberate future bump must update this
+# pinned value together with net/protocol.h and docs/PROTOCOL.md.
+EXPECTED_OUTFIT_SIZE = 784
 OUTFIT_SIZE = _struct_size("OutfitState")
+require(OUTFIT_SIZE == EXPECTED_OUTFIT_SIZE,
+        f"OutfitState expected {EXPECTED_OUTFIT_SIZE} B (protocol v14: "
+        f"components[96]+wearable[96]), got {OUTFIT_SIZE}")
 ACTION_SIZE = _struct_size("ActionStatePayload")
 VEHICLE_SIZE = _struct_size("PlayerVehicleState")
 MISSION_EVENT_SIZE = _struct_size("MissionEventPayload")
@@ -762,11 +770,18 @@ def test_payload_sizes_and_host_only_messages(exe, tmp):
                 "Frame with extra byte must be dropped")
 
         outfit = b"\x11" * OUTFIT_SIZE
+        require(len(outfit) == EXPECTED_OUTFIT_SIZE,
+                f"Outfit payload must be {EXPECTED_OUTFIT_SIZE} B (v14), "
+                f"got {len(outfit)}")
         host.sendall(frame_bytes(TYPE_OUTFIT, outfit))
-        require(recv_type(guest, TYPE_OUTFIT, 2.0) == outfit, "Outfit must relay")
+        require(recv_type(guest, TYPE_OUTFIT, 2.0) == outfit,
+                "Outfit (784 B OutfitState) must relay byte-identical")
         host.sendall(frame_bytes(TYPE_OUTFIT, outfit[:-1]))
         require(recv_type(guest, TYPE_OUTFIT, 0.4) is None,
                 "short Outfit must be dropped")
+        host.sendall(frame_bytes(TYPE_OUTFIT, outfit + b"\x00"))
+        require(recv_type(guest, TYPE_OUTFIT, 0.4) is None,
+                "oversized Outfit must be dropped (exact 784 B required)")
 
         action = b"\x22" * ACTION_SIZE
         vehicle = b"\x33" * VEHICLE_SIZE
@@ -876,12 +891,19 @@ def test_relay_misc_messages(exe, tmp):
                 f"Respawned must relay with the sender name: {p!r}")
 
         horse = b"\x5A" * OUTFIT_SIZE
+        require(len(horse) == EXPECTED_OUTFIT_SIZE,
+                f"HorseOutfit payload must be {EXPECTED_OUTFIT_SIZE} B (v14), "
+                f"got {len(horse)}")
         host.sendall(frame_bytes(TYPE_HORSE_OUTFIT, horse))
         p = recv_type(guest, TYPE_HORSE_OUTFIT, 2.0)
-        require(p == horse, "HorseOutfit must relay byte-identical (OutfitState size)")
+        require(p == horse,
+                "HorseOutfit must relay byte-identical (784 B OutfitState)")
         host.sendall(frame_bytes(TYPE_HORSE_OUTFIT, horse[:-1]))
         require(recv_type(guest, TYPE_HORSE_OUTFIT, 0.4) is None,
                 "short HorseOutfit must be dropped")
+        host.sendall(frame_bytes(TYPE_HORSE_OUTFIT, horse + b"\x00"))
+        require(recv_type(guest, TYPE_HORSE_OUTFIT, 0.4) is None,
+                "oversized HorseOutfit must be dropped (exact 784 B required)")
 
         host.sendall(frame_bytes(TYPE_LEAVE, b""))
         p = recv_type(guest, TYPE_PLAYER_LEFT, 2.0)
@@ -1322,7 +1344,7 @@ def test_concurrent_fuzz(exe, tmp):
                          TYPE_ACTION_STATE, TYPE_MISSION_EVENT, 0x7E]
                 while not stop.is_set():
                     t = rng.choice(types)
-                    ln = rng.choice([0, 8, 24, 88, 400, 2000])
+                    ln = rng.choice([0, 8, 24, 88, OUTFIT_SIZE, 2000])
                     try:
                         r.sendall(struct.pack("<I", ln) + bytes([t]) +
                                   bytes([rng.randrange(256) for _ in range(ln)]))
@@ -1341,7 +1363,7 @@ def test_concurrent_fuzz(exe, tmp):
                          TYPE_MISSION_STATE, 0x7E]
                 while not stop.is_set():
                     t = rng.choice(types)
-                    ln = rng.choice([0, 1, 8, 12, 16, 24, 32, 88, 400, 1500])
+                    ln = rng.choice([0, 1, 8, 12, 16, 24, 32, 88, OUTFIT_SIZE, 1500])
                     try:
                         sock.sendall(struct.pack("<I", ln) + bytes([t]) +
                                      bytes([rng.randrange(256) for _ in range(ln)]))
@@ -1351,16 +1373,40 @@ def test_concurrent_fuzz(exe, tmp):
             except OSError:
                 pass
 
-        threads = [threading.Thread(target=rogue_worker, args=(100 + i,))
+        def drain_worker(sock):
+            # Server closes a socket whose outgoing queue exceeds 512 KB
+            # (anti-OOM for a non-reading client). A real client keeps reading
+            # relayed traffic, so the test must drain host/guest during the
+            # storm; otherwise the queue cap legitimately closes the socket.
+            sock.settimeout(0.1)
+            while not stop.is_set():
+                try:
+                    if not sock.recv(65536):
+                        return
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+
+        threads = [threading.Thread(target=rogue_worker, args=(100 + i,),
+                                    daemon=True)
                    for i in range(3)]
-        threads += [threading.Thread(target=sender_worker, args=(host, 200)),
-                    threading.Thread(target=sender_worker, args=(guest, 201))]
+        threads += [threading.Thread(target=sender_worker, args=(host, 200),
+                                     daemon=True),
+                    threading.Thread(target=sender_worker, args=(guest, 201),
+                                     daemon=True),
+                    threading.Thread(target=drain_worker, args=(host,),
+                                     daemon=True),
+                    threading.Thread(target=drain_worker, args=(guest,),
+                                     daemon=True)]
         for th in threads:
             th.start()
-        time.sleep(3.0)
-        stop.set()
-        for th in threads:
-            th.join(timeout=3.0)
+        try:
+            time.sleep(3.0)
+        finally:
+            stop.set()
+            for th in threads:
+                th.join(timeout=3.0)
 
         # Server must still be alive after the storm.
         recv_msgs(host, 0.3)
@@ -1609,7 +1655,8 @@ def main():
                     log(f"[FAIL] {test.__name__}: {exc}")
         log("")
         log(f"{passed} passed, {failures} failed, {known_fails} known-fail "
-            f"(protocol v{PROTO}, cap={CAP_ACTIVE}/rate={CAP_RATE}/s, "
+            f"(protocol v{PROTO}, outfit={OUTFIT_SIZE}B, "
+            f"cap={CAP_ACTIVE}/rate={CAP_RATE}/s, "
             f"name<={MAX_NAME_BYTES}B)")
         if failures:
             log(f"\n{failures} test(s) failed; workdir: {tmp}")

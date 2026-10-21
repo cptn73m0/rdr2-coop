@@ -10,8 +10,8 @@ namespace net {
 
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
-// v13: TrainSnapshot — R&D: engine/direction/speed + упорядоченные вагоны.
-constexpr uint16_t kProtocolVersion = 13;
+// v14: OutfitState + wearable states (открытая/закрытая куртка, рукава и т.п.).
+constexpr uint16_t kProtocolVersion = 14;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -68,10 +68,14 @@ struct OutfitState {
     unsigned long long model = 0;            // модель педа (для проверки)
     uint32_t count = 0;                      // сколько компонентов одето
     uint32_t components[kMaxOutfitComponents] = {0}; // хэши компонентов
+    // Wearable state для каждого компонента (0 = нет состояния).
+    // Без него у гостя дефолтное состояние слоя (например, куртка "закрыта"),
+    // и рубашка просвечивает/пропадает не так, как у оригинала.
+    uint32_t wearable[kMaxOutfitComponents] = {0};
 };
-// 8 + 4 + 96*4 = 396, выравнивание до 8 → 400. Формат уходит в сеть как есть;
-// менять только вместе с kProtocolVersion.
-static_assert(sizeof(OutfitState) == 400, "OutfitState must be 400 bytes");
+// 8 + 4 + 96*4 + 96*4 = 780, выравнивание до 8 → 784. Формат уходит в сеть
+// как есть; менять только вместе с kProtocolVersion.
+static_assert(sizeof(OutfitState) == 784, "OutfitState must be 784 bytes");
 
 // Состояние мира, транслируемое хостом всем игрокам (время + погода).
 // Хостом считается ПЕРВЫЙ подключившийся игрок; остальные применяют его

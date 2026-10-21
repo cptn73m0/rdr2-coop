@@ -20,6 +20,11 @@ Leave/PlayerLeft/Died/Respawned/HorseOutfit, connection cap/per-IP rate limit,
 (32/8/32/12). Случайное ослабление лимита в server.cpp валит suite, а не
 подхватывается тестом автоматически.
 
+Для протокола v14 дополнительно запинен размер `OutfitState`: `_struct_size`
+обязан вернуть **784 B** (model u64 + count u32 + components[96] u32 +
+wearable[96] u32). Если размер в `net/protocol.h` изменится, тест упадёт и
+потребует осознанного обновления тестов/документации под новую версию.
+
 ## Запуск
 
 ```powershell
@@ -43,8 +48,8 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_roles_and_full` | HOST/GUEST, занятый ник → NameTaken, третий игрок → ServerFull; payload PlayerJoined (имя/модель) |
 | `test_prejoin_and_ping` | до JOIN Frame/Died закрывают соединение; Ping (8 байт) работает до JOIN |
 | `test_world_host_only` | WorldSnapshot 64 ретранслируется, >64 отбрасывается, гость не подменяет мир |
-| `test_payload_sizes_and_host_only_messages` | точные размеры Frame/Outfit/Action/Vehicle/Shot/Mission; Frame +1 байт дропается; host-only MissionEvent/State/barrier/TrainSnapshot, carCount ≤ 16 |
-| `test_relay_misc_messages` | Died/Respawned ретранслируются с ником отправителя; HorseOutfit (400 Б) и Leave/PlayerLeft |
+| `test_payload_sizes_and_host_only_messages` | точные размеры Frame/Outfit/Action/Vehicle/Shot/Mission; OutfitState 784 B + wearable (v14), short/extra Frame дропаются; host-only MissionEvent/State/barrier/TrainSnapshot, carCount ≤ 16 |
+| `test_relay_misc_messages` | Died/Respawned ретранслируются с ником отправителя; HorseOutfit (784 Б OutfitState + wearable) и Leave/PlayerLeft |
 | `test_worldstate_host_only` | WorldState от хоста ретранслируется, от гостя — блокируется (P0-фикс сервера) |
 | `test_oversized_and_truncated` | len > 64 КБ и обрезанные кадры не роняют сервер |
 | `test_host_migration` | при выходе хоста гость получает HostChanged(1) и может слать WorldSnapshot |
@@ -53,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_fuzz_frames` | 300 случайных кадров/типов/размеров + oversize + fragmented Ping (8-байтовый payload) |
 | `test_players_txt_recovery` | битые строки и stale `.tmp` не мешают восстановлению двух игроков |
 | `test_players_txt_corrupt_joining_player` | испорченные строки **входящего** игрока (`Alice:junk:...`, `Alice:`, NaN/Inf, мало полей) → сервер не падает, JOIN без сохранённой позиции; валидный Bob восстанавливается |
-| `test_concurrent_fuzz` | 3 rogue + 2 sender потока 3 с; сервер жив и отвечает Ping |
+| `test_concurrent_fuzz` | 3 rogue + 2 sender + 2 drain потока 3 с; сервер жив и отвечает Ping; host/guest читают relay, чтобы не упереться в серверный лимит очереди отправки |
 | `test_connection_cap` | flood: срабатывает pre-JOIN лимит (`kMaxPreJoinConnections`), принятых «сырых» сокетов не больше лимита, активный cap не срабатывает раньше; после flood валидный клиент входит |
 | `test_per_ip_rate_limit` | 30 быстрых подключений: проверяются записи `per-IP rate limit`, реально закрытые сервером сокеты; после окна вход работает |
 | `test_graceful_shutdown` | сервер корректно завершается по тест-хуку и сохраняет players.txt |
