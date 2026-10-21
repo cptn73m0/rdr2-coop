@@ -11,7 +11,9 @@ namespace net {
 // Версия протокола. Должна совпадать у клиента и сервера; при несовпадении
 // сервер отклоняет JOIN (Msg::JoinRejected), чтобы не разбирать чужие байты.
 // v14: OutfitState + wearable states (открытая/закрытая куртка, рукава и т.п.).
-constexpr uint16_t kProtocolVersion = 14;
+// v15 (E0): actor-репликация NPC — ActorSpawnBatch/ActorFrames/ActorDespawn/
+//           ActorEvent/ActorOutfit (хост) и ActorResync (гость -> хост).
+constexpr uint16_t kProtocolVersion = 15;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -49,6 +51,14 @@ enum class Msg : uint8_t {
     MissionBarrier = 0x15,// P3: offer/ready/start-window/started/abort
     HostChanged = 0x16,   // сервер -> клиент: новый хост / смена роли
     TrainSnapshot = 0x17, // R&D: поезд/состав (engine + вагоны по порядку)
+    // E0 (v15): actor-репликация NPC. 0x18-0x1C — только хост -> сервер ->
+    // остальные; 0x1D — только гость -> сервер -> хосту.
+    ActorSpawnBatch = 0x18, // хост -> сервер -> гость: спавн/респавн актёров
+    ActorFrames     = 0x19, // хост -> сервер -> гость: кадры движения актёров
+    ActorDespawn    = 0x1A, // хост -> сервер -> гость: удаление актёра
+    ActorEvent      = 0x1B, // хост -> сервер -> гость: событие актёра
+    ActorOutfit     = 0x1C, // хост -> сервер -> гость: outfit актёра
+    ActorResync     = 0x1D, // гость -> сервер -> хосту: запрос resync
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -340,6 +350,141 @@ struct MissionBarrierPayload {
 };
 static_assert(sizeof(MissionBarrierPayload) == 12,
               "MissionBarrierPayload must be 12 bytes");
+
+// ---------------- E0: actor-репликация NPC (протокол v15) ----------------
+// Хост реплицирует до kMaxActors "актёров" (управляемых NPC/игровых педов,
+// кроме собственно игроков): батч спавна, батч кадров движения, despawn,
+// события и outfit. Сервер принимает 0x18-0x1C только от хоста и релеит
+// байт-в-байт; 0x1D (resync) — только от гостя и только хосту.
+constexpr int kMaxActors = 12;
+
+// Флаги ActorSpawn::flags.
+constexpr uint8_t kActorFlagMounted   = 1u << 0; // сидит на лошади
+constexpr uint8_t kActorFlagDead      = 1u << 1; // мёртв/умирает
+constexpr uint8_t kActorFlagDrawn     = 1u << 2; // оружие в руках
+constexpr uint8_t kActorFlagChanging  = 1u << 3; // анимация draw/holster
+constexpr uint8_t kActorFlagCombat    = 1u << 4; // в бою
+constexpr uint8_t kActorFlagScenario  = 1u << 5; // в сценарии
+constexpr uint8_t kActorFlagReloading = 1u << 6; // перезаряжается
+constexpr uint8_t kActorFlagAiming    = 1u << 7; // целится
+
+// kind: 0 = human.
+constexpr uint8_t kActorKindHuman = 0;
+
+// Один актёр для батча спавна (64 байта).
+struct ActorSpawn {
+    uint32_t actorId = 0;      // стабильный id актора в рамках эпохи
+    uint16_t epoch = 0;        // эпоха/сессия хоста
+    uint8_t  kind = kActorKindHuman;
+    uint8_t  flags = 0;        // kActorFlag*
+    uint32_t model = 0;        // хэш модели педа
+    uint32_t metaOutfit = 0;   // _GET_PED_META_OUTFIT_HASH (0 = нет)
+    uint32_t mountActorId = 0; // actorId лошади (0 = нет)
+    uint32_t weaponHash = 0;   // оружие в руке (0 = нет)
+    uint32_t scenarioHash = 0; // сценарий (0 = нет)
+    float    x = 0.f;
+    float    y = 0.f;
+    float    z = 0.f;
+    float    heading = 0.f;
+    uint8_t  health = 0;       // 0..255 -> 0..1 у получателя
+    uint8_t  moveStyle = 0;    // стиль движения
+    uint8_t  phase = 0;        // фаза клипа/сценария 0..255
+    uint8_t  pad = 0;
+    int16_t  vx = 0;           // скорость, фикс. точка (см. игровой слой)
+    int16_t  vy = 0;
+    int16_t  vz = 0;
+    uint16_t pad2 = 0;
+    uint32_t reserved = 0;
+    uint32_t reserved2 = 0;
+};
+static_assert(sizeof(ActorSpawn) == 64, "ActorSpawn must be 64 bytes");
+
+struct ActorSpawnBatchHeader {
+    uint32_t epoch = 0;
+    uint16_t count = 0; // 0..kMaxActors
+    uint16_t pad = 0;
+};
+static_assert(sizeof(ActorSpawnBatchHeader) == 8,
+              "ActorSpawnBatchHeader must be 8 bytes");
+// payload = header + count * ActorSpawn; максимум 8 + 12*64 = 776.
+constexpr std::size_t kActorSpawnBatchMaxSize =
+    sizeof(ActorSpawnBatchHeader) + kMaxActors * sizeof(ActorSpawn);
+static_assert(kActorSpawnBatchMaxSize == 776,
+              "ActorSpawnBatch max payload must be 776 bytes");
+
+// Один кадр движения актёра (32 байта).
+struct ActorFrame {
+    uint32_t actorId = 0;
+    uint16_t flags = 0;
+    uint8_t  animState = 0;
+    uint8_t  speed = 0;        // 0..255 (доля максимальной скорости)
+    float    x = 0.f;
+    float    y = 0.f;
+    float    z = 0.f;
+    float    heading = 0.f;
+    uint32_t targetActorId = 0; // цель атаки/взаимодействия (0 = нет)
+    uint16_t seq = 0;           // порядковый номер кадра
+    uint16_t pad = 0;
+};
+static_assert(sizeof(ActorFrame) == 32, "ActorFrame must be 32 bytes");
+
+struct ActorFramesHeader {
+    uint32_t epoch = 0;
+    uint16_t seq = 0;
+    uint16_t count = 0; // 0..kMaxActors
+};
+static_assert(sizeof(ActorFramesHeader) == 8,
+              "ActorFramesHeader must be 8 bytes");
+// payload = header + count * ActorFrame; максимум 8 + 12*32 = 392.
+constexpr std::size_t kActorFramesMaxSize =
+    sizeof(ActorFramesHeader) + kMaxActors * sizeof(ActorFrame);
+static_assert(kActorFramesMaxSize == 392,
+              "ActorFrames max payload must be 392 bytes");
+
+// Удаление актёра (12 байт).
+struct ActorDespawnPayload {
+    uint32_t epoch = 0;
+    uint32_t actorId = 0;
+    uint8_t  reason = 0;
+    uint8_t  pad[3] = {0, 0, 0};
+};
+static_assert(sizeof(ActorDespawnPayload) == 12,
+              "ActorDespawnPayload must be 12 bytes");
+
+// Событие актёра (32 байта). x/y/z — u32-поля (формат задаёт игровой слой).
+struct ActorEventPayload {
+    uint32_t epoch = 0;
+    uint32_t actorId = 0;
+    uint8_t  type = 0;
+    uint8_t  flags = 0;
+    uint16_t pad = 0;
+    uint32_t a = 0;
+    uint32_t b = 0;
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t z = 0;
+};
+static_assert(sizeof(ActorEventPayload) == 32,
+              "ActorEventPayload must be 32 bytes");
+
+// Outfit актёра (792 байта): epoch + actorId + net::OutfitState (784).
+struct ActorOutfitPayload {
+    uint32_t epoch = 0;
+    uint32_t actorId = 0;
+    OutfitState outfit{};
+};
+static_assert(sizeof(ActorOutfitPayload) == 792,
+              "ActorOutfitPayload must be 792 bytes");
+
+// Запрос resync от гостя хосту (12 байт).
+struct ActorResyncPayload {
+    uint32_t epoch = 0;
+    uint32_t lastSeq = 0;
+    uint8_t  reason = 0;
+    uint8_t  pad[3] = {0, 0, 0};
+};
+static_assert(sizeof(ActorResyncPayload) == 12,
+              "ActorResyncPayload must be 12 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

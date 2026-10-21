@@ -16,6 +16,7 @@ add_library(rdr2_coop SHARED
     src/config.cpp
     src/world_scan.cpp
     src/world_sync.cpp
+    src/actor_sync.cpp
     src/world_snapshot_parse.cpp
     src/world_entity_budget.cpp
     src/mission_barrier_rules.cpp

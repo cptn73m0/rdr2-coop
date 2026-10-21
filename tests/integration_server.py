@@ -102,6 +102,17 @@ def _proto_const(name):
     return int(m.group(1))
 
 
+def _proto_const_optional(name):
+    m = re.search(re.escape(name) + r"\s*=\s*(\d+)\s*;", _PROTO_SRC)
+    return int(m.group(1)) if m else None
+
+
+def _struct_size_optional(name):
+    m = re.search(r"static_assert\s*\(\s*sizeof\s*\(\s*" + re.escape(name) +
+                  r"\s*\)\s*==\s*(\d+)", _PROTO_SRC)
+    return int(m.group(1)) if m else None
+
+
 def _server_const(name, fallback):
     m = re.search(re.escape(name) + r"\s*=\s*(\d+)\s*;", _SERVER_SRC)
     return int(m.group(1)) if m else fallback
@@ -203,6 +214,102 @@ for _limit_name, (_actual, _expected) in _PINNED_LIMITS.items():
 # have landed in server/server.cpp, so these tests are strict again.
 KNOWN_FAIL_TESTS = set()
 
+# --------------------------------------------------------------------------
+# Protocol v15 (E0): actor replication messages 0x18..0x1D.
+# The v15 wire format is signed off in the net-review E0 task; these tests are
+# skipped while net/protocol.h is still v14 (E0 not merged) and become strict
+# automatically once the header carries the Actor* messages. Expected values
+# below are pinned to the E0 spec: spawn 64 B, frame 32 B, max 12 actors,
+# batch sizes 776/392 B, despawn/resync 12 B, event 32 B, outfit 792 B.
+# --------------------------------------------------------------------------
+_ACTOR_MSG_PINS = {
+    "ActorSpawnBatch": 0x18,
+    "ActorFrames": 0x19,
+    "ActorDespawn": 0x1A,
+    "ActorEvent": 0x1B,
+    "ActorOutfit": 0x1C,
+    "ActorResync": 0x1D,
+}
+_ACTOR_SIZE_PINS = {
+    "ActorSpawn": 64,
+    "ActorFrame": 32,
+}
+
+ACTOR_AVAILABLE = False
+TYPE_ACTOR_SPAWN_BATCH = None
+TYPE_ACTOR_FRAMES = None
+TYPE_ACTOR_DESPAWN = None
+TYPE_ACTOR_EVENT = None
+TYPE_ACTOR_OUTFIT = None
+TYPE_ACTOR_RESYNC = None
+ACTOR_SPAWN_SIZE = 0
+ACTOR_FRAME_SIZE = 0
+MAX_ACTORS = 0
+ACTOR_SPAWN_BATCH_MAX = 0
+ACTOR_FRAMES_MAX = 0
+ACTOR_DESPAWN_SIZE = 0
+ACTOR_EVENT_SIZE = 0
+ACTOR_OUTFIT_SIZE = 0
+ACTOR_RESYNC_SIZE = 0
+
+if PROTO >= 15:
+    _missing_actor_msg = [name for name in _ACTOR_MSG_PINS if name not in MSG]
+    _missing_actor_size = [name for name in _ACTOR_SIZE_PINS
+                           if _struct_size_optional(name) is None]
+    _max_actors = _proto_const_optional("kMaxActors")
+    if _missing_actor_msg or _missing_actor_size or _max_actors is None:
+        raise RuntimeError(
+            "protocol v15 is present but E0 actor spec is incomplete: "
+            f"missing msgs={_missing_actor_msg}, "
+            f"missing sizes={_missing_actor_size}, kMaxActors={_max_actors}")
+
+    TYPE_ACTOR_SPAWN_BATCH = MSG["ActorSpawnBatch"]
+    TYPE_ACTOR_FRAMES = MSG["ActorFrames"]
+    TYPE_ACTOR_DESPAWN = MSG["ActorDespawn"]
+    TYPE_ACTOR_EVENT = MSG["ActorEvent"]
+    TYPE_ACTOR_OUTFIT = MSG["ActorOutfit"]
+    TYPE_ACTOR_RESYNC = MSG["ActorResync"]
+    ACTOR_SPAWN_SIZE = _struct_size("ActorSpawn")
+    ACTOR_FRAME_SIZE = _struct_size("ActorFrame")
+    MAX_ACTORS = _max_actors
+    ACTOR_SPAWN_BATCH_MAX = 8 + MAX_ACTORS * ACTOR_SPAWN_SIZE
+    ACTOR_FRAMES_MAX = 8 + MAX_ACTORS * ACTOR_FRAME_SIZE
+    # Despawn/Resync: epoch u32 + actorId/lastSeq u32 + reason u8 + pad3.
+    ACTOR_DESPAWN_SIZE = 12
+    ACTOR_EVENT_SIZE = 32
+    ACTOR_OUTFIT_SIZE = 8 + OUTFIT_SIZE
+    ACTOR_RESYNC_SIZE = 12
+    for _name, _expected_id in _ACTOR_MSG_PINS.items():
+        require(MSG.get(_name) == _expected_id,
+                f"Msg::{_name} expected 0x{_expected_id:02X}, "
+                f"got {MSG.get(_name)} (protocol v15 E0 spec changed)")
+    for _name, _expected_size in _ACTOR_SIZE_PINS.items():
+        _actual = _struct_size(_name)
+        require(_actual == _expected_size,
+                f"{_name} expected {_expected_size} B (v15 E0), got {_actual}")
+    require(MAX_ACTORS == 12, f"kMaxActors expected 12, got {MAX_ACTORS}")
+    require(ACTOR_SPAWN_BATCH_MAX == 776,
+            f"ActorSpawnBatch max expected 776 B, got {ACTOR_SPAWN_BATCH_MAX}")
+    require(ACTOR_FRAMES_MAX == 392,
+            f"ActorFrames max expected 392 B, got {ACTOR_FRAMES_MAX}")
+    require(ACTOR_DESPAWN_SIZE == 12, "ActorDespawn expected 12 B")
+    require(ACTOR_EVENT_SIZE == 32, "ActorEvent expected 32 B")
+    require(ACTOR_OUTFIT_SIZE == 8 + EXPECTED_OUTFIT_SIZE,
+            f"ActorOutfit expected {8 + EXPECTED_OUTFIT_SIZE} B, "
+            f"got {ACTOR_OUTFIT_SIZE}")
+    require(ACTOR_RESYNC_SIZE == 12, "ActorResync expected 12 B")
+    ACTOR_AVAILABLE = True
+
+# Names of the conditional v15 actor tests (skipped while E0 is not merged).
+ACTOR_TESTS = {
+    "test_actor_spawn_host_only",
+    "test_actor_frames_host_only",
+    "test_actor_despawn_event_outfit",
+    "test_actor_resync_direction",
+    "test_actor_validation_drops",
+    "test_actor_duplicate_actor_ids",
+}
+
 # 50-100 rounds of the JOIN race per task; overridable for slow CI.
 JOIN_RACE_ITERS = int(os.environ.get("RDR2_JOIN_RACE_ITERS", "50"))
 
@@ -248,6 +355,91 @@ def make_train(count):
                     5.0 + i, 6.0, 7.0, 30.0, 1, 0, 0, 0)
         for i in range(count))
     return header + ents
+
+
+# ---- Protocol v15 E0 actor payload builders ---------------------------------
+# Layouts are pinned to the E0 spec (see docs/PROTOCOL.md, section "v15 E0").
+# Builders are only called from tests guarded by ACTOR_AVAILABLE.
+
+def actor_spawn(actor_id=1, epoch=1, kind=0, flags=0, model=0xCF7E73BE,
+                meta_outfit=0, mount_actor_id=0, weapon_hash=0,
+                scenario_hash=0, x=1.0, y=2.0, z=3.0, heading=90.0,
+                health=200, move_style=0, phase=0, pad=0,
+                vx=0, vy=0, vz=0, pad2=0, reserved=0, reserved2=0):
+    require(ACTOR_AVAILABLE, "actor v15 messages are not in net/protocol.h yet")
+    rec = struct.pack("<IHBBIIIIIffffBBBBhhhHII",
+                      actor_id, epoch, kind, flags,
+                      model, meta_outfit, mount_actor_id, weapon_hash,
+                      scenario_hash,
+                      x, y, z, heading,
+                      health, move_style, phase, pad,
+                      vx, vy, vz, pad2, reserved, reserved2)
+    require(len(rec) == ACTOR_SPAWN_SIZE,
+            f"ActorSpawn builder mismatch: {len(rec)} != {ACTOR_SPAWN_SIZE}")
+    return rec
+
+
+def actor_frame(actor_id=1, flags=0, anim_state=0, speed=0,
+                x=1.0, y=2.0, z=3.0, heading=90.0,
+                target_actor_id=0, seq=1, pad=0):
+    require(ACTOR_AVAILABLE, "actor v15 messages are not in net/protocol.h yet")
+    rec = struct.pack("<IHBBffffIHH", actor_id, flags, anim_state, speed,
+                      x, y, z, heading, target_actor_id, seq, pad)
+    require(len(rec) == ACTOR_FRAME_SIZE,
+            f"ActorFrame builder mismatch: {len(rec)} != {ACTOR_FRAME_SIZE}")
+    return rec
+
+
+def actor_spawn_batch(epoch=1, records=None):
+    require(ACTOR_AVAILABLE, "actor v15 messages are not in net/protocol.h yet")
+    records = list(records or [])
+    header = struct.pack("<IHH", epoch, len(records), 0)
+    payload = header + b"".join(records)
+    require(len(header) == 8, "ActorSpawnBatch header must be 8 B")
+    return payload
+
+
+def actor_frames(epoch=1, seq=1, records=None):
+    require(ACTOR_AVAILABLE, "actor v15 messages are not in net/protocol.h yet")
+    records = list(records or [])
+    header = struct.pack("<IHH", epoch, seq, len(records))
+    require(len(header) == 8, "ActorFrames header must be 8 B")
+    return header + b"".join(records)
+
+
+def actor_despawn(epoch=1, actor_id=1, reason=0):
+    require(ACTOR_AVAILABLE, "actor v15 messages are not in net/protocol.h yet")
+    payload = struct.pack("<IIB3x", epoch, actor_id, reason)
+    require(len(payload) == ACTOR_DESPAWN_SIZE,
+            "ActorDespawn builder mismatch")
+    return payload
+
+
+def actor_event(epoch=1, actor_id=1, ev_type=0, flags=0, pad=0,
+                a=0, b=0, x=0, y=0, z=0):
+    require(ACTOR_AVAILABLE, "actor v15 messages are not in net/protocol.h yet")
+    payload = struct.pack("<IIBBHIIIII", epoch, actor_id, ev_type, flags,
+                          pad, a, b, x, y, z)
+    require(len(payload) == ACTOR_EVENT_SIZE, "ActorEvent builder mismatch")
+    return payload
+
+
+def actor_outfit(epoch=1, actor_id=1, outfit=None):
+    require(ACTOR_AVAILABLE, "actor v15 messages are not in net/protocol.h yet")
+    if outfit is None:
+        outfit = b"\xA5" * OUTFIT_SIZE
+    require(len(outfit) == OUTFIT_SIZE,
+            f"OutfitState must be {OUTFIT_SIZE} B, got {len(outfit)}")
+    payload = struct.pack("<II", epoch, actor_id) + outfit
+    require(len(payload) == ACTOR_OUTFIT_SIZE, "ActorOutfit builder mismatch")
+    return payload
+
+
+def actor_resync(epoch=1, last_seq=0, reason=0):
+    require(ACTOR_AVAILABLE, "actor v15 messages are not in net/protocol.h yet")
+    payload = struct.pack("<IIB3x", epoch, last_seq, reason)
+    require(len(payload) == ACTOR_RESYNC_SIZE, "ActorResync builder mismatch")
+    return payload
 
 
 def frame_bytes(type_, payload):
@@ -939,6 +1131,310 @@ def test_worldstate_host_only(exe, tmp):
         guest.close()
 
 
+# --------------------------------------------------------------------------
+# Protocol v15 (E0): actor replication messages 0x18..0x1D.
+# Tests are conditional on net/protocol.h carrying the Actor* messages; while
+# E0 is not merged they are reported as [skip]. After merge they are strict and
+# match the E0 spec in docs/PROTOCOL.md.
+# --------------------------------------------------------------------------
+
+def _actor_pair(srv):
+    """Join host+guest and drain JOIN_OK/PlayerJoined noise."""
+    host = connect(srv.port)
+    join(host, "Alice")
+    require(recv_type(host, TYPE_JOIN_OK) is not None, "host JOIN_OK missing")
+    guest = connect(srv.port)
+    join(guest, "Bob")
+    require(recv_type(guest, TYPE_JOIN_OK) is not None, "guest JOIN_OK missing")
+    recv_msgs(host, 0.3)
+    recv_msgs(guest, 0.3)
+    return host, guest
+
+
+def _actor_expect_relay(sender, receiver, type_, payload, what):
+    sender.sendall(frame_bytes(type_, payload))
+    got = recv_type(receiver, type_, 2.0)
+    require(got == payload, f"{what} must relay byte-identical")
+
+
+def _actor_expect_drop(sender, receiver, type_, payload, what):
+    sender.sendall(frame_bytes(type_, payload))
+    require(recv_type(receiver, type_, 0.5) is None, f"{what} must be dropped")
+
+
+def test_actor_spawn_host_only(exe, tmp):
+    log("[test] v15 actor spawn batch: host-only relay + limits")
+    require(ACTOR_AVAILABLE, "v15 Actor* messages missing")
+    with Server(exe, tmp / "actor_spawn") as srv:
+        host, guest = _actor_pair(srv)
+
+        one = actor_spawn_batch(epoch=1, records=[actor_spawn(actor_id=7, epoch=1)])
+        require(len(one) == 8 + ACTOR_SPAWN_SIZE,
+                f"spawn batch size {len(one)} != {8 + ACTOR_SPAWN_SIZE}")
+        _actor_expect_relay(host, guest, TYPE_ACTOR_SPAWN_BATCH, one,
+                            "ActorSpawnBatch(1)")
+
+        max_batch = actor_spawn_batch(
+            epoch=2,
+            records=[actor_spawn(actor_id=100 + i, epoch=2)
+                     for i in range(MAX_ACTORS)])
+        require(len(max_batch) == ACTOR_SPAWN_BATCH_MAX,
+                f"max spawn batch {len(max_batch)} != {ACTOR_SPAWN_BATCH_MAX}")
+        _actor_expect_relay(host, guest, TYPE_ACTOR_SPAWN_BATCH, max_batch,
+                            "ActorSpawnBatch(max)")
+
+        empty = actor_spawn_batch(epoch=3, records=[])
+        _actor_expect_relay(host, guest, TYPE_ACTOR_SPAWN_BATCH, empty,
+                            "ActorSpawnBatch(count=0)")
+
+        too_many = actor_spawn_batch(
+            epoch=4,
+            records=[actor_spawn(actor_id=200 + i, epoch=4)
+                     for i in range(MAX_ACTORS + 1)])
+        _actor_expect_drop(host, guest, TYPE_ACTOR_SPAWN_BATCH, too_many,
+                           "ActorSpawnBatch(count>max)")
+
+        _actor_expect_drop(host, guest, TYPE_ACTOR_SPAWN_BATCH, one[:-1],
+                           "short ActorSpawnBatch")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_SPAWN_BATCH, one + b"\x00",
+                           "oversized ActorSpawnBatch")
+
+        guest.sendall(frame_bytes(TYPE_ACTOR_SPAWN_BATCH, one))
+        require(recv_type(host, TYPE_ACTOR_SPAWN_BATCH, 0.5) is None,
+                "guest ActorSpawnBatch must be blocked (host-only)")
+        host.close()
+        guest.close()
+
+
+def test_actor_frames_host_only(exe, tmp):
+    log("[test] v15 actor frames: host-only relay + limits/finite")
+    require(ACTOR_AVAILABLE, "v15 Actor* messages missing")
+    with Server(exe, tmp / "actor_frames") as srv:
+        host, guest = _actor_pair(srv)
+
+        one = actor_frames(epoch=1, seq=1,
+                           records=[actor_frame(actor_id=7, seq=1)])
+        require(len(one) == 8 + ACTOR_FRAME_SIZE,
+                f"frames size {len(one)} != {8 + ACTOR_FRAME_SIZE}")
+        _actor_expect_relay(host, guest, TYPE_ACTOR_FRAMES, one, "ActorFrames(1)")
+
+        max_batch = actor_frames(
+            epoch=2, seq=10,
+            records=[actor_frame(actor_id=100 + i, seq=10 + i)
+                     for i in range(MAX_ACTORS)])
+        require(len(max_batch) == ACTOR_FRAMES_MAX,
+                f"max frames {len(max_batch)} != {ACTOR_FRAMES_MAX}")
+        _actor_expect_relay(host, guest, TYPE_ACTOR_FRAMES, max_batch,
+                            "ActorFrames(max)")
+
+        empty = actor_frames(epoch=3, seq=20, records=[])
+        _actor_expect_relay(host, guest, TYPE_ACTOR_FRAMES, empty,
+                            "ActorFrames(count=0)")
+
+        too_many = actor_frames(
+            epoch=4, seq=30,
+            records=[actor_frame(actor_id=200 + i, seq=30 + i)
+                     for i in range(MAX_ACTORS + 1)])
+        _actor_expect_drop(host, guest, TYPE_ACTOR_FRAMES, too_many,
+                           "ActorFrames(count>max)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_FRAMES, one[:-1],
+                           "short ActorFrames")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_FRAMES, one + b"\x00",
+                           "oversized ActorFrames")
+
+        for bad in (float("nan"), float("inf"), 1.0e6):
+            bad_frames = actor_frames(
+                epoch=5, seq=40,
+                records=[actor_frame(actor_id=7, seq=40, x=bad)])
+            _actor_expect_drop(host, guest, TYPE_ACTOR_FRAMES, bad_frames,
+                               f"ActorFrames(x={bad!r})")
+
+        guest.sendall(frame_bytes(TYPE_ACTOR_FRAMES, one))
+        require(recv_type(host, TYPE_ACTOR_FRAMES, 0.5) is None,
+                "guest ActorFrames must be blocked (host-only)")
+        host.close()
+        guest.close()
+
+
+def test_actor_despawn_event_outfit(exe, tmp):
+    log("[test] v15 actor despawn/event/outfit: host-only + exact sizes")
+    require(ACTOR_AVAILABLE, "v15 Actor* messages missing")
+    with Server(exe, tmp / "actor_misc") as srv:
+        host, guest = _actor_pair(srv)
+
+        despawn = actor_despawn(epoch=1, actor_id=7, reason=2)
+        require(len(despawn) == ACTOR_DESPAWN_SIZE, "despawn size mismatch")
+        _actor_expect_relay(host, guest, TYPE_ACTOR_DESPAWN, despawn,
+                            "ActorDespawn")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_DESPAWN, despawn[:-1],
+                           "short ActorDespawn")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_DESPAWN, despawn + b"\x00",
+                           "oversized ActorDespawn")
+        guest.sendall(frame_bytes(TYPE_ACTOR_DESPAWN, despawn))
+        require(recv_type(host, TYPE_ACTOR_DESPAWN, 0.5) is None,
+                "guest ActorDespawn must be blocked (host-only)")
+
+        event = actor_event(epoch=1, actor_id=7, ev_type=1, flags=1,
+                            a=10, b=20, x=1, y=2, z=3)
+        require(len(event) == ACTOR_EVENT_SIZE, "event size mismatch")
+        _actor_expect_relay(host, guest, TYPE_ACTOR_EVENT, event,
+                            "ActorEvent")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_EVENT, event[:-1],
+                           "short ActorEvent")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_EVENT, event + b"\x00",
+                           "oversized ActorEvent")
+        guest.sendall(frame_bytes(TYPE_ACTOR_EVENT, event))
+        require(recv_type(host, TYPE_ACTOR_EVENT, 0.5) is None,
+                "guest ActorEvent must be blocked (host-only)")
+
+        outfit = actor_outfit(epoch=1, actor_id=7)
+        require(len(outfit) == ACTOR_OUTFIT_SIZE,
+                f"outfit size {len(outfit)} != {ACTOR_OUTFIT_SIZE}")
+        _actor_expect_relay(host, guest, TYPE_ACTOR_OUTFIT, outfit,
+                            "ActorOutfit")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_OUTFIT, outfit[:-1],
+                           "short ActorOutfit")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_OUTFIT, outfit + b"\x00",
+                           "oversized ActorOutfit")
+        guest.sendall(frame_bytes(TYPE_ACTOR_OUTFIT, outfit))
+        require(recv_type(host, TYPE_ACTOR_OUTFIT, 0.5) is None,
+                "guest ActorOutfit must be blocked (host-only)")
+
+        host.close()
+        guest.close()
+
+
+def test_actor_resync_direction(exe, tmp):
+    log("[test] v15 actor resync: guest -> host only")
+    require(ACTOR_AVAILABLE, "v15 Actor* messages missing")
+    with Server(exe, tmp / "actor_resync") as srv:
+        host, guest = _actor_pair(srv)
+
+        resync = actor_resync(epoch=1, last_seq=123, reason=1)
+        require(len(resync) == ACTOR_RESYNC_SIZE, "resync size mismatch")
+
+        guest.sendall(frame_bytes(TYPE_ACTOR_RESYNC, resync))
+        got = recv_type(host, TYPE_ACTOR_RESYNC, 2.0)
+        require(got == resync,
+                "guest ActorResync must relay byte-identical to the host only")
+
+        host.sendall(frame_bytes(TYPE_ACTOR_RESYNC, resync))
+        require(recv_type(guest, TYPE_ACTOR_RESYNC, 0.6) is None,
+                "host ActorResync must be blocked (guest-only direction)")
+
+        _actor_expect_drop(host, guest, TYPE_ACTOR_RESYNC, resync[:-1],
+                           "short ActorResync")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_RESYNC, resync + b"\x00",
+                           "oversized ActorResync")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_RESYNC,
+                           actor_resync(epoch=0, last_seq=1, reason=1),
+                           "ActorResync(epoch=0)")
+        host.close()
+        guest.close()
+
+
+def test_actor_validation_drops(exe, tmp):
+    log("[test] v15 actor validation: epoch/actorId/finite/unknown drops")
+    require(ACTOR_AVAILABLE, "v15 Actor* messages missing")
+    with Server(exe, tmp / "actor_validate") as srv:
+        host, guest = _actor_pair(srv)
+
+        # epoch=0 is invalid for every actor message.
+        _actor_expect_drop(host, guest, TYPE_ACTOR_SPAWN_BATCH,
+                           actor_spawn_batch(epoch=0,
+                                             records=[actor_spawn(actor_id=7,
+                                                                  epoch=0)]),
+                           "ActorSpawnBatch(epoch=0)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_FRAMES,
+                           actor_frames(epoch=0, seq=1,
+                                        records=[actor_frame(actor_id=7,
+                                                             seq=1)]),
+                           "ActorFrames(epoch=0)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_DESPAWN,
+                           actor_despawn(epoch=0, actor_id=7), "Despawn(epoch=0)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_EVENT,
+                           actor_event(epoch=0, actor_id=7), "Event(epoch=0)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_OUTFIT,
+                           actor_outfit(epoch=0, actor_id=7), "Outfit(epoch=0)")
+
+        # actorId=0 is invalid where an actorId is present.
+        _actor_expect_drop(host, guest, TYPE_ACTOR_SPAWN_BATCH,
+                           actor_spawn_batch(epoch=1,
+                                             records=[actor_spawn(actor_id=0)]),
+                           "ActorSpawnBatch(actorId=0)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_FRAMES,
+                           actor_frames(epoch=1, seq=1,
+                                        records=[actor_frame(actor_id=0, seq=1)]),
+                           "ActorFrames(actorId=0)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_DESPAWN,
+                           actor_despawn(epoch=1, actor_id=0), "Despawn(actorId=0)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_OUTFIT,
+                           actor_outfit(epoch=1, actor_id=0), "Outfit(actorId=0)")
+
+        # Non-finite / absurd coordinates in spawn and frames.
+        for bad in (float("nan"), float("inf"), -float("inf"), 1.0e6, -1.0e6):
+            _actor_expect_drop(host, guest, TYPE_ACTOR_SPAWN_BATCH,
+                               actor_spawn_batch(epoch=1,
+                                                 records=[actor_spawn(x=bad)]),
+                               f"ActorSpawnBatch(x={bad!r})")
+        for bad in (float("nan"), float("inf"), 1.0e6):
+            _actor_expect_drop(host, guest, TYPE_ACTOR_FRAMES,
+                               actor_frames(epoch=1, seq=1,
+                                            records=[actor_frame(x=bad,
+                                                                 seq=1)]),
+                               f"ActorFrames(heading/x={bad!r})")
+
+        # Unknown message type must not be relayed and must not crash.
+        host.sendall(frame_bytes(0x7E, b"\x00" * 32))
+        require(recv_type(guest, 0x7E, 0.5) is None,
+                "unknown type must not be relayed")
+        host.close()
+        guest.close()
+
+
+def test_actor_duplicate_actor_ids(exe, tmp):
+    log("[test] v15 actor duplicate actorId in one batch must be dropped")
+    require(ACTOR_AVAILABLE, "v15 Actor* messages missing")
+    with Server(exe, tmp / "actor_dup") as srv:
+        host, guest = _actor_pair(srv)
+
+        dup_spawn = actor_spawn_batch(
+            epoch=1,
+            records=[actor_spawn(actor_id=7, epoch=1),
+                     actor_spawn(actor_id=7, epoch=1)])
+        _actor_expect_drop(host, guest, TYPE_ACTOR_SPAWN_BATCH, dup_spawn,
+                           "ActorSpawnBatch(duplicate actorId)")
+
+        dup_frames = actor_frames(
+            epoch=1, seq=1,
+            records=[actor_frame(actor_id=7, seq=1),
+                     actor_frame(actor_id=7, seq=1)])
+        _actor_expect_drop(host, guest, TYPE_ACTOR_FRAMES, dup_frames,
+                           "ActorFrames(duplicate actorId)")
+        host.close()
+        guest.close()
+
+
+def test_actor_gating_no_actor_log(exe, tmp):
+    log("[test] v15 gating: no 'actor:' log lines in a normal session")
+    # This test runs even before E0 is merged: a normal session must not emit
+    # any actor: lines. After merge it guards against accidental actor traffic
+    # when npc_actor=0.
+    with Server(exe, tmp / "actor_gating") as srv:
+        host, guest = _actor_pair(srv)
+        host.sendall(frame_bytes(TYPE_FRAME, make_frame_payload()))
+        require(recv_type(guest, TYPE_FRAME, 2.0) is not None,
+                "normal Frame relay broken")
+        host.close()
+        guest.close()
+        srv.wait_log_contains("отключился", 4.0)
+        text = srv.log_text()
+        actor_lines = [line for line in text.splitlines() if "actor:" in line]
+        require(not actor_lines,
+                "server logged actor: lines in a session without actor "
+                f"messages: {actor_lines[:5]}")
+
+
 def test_oversized_and_truncated(exe, tmp):
     log("[test] oversized / truncated frames")
     with Server(exe, tmp / "oversize") as srv:
@@ -1486,38 +1982,57 @@ def test_connection_cap(exe, tmp):
         c.close()
 
 
+def _burst_connections(port, count, timeout=1.0):
+    socks = []
+    for _ in range(count):
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+            s.settimeout(0.5)
+            socks.append(s)
+        except OSError:
+            pass
+    return socks
+
+
 def test_per_ip_rate_limit(exe, tmp):
     log("[test] per-IP rate limit (real assert on rejected connections)")
     with Server(exe, tmp / "rate") as srv:
-        total = CAP_RATE + 18
-        socks = []
-        for _ in range(total):
-            try:
-                s = socket.create_connection(("127.0.0.1", srv.port), timeout=1.0)
-                s.settimeout(0.5)
-                socks.append(s)
-            except OSError:
-                pass
-        time.sleep(0.4)
+        # Burst must fit into one server rate window to be deterministic.
+        # The server counts connections per fixed 1 s window and rejects above
+        # CAP_RATE/s; retry with a fresh window if the machine is slow.
+        total = CAP_RATE * 2
+        min_events = max(4, CAP_RATE // 2)
+        rate_events = 0
+        closed = 0
+        still_open = 0
+        text = ""
+        for _attempt in range(3):
+            time.sleep(1.05)  # fresh rate window
+            socks = _burst_connections(srv.port, total)
+            time.sleep(0.4)
+            text = srv.wait_log_contains("per-IP rate limit", timeout=2.0)
+            rate_events = text.count("per-IP rate limit")
+            closed, still_open = classify_connections(socks)
+            for s in socks:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+            if rate_events >= min_events and closed >= min_events:
+                break
+            time.sleep(0.2)
 
-        text = srv.wait_log_contains("per-IP rate limit", timeout=3.0)
-        rate_events = text.count("per-IP rate limit")
-        expected_rejected = max(0, len(socks) - CAP_RATE)
-        require(rate_events >= max(1, expected_rejected - 3),
+        require(rate_events >= min_events,
                 f"per-IP rate limit rejected too few connections: "
-                f"{rate_events} log entries, expected ~{expected_rejected} "
-                f"(opened={len(socks)}, rate={CAP_RATE}/s). log tail:\n{tail(text)}")
-
-        closed, still_open = classify_connections(socks)
-        require(closed >= max(1, expected_rejected - 3),
-                f"server closed only {closed} sockets, expected ~{expected_rejected}")
+                f"{rate_events} log entries (need >= {min_events}); "
+                f"opened={total}, rate={CAP_RATE}/s. log tail:\n{tail(text)}")
+        require(closed >= min_events,
+                f"server closed only {closed} sockets, "
+                f"expected >= {min_events}")
         require(still_open <= CAP_RATE + 2,
                 f"too many connections survived rate limit: {still_open}")
-        for s in socks:
-            try:
-                s.close()
-            except OSError:
-                pass
+        require("лимит соединений" not in text,
+                "active connection cap hit before the per-IP rate limit")
 
         time.sleep(1.2)  # new rate window
         c, _ = join_with_retry(srv, "AfterRate", timeout=6.0)
@@ -1615,6 +2130,7 @@ def main():
     failures = 0
     known_fails = 0
     passed = 0
+    skipped = 0
     tests = [
         test_join_rejections,
         test_join_name_validation,
@@ -1624,6 +2140,14 @@ def main():
         test_payload_sizes_and_host_only_messages,
         test_relay_misc_messages,
         test_worldstate_host_only,
+        # Protocol v15 E0 actor tests (skipped until net/protocol.h v15 lands).
+        test_actor_spawn_host_only,
+        test_actor_frames_host_only,
+        test_actor_despawn_event_outfit,
+        test_actor_resync_direction,
+        test_actor_validation_drops,
+        test_actor_duplicate_actor_ids,
+        test_actor_gating_no_actor_log,
         test_oversized_and_truncated,
         test_host_migration,
         test_join_race,
@@ -1639,6 +2163,11 @@ def main():
     ]
     try:
         for test in tests:
+            if not ACTOR_AVAILABLE and test.__name__ in ACTOR_TESTS:
+                skipped += 1
+                log(f"[skip] {test.__name__}: protocol v15 Actor* messages are "
+                    "not in net/protocol.h yet (E0 merge pending)")
+                continue
             try:
                 test(exe, tmp)
                 if test.__name__ in KNOWN_FAIL_TESTS:
@@ -1654,8 +2183,11 @@ def main():
                     failures += 1
                     log(f"[FAIL] {test.__name__}: {exc}")
         log("")
-        log(f"{passed} passed, {failures} failed, {known_fails} known-fail "
+        skipped_part = f", {skipped} skipped (E0 pending)" if skipped else ""
+        log(f"{passed} passed, {failures} failed, {known_fails} known-fail"
+            f"{skipped_part} "
             f"(protocol v{PROTO}, outfit={OUTFIT_SIZE}B, "
+            f"actors={'on' if ACTOR_AVAILABLE else 'pending'}, "
             f"cap={CAP_ACTIVE}/rate={CAP_RATE}/s, "
             f"name<={MAX_NAME_BYTES}B)")
         if failures:

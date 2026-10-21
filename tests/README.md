@@ -4,7 +4,9 @@
 по TCP: JOIN (включая гонку одновременных JOIN), роли/лимиты, host-only
 сообщения, точные размеры, WorldSnapshot, мусорные кадры, ретрансляцию
 Leave/PlayerLeft/Died/Respawned/HorseOutfit, connection cap/per-IP rate limit,
-`players.txt` persistence/recovery, graceful shutdown.
+`players.txt` persistence/recovery, graceful shutdown, а также v15 E0
+actor-сообщения (spawn/frames/despawn/event/outfit/resync) — когда они есть в
+`net/protocol.h`.
 
 ## Требования
 
@@ -25,6 +27,12 @@ Leave/PlayerLeft/Died/Respawned/HorseOutfit, connection cap/per-IP rate limit,
 wearable[96] u32). Если размер в `net/protocol.h` изменится, тест упадёт и
 потребует осознанного обновления тестов/документации под новую версию.
 
+Для протокола v15 (E0) при наличии `Actor*`-сообщений в header также
+пинятся: `kMaxActors=12`, `ActorSpawn=64 B`, `ActorFrame=32 B`,
+`ActorSpawnBatch≤776 B`, `ActorFrames≤392 B`, `ActorDespawn/ActorResync=12 B`,
+`ActorEvent=32 B`, `ActorOutfit=792 B`; ID 0x18–0x1D. Пока header v14,
+actor-тесты скипаются с `[skip]` и не валят базовый suite.
+
 ## Запуск
 
 ```powershell
@@ -39,7 +47,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 `--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
 `KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто (20 сценариев)
+## Что покрыто (20 базовых сценариев + 7 actor-тестов v15)
 
 | Тест | Проверка |
 |---|---|
@@ -63,6 +71,18 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_per_ip_rate_limit` | 30 быстрых подключений: проверяются записи `per-IP rate limit`, реально закрытые сервером сокеты; после окна вход работает |
 | `test_graceful_shutdown` | сервер корректно завершается по тест-хуку и сохраняет players.txt |
 | `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта; первый игрок = HOST |
+
+### v15 E0 actor-тесты (условные: активны при `PROTO≥15` и наличии Actor* в header)
+
+| Тест | Проверка |
+|---|---|
+| `test_actor_spawn_host_only` | 0x18: host→guest byte-identical; count 0/1/12 reley, count 13 drop; short/long drop; guest→host blocked |
+| `test_actor_frames_host_only` | 0x19: relay byte-identical; count 0/12/13; short/long; NaN/Inf/|x|≥100000 drop; guest→host blocked |
+| `test_actor_despawn_event_outfit` | 0x1A/0x1B/0x1C: exact 12/32/792 B, relay byte-identical, short/long drop, guest→host blocked |
+| `test_actor_resync_direction` | 0x1D: guest→host relay only to host; host→guest blocked; short/long/epoch=0 drop |
+| `test_actor_validation_drops` | epoch=0, actorId=0, non-finite/absurd coords, unknown type drop (0x18–0x1C) |
+| `test_actor_duplicate_actor_ids` | duplicate actorId в spawn/frames-батче → батч дропается (ожидает серверной проверки уникальности) |
+| `test_actor_gating_no_actor_log` | обычная сессия без actor-сообщений → в `server_console.log` **0 строк `actor:`** |
 
 ## C++ headless-тесты (сеть)
 

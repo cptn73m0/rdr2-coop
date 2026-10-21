@@ -86,6 +86,10 @@ void WriteDefaultIni()
     fputs("world_trains = 0\n", f);
     fputs("# R&D: подробный лог offset/attach вагонов (диагностика).\n", f);
     fputs("train_debug = 0\n", f);
+    fputs("# R&D E0: каркас NPC actor sync (0 = выключено).\n", f);
+    fputs("npc_actor = 0\n", f);
+    fputs("# R&D E-1: probe-лог 20 ближайших human NPC (только при npc_actor=1).\n", f);
+    fputs("npc_debug = 0\n", f);
     fclose(f);
 }
 
@@ -139,6 +143,8 @@ void ApplyLine(const std::string& raw, Config& out)
     else if (key == "mission_reward_log") out.missionRewardLog = AsBool(val);
     else if (key == "world_trains") out.worldTrains = AsBool(val);
     else if (key == "train_debug") out.trainDebug = AsBool(val);
+    else if (key == "npc_actor") out.npcActor = AsBool(val);
+    else if (key == "npc_debug") out.npcDebug = AsBool(val);
     else if (key == "ped_model")
     {
         unsigned long long m = 0;

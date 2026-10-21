@@ -40,6 +40,12 @@ struct Config {
     bool worldTrains = false;
     // R&D: подробный лог offset/attach для TrainSnapshot (диагностика).
     bool trainDebug = false;
+    // R&D E0 (NPC actor sync): каркас синхронизации NPC-акторов. Пока только
+    // фасад actor_sync::Tick; по умолчанию выключено (0 = ни нативов, ни логов).
+    bool npcActor = false;
+    // R&D E-1 (probe): раз в ~2 с логировать 20 ближайших human NPC (только хост).
+    // Работает только при npc_actor=1; по умолчанию выключено.
+    bool npcDebug = false;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —

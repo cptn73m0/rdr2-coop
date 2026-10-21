@@ -2,9 +2,13 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 14` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 15` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение
-  (`JoinRejected.VersionMismatch`); клиенты v13 и v14 несовместимы.
+  (`JoinRejected.VersionMismatch`); клиенты v14 и v15 несовместимы.
+- v15 (E0): actor-сообщения NPC-репликации — `ActorSpawnBatch` (0x18),
+  `ActorFrames` (0x19), `ActorDespawn` (0x1A), `ActorEvent` (0x1B),
+  `ActorOutfit` (0x1C), `ActorResync` (0x1D). Пока каркас протокола/сервера:
+  клиентская репликация NPC ещё не реализована, `npc_actor=0` по умолчанию.
 - v14: `OutfitState` расширен до **784 байт** — добавлен `wearable[96]` (u32)
   для wearable states одежды (открытая/закрытая куртка, рукава и т.п.).
 - v13: TrainSnapshot (0x17) — R&D: engine/direction/speed + вагоны по порядку.
@@ -235,6 +239,73 @@ payload: TrainSnapshotHeader (16 B)
 перетирает привязанные вагоны; при удалении локомотива вагоны отцепляются.
 Это экспериментально и требует игровой проверки.
 
+## E0 (v15): ACTOR-СООБЩЕНИЯ (NPC-репликация, каркас)
+
+E0 — этап каркаса: протокол, серверный relay/валидация и headless-тесты.
+Клиентская репликация NPC (discovery/спавн/движение/анимации) появится в
+E1+, флаг `npc_actor` по умолчанию **0**; в игре не проверялось.
+Все структуры — little-endian, фиксированы `static_assert` в `net/protocol.h`.
+`kMaxActors = 12`.
+
+Правила сервера:
+- **0x18–0x1C принимаются только от хоста** (как WorldSnapshot): от гостя —
+  лог и игнор; payload валидируется (точный размер, count ≤12, epoch != 0,
+  actorId != 0, конечные координаты `|v| < 100000`) и ретранслируется
+  остальным **byte-identical**; невалидный payload дропается.
+- В `ActorSpawnBatch`/`ActorFrames` `actorId` не должен повторяться внутри
+  одного батча (проверка O(count²)): duplicate-батч дропается целиком;
+  `count=0` и одиночные батчи валидны.
+- **0x1D принимается только от гостя и ретранслируется только хосту**
+  (не broadcast); от хоста — лог и игнор.
+
+### 0x18 ACTOR_SPAWN_BATCH (хост → сервер → гость)
+```
+payload: ActorSpawnBatchHeader (8 B) + count * ActorSpawn (64 B)
+         max = 8 + 12*64 = 776 B
+header: epoch:u32  count:u16  pad:u16
+ActorSpawn (64 B):
+  actorId:u32        — стабильный id в рамках epoch (не 0)
+  epoch:u16
+  kind:u8            — 0 = human
+  flags:u8           — bit0 mounted, 1 dead, 2 drawn, 3 changing,
+                       4 combat, 5 scenario, 6 reloading, 7 aiming
+  model:u32  metaOutfit:u32  mountActorId:u32
+  weaponHash:u32  scenarioHash:u32
+  x,y,z,heading:f32
+  health:u8  moveStyle:u8  phase:u8  pad:u8
+  vx,vy,vz:i16  pad2:u16  reserved:u32  reserved2:u32
+```
+### 0x19 ACTOR_FRAMES (хост → сервер → гость)
+```
+payload: ActorFramesHeader (8 B) + count * ActorFrame (32 B)
+         max = 8 + 12*32 = 392 B
+header: epoch:u32  seq:u16  count:u16
+ActorFrame (32 B):
+  actorId:u32  flags:u16  animState:u8  speed:u8
+  x,y,z,heading:f32
+  targetActorId:u32  seq:u16  pad:u16
+```
+### 0x1A ACTOR_DESPAWN (хост → сервер → гость, 12 B)
+```
+epoch:u32  actorId:u32  reason:u8  pad[3]
+```
+### 0x1B ACTOR_EVENT (хост → сервер → гость, 32 B)
+```
+epoch:u32  actorId:u32  type:u8  flags:u8  pad:u16
+a:u32  b:u32  x:u32  y:u32  z:u32   // формат полей задаёт игровой слой
+```
+### 0x1C ACTOR_OUTFIT (хост → сервер → гость, 792 B)
+```
+epoch:u32  actorId:u32  + OutfitState (784 B; см. 0x09)
+```
+### 0x1D ACTOR_RESYNC (гость → сервер → хосту, 12 B)
+```
+epoch:u32  lastSeq:u32  reason:u8  pad[3]
+```
+- Назначение: гость сообщает хосту, что потерял поток кадров (epoch/seq) и
+  просит resync; сервер пересылает запрос только текущему хосту.
+- E0 не реализует обработку на хосте/госте — только транспорт и контракт.
+
 ### Reconnect (клиент)
 
 - При разрыве TCP клиент автоматически переподключается с backoff
@@ -249,7 +320,8 @@ payload: TrainSnapshotHeader (16 B)
 
 - Этот раздел описывает актуальные для стабильной сборки изменения (Spike 1/P1/P2/P3);
   базовые разделы ниже сохранены как историческая спецификация Spike 1, но
-  ключевые форматы (JOIN/JOIN_OK, FRAME 88 B, OUTFIT 784 B) обновлены под v14.
+  ключевые форматы (JOIN/JOIN_OK, FRAME 88 B, OUTFIT 784 B) обновлены под
+  v14/v15 (v15 добавляет actor-сообщения E0, см. раздел выше).
 
 Сетевой стек поверх **сервера-релея**. Один сервер, несколько клиентов
 (ASI-плагинов). Клиент периодически шлёт свой `GhostFrame`, сервер
@@ -263,10 +335,11 @@ payload: TrainSnapshotHeader (16 B)
 ```
 
 - Клиент отправляет: JOIN, FRAME, LEAVE, OUTFIT/HORSE_OUTFIT, PING; хост
-  дополнительно — WorldSnapshot, MissionEvent/MissionState/MissionBarrier
-  (при включённых флагах).
+  дополнительно — WorldSnapshot, MissionEvent/MissionState/MissionBarrier,
+  actor-сообщения 0x18–0x1C (при включённых флагах); гость — ActorResync 0x1D.
 - Сервер рассылает: JOIN_OK/JOIN_REJECTED, PLAYER_JOINED, PLAYER_LEFT, FRAME,
-  OUTFIT/HORSE_OUTFIT, HOST_CHANGED и host-only сообщения от хоста.
+  OUTFIT/HORSE_OUTFIT, HOST_CHANGED, host-only сообщения от хоста и actor-
+  сообщения 0x18–0x1C; ActorResync — только хосту.
 
 ## Транспорт
 

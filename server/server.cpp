@@ -285,6 +285,124 @@ bool IsValidTrainSnapshot(const std::vector<uint8_t>& pay)
     return true;
 }
 
+// ---------------- E0: валидация actor-сообщений (v15) ----------------
+// Проверяем точный размер header+count*record, count<=kMaxActors, epoch!=0,
+// actorId!=0 и конечность координат (|coord| < 100000), чтобы не
+// ретранслировать мусор от сломанного/враждебного хоста.
+bool IsFiniteActorCoord(float v)
+{
+    return std::isfinite(v) && std::fabs(v) < 1.0e5f;
+}
+
+bool IsSaneActorSpawnRecord(const net::ActorSpawn& a)
+{
+    return a.actorId != 0 &&
+           IsFiniteActorCoord(a.x) && IsFiniteActorCoord(a.y) &&
+           IsFiniteActorCoord(a.z) && IsFiniteActorCoord(a.heading);
+}
+
+bool IsSaneActorFrameRecord(const net::ActorFrame& f)
+{
+    return f.actorId != 0 &&
+           IsFiniteActorCoord(f.x) && IsFiniteActorCoord(f.y) &&
+           IsFiniteActorCoord(f.z) && IsFiniteActorCoord(f.heading);
+}
+
+bool IsValidActorSpawnBatch(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() < sizeof(net::ActorSpawnBatchHeader))
+        return false;
+    net::ActorSpawnBatchHeader h{};
+    std::memcpy(&h, pay.data(), sizeof(h));
+    if (h.epoch == 0 || h.count > net::kMaxActors)
+        return false;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.count) * sizeof(net::ActorSpawn);
+    if (pay.size() != need)
+        return false;
+    const uint8_t* data = pay.data() + sizeof(h);
+    uint32_t seen[net::kMaxActors] = {0};
+    for (uint16_t i = 0; i < h.count; ++i)
+    {
+        net::ActorSpawn a{};
+        std::memcpy(&a, data + static_cast<std::size_t>(i) * sizeof(a), sizeof(a));
+        if (!IsSaneActorSpawnRecord(a))
+            return false;
+        // Дубли actorId в одном батче — признак битого/склеенного снапшота:
+        // получатель не должен применить два разных состояния одного актора.
+        for (uint16_t j = 0; j < i; ++j)
+            if (seen[j] == a.actorId)
+                return false;
+        seen[i] = a.actorId;
+    }
+    return true;
+}
+
+bool IsValidActorFrames(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() < sizeof(net::ActorFramesHeader))
+        return false;
+    net::ActorFramesHeader h{};
+    std::memcpy(&h, pay.data(), sizeof(h));
+    if (h.epoch == 0 || h.count > net::kMaxActors)
+        return false;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.count) * sizeof(net::ActorFrame);
+    if (pay.size() != need)
+        return false;
+    const uint8_t* data = pay.data() + sizeof(h);
+    uint32_t seen[net::kMaxActors] = {0};
+    for (uint16_t i = 0; i < h.count; ++i)
+    {
+        net::ActorFrame f{};
+        std::memcpy(&f, data + static_cast<std::size_t>(i) * sizeof(f), sizeof(f));
+        if (!IsSaneActorFrameRecord(f))
+            return false;
+        // Дубли actorId в одном батче кадров отбрасываем (см. spawn batch).
+        for (uint16_t j = 0; j < i; ++j)
+            if (seen[j] == f.actorId)
+                return false;
+        seen[i] = f.actorId;
+    }
+    return true;
+}
+
+bool IsValidActorDespawn(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() != sizeof(net::ActorDespawnPayload))
+        return false;
+    net::ActorDespawnPayload msg{};
+    std::memcpy(&msg, pay.data(), sizeof(msg));
+    return msg.epoch != 0 && msg.actorId != 0;
+}
+
+bool IsValidActorEvent(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() != sizeof(net::ActorEventPayload))
+        return false;
+    net::ActorEventPayload ev{};
+    std::memcpy(&ev, pay.data(), sizeof(ev));
+    return ev.epoch != 0 && ev.actorId != 0;
+}
+
+bool IsValidActorOutfit(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() != sizeof(net::ActorOutfitPayload))
+        return false;
+    net::ActorOutfitPayload msg{};
+    std::memcpy(&msg, pay.data(), sizeof(msg));
+    return msg.epoch != 0 && msg.actorId != 0;
+}
+
+bool IsValidActorResync(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() != sizeof(net::ActorResyncPayload))
+        return false;
+    net::ActorResyncPayload msg{};
+    std::memcpy(&msg, pay.data(), sizeof(msg));
+    return msg.epoch != 0;
+}
+
 // ---------------- Персистентность (players.txt) ----------------
 // Формат строк: name:x:y:z:heading (ровно 4 числовых поля).
 const std::string kSaveFile = "players.txt";
@@ -561,6 +679,32 @@ void BroadcastToAll(const std::vector<uint8_t>& frame)
         netio::Socket* s = kv.second.sock;
         if (s) s->Send(frame.data(), static_cast<int>(frame.size()));
     }
+}
+
+// ---------------- E0: host-only ретрансляция actor-сообщений ----------------
+using PayloadValidator = bool (*)(const std::vector<uint8_t>&);
+
+// 0x18-0x1C принимаем только от хоста (как WorldSnapshot): сообщения от
+// не-хоста логируются и игнорируются; невалидные payload'ы дропаются;
+// валидные уходят остальным байт-в-байт.
+void RelayHostOnly(netio::Socket* sock, const std::string& name,
+                   const std::vector<uint8_t>& pay, uint8_t type,
+                   PayloadValidator validator, const char* what)
+{
+    bool senderIsHost = false;
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        auto it = g_online.find(name);
+        senderIsHost = it != g_online.end() && it->second.isHost;
+    }
+    if (!senderIsHost)
+    {
+        LogWarn("[!] " + name + ": " + what + " от не-хоста проигнорирован");
+        return;
+    }
+    if (!validator(pay))
+        return;
+    BroadcastToOthers(sock, MakeMsg(type, pay.data(), static_cast<uint32_t>(pay.size())));
 }
 
 // ---------------- Таблица состояния ----------------
@@ -1084,6 +1228,66 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                     BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::TrainSnapshot,
                                                     pay.data(), (uint32_t)pay.size()));
                 }
+                break;
+            }
+            // ---------------- E0 (v15): actor-сообщения ----------------
+            case net::Msg::ActorSpawnBatch:
+            {
+                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorSpawnBatch,
+                              IsValidActorSpawnBatch, "ActorSpawnBatch");
+                break;
+            }
+            case net::Msg::ActorFrames:
+            {
+                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorFrames,
+                              IsValidActorFrames, "ActorFrames");
+                break;
+            }
+            case net::Msg::ActorDespawn:
+            {
+                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorDespawn,
+                              IsValidActorDespawn, "ActorDespawn");
+                break;
+            }
+            case net::Msg::ActorEvent:
+            {
+                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorEvent,
+                              IsValidActorEvent, "ActorEvent");
+                break;
+            }
+            case net::Msg::ActorOutfit:
+            {
+                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorOutfit,
+                              IsValidActorOutfit, "ActorOutfit");
+                break;
+            }
+            case net::Msg::ActorResync:
+            {
+                // Запрос resync — только от гостя и только хосту (не broadcast).
+                if (!IsValidActorResync(pay))
+                    break;
+                bool senderIsHost = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    auto it = g_online.find(name);
+                    senderIsHost = it != g_online.end() && it->second.isHost;
+                    if (!senderIsHost)
+                    {
+                        const std::vector<uint8_t> msg = MakeMsg(
+                            (uint8_t)net::Msg::ActorResync,
+                            pay.data(), static_cast<uint32_t>(pay.size()));
+                        for (auto& kv : g_online)
+                        {
+                            if (kv.second.isHost && kv.second.sock)
+                            {
+                                kv.second.sock->Send(msg.data(), (int)msg.size());
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (senderIsHost)
+                    LogWarn("[!] " + name + ": ActorResync от хоста проигнорирован");
                 break;
             }
             case net::Msg::HorseOutfit:

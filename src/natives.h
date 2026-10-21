@@ -273,4 +273,12 @@ constexpr unsigned long long GET_MISSION_FLAG                 = 0xB15CD1CF58771D
 constexpr unsigned long long GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH =
     0x2C83A9DA6BFFC4F9ull;
 
+// R&D E-1 (probe): анализ ближайших human NPC — мета-наряд, сценарий,
+// тип педа. Только чтение; используются actor_sync probe (npc_debug=1).
+constexpr unsigned long long _IS_META_PED_OUTFIT_EQUIPPED     = 0x98082246107A6ACFull;
+constexpr unsigned long long IS_PED_HUMAN                     = 0xB980061DA992779Dull;
+constexpr unsigned long long IS_PED_A_PLAYER                  = 0x12534C348C6CB68Bull;
+constexpr unsigned long long GET_PED_TYPE                     = 0xFF059E1E4C01E63Cull;
+constexpr unsigned long long _GET_SCENARIO_POINT_TYPE_PED_IS_USING = 0x2D0571BB55879DA2ull;
+
 } // namespace natives

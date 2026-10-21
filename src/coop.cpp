@@ -7,6 +7,7 @@
 #include "persist.h"
 #include "world_scan.h"
 #include "world_sync.h"
+#include "actor_sync.h"
 #include "mission_catalog.h"
 #include "mission_rewards.h"
 #include "mission_barrier_rules.h"
@@ -6411,6 +6412,12 @@ void Tick()
             sh_log::Write("coop: local player revived, sent Respawned\n");
         }
     }
+
+    // R&D E0: каркас NPC actor sync (E-1 probe при npc_debug=1). При
+    // npc_actor=0 внутри немедленный return — без нативов/логов, поведение
+    // клиента не меняется. Вызов — в конце Tick до persist, без ранних return.
+    actor_sync::Tick(playerPed, s_tickCount, s_amHost.load(),
+                     coopcfg::Get().npcActor);
 
     // Persist the ped's position regularly so a returning player spawns on
     // their last known coords. Write at a low frequency to avoid hammering

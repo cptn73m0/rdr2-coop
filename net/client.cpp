@@ -166,6 +166,106 @@ bool IsSaneWorldSnapshot(const std::vector<uint8_t>& p)
     return true;
 }
 
+// ---------------- E0 (v15): actor-сообщения ----------------
+// Проверки как для FramePayload: точный размер, count<=kMaxActors,
+// epoch!=0, actorId!=0, конечные координаты.
+bool IsSaneActorSpawn(const net::ActorSpawn& a)
+{
+    return a.actorId != 0 && IsFiniteCoord(a.x) && IsFiniteCoord(a.y) &&
+           IsFiniteCoord(a.z) && IsFiniteCoord(a.heading);
+}
+
+bool IsSaneActorFrame(const net::ActorFrame& f)
+{
+    return f.actorId != 0 && IsFiniteCoord(f.x) && IsFiniteCoord(f.y) &&
+           IsFiniteCoord(f.z) && IsFiniteCoord(f.heading);
+}
+
+bool ParseActorSpawnBatch(const std::vector<uint8_t>& p, uint32_t& outEpoch,
+                          std::vector<net::ActorSpawn>& out)
+{
+    if (p.size() < sizeof(net::ActorSpawnBatchHeader)) return false;
+    net::ActorSpawnBatchHeader h{};
+    std::memcpy(&h, p.data(), sizeof(h));
+    if (h.epoch == 0 || h.count > net::kMaxActors) return false;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.count) * sizeof(net::ActorSpawn);
+    if (p.size() != need) return false;
+    const uint8_t* data = p.data() + sizeof(h);
+    out.clear();
+    out.reserve(h.count);
+    for (uint16_t i = 0; i < h.count; ++i)
+    {
+        net::ActorSpawn a{};
+        std::memcpy(&a, data + static_cast<std::size_t>(i) * sizeof(a), sizeof(a));
+        if (!IsSaneActorSpawn(a)) return false;
+        out.push_back(a);
+    }
+    outEpoch = h.epoch;
+    return true;
+}
+
+bool ParseActorFrames(const std::vector<uint8_t>& p, uint32_t& outEpoch,
+                      uint16_t& outSeq, std::vector<net::ActorFrame>& out)
+{
+    if (p.size() < sizeof(net::ActorFramesHeader)) return false;
+    net::ActorFramesHeader h{};
+    std::memcpy(&h, p.data(), sizeof(h));
+    if (h.epoch == 0 || h.count > net::kMaxActors) return false;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.count) * sizeof(net::ActorFrame);
+    if (p.size() != need) return false;
+    const uint8_t* data = p.data() + sizeof(h);
+    out.clear();
+    out.reserve(h.count);
+    for (uint16_t i = 0; i < h.count; ++i)
+    {
+        net::ActorFrame f{};
+        std::memcpy(&f, data + static_cast<std::size_t>(i) * sizeof(f), sizeof(f));
+        if (!IsSaneActorFrame(f)) return false;
+        out.push_back(f);
+    }
+    outEpoch = h.epoch;
+    outSeq = h.seq;
+    return true;
+}
+
+bool ParseActorDespawn(const std::vector<uint8_t>& p, net::ActorDespawnPayload& out)
+{
+    if (p.size() != sizeof(net::ActorDespawnPayload)) return false;
+    std::memcpy(&out, p.data(), sizeof(out));
+    return out.epoch != 0 && out.actorId != 0;
+}
+
+bool ParseActorEvent(const std::vector<uint8_t>& p, net::ActorEventPayload& out)
+{
+    if (p.size() != sizeof(net::ActorEventPayload)) return false;
+    std::memcpy(&out, p.data(), sizeof(out));
+    return out.epoch != 0 && out.actorId != 0;
+}
+
+bool ParseActorOutfit(const std::vector<uint8_t>& p, uint32_t& outEpoch,
+                      uint32_t& outActorId, net::OutfitState& out)
+{
+    if (p.size() != sizeof(net::ActorOutfitPayload)) return false;
+    net::ActorOutfitPayload msg{};
+    std::memcpy(&msg, p.data(), sizeof(msg));
+    if (msg.epoch == 0 || msg.actorId == 0) return false;
+    outEpoch = msg.epoch;
+    outActorId = msg.actorId;
+    out = msg.outfit;
+    if (out.count > static_cast<uint32_t>(net::kMaxOutfitComponents))
+        out.count = static_cast<uint32_t>(net::kMaxOutfitComponents);
+    return true;
+}
+
+bool ParseActorResync(const std::vector<uint8_t>& p, net::ActorResyncPayload& out)
+{
+    if (p.size() != sizeof(net::ActorResyncPayload)) return false;
+    std::memcpy(&out, p.data(), sizeof(out));
+    return out.epoch != 0;
+}
+
 } // namespace
 
 Client::Client() = default;
@@ -225,6 +325,12 @@ void Client::SetMissionBarrier(OnMissionBarrier cb) { onMissionBarrier_ = std::m
 void Client::SetTrainSnapshot(OnTrainSnapshot cb) { onTrainSnapshot_ = std::move(cb); }
 void Client::SetConnectionLost(OnConnectionLost cb) { onConnectionLost_ = std::move(cb); }
 void Client::SetHostChanged(OnHostChanged cb) { onHostChanged_ = std::move(cb); }
+void Client::SetActorSpawnBatch(OnActorSpawnBatch cb) { onActorSpawnBatch_ = std::move(cb); }
+void Client::SetActorFrames(OnActorFrames cb) { onActorFrames_ = std::move(cb); }
+void Client::SetActorDespawn(OnActorDespawn cb) { onActorDespawn_ = std::move(cb); }
+void Client::SetActorEvent(OnActorEvent cb) { onActorEvent_ = std::move(cb); }
+void Client::SetActorOutfit(OnActorOutfit cb) { onActorOutfit_ = std::move(cb); }
+void Client::SetActorResyncRequest(OnActorResyncRequest cb) { onActorResyncRequest_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -359,6 +465,76 @@ void Client::SendTrainSnapshot(const std::vector<uint8_t>& payload)
         (uint8_t)net::Msg::TrainSnapshot,
         payload.data(), (uint32_t)payload.size());
     SendRaw(frame);
+}
+
+void Client::SendActorSpawnBatch(uint32_t epoch, const std::vector<net::ActorSpawn>& actors)
+{
+    uint16_t count = static_cast<uint16_t>(actors.size());
+    if (count > static_cast<uint16_t>(net::kMaxActors))
+        count = static_cast<uint16_t>(net::kMaxActors);
+    std::vector<uint8_t> pay(sizeof(net::ActorSpawnBatchHeader) +
+                             static_cast<std::size_t>(count) * sizeof(net::ActorSpawn));
+    net::ActorSpawnBatchHeader h{};
+    h.epoch = epoch;
+    h.count = count;
+    std::memcpy(pay.data(), &h, sizeof(h));
+    for (uint16_t i = 0; i < count; ++i)
+    {
+        std::memcpy(pay.data() + sizeof(h) +
+                        static_cast<std::size_t>(i) * sizeof(net::ActorSpawn),
+                    &actors[i], sizeof(net::ActorSpawn));
+    }
+    SendRaw(MakeFrame((uint8_t)net::Msg::ActorSpawnBatch,
+                      pay.data(), static_cast<uint32_t>(pay.size())));
+}
+
+void Client::SendActorFrames(uint32_t epoch, uint16_t seq,
+                             const std::vector<net::ActorFrame>& frames)
+{
+    uint16_t count = static_cast<uint16_t>(frames.size());
+    if (count > static_cast<uint16_t>(net::kMaxActors))
+        count = static_cast<uint16_t>(net::kMaxActors);
+    std::vector<uint8_t> pay(sizeof(net::ActorFramesHeader) +
+                             static_cast<std::size_t>(count) * sizeof(net::ActorFrame));
+    net::ActorFramesHeader h{};
+    h.epoch = epoch;
+    h.seq = seq;
+    h.count = count;
+    std::memcpy(pay.data(), &h, sizeof(h));
+    for (uint16_t i = 0; i < count; ++i)
+    {
+        std::memcpy(pay.data() + sizeof(h) +
+                        static_cast<std::size_t>(i) * sizeof(net::ActorFrame),
+                    &frames[i], sizeof(net::ActorFrame));
+    }
+    SendRaw(MakeFrame((uint8_t)net::Msg::ActorFrames,
+                      pay.data(), static_cast<uint32_t>(pay.size())));
+}
+
+void Client::SendActorDespawn(const net::ActorDespawnPayload& msg)
+{
+    SendRaw(MakeFrame((uint8_t)net::Msg::ActorDespawn,
+                      reinterpret_cast<const uint8_t*>(&msg),
+                      static_cast<uint32_t>(sizeof(msg))));
+}
+
+void Client::SendActorEvent(const net::ActorEventPayload& ev)
+{
+    SendRaw(MakeFrame((uint8_t)net::Msg::ActorEvent,
+                      reinterpret_cast<const uint8_t*>(&ev),
+                      static_cast<uint32_t>(sizeof(ev))));
+}
+
+void Client::SendActorOutfit(uint32_t epoch, uint32_t actorId,
+                             const net::OutfitState& outfit)
+{
+    net::ActorOutfitPayload msg{};
+    msg.epoch = epoch;
+    msg.actorId = actorId;
+    msg.outfit = outfit;
+    SendRaw(MakeFrame((uint8_t)net::Msg::ActorOutfit,
+                      reinterpret_cast<const uint8_t*>(&msg),
+                      static_cast<uint32_t>(sizeof(msg))));
 }
 
 void Client::SendShot(const net::ShotPayload& sp)
@@ -697,6 +873,53 @@ bool Client::RunOnce()
             {
                 // Сырой payload: проверку размера/carCount делает world_sync.
                 if (onTrainSnapshot_) onTrainSnapshot_(p);
+                break;
+            }
+            // ---------------- E0 (v15): actor-сообщения ----------------
+            case net::Msg::ActorSpawnBatch:
+            {
+                uint32_t epoch = 0;
+                std::vector<net::ActorSpawn> actors;
+                if (ParseActorSpawnBatch(p, epoch, actors) && onActorSpawnBatch_)
+                    onActorSpawnBatch_(epoch, actors);
+                break;
+            }
+            case net::Msg::ActorFrames:
+            {
+                uint32_t epoch = 0;
+                uint16_t seq = 0;
+                std::vector<net::ActorFrame> frames;
+                if (ParseActorFrames(p, epoch, seq, frames) && onActorFrames_)
+                    onActorFrames_(epoch, seq, frames);
+                break;
+            }
+            case net::Msg::ActorDespawn:
+            {
+                net::ActorDespawnPayload msg{};
+                if (ParseActorDespawn(p, msg) && onActorDespawn_)
+                    onActorDespawn_(msg);
+                break;
+            }
+            case net::Msg::ActorEvent:
+            {
+                net::ActorEventPayload ev{};
+                if (ParseActorEvent(p, ev) && onActorEvent_)
+                    onActorEvent_(ev);
+                break;
+            }
+            case net::Msg::ActorOutfit:
+            {
+                uint32_t epoch = 0, actorId = 0;
+                net::OutfitState outfit{};
+                if (ParseActorOutfit(p, epoch, actorId, outfit) && onActorOutfit_)
+                    onActorOutfit_(epoch, actorId, outfit);
+                break;
+            }
+            case net::Msg::ActorResync:
+            {
+                net::ActorResyncPayload req{};
+                if (ParseActorResync(p, req) && onActorResyncRequest_)
+                    onActorResyncRequest_(req);
                 break;
             }
             case net::Msg::PlayerJoined:

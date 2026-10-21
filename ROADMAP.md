@@ -5,10 +5,11 @@
 
 **Актуально на:** 21.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** v14 (`OutfitState` 784 B: components + wearable states).
-Рабочая база: пед-призрак игрока, лошадь, одежда из shop-предметов, выстрелы,
-время/погода; синхронизация wearable states реализована и **проверяется в игре**;
-экспериментальные флаги 0.
+**Текущий протокол:** v15 (E0: каркас actor-сообщений для NPC-репликации;
+`kMaxActors=12`, 0x18–0x1D). Рабочая база/игровой стабильный тег — **stable-v14**
+(пед-призрак, лошадь, одежда shop+wearable, выстрелы, время/погода).
+Синхронизация wearable states реализована и проверяется в игре; **репликация
+NPC не включена** (`npc_actor=0`, реализация по этапам E1–E4).
 
 ---
 
@@ -33,7 +34,7 @@
 - [x] Спавн повторного игрока на сохранённой позиции
 - [x] Обработка дисконнекта: удаление педа и метки
 - [x] Явные роли HOST/GUEST, лимит 2 игрока, `JoinRejected`
-- [x] Версия протокола в JOIN (v14), отказ при несовпадении
+- [x] Версия протокола в JOIN (v15), отказ при несовпадении
 
 ## Фаза 3 — Сеть — готово (база)
 
@@ -62,6 +63,26 @@
 - [ ] Верховая стрельба/сложные mounted-анимации
 
 ## Фаза 5 — P1: репликация мира/NPC
+
+### NPC-репликация v15 — статус «E0 каркас, реализация по этапам»
+- [x] E0: протокол v15 `actor`-сообщения 0x18–0x1D (spawn/frames/despawn/
+      event/outfit/resync), `kMaxActors=12`, static_assert размеров
+- [x] E0: серверный host-only relay + валидация (exact size, count≤12,
+      epoch/actorId!=0, finite coords), resync guest→host only
+- [x] E0: integration-тесты v15 (host-only, размеры/лимиты, epoch/actorId,
+      NaN/Inf, resync-направление, gating `actor:`=0); активируются при PROTO≥15
+- [x] E0: серверная проверка duplicate actorId + зелёный полный actor-suite
+      (27/27 integration на build-server-ci)
+- [ ] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (в работе)
+- [ ] E1: discovery/router (radius 60 м, cap 12, стабильные actorId), lifecycle
+      spawn/despawn/resync/timeout, интерполяция/lead, `npc_actor=1`
+- [ ] E2: анимации/сценарии/mounted/бой/смерть NPC
+- [ ] E3: outfit/meta-outfit/wearable «неотличимость» внешности NPC
+- [ ] E4: resync/reconnect/host migration, бюджет Tick p95, FPS-метрики,
+      игровой чек-лист «неотличимости»
+- [ ] Игровая приёмка: не включать `npc_actor` до E1-гейта (headless-тесты +
+      метрики p95/tick/FPS), известные ограничения — лицо/волосы, точные
+      анимации, катсцены
 
 - [x] `WorldSnapshot` (0x10), хост-авторитет
 - [x] Сканер NPC 60 м, до 64 сущностей (32 Ped + 16 Vehicle + 16 Object),

@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "net/frame.h"
 #include "net/protocol.h"
@@ -74,6 +75,17 @@ public:
     using OnConnectionLost = std::function<void()>;
     // Сервер сменил роль (host migration).
     using OnHostChanged = std::function<void(bool isHost)>;
+    // E0 (v15): actor-репликация. Типизированные колбэки для приёма:
+    // 0x18-0x1C приходят только от хоста (через сервер), 0x1D — хосту от гостя.
+    using OnActorSpawnBatch = std::function<void(
+        uint32_t epoch, const std::vector<net::ActorSpawn>& actors)>;
+    using OnActorFrames = std::function<void(
+        uint32_t epoch, uint16_t seq, const std::vector<net::ActorFrame>& frames)>;
+    using OnActorDespawn = std::function<void(const net::ActorDespawnPayload&)>;
+    using OnActorEvent = std::function<void(const net::ActorEventPayload&)>;
+    using OnActorOutfit = std::function<void(
+        uint32_t epoch, uint32_t actorId, const net::OutfitState& outfit)>;
+    using OnActorResyncRequest = std::function<void(const net::ActorResyncPayload&)>;
 
     Client();
     ~Client();
@@ -108,6 +120,14 @@ public:
     void SendMissionBarrier(const net::MissionBarrierPayload& event);
     // R&D: отправить TrainSnapshot (только хост).
     void SendTrainSnapshot(const std::vector<uint8_t>& payload);
+    // E0 (v15): отправка actor-сообщений (хост). ActorResync — гостевая
+    // заявка, её шлёт игровой слой через отдельный API (пока не используется).
+    void SendActorSpawnBatch(uint32_t epoch, const std::vector<net::ActorSpawn>& actors);
+    void SendActorFrames(uint32_t epoch, uint16_t seq,
+                         const std::vector<net::ActorFrame>& frames);
+    void SendActorDespawn(const net::ActorDespawnPayload& msg);
+    void SendActorEvent(const net::ActorEventPayload& ev);
+    void SendActorOutfit(uint32_t epoch, uint32_t actorId, const net::OutfitState& outfit);
     // Текущее состояние роли по мнению сервера (обновляется HostChanged).
     bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
@@ -133,6 +153,13 @@ public:
     void SetTrainSnapshot(OnTrainSnapshot cb);
     void SetConnectionLost(OnConnectionLost cb);
     void SetHostChanged(OnHostChanged cb);
+    // E0 (v15): actor-сообщения.
+    void SetActorSpawnBatch(OnActorSpawnBatch cb);
+    void SetActorFrames(OnActorFrames cb);
+    void SetActorDespawn(OnActorDespawn cb);
+    void SetActorEvent(OnActorEvent cb);
+    void SetActorOutfit(OnActorOutfit cb);
+    void SetActorResyncRequest(OnActorResyncRequest cb);
 
     ClientState State() const;
 
@@ -182,6 +209,12 @@ private:
     OnTrainSnapshot onTrainSnapshot_;
     OnConnectionLost onConnectionLost_;
     OnHostChanged onHostChanged_;
+    OnActorSpawnBatch onActorSpawnBatch_;
+    OnActorFrames onActorFrames_;
+    OnActorDespawn onActorDespawn_;
+    OnActorEvent onActorEvent_;
+    OnActorOutfit onActorOutfit_;
+    OnActorResyncRequest onActorResyncRequest_;
     std::atomic<bool> joined_{false};
     std::atomic<bool> isHost_{false};
     std::atomic<uint32_t> rttMs_{0};
