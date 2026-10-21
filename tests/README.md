@@ -27,11 +27,11 @@ actor-сообщения (spawn/frames/despawn/event/outfit/resync) — когд
 wearable[96] u32). Если размер в `net/protocol.h` изменится, тест упадёт и
 потребует осознанного обновления тестов/документации под новую версию.
 
-Для протокола v15 (E0) при наличии `Actor*`-сообщений в header также
+Для протокола v15 (E0/E1) при наличии `Actor*`-сообщений в header также
 пинятся: `kMaxActors=12`, `ActorSpawn=64 B`, `ActorFrame=32 B`,
 `ActorSpawnBatch≤776 B`, `ActorFrames≤392 B`, `ActorDespawn/ActorResync=12 B`,
-`ActorEvent=32 B`, `ActorOutfit=792 B`; ID 0x18–0x1D. Пока header v14,
-actor-тесты скипаются с `[skip]` и не валят базовый suite.
+`ActorEvent=32 B`, `ActorOutfit=792 B`; ID 0x18–0x1D. Если header откатить
+на v14, actor-тесты скипаются с `[skip]` и не валят базовый suite.
 
 ## Запуск
 
@@ -81,8 +81,31 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_actor_despawn_event_outfit` | 0x1A/0x1B/0x1C: exact 12/32/792 B, relay byte-identical, short/long drop, guest→host blocked |
 | `test_actor_resync_direction` | 0x1D: guest→host relay only to host; host→guest blocked; short/long/epoch=0 drop |
 | `test_actor_validation_drops` | epoch=0, actorId=0, non-finite/absurd coords, unknown type drop (0x18–0x1C) |
-| `test_actor_duplicate_actor_ids` | duplicate actorId в spawn/frames-батче → батч дропается (ожидает серверной проверки уникальности) |
-| `test_actor_gating_no_actor_log` | обычная сессия без actor-сообщений → в `server_console.log` **0 строк `actor:`** |
+| `test_actor_duplicate_actor_ids` | duplicate actorId в spawn/frames-батче → сервер дропает батч целиком (O(count²), лог не пишется) |
+| `test_actor_gating_no_actor_log` | обычная сессия без actor-сообщений → в `server_console.log` **0 строк `actor:`** (серверный gating) |
+
+### E1 (actor_sync, клиент) — in-game проверка
+
+E1 добавляет клиентскую репликацию human-NPC: discovery/roster, proxies,
+жизненный цикл spawn→frames→despawn, интерполяция. Wire/relay/валидация
+по-прежнему покрыты actor-тестами E0 выше (27/27 автоматических сценариев);
+сама клиентская логика требует игры и проверяется по чек-листу
+[`docs/NPC_E1_TESTING.md`](../docs/NPC_E1_TESTING.md).
+
+- E1 использует **0x18** `ActorSpawnBatch` (спавн + heartbeat), **0x19**
+  `ActorFrames` (10 Гц), **0x1A** `ActorDespawn` (reason 1 gone / 2 dead /
+  3 evicted); 0x1B/0x1C принимаются, но в E1 не применяются; 0x1D resync
+  реализован (Client::SendActorResync, троттлинг ≤1/с, лог
+  `actor: resync request`; хост отвечает повторным roster через 0x18).
+- Флаги: `npc_actor=1` (default 0), `npc_cap` (1..12, default 8),
+  `npc_radius` (20..100, default 60), `npc_debug=1` для `probe:`-логов.
+- `test_actor_gating_no_actor_log` — **серверный** тест (mock-клиенты никогда не
+  шлют actor-сообщения), поэтому E1 его не ломает. Клиентский gating
+  (`npc_actor=0` → 0 строк `actor:`/`probe:` в `rdr2-coop.log`) проверяется
+  вручную в S0/S9 чек-листа E1.
+- Метрики/пороги E1 (`actor: spawn/despawn/snapshot/proxies/appliedFrames/timeouts`,
+  spawn p95 ≤300 мс, despawn ≤1 с, timeout ≤0.5%, teleports 0 в steady) —
+  см. `docs/NPC_E1_TESTING.md` §2.
 
 ## C++ headless-тесты (сеть)
 
@@ -136,4 +159,5 @@ Actions; fallback на старые `build-server-v10/v12` удалён.
   pre-JOIN limit (8 сокетов). Тест проверяет, что cap остаётся
   defense-in-depth выше достижимого числа сокетов и не срабатывает раньше
   pre-JOIN лимита.
-- Для игровых проверок см. `docs/TESTING.md` (два ПК).
+- Для игровых проверок см. `docs/TESTING.md` (два ПК); E1 NPC-акторы —
+  `docs/NPC_E1_TESTING.md` (S0–S9, метрики `actor:`, откат).

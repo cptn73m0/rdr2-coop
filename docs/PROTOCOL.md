@@ -5,10 +5,11 @@
 - `net::kProtocolVersion = 15` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение
   (`JoinRejected.VersionMismatch`); клиенты v14 и v15 несовместимы.
-- v15 (E0): actor-сообщения NPC-репликации — `ActorSpawnBatch` (0x18),
+- v15 (E0/E1): actor-сообщения NPC-репликации — `ActorSpawnBatch` (0x18),
   `ActorFrames` (0x19), `ActorDespawn` (0x1A), `ActorEvent` (0x1B),
-  `ActorOutfit` (0x1C), `ActorResync` (0x1D). Пока каркас протокола/сервера:
-  клиентская репликация NPC ещё не реализована, `npc_actor=0` по умолчанию.
+  `ActorOutfit` (0x1C), `ActorResync` (0x1D). E0 — каркас/relay/валидация;
+  E1 — клиентская репликация human-NPC (реализована, в игре ещё не проверена);
+  `npc_actor=0` по умолчанию.
 - v14: `OutfitState` расширен до **784 байт** — добавлен `wearable[96]` (u32)
   для wearable states одежды (открытая/закрытая куртка, рукава и т.п.).
 - v13: TrainSnapshot (0x17) — R&D: engine/direction/speed + вагоны по порядку.
@@ -239,13 +240,15 @@ payload: TrainSnapshotHeader (16 B)
 перетирает привязанные вагоны; при удалении локомотива вагоны отцепляются.
 Это экспериментально и требует игровой проверки.
 
-## E0 (v15): ACTOR-СООБЩЕНИЯ (NPC-репликация, каркас)
+## E0/E1 (v15): ACTOR-СООБЩЕНИЯ (NPC-репликация)
 
-E0 — этап каркаса: протокол, серверный relay/валидация и headless-тесты.
-Клиентская репликация NPC (discovery/спавн/движение/анимации) появится в
-E1+, флаг `npc_actor` по умолчанию **0**; в игре не проверялось.
-Все структуры — little-endian, фиксированы `static_assert` в `net/protocol.h`.
-`kMaxActors = 12`.
+E0 — каркас: протокол, серверный relay/валидация и headless-тесты.
+E1 (реализовано, в игре ещё не проверено) — клиентская репликация human-NPC:
+хост-дискавери, spawn/frames/despawn, прокси и интерполяция. Флаг `npc_actor`
+по умолчанию **0**; при выключенном флаге не должно быть ни одного
+`actor:`-лога. Все структуры little-endian, фиксированы `static_assert` в
+`net/protocol.h`. `kMaxActors = 12`; в E1 `npc_cap` 1..12 (default 8),
+`npc_radius` 20..100 м (default 60), despawn-гистерезис +10 м.
 
 Правила сервера:
 - **0x18–0x1C принимаются только от хоста** (как WorldSnapshot): от гостя —
@@ -275,6 +278,8 @@ ActorSpawn (64 B):
   health:u8  moveStyle:u8  phase:u8  pad:u8
   vx,vy,vz:i16  pad2:u16  reserved:u32  reserved2:u32
 ```
+- E1: хост шлёт батч на новые спавны и heartbeat (~2.5 с,
+  `kSpawnHeartbeatTicks=150`), чтобы гость/join/resync получили roster.
 ### 0x19 ACTOR_FRAMES (хост → сервер → гость)
 ```
 payload: ActorFramesHeader (8 B) + count * ActorFrame (32 B)
@@ -289,6 +294,8 @@ ActorFrame (32 B):
 ```
 epoch:u32  actorId:u32  reason:u8  pad[3]
 ```
+- E1: reason 1 = ушёл (>70 м)/таймаут, 2 = умер, 3 = вытеснен
+  (cap/смена модели); хост шлёт не чаще 1 сообщения за тик.
 ### 0x1B ACTOR_EVENT (хост → сервер → гость, 32 B)
 ```
 epoch:u32  actorId:u32  type:u8  flags:u8  pad:u16
@@ -298,13 +305,35 @@ a:u32  b:u32  x:u32  y:u32  z:u32   // формат полей задаёт иг
 ```
 epoch:u32  actorId:u32  + OutfitState (784 B; см. 0x09)
 ```
+- E1: 0x1B ActorEvent и 0x1C ActorOutfit **принимаются**, но пока не
+  применяются (только счётчики в inbox); визуальный эффект — вне E1.
 ### 0x1D ACTOR_RESYNC (гость → сервер → хосту, 12 B)
 ```
 epoch:u32  lastSeq:u32  reason:u8  pad[3]
 ```
 - Назначение: гость сообщает хосту, что потерял поток кадров (epoch/seq) и
   просит resync; сервер пересылает запрос только текущему хосту.
-- E0 не реализует обработку на хосте/госте — только транспорт и контракт.
+- E1: реализовано: `Client::SendActorResync` + `coop::SendActorResync`
+  (троттлинг ≤1 запроса/с, лог `actor: resync request epoch=… seq=… reason=…`);
+  хост обрабатывает запрос через `OnActorResyncRequest` и на следующем
+  discovery-тике шлёт полный spawn-batch (0x18) вместо ожидания heartbeat.
+
+### E1 (actor_sync, v15) — текущая реализация
+- Использует **0x18** (`ActorSpawnBatch`: спавн + heartbeat), **0x19**
+  (`ActorFrames` 10 Гц), **0x1A** (`ActorDespawn`: reasons 1/2/3).
+- Хост: discovery 10 Гц (каждые 6 тиков) по human NPC рядом с обоими игроками,
+  стабильные `actorId` в рамках epoch, cap `npc_cap`, радиус `npc_radius`
+  (keep +10 м), mission NPC исключены, мёртвые не спавнятся; кадры отправляются
+  всему roster 10 Гц.
+- Гость: inbox под mutex, прокси-педы (CREATE_PED, mission, no-collision),
+  request model ≤2/тик, create/delete ≤2/тик, интерполяция по навмешу
+  (snap при >12 м/|dz|>8), resync после 2 с без кадров (0x1D, ≤1 запроса/с),
+  удаление прокси после 10 с; смена epoch/leave/reconnect/host migration →
+  сброс и новые прокси; на resync хост повторно шлёт roster (0x18).
+- При `npc_actor=0`: `actor_sync::Tick` и callbacks ничего не делают и не
+  пишут `actor:`/`probe:` (gating), сервер при этом не получает actor-сообщений.
+- Статус: реализовано, **в игре не проверено**; чек-лист/метрики —
+  `docs/NPC_E1_TESTING.md`.
 
 ### Reconnect (клиент)
 
@@ -321,7 +350,7 @@ epoch:u32  lastSeq:u32  reason:u8  pad[3]
 - Этот раздел описывает актуальные для стабильной сборки изменения (Spike 1/P1/P2/P3);
   базовые разделы ниже сохранены как историческая спецификация Spike 1, но
   ключевые форматы (JOIN/JOIN_OK, FRAME 88 B, OUTFIT 784 B) обновлены под
-  v14/v15 (v15 добавляет actor-сообщения E0, см. раздел выше).
+  v14/v15 (v15: actor-сообщения E0/E1, см. раздел выше).
 
 Сетевой стек поверх **сервера-релея**. Один сервер, несколько клиентов
 (ASI-плагинов). Клиент периодически шлёт свой `GhostFrame`, сервер

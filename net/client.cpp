@@ -537,6 +537,21 @@ void Client::SendActorOutfit(uint32_t epoch, uint32_t actorId,
                       static_cast<uint32_t>(sizeof(msg))));
 }
 
+bool Client::SendActorResync(uint32_t epoch, uint32_t lastSeq, uint8_t reason)
+{
+    // 0x1D — гость -> сервер -> хосту (сервер релеит только хосту). До JOIN_OK
+    // не отправляем; SendRaw сам проверяет joined_/живость сокета и
+    // потокобезопасно берёт текущее соединение (null/Closed -> false).
+    if (!joined_.load()) return false;
+    net::ActorResyncPayload msg{};
+    msg.epoch = epoch;
+    msg.lastSeq = lastSeq;
+    msg.reason = reason;
+    return SendRaw(MakeFrame((uint8_t)net::Msg::ActorResync,
+                             reinterpret_cast<const uint8_t*>(&msg),
+                             static_cast<uint32_t>(sizeof(msg))));
+}
+
 void Client::SendShot(const net::ShotPayload& sp)
 {
     std::vector<uint8_t> pay(reinterpret_cast<const uint8_t*>(&sp),

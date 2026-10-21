@@ -1,16 +1,18 @@
-# E-1: probe-контракт и чек-лист анализа NPC (read-only)
+# E-1: probe-контракт, анализатор и результаты реального прогона NPC
 
-**Статус:** E-1 (research/gate) — контракт лога, анализатор, чек-лист. Код
-probe-режима реализует `client-review` (task-34) в `src/actor_sync.*` +
-`src/config.*` + `src/natives.h`. Этот документ фиксирует контракт и порядок
-проверки; визуальную репликацию NPC он **не** включает.
+**Статус:** E-1 закрыт по данным: probe-прогон хоста 21.10.2026 ~23:00
+(лог 157 МБ, 2 612 896 строк, 837 `probe:`-строк: 49 записей NPC + 788
+scan-окон), анализатор и тесты обновлены. Итоги — §8, рекомендации E1/E2 —
+§8.4/§10. Визуальную репликацию NPC этот документ **не** включает.
 
 **Связанные файлы/задачи:**
 `docs/TESTING.md` (двух-ПК прогоны), `docs/PROTOCOL.md` (v14 → v15),
 `research/rdr2-existing-coop-mods.md`, `third_party/rdr3-discoveries/`
-(данные по метапедам/сценариям/relationship), `third_party/rdr2-hashdb/Peds.json`
-(имена моделей). Прошлый research-отчёт по матрице реализуемости NPC отправлен
-Lead отдельно; этот документ — его E-1-срез.
+(метапеды/сценарии/relationship), `third_party/rdr2-hashdb/Peds.json`
+(имена моделей), `src/actor_sync.cpp` (probe), `tests/npc_probe_analyze.py`
+(анализатор), `tests/test_npc_probe_analyze.py` (25 тестов). Прошлый
+research-отчёт по матрице реализуемости NPC отправлен Lead отдельно; этот
+документ — его E-1-срез.
 
 **Цель E-1 (на что отвечаем до кода E1):**
 1. Читается ли у NPC текущий meta outfit hash (`metaOutfit != 0`) или нужен
@@ -18,13 +20,13 @@ Lead отдельно; этот документ — его E-1-срез.
 2. Согласуется ли `_IS_META_PED_OUTFIT_EQUIPPED` (`equipped`) с найденным хэшем.
 3. Что реально приходит в `dynScenario`/`pointType` для сценарных NPC и
    достаточна ли детекция (полная/частичная/нулевая).
-4. Наблюдаема ли доля human vs animal в пуле (и не фильтрует ли probe только
-   людей — это меняет план E1/E2).
+4. Наблюдаема ли доля human vs animal в пуле (и как она зависит от локации).
 5. Есть ли в пробе кони/оружие (для приоритета mount/combat-репликации).
 
-**Ничего не собирать и не запускать игру для E-1-документа.** Для самого
-probe-прогона нужен собранный `.asi` с probe-режимом (его готовит
-`client-review`), игра запускается пользователем/Lead по чек-листу ниже.
+**Ответы по данным §8:** H1 = PARTIAL (22.4% outfit hash), H2 = PASS (100%),
+H3 = PASS (100% через pointType), H4 = PASS (pool counters: human 44.6% /
+animal 55.4%, сильно зависит от локации), H5 = INFO (mount 10.2%, armed 10.2%),
+H6 = PASS (0/25 несовпадений human vs имя модели).
 
 ---
 
@@ -39,23 +41,23 @@ probe-прогона нужен собранный `.asi` с probe-режимо�
    npc_debug = 1
    ```
 
-   - `npc_actor = 1` включает фасад `actor_sync`; в E0 это **только probe** и
-     заглушки (сетевых сообщений/спавна нет), поэтому probe-прогон остаётся
-     read-only.
+   - `npc_actor = 1` включает фасад `actor_sync`; в E0/E1-начале это **только
+     probe** и заглушки (сетевых сообщений/спавна ещё нет), поэтому
+     probe-прогон остаётся read-only.
    - `npc_debug = 1` включает сам probe (чтение мира + лог `probe:`).
-   - **Важно — расхождение с постановкой E-1:** в текущей реализации task-34
-     probe гейтится `npc_actor=1` (`src/actor_sync.cpp:289-302`), поэтому
+   - **Гейт (факт):** в текущей реализации task-34/38 probe выполняется только
+     при `npc_actor=1` (`src/actor_sync.cpp`, `Tick` → `if (!enabled) return`);
      `npc_actor=0` даёт **ноль** `probe:`-строк. Постановка Lead предполагала
-     `npc_debug=1, npc_actor=0` (probe без actor-пайплайна). До мержа
-     `client-review` прогон делается с `npc_actor=1` (E0-заглушка поведение не
-     меняет); после мержа проверить, развязан ли probe от `npc_actor`, и
-     зафиксировать окончательный вариант в этом разделе. Решение — за Lead.
+     `npc_debug=1, npc_actor=0`; расхождение зафиксировано, решение — за Lead
+     (развязать probe от `npc_actor` или оставить как есть).
    - `npc_debug = 0` (default) или `npc_actor = 0` — **ноль** строк `probe:`
      и ноль новых нативов.
    - `world_sync = 0` (и прочие experimental-флаги = 0) — чтобы лог был чистым.
-   - Текущий probe фильтрует **только людей** (`!IsHuman`), исключает мёртвых,
-     педов-игроков и локальную лошадь: животные/кони в `probe:` не появятся
-     (см. H4/§5); это ограничение task-34, а не контракта.
+   - **Per-ped строки human-only:** probe логирует top-20 **живых людей**
+     (`!IsHuman`/dead отсекаются), животные в per-ped `probe: model=…` не
+     попадают. Но summary-строка скана (task-38) содержит счётчики
+     `humans=/animals=/total=` по **всем** педам в радиусе до human-фильтра —
+     именно они дают pool-долю human/animal (H4).
 3. Запустить RDR2, загрузить сейв хоста, встать в выбранной локации (см. §4)
    и дать probe поработать **2–3 минуты**.
 4. Закрыть игру, скопировать `rdr2-coop.log` (рядом с `.asi`, на тестовой
@@ -88,16 +90,16 @@ probe: model=0x… metaOutfit=0x… equipped=N mount=0x… weapon=0x… scenario
 | Поле | Формат | Натив (hash, arity) | Смысл | Ожидаемо |
 |---|---|---|---|---|
 | `model` | `0x%X` | `GET_ENTITY_MODEL` `0xDA76A9F39210D365`(1) [nh] | модель педа | известные модели из `Peds.json`; `?`/unknown — модель отсутствует в hashdb |
-| `metaOutfit` | `0x%X` | `_GET_PED_META_OUTFIT_HASH` `0x30569F348D126A5A`(1) [nh] | текущий мета-наряд | **главная гипотеза H1**: у NPC ≠ 0; у педов игрока = 0 (проверено в репо) |
-| `equipped` | `0 / 1` | `_IS_META_PED_OUTFIT_EQUIPPED(ped, metaOutfit)` `0x98082246107A6ACF`(2) [nd] | «наряд считается надетым» | `1` при `metaOutfit != 0` (H2); если всегда 0 — проверить арность/семантику |
-| `mount` | `0x…` (0 = пешком) | `GET_MOUNT` `0xE7E11B8DCBED1058`(1) [nh]; канон — **model hash лошади** `GET_ENTITY_MODEL(GET_MOUNT(ped))` | на чём едет | ≠0 только у всадников; в пробе у дороги/ранчо должно быть заметно |
-| `weapon` | `0x…` (0 = без оружия) | `GET_CURRENT_PED_WEAPON` `0x3A87E44BB9A01D54`(5) [nh] (out-hash) или `_GET_PED_CURRENT_HELD_WEAPON` `0x8425C5F057012DAB`(1) [nh] | оружие в руках/выбранное | ≠0 у бандитов/закона/охотников; у мирян чаще 0 |
-| `scenarioAny` | `0 / 1` | `IS_PED_USING_ANY_SCENARIO` `0x57AB4A3080F85143`(1) [nh] | пед вообще в сценарии | 1 у сидящих/курящих/работающих; 0 у идущих/стоящих/в бою |
-| `dynScenario` | `0x%X` | `_GET_ACTIVE_DYNAMIC_SCENARIO` `0x569F1E1237508DEB`(1) [nh] | динамический сценарий | комментарий nativedb: **только kneel/sit/squat/sleep**; у остальных сценариев может быть 0 (H3) |
-| `pointType` | `0x%X` | `_GET_SCENARIO_POINT_TYPE_PED_IS_USING` `0x2D0571BB55879DA2`(1) [nd] | тип scenario point, который использует пед | ≠0 у педов на сценарных точках (стоячие сценарии, работа, охрана) — второй канал H3 |
-| `pedType` | `N` | `GET_PED_TYPE` `0xFF059E1E4C01E63C`(1) [nd] | ePedType (значения уточняются) | распределение в логе; human=1 должен коррелировать с людьми |
-| `human` | `0 / 1` | `IS_PED_HUMAN` `0xB980061DA992779D`(1) [nd] | человек/животное | 1 — люди, 0 — животные/кони (H4, H6) |
-| `mission` | `0 / 1` | `IS_ENTITY_A_MISSION_ENTITY` `0x138190F64DB4BBD1`(1) [nh] | mission-entity | 0 у ambient; 1 у миссионных акторов (их в E1 не реплицируем) |
+| `metaOutfit` | `0x%X` | `_GET_PED_META_OUTFIT_HASH` `0x30569F348D126A5A`(1) [nh] | текущий мета-наряд | у NPC бывает ≠ 0, но не всегда: в прогоне 23:00 — 11/49 (22.4%), H1 = PARTIAL |
+| `equipped` | `0 / 1` | `_IS_META_PED_OUTFIT_EQUIPPED(ped, metaOutfit)` `0x98082246107A6ACF`(2) [nd] | «наряд считается надетым» | `1` при `metaOutfit != 0` (H2); в прогоне 11/11 = 100% |
+| `mount` | `0x…` (0 = пешком) | `GET_MOUNT` `0xE7E11B8DCBED1058`(1) [nh]; канон — **model hash лошади** `GET_ENTITY_MODEL(GET_MOUNT(ped))` | на чём едет | ≠0 только у всадников; в городе 5/49 = 10.2% |
+| `weapon` | `0x…` | `GET_CURRENT_PED_WEAPON` `0x3A87E44BB9A01D54`(5) [nh] (out-hash) | оружие в руках/выбранное | **0xA2719263 = WEAPON_UNARMED — это «без оружия»**, не armed; в прогоне: raw ≠0 75.5%, из них Unarmed 32/49 (65.3%), armed 5/49 (10.2%) |
+| `scenarioAny` | `0 / 1` | `IS_PED_USING_ANY_SCENARIO` `0x57AB4A3080F85143`(1) [nh] | пед вообще в сценарии | 1 у сидящих/курящих/работающих; в прогоне 26/49 |
+| `dynScenario` | `0x%X` | `_GET_ACTIVE_DYNAMIC_SCENARIO` `0x569F1E1237508DEB`(1) [nh] | динамический сценарий | комментарий nativedb: **только kneel/sit/squat/sleep**; в прогоне 24/26 сценариев (92.3%) |
+| `pointType` | `0x%X` | `_GET_SCENARIO_POINT_TYPE_PED_IS_USING` `0x2D0571BB55879DA2`(1) [nd] | тип scenario point, который использует пед | ≠0 у педов на сценарных точках; в прогоне **26/26 (100%)** — основной канал H3 |
+| `pedType` | `N` | `GET_PED_TYPE` `0xFF059E1E4C01E63C`(1) [nd] | ePedType | в прогоне только 4 (42) и 5 (7); **гипотеза: 4 = human male, 5 = human female** (25/25 известных моделей сошлись, 24 unknown) |
+| `human` | `0 / 1` | `IS_PED_HUMAN` `0xB980061DA992779D`(1) [nd] | человек/животное | 1 — люди; per-ped записи human-only, поэтому 1 у всех 49 |
+| `mission` | `0 / 1` | `IS_ENTITY_A_MISSION_ENTITY` `0x138190F64DB4BBD1`(1) [nh] | mission-entity | 0 у ambient; в прогоне 14/49 (28.6%) — миссионные акторы |
 
 Пометки: `[nh]` — хэш уже есть в `src/natives.h` и проверен в проекте;
 `[nd]` — из `third_party/rdr2-runtime-scripthook/.../NativeDecl.cs` /
@@ -108,38 +110,34 @@ probe: model=0x… metaOutfit=0x… equipped=N mount=0x… weapon=0x… scenario
 `0x12534C348C6CB68B`(1) [nd], `IS_PED_ON_MOUNT` `0x460BC76A0E10655E`(1) [nh],
 `IS_PED_DEAD_OR_DYING` `0x3317DEDB88C95038`(2) [nh], `GET_ENTITY_COORDS`
 `0xA86D5F069399F44D`(3) [nh], отсев локального игрока/ghost/лошади, радиус 60 м,
-cap 20 педов, частота ~120 тиков (2 с).
+cap 20 живых людей, частота ~120 тиков (2 с).
 
-**Троттлинг:** строка пишется раз в ~2 с на **уникальную комбинацию
-model+metaOutfit** (иначе throttle). Клиент дополнительно пишет **summary**
-строку на каждое окно скана:
+**Summary-строка (task-38), отдельно от per-ped:**
 
 ```
-probe: scan humans=H logged=L newCombos=C unique=U
+probe: scan humans=H animals=A total=T logged=L newCombos=C unique=U
 ```
 
-`humans` — людей в радиусе 60 м, `logged` — сколько попало в top-20,
-`newCombos` — новых комбинаций в этом окне, `unique` — всего уникальных
-комбинаций за сессию. Анализатор парсит summary отдельно (это не запись педа)
-и выводит таблицу `Probe scan windows`. Поэтому:
-- `records` ≠ числу NPC в мире; «unique signatures» в анализаторе — оценка
-  разнообразия (стабильного `ped id` в контракте нет);
-- распределения смещены к первым встреченным комбинациям; для процентов
-  двигайтесь по городу/лагерю, а не стойте на месте;
-- если `humans=0` во всех окнах — probe стоит в безлюдном месте;
-  если `humans>0`, а записей мало — сработал throttle (комбинации уже видели).
+- `total` — все педы в радиусе 60 м (кроме local player/mount/player-педов),
+  `humans` — из них люди, `animals` — остальные (включая мёртвых и лошадей);
+- `logged` — сколько попало в top-20, `newCombos` — новых комбинаций в окне,
+  `unique` — всего уникальных комбинаций за сессию;
+- анализатор парсит summary отдельно (это не запись педа), строит
+  `Pool totals by scan windows`, `Pool by location heuristic` и
+  `Longest pool segments`, и **H4 считает именно по этим счётчикам**.
 
-**Открытые вопросы к реализации (сверить с `client-review`):**
-1. `equipped` — именно `_IS_META_PED_OUTFIT_EQUIPPED(ped, metaOutfit)`, или
-   проверка другого кандидата? Контракт — первый вариант.
-2. `mount` — handle из `GET_MOUNT` или model hash? Канон для E1 — **model
-   hash**; если сейчас handle, `client-review` меняет лог (иначе E1 не сможет
-   спавнить лошадь по модели).
-3. `human`-фильтр: task-34 говорит «20 ближайших **human** NPC», и текущая
-   реализация действительно фильтрует людей (`!IsHuman`), т.е. в логе
-   `human=1` у всех записей, а животные не появляются. Для E-1 это значит
-   **H4 = WARN (animal-доля неизмерима)**; чтобы получить долю human/animal,
-   нужен отдельный all-peds режим probe (согласовать с Lead/client-review).
+**Троттлинг per-ped:** строка пишется раз в ~2 с на **уникальную комбинацию
+model+metaOutfit**, поэтому `records` ≠ числу NPC в мире; «unique signatures»
+в анализаторе — оценка разнообразия (стабильного `ped id` в контракте нет).
+Для процентов внешности двигайтесь по городу/лагерю, а не стойте на месте.
+
+**Открытые вопросы к реализации (остались после сверки кода):**
+1. Гейт probe через `npc_actor=1` (см. §1) — расхождение с постановкой Lead.
+2. `pointType` печатается как `(unsigned int)` от `int`: отрицательные значения
+   выглядят как `0xFFFFFFxx`; анализатор считает любые `!= 0` — при разборе
+   конкретных хэшей учитывать.
+3. В прогоне 7 записей имеют `dynScenario != 0` при `scenarioAny=0` —
+   семантика переходов/остаточного сценария требует отдельной проверки.
 
 ---
 
@@ -153,30 +151,32 @@ Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" -Patt
 
 Ожидаемо:
 - при `npc_actor=1, npc_debug=1` на **хосте** — есть строки `probe:` с 11
-  полями и summary-строки `probe: scan humans=… logged=… newCombos=… unique=…`
+  полями и summary-строки `probe: scan humans=… animals=… total=… …`
   (раз в окно ~2 с);
 - при `npc_actor=0` **или** `npc_debug=0` — **ноль** `probe:`; при
-  `npc_actor=0` также ноль `actor:`-строк (probe/actor не активны);
+  `npc_actor=0` также ноль `actor:`-строк;
 - на **госте** при `npc_debug=1` — ноль `probe:` (probe host-only); иначе
   сообщить Lead (нарушение контракта/реализации);
-- в строках нет `NaN`, отрицательных «хэшей», пустых `model=`/`human=`;
+- в строках нет `NaN`, пустых `model=`/`human=`;
 - `probe:` не чаще ~1 строки на 2 с на комбинацию; нет потока тысяч строк/с
   (throttle работает, не спамит Tick-бюджет).
 
 ---
 
-## 4. Какие прогоны нужны (3 файла лога)
+## 4. Какие прогоны нужны (3+ файла лога)
 
 | Прогон | Где | Что проверяем | Длительность |
 |---|---|---|---|
-| `probe_town.log` | Saint-Denis / Valentine / Rhodes, людная улица | H1 (outfit hash у `a_m_*`/`a_f_*`/`u_*`), H2, H4 human-доля, H6 | 2–3 мин |
-| `probe_road.log` | дорога/ранчо/кемпинг, всадники, караваны | H5 mount/weapon, животные `a_c_*`, мета-аутфиты лошадей | 2–3 мин |
+| `probe_town.log` | Saint-Denis / Valentine / Rhodes, людная улица | H1 (outfit hash людей), H2, H4 pool, H6 | 2–3 мин |
+| `probe_road.log` | дорога/ранчо/кемпинг, всадники, караваны | H5 mount/armed, pool animals, мета-аутфиты лошадей | 2–3 мин |
 | `probe_scenario.log` | салун/скамейки/кровать/костёр/рабочие точки, лагерь | H3 dynScenario/pointType, позы (sit/smoke/kneel/sleep) | 2–3 мин |
-| (опционально) `probe_mission.log` | рядом с миссией/лагерем банды | `mission=1`, `cs_*`/`mp_*`/`msp_*`, бой (`weapon`, `scenarioAny`) | 1–2 мин |
+| (опционально) `probe_mission.log` | рядом с миссией/лагерем банды | `mission=1`, `cs_*`/`mp_*`/`msp_*`, armed | 1–2 мин |
 
 Рекомендации: хост стоит/медленно идёт, не бежит; время суток/погода не важны;
 `npc_actor=1`, `npc_debug=1` (см. §1), `world_sync=0`; после каждого прогона —
-отдельный файл лога (иначе смешаются локации и гипотезы).
+отдельный файл лога (иначе смешаются локации и гипотезы). Прогон 23:00 был
+смешанным (дикая природа + город) — поэтому animal-доля в нём location-biased,
+см. §8.
 
 ---
 
@@ -204,20 +204,11 @@ Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" -Patt
 Итого human-ish ≈ 79%, животные+кони ≈ 15%, unnamed ≈ 6% (по hashdb, не по
 миру). В реальном probe распределение зависит от локации: в городе доминируют
 `a_m_*`/`a_f_*`/`u_*`, в wilderness — `a_c_*`, на дороге — `a_c_horse_*` и
-всадники. Из текущего тестового лога (`scan:`-строки): ближайшие модели были
-`0x0D7114C9 PLAYER_ZERO`, `0x28F9976A A_C_HORSE_DUTCHWARMBLOOD_CHOCOLATEROAN`,
-`0x0348B323 A_C_HORSE_AMERICANSTANDARDBRED_PALOMINODAPPLE`,
-`0x1E6ABEAD A_C_WOODPECKER_01`, `0x05C70C99 A_C_HORSE_MORGAN_PALOMINO`;
-часть хэшей в `Peds.json` отсутствует — это нормально, анализатор помечает их
-как `?`/unknown class.
-
-Важно для H4/H6: в текущей реализации task-34 probe **human-only** (`!IsHuman`
-в `src/actor_sync.cpp:225`), поэтому `human=1` у всех записей, животные в лог не
-попадают и H4 будет `WARN` (animal-доля неизмерима). Для полноценного E-1
-нужен all-peds режим probe (или отдельный прогон животных) — согласовать с
-Lead/client-review; анализатор уже поддерживает оба варианта (`human=` +
-hashdb-классы) и предупреждает (`H4 WARN`). H6 при этом работает: он проверяет
-`human` против имени модели для людей (и животных, если они появятся).
+всадники. В прогоне 23:00 топ моделей: `G_M_M_UNIINBRED_01` (5),
+`RE_MOONSHINECAMP_MALES_01` (2), `S_M_M_GENCONDUCTOR_01` (2), дальше ambient
+`A_M_M_ASBTOWNFOLK_01`, `A_M_Y_ASBMINER_02` и unknown-модели; 24 из 49 записей
+получили класс `unknown` (модели отсутствуют в `Peds.json` или безымянные) —
+это нормально, анализатор помечает их `?`.
 
 ---
 
@@ -225,16 +216,17 @@ hashdb-классы) и предупреждает (`H4 WARN`). H6 при это
 
 | ID | Гипотеза | PASS | PARTIAL/WARN | FAIL/UNKNOWN | Что значит для E1 |
 |---|---|---|---|---|---|
-| **H1** | `metaOutfit != 0` читается у human NPC | ≥90% уникальных human-педов | 10–90% → `PARTIAL` | <10% → `FAIL`; нет human → `INSUFFICIENT` | PASS → E1-A (request/apply outfit); PARTIAL → E1-A + E1-B; FAIL → E1-B/E1-C |
-| **H2** | `equipped=1` согласуется с `metaOutfit != 0` | ≥95% записей с хэшем | >0 но <95% → `WARN` | 0% → `FAIL`; нет поля → `UNKNOWN` | FAIL → не полагаться на `equipped`: проверить хэш/арность `_IS_META_PED_OUTFIT_EQUIPPED`, искать другой детект |
-| **H3** | Сценарные позы детектируются (`dynScenario` или `pointType`) | ≥80% записей с `scenarioAny=1` | 30–80% → `PARTIAL` | <30% → `FAIL`; нет `scenarioAny` → `INSUFFICIENT` | PASS → E1-D по dyn/point-цепочке; PARTIAL → только детектируемое подмножество; FAIL → расширить probe/boolean-probe |
-| **H4** | Доля human vs animal наблюдаема | после all-peds режима: `human+animal` ≥95% записей **и** есть animal | animal=0 → `WARN`; в текущем human-only probe это **ожидаемый** статус | нет `human=` → `INSUFFICIENT` | WARN → согласовать all-peds probe до E1/E2 (животные); H4 не блокирует H1/H3 |
-| **H5** | mount/weapon заполнены | — (INFO) | — | — | низкий mount → отдельный road/camp probe; weapon → приоритет combat-репликации |
+| **H1** | `metaOutfit != 0` читается у human NPC | ≥90% уникальных human-педов | 10–90% → `PARTIAL` | <10% → `FAIL`; нет human → `INSUFFICIENT` | PASS → E1-A (request/apply outfit); PARTIAL → E1-A для меньшинства + E1-B/E1-C fallback; FAIL → E1-B/E1-C |
+| **H2** | `equipped=1` согласуется с `metaOutfit != 0` | ≥95% записей с хэшем | >0 но <95% → `WARN` | 0% → `FAIL`; нет поля → `UNKNOWN` | FAIL → не полагаться на `equipped`; PASS → `equipped` годится для валидации outfit |
+| **H3** | Сценарные позы детектируются (`dynScenario` или `pointType`) | ≥80% записей с `scenarioAny=1` | 30–80% → `PARTIAL` | <30% → `FAIL`; нет `scenarioAny` → `INSUFFICIENT` | PASS → E1-D; предпочитать цепочку с большим покрытием (dyn vs point) |
+| **H4** | Доля human vs animal в пуле наблюдаема | есть scan-счётчики `humans=/animals=/total=` хотя бы в одном окне, `total>0` | — | нет счётчиков и нет animal-записей → `WARN`; нет данных → `INSUFFICIENT` | PASS → pool-доля известна; animal-доля зависит от локации → E1 human-only, animals/кони — E2 |
+| **H5** | mount/armed заполнены | — (INFO) | — | — | mount% → приоритет rider↔mount; armed% (без `WEAPON_UNARMED`) → приоритет combat |
 | **H6** | `human` согласуется с именем модели из hashdb | ≤5% несовпадений | ≤20% → `WARN` | >20% → `FAIL`; нет hashdb → `UNKNOWN` | FAIL → баг контракта/реализации (перепутаны human/pedType/поле), чинить до E1 |
 
-Дополнительно анализатор печатает: распределение `pedType`, топ моделей,
-топ `metaOutfit`, топ `dynScenario`, топ `pointType`, топ mount/weapon,
-классы моделей и per-class проценты `outfit!=0`/mount/weapon/scenarioAny.
+Дополнительно анализатор печатает: pool totals/location/segments; распределение
+`pedType` с метками-гипотезами; gender-check `pedType 4/5` против имён моделей;
+топ моделей, `metaOutfit`, `dynScenario`, `pointType`, mount, armed weapons;
+классы моделей и per-class проценты `outfit!=0`/mount/armed/scenarioAny.
 Gating для `--strict`: только **FAIL** у H1/H2/H3/H6; `PARTIAL/WARN/UNKNOWN/
 INSUFFICIENT` не валят gate (это исследовательские статусы, Lead решает по
 отчёту).
@@ -245,155 +237,309 @@ INSUFFICIENT` не валят gate (это исследовательские с
 
 1. `log lines / parsed / invalid / scan summaries` — если `invalid > 0`, часть
    строк битая: сравнить с контрактом (§2), сообщить `client-review` точный
-   пример. `scan summaries` — число summary-строк `probe: scan …`.
-2. `Probe scan windows` — плотность мира: `humans_max/avg` в радиусе 60 м,
-   `logged_max/avg`, `newCombos`/`unique`; если `humans=0` — локация пустая
-   (не ошибка контракта).
-3. `Pool` — доля human/animal. В текущем probe human-only `animal=0` —
-   ожидаемо (H4 WARN); если появится all-peds режим — проверить animal-долю.
-4. `Outfits` — **H1**: доля `metaOutfit != 0` по всем/human/animal/уникальным.
-5. `Equipped` — **H2**: `equipped=1` среди записей с хэшем; `outfit==0` с
+   пример.
+2. `Pool totals by scan windows` — **H4**: суммарные `humans/animals/total`,
+   human/animal share (взвешенный по числу педов), min/avg/max window-share,
+   число окон `humans=0`/пустых. Помните: «animal share (pool sum)» и
+   «window animal share avg» — разные метрики (окна в wilderness малочисленны
+   по людям, но их много; city-окна дают большой вклад в сумму).
+3. `Pool by location heuristic` — разбивка окон по составу пула:
+   `wild` (<20% humans), `mixed`, `town` (>=50% humans), `empty`; для каждой
+   локации — окна, число сегментов, длительность, средние humans/animals и
+   shares. Это **эвристика**: координат в scan-строке нет, локация выводится
+   из состава пула.
+4. `Longest pool segments` — самые длинные непрерывные сегменты (полезно
+   увидеть «город»: в прогоне 23:00 — 87 окон/~174 с, humans_avg 64.0,
+   animal_share 16.3%).
+5. `Pool` (per-ped records) — у per-ped записей `animal=0` всегда (probe
+   human-only), это ожидаемо; animal-долю смотреть в scan-таблицах.
+6. `Outfits` — **H1**: доля `metaOutfit != 0` по всем/human/animal/уникальным.
+7. `Equipped` — **H2**: `equipped=1` среди записей с хэшем; `outfit==0` с
    `equipped=1` — шум/баг семантики.
-6. `Scenarios` — **H3**: `dynScenario != 0`, `pointType != 0` и их объединение
+8. `Scenarios` — **H3**: `dynScenario != 0`, `pointType != 0` и их объединение
    среди `scenarioAny=1`; отдельно «both zero» — сколько поз E1 не увидит.
-7. `Mount/weapon/mission` — H5 + доля mission-entity.
-8. `pedType` — накопить реальные значения; сверить с `human` (H6) и позже
-   заменить/дополнить маппингом ePedType, когда он подтвердится.
-9. `Top models/outfits/scenarios` — рабочий список для E1: какие модели
-   массовые, какие outfit-хэши повторяются, какие scenario-хэши реально
-   приходят (их и реплеить).
-10. `Verdicts` + `E1 plan hint` — итог для Lead; в отчёт копируются строки
-    `[STATUS] H…` и `E1 plan hint`.
-
-Пример (синтетический, для проверки формата):
-
-```
-[PASS] H1: meta outfit hash readable for human NPCs
-      2/2 unique human peds have metaOutfit != 0
-[PASS] H3: scenario detection coverage
-      2/2 scenario peds detected (dyn=50%, point=50%); preferred chain: dynamic-scenario chain
-```
+9. `Mount/weapon/mission` — H5: mount%, **armed (без Unarmed)**, unarmed,
+   weapon==0, raw !=0, mission%; `WEAPON_UNARMED` (0xA2719263) — не оружие.
+10. `pedType` — метки-гипотезы 4=male, 5=female + gender-check по именам
+    моделей; если появятся другие значения — накапливать и добавлять метки
+    только после подтверждения.
+11. `Top ...` — рабочий список для E1: массовые модели, повторяющиеся
+    outfit/scenario/pointType-хэши (их реплеить), armed weapons.
+12. `Verdicts` + `E1 plan hint` — итог для Lead; в отчёт копируются строки
+    `[STATUS] H…`, `value` и `E1 plan hint`.
 
 ---
 
-## 8. Приёмка E-1 (чек-лист)
+## 8. Результаты реального прогона (23:00)
 
-- [ ] `npc_debug=0` (default) на хосте: в логе **0** строк `probe:`; поведение
+**Вход:** `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` (157 171 311 Б;
+2 612 896 строк; последняя запись 21.10.2026 23:17). Probe: `npc_actor=1`,
+`npc_debug=1`; смешанный маршрут (дикая природа + город), ~26 минут окон.
+
+**Парсинг:** 837 `probe:`-строк = 49 per-ped записей + 788 scan-окон;
+invalid = 0. Уникальных сигнатур 49, уникальных моделей 43, outfit-хэшей 11.
+
+### 8.1 Внешность (H1/H2)
+
+| Метрика | Значение |
+|---|---:|
+| per-ped записей / уникальных | 49 / 49 |
+| `metaOutfit != 0` | **11/49 = 22.4%** |
+| `metaOutfit == 0` | 38/49 = 77.6% |
+| `equipped=1` среди `metaOutfit != 0` | **11/11 = 100%** |
+| `equipped=1` при `metaOutfit == 0` | 0/38 |
+| уникальных outfit-хэшей | 11 |
+
+**H1 = PARTIAL (0.224)** → прямая репликация через meta outfit возможна только
+для ~22% NPC; для ~78% нужен fallback.
+**H2 = PASS (1.000)** → `_IS_META_PED_OUTFIT_EQUIPPED(ped, metaOutfit)` можно
+использовать как валидатор применённого наряда (и как дешёвый детект смены,
+если hash читается).
+
+### 8.2 Сценарии (H3)
+
+| Метрика | Значение |
+|---|---:|
+| `scenarioAny=1` | 26/49 = 53.1% |
+| `dynScenario != 0` среди них | 24/26 = 92.3% |
+| `pointType != 0` среди них | **26/26 = 100%** |
+| `dyn or point` detected | 26/26 = 100% |
+| both zero (undetected) | 0 |
+| `dynScenario != 0` при `scenarioAny=0` | 7 записей (см. §11) |
+
+**H3 = PASS (1.000)**, предпочтительная цепочка — **scenario point**
+(100% против 92% у dynamic). Топ point-type хэшей: `0x2A0961F2` (2),
+`0xAAF6DBE7` (2), `0x07CFB3C9` (2), далее по 1. Топ dynScenario: `0x8C510147`
+(6 записей), `0x990BCA7A`, `0xB54455E1`, `0x59C715C7` (по 2).
+
+### 8.3 Пул human/animal по scan-окнам (H4)
+
+| Метрика | Значение |
+|---|---:|
+| scan-окон с pool-счётчиками | 788 |
+| Σ humans / Σ animals / Σ total | 6485 / 8051 / **14536** |
+| human share (взвешенный) | **44.6%** |
+| animal share (взвешенный) | **55.4%** |
+| window human share min/avg/max | 0.0% / 19.3% / 93.9% |
+| window animal share min/avg/max | 6.1% / 80.7% / 100.0% |
+| окон `humans=0` / пустых | 382 / 5 |
+| logged peds max/avg | 20 / 2.83 |
+
+Pool по локациям (эвристика по составу окон):
+
+| Bucket | Окон | Сегментов | Длит., с | humans_avg | animals_avg | human_share | animal_share |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| wild (<20% humans) | 526 | 12 | 1052 | 0.4 | 11.1 | 3.7% | **96.3%** |
+| mixed | 127 | 15 | 254 | 3.5 | 7.5 | 31.8% | 68.2% |
+| town (>=50% humans) | 130 | 7 | 260 | 44.8 | 9.7 | **82.1%** | **17.9%** |
+| empty | 5 | 1 | 10 | 0.0 | 0.0 | n/a | n/a |
+
+Самые длинные сегменты: wild 235 окон/470 с (humans 0.0, animal 99.8%),
+wild 99/198 с (humans 0.6, animal 94.2%), **town 87/174 с (humans_avg 64.0,
+animals_avg 12.4, human 83.7% / animal 16.3%)**, mixed 62/124 с, wild 48/96 с.
+
+**H4 = PASS**: pool-доля измерена, но **animal share сильно зависит от
+локации** — в городе ~18% животных, в дикой природе ~96–100%. Общие 55.4%
+animal — следствие смешанного маршрута и множества wilderness-окон, а не
+типичного города.
+
+### 8.4 Остальные метрики
+
+| Метрика | Значение |
+|---|---:|
+| mount != 0 | **5/49 = 10.2%** |
+| armed (weapon ≠ 0, ≠ Unarmed) | **5/49 = 10.2%** |
+| unarmed (`0xA2719263`) | 32/49 = 65.3% |
+| weapon == 0 | 12/49 = 24.5% |
+| weapon != 0 (raw, ошибочная метрика) | 37/49 = 75.5% |
+| mission != 0 | **14/49 = 28.6%** |
+| pedType 4 / 5 | 42 / 7 (85.7% / 14.3%) |
+| gender-check 4=male/5=female (известные модели) | **25/25 match, 0 mismatch, 24 unknown** |
+
+Топ armed weapons: `0x67DC3FDE` (2), `0x5C54EFD4` (2), `0x6DFA071B` (1).
+Топ mount: `A_C_HORSE_KENTUCKYSADDLE_GREY`, `A_C_HORSE_MORGAN_PALOMINO` + 3
+unknown-хэша. Модели: 24/49 класса `unknown` (нет в hashdb) — нормально;
+outfit!=0 по классам: gang 57%, event 100%, story 50%, ambient 0% (маленькая
+выборка), unknown 12.5%.
+
+### 8.5 Вердикты H1–H6 по прогону
+
+| ID | Статус | Кратко |
+|---|---|---|
+| H1 | **PARTIAL** 0.224 | 11/49 outfit hash; 78% требуют fallback |
+| H2 | **PASS** 1.000 | 11/11 equipped согласуется |
+| H3 | **PASS** 1.000 | 26/26 сценариев, pointType 100% (dyn 92%) |
+| H4 | **PASS** | human 44.6% / animal 55.4% (взвеш.), town animal 17.9% vs wild 96.3% |
+| H5 | **INFO** | mount 10.2%, armed 10.2% (Unarmed 65.3% исключён) |
+| H6 | **PASS** 0.000 | 0/25 known-model несовпадений human vs имя |
+
+### 8.6 Рекомендации E1/E2 (по данным прогона)
+
+**E1 (human-only):**
+1. **Внешность:** H1 PARTIAL → E1-A (request/apply meta outfit) только для
+   ~22% педов; для остальных **E1-B**: на хосте перебрать outfit-хэши модели
+   из `rdr3-discoveries/clothes/metaped_outfits.lua` (890 моделей) через
+   `_IS_META_PED_OUTFIT_EQUIPPED(ped, cand)` (H2 это валидирует), кэш
+   model→candidates, cap 8–16; если матча нет — **E1-C** asset/tint capture
+   (`GET_NUM_COMPONENTS_IN_PED` + `GET_META_PED_ASSET_GUIDS/TINT` →
+   `_SET_META_PED_TAG`, отдельное сообщение протокола, не `ActorOutfit` 784B).
+2. **Сценарии:** H3 PASS → **scenario point цепочка**: хост шлёт
+   pointType+coords/heading, гость `CREATE_SCENARIO_POINT_HASH` +
+   `TASK_USE_SCENARIO_POINT` (сохраняет пропы), dynScenario — fallback
+   (`TASK_START_SCENARIO_IN_PLACE_HASH`). Приоритет — pointType (100%).
+3. **Бюджет/плотность:** в городе 55–64 человека в радиусе 60 м (сегмент
+   town: humans_avg 64.0), а протокол v15 `kMaxActors=12` → покрытие ~19%
+   городской толпы. Нужно решение Lead: увеличить cap E1 (напр. 32–64),
+   либо явно принять разрежённую репликацию; animals/кони в тот же бюджет не
+   брать.
+4. **Mission-entity:** 28.6% записей — mission; в E1 **не реплицировать**
+   (двойники со своей копией миссии гостя), оставить в discovery только как
+   presentation при guest-idle (отдельная задача).
+5. **Кони:** mount 10.2% → пара rider↔mount нужна для всадников; сама лошадь
+   в E1 минимально (модель+снаряжение) или отложить в E2, но тогда всадник
+   будет «пешком» — решить по объёму E1.
+6. **Бой:** armed только 10.2% (Unarmed 65.3%) → combat-репликация ниже
+   приоритета внешности/локомоции; replay выстрелов — после базового E1.
+
+**E2 (animals/horses отдельно):**
+1. Pool: overall animal 55.4%, но **town ~18%, wild ~96–100%** → нужны
+   per-location бюджеты и отдельные probe-прогоны по локациям; животные
+   per-ped не логируются (human-only) — для E2 нужен all-peds probe или
+   отдельный animal-probe.
+2. Horses: mount 10.2% в смешанном прогоне, топ-модели известны; horse
+   appearance (outfit/shop items) проверять отдельно; тягловые лошади повозок —
+   отдельный риск.
+3. Animals: модель+outfit (metaped_outfits.lua для животных), локомоция
+   задачами, поведение/AI не реплицировать; бюджет и LOD — по локациям.
+
+---
+
+## 9. Приёмка E-1 (чек-лист)
+
+- [x] Реальный probe-прогон на хосте выполнен, лог сохранён
+      (`rdr2-coop.log`, 837 `probe:`-строк: 49 per-ped + 788 scan).
+- [x] Анализатор на реальном логе: exit 0, invalid=0, H1/H2/H3/H4/H5/H6
+      посчитаны, цифры §8 воспроизводятся.
+- [x] `python tests\test_npc_probe_analyze.py` → `ALL 25 TESTS PASSED`.
+- [ ] `npc_debug=0` (default) на хосте: **0** строк `probe:`; поведение
       и производительность не отличаются от текущей сборки.
 - [ ] `npc_actor=0` на хосте (при любом `npc_debug`): **0** строк `probe:` и
-      **0** строк `actor:` — каркас E0 неактивен (текущая реализация task-34
-      гейтит probe через `npc_actor=1`, см. §1).
-- [ ] `npc_actor=1, npc_debug=1` на хосте: есть `probe:`-строки с 11 полями,
-      регулярно в людной локации (>= 1 строка/2 с на новые комбинации), плюс
-      summary `probe: scan humans=… logged=… newCombos=… unique=…`;
-      нет потока/спама, нет крашей.
+      **0** строк `actor:` — каркас E0 неактивен (probe гейтится
+      `npc_actor=1`, см. §1).
+- [ ] `npc_actor=1, npc_debug=1` на хосте: есть `probe:`-строки с 11 полями
+      и summary `probe: scan humans=… animals=… total=… …`;
+      нет спама/крашей.
 - [ ] `npc_actor=1, npc_debug=1` на госте: **0** `probe:`-строк (probe
       host-only); если нет — зафиксировать и решить с Lead.
-- [ ] Три прогона (§4) сохранены отдельными логами; анализатор на каждом
-      завершается exit 0 и печатает verdicts.
-- [ ] `python tests\test_npc_probe_analyze.py` — `ALL N TESTS PASSED`.
-- [ ] H1/H2/H3/H4/H6 имеют статус (PASS/PARTIAL/FAIL/WARN/INSUFFICIENT), H5
-      INFO; отчёт Lead с топ-моделями/outfit/scenario и `E1 plan hint`.
-- [ ] Проверено отсутствие `actor:`-строк при `npc_actor=0` (каркас E0 не
-      активен) и отсутствие утечек/новых нативов при `npc_debug=0`.
-- [ ] Зафиксировано фактическое поведение probe: human-only + гейт
-      `npc_actor=1`; H4 = `WARN` (animal-доля не измеряется) — решение об
-      all-peds режиме/escalation к Lead записано в отчёте.
+- [ ] Отдельные прогоны `probe_town.log` / `probe_road.log` /
+      `probe_scenario.log` дают per-location разбивку animal-доли (нужно для
+      E2; текущий прогон смешанный).
 
----
-
-## 9. План E1 по результатам probe
+## 10. План E1 по результатам probe
 
 Матрица «результат H1 → путь внешности»:
 
 | Результат | Путь E1 | Работы | Критерий готовности |
 |---|---|---|---|
-| H1 PASS (≥90%, hash!=0) | **E1-A: meta outfit** | На спавне актора: `_REQUEST_META_PED_OUTFIT(model, metaOutfit)` → ждать `_HAS_META_PED_OUTFIT_LOADED` → `_APPLY_PED_META_PED_OUTFIT(req, ped, true, true)` → `_RELEASE_...`; применять до `SET_ENTITY_VISIBLE`; hash уже в `ActorSpawn` (v15, поле `metaOutfit`, 0x18) | side-by-side 20 NPC на хосте/госте: outfit hash совпал, нет «дефолтного» вида, apply latency ≤ 3 кадра; при APPLY=false — fallback E1-B |
-| H1 PARTIAL (10–90%) | **E1-A + E1-B** | E1-A для классов/моделей с hash!=0; E1-B — перебор outfit-хэшей для остальных | те же критерии + для каждого класса свой путь; логировать `outfit fallback model=… candidates=… match=…` |
-| H1 FAIL (<10%) / hash всегда 0 | **E1-B → E1-C** | E1-B: на хосте для модели перебрать outfit-хэши из `rdr3-discoveries/clothes/metaped_outfits.lua` (890 моделей) через `_IS_META_PED_OUTFIT_EQUIPPED(ped, cand)`; нужен model→candidates список (генерируемый C++ header из Lua, не руками); кэш по модели, cap кандидатов (8–16). Если матча нет — E1-C | E1-B: найден кандидат для ≥90% проверенных моделей, cost ≤ N нативов/пед (bounded, не каждый тик). E1-C: компонентный захват `GET_NUM_COMPONENTS_IN_PED` + `GET_META_PED_ASSET_GUIDS/TINT` → `_SET_META_PED_TAG`; нужен протокол (ActorOutfit 0x1C — это shop-набор 784B, для asset GUID/тинтов нужен новый/расширенный формат — согласовать с net-review) |
-| H2 FAIL/UNKNOWN | не блокирует внешность | E1-A/B не используют `equipped`; проверить арность/порядок `_IS_META_PED_OUTFIT_EQUIPPED`, при необходимости заменить детект на component-compare | документировать, что `equipped` не используется до выяснения |
+| H1 PARTIAL (текущий 22.4%) | **E1-A + E1-B** | E1-A (meta outfit) для hash!=0; E1-B — перебор outfit-хэшей модели через `_IS_META_PED_OUTFIT_EQUIPPED` (H2 валидирует); E1-C asset/tint — если перебор не нашёл | E1-A: 11/49 моделей, latency ≤ 3 кадра; E1-B: ≥90% оставшихся моделей находят кандидата, cost bounded (cap 8–16/модель, кэш) |
+| H1 PASS (<10% fallback) | **E1-A** | request/apply для всех | outfit hash совпал у >90% |
+| H1 FAIL | **E1-B → E1-C** | перебор, затем asset/tint | ≥90% моделей покрыты, иначе E1-C протокол |
 
 Матрица «H3 → путь сценариев»:
 
 | Результат | Путь E1-D | Работы | Критерий |
 |---|---|---|---|
-| H3 PASS, dyn>point | dynamic scenario | в фрейм/ивент актора: `scenarioHash = dynScenario`; гость `TASK_START_SCENARIO_IN_PLACE_HASH(ped, hash, -1, 1, 0, heading, 0)` + `TASK_STAND_STILL` при выходе | позы sit/smoke/kneel/sleep совпадают на 80–90% NPC; props могут отличаться |
-| H3 PASS, point>dyn | scenario point | хост шлёт pointType + coords/heading; гость `CREATE_SCENARIO_POINT_HASH(pointType, x,y,z,heading,…)` + `TASK_USE_SCENARIO_POINT`, удалять point при выходе | совпадение позы и пропа (где есть) лучше dyn-пути; cap на количество point-ов |
-| H3 PARTIAL | только детектируемое подмножество | как выше для детектируемых; остальные — idle и лог `scenario-undetected` | не хуже текущего (стоят/идут), без «танцев»; список непокрытых поз для расширения probe |
-| H3 FAIL/INSUFFICIENT | расширить probe до E1-D | добавить в probe `PED_HAS_USE_SCENARIO_TASK`, `_GET_SCENARIO_POINT_PED_IS_USING`, `_IS_PED_IN_SCENARIO_BASE`, пробовать boolean-перебор известных scenario-хэшей (ограниченно) | после probe повторно решить; до этого сценарии в E1 не включать |
+| H3 PASS, point>dyn (текущий: point 100%, dyn 92%) | **scenario point** | хост: pointType + coords/heading; гость: `CREATE_SCENARIO_POINT_HASH(pointType, x,y,z,heading,…)` + `TASK_USE_SCENARIO_POINT`; удалять point при выходе | поза+проп совпадают; cap на число point-ов; dyn — fallback |
+| H3 PARTIAL | только детектируемое | как выше для детектируемых, остальные idle | не хуже текущего, без «танцев» |
+| H3 FAIL/INSUFFICIENT | расширить probe | `PED_HAS_USE_SCENARIO_TASK`, `_GET_SCENARIO_POINT_PED_IS_USING`, `_IS_PED_IN_SCENARIO_BASE` | после probe повторно решить |
 
 Прочие решения:
-- **H4 WARN (фактически human-only probe):** в task-34 probe фильтрует
-  `!IsHuman`, поэтому H4 гарантированно `WARN`; до E1/E2 добавить
-  `npc_debug_all=1` (или снять фильтр), иначе животные/кони в E1 не покрыты.
-  H4 не блокирует E1-A (люди) — это отдельный скоуп.
-- **H5**: mount/weapon — приоритет слоёв E1: если mount высокий — добавлять
-  pair rider↔mount (ActorSpawn уже содержит `mountActorId`), если weapon
-  высокий — combat-репликацию (ActorEvent/ActorFrame flags) раньше сценариев.
-- **H2 FAIL:** не использовать `equipped` в E1; детект смены наряда — по
-  `metaOutfit` (если он читается) или component-compare.
-- **Mission-entity:** в E1 по умолчанию не реплицировать (`mission=1` —
-  исключение из discovery), иначе двойники со своей копией миссии гостя;
-  probe нужен, чтобы понять долю mission-акторов в сценах.
-- **H6 FAIL:** сначала починить контракт (human/pedType/поле), потом E1.
+- **H1 PARTIAL (факт):** 78% NPC — fallback; E1-B (перебор) дешёвый кандидат
+  №1, E1-C — резерв; `ActorOutfit` 0x1C не подходит для asset GUID (это
+  shop-набор 784B) — для E1-C нужен отдельный формат сообщения.
+- **H3 PASS:** pointType-цепочка; `dynScenario` вне `scenarioAny` (7 записей)
+  не считать ошибкой, но проверить переходы.
+- **H4 PASS:** E1 = human-only; animals/кони — E2 по локациям
+  (town animal ~18%, wild ~96–100%).
+- **H5:** mount 10.2% → rider↔mount; armed 10.2% → combat не приоритет.
+- **Mission-entity:** в E1 не реплицировать (28.6% записей mission), иначе
+  двойники со своей копией миссии гостя.
+- **H6 PASS:** контракт human/model в порядке; `pedType 4/5` — гипотеза,
+  подтверждена 25/25 известных моделей.
+- **Бюджет:** kMaxActors=12 (v15) vs 55–64 humans в городе — решение об
+  увеличении cap/разрежении за Lead.
 
 ---
 
-## 10. Ограничения и риски
+## 11. Ограничения и риски
 
 1. **Троттлинг/уникальность:** нет `ped id` в контракте → «unique» —
    приближение; если нужен трекинг одной особи во времени, предложить
    добавить `ped=0x…`/`netId` в контракт отдельной задачей.
 2. **`equipped` семантика (подтверждена кодом):** `src/actor_sync.cpp`
    вызывает `_IS_META_PED_OUTFIT_EQUIPPED(handle, metaOutfit)` — контракт
-   соблюдён, H2 валиден. При переписывании probe в E1 сохранить именно эту
-   пару аргументов (ped, текущий hash), не проверять «0»/другой кандидат.
+   соблюдён, H2 валиден и подтверждён 11/11.
 3. **`mount` — model hash (подтверждено):** `GetMountModel()` в
-   `src/actor_sync.cpp` пишет `GET_ENTITY_MODEL(GET_MOUNT(ped))`; для E1 этого
-   достаточно. Если понадобится handle — добавить отдельное поле, не менять
-   существующее.
-4. **Probe human-only (факт):** `src/actor_sync.cpp:225` фильтрует `!IsHuman`,
-   а также исключает мёртвых, player-педов и local mount → H4 = `WARN`,
-   животные/кони не покрыты. Нужен all-peds режим (новая задача
-   `client-review`) или отдельный animal-probe; H4 не блокирует E1-A (люди).
+   `src/actor_sync.cpp` пишет `GET_ENTITY_MODEL(GET_MOUNT(ped))`; для E1
+   достаточно; handle отдельно не нужен.
+4. **Per-ped records human-only (факт):** `src/actor_sync.cpp` фильтрует
+   `!IsHuman`; animals/кони видны только в scan-счётчиках (`humans/animals/
+   total`), не в per-ped строках → внешность животных в E1 не измеряется.
 5. **`_GET_ACTIVE_DYNAMIC_SCENARIO` ограничен** (nativedb: только
-   kneel/sit/squat/sleep) — H3 это и проверяет; не ожидать 100% по стоячим
-   сценариям.
+   kneel/sit/squat/sleep); в прогоне dyn покрыл 92% сценариев, но
+   предпочтительнее pointType (100%).
 6. **`dynScenario`/`pointType` — 32-bit hashes**, коллизии/мусор возможны от
-   невалидных аргументов; проверять `0` vs `!=0` и топ-список, а не только
-   проценты.
+   невалидных аргументов (pointType печатается как unsigned int); проверять
+   `0` vs `!=0` и топ-список, а не только проценты.
 7. **hashdb неполон** (120 безымянных моделей + часть ambient-моделей
-   отсутствует) → класс `?`/unknown; это не ошибка probe.
-8. **Лог большой** (текущий `rdr2-coop.log` ~141 МБ); анализатор стримит
-   построчно, но для пересылки лучше вырезать `probe:`-строки:
+   отсутствует) → класс `?`/unknown (24/49 в прогоне); это не ошибка probe.
+8. **Лог большой** (157 МБ в прогоне 23:00); анализатор стримит построчно,
+   но для пересылки лучше вырезать агрегаты/`probe:`-строки:
    `Select-String -Pattern 'probe:' > probe_lines.txt`.
 9. **Probe не должен оставаться включённым** в обычных сессиях: `npc_debug=0`
    default; при `npc_actor=1` actor-пайплайн не должен зависеть от probe-логов.
 10. **Версии/хэши:** `[nd]`-нативы перед кодом сверить по NativeDecl/nativedb
     и правилу проекта; probe-нативы в `src/natives.h` добавляет `client-review`,
     не дублировать вручную.
-11. **Гейт probe через `npc_actor=1` (факт/расхождение с постановкой):** в
-    `src/actor_sync.cpp` probe выполняется только при `npc_actor=1`
-    (`Tick` → `if (!enabled) return`, строки 289–302); постановка Lead —
-    `npc_debug=1, npc_actor=0`. До мержа использовать фактический гейт, после
-    мержа — зафиксировать окончательный вариант и обновить §1.
+11. **Гейт probe через `npc_actor=1` (факт/расхождение с постановкой):**
+    `Tick` → `if (!enabled) return`; постановка Lead — `npc_debug=1,
+    npc_actor=0`. До мержа использовать фактический гейт, после мержа —
+    зафиксировать окончательный вариант и обновить §1.
+12. **Location bias H4:** scan-строка без координат; `wild/mixed/town` —
+    эвристика по составу пула. Общая animal share (55.4%) не равна
+    «типичному городу» (~18%); для E2 нужны раздельные прогоны по локациям.
+13. **`WEAPON_UNARMED` pitfall:** `0xA2719263` нельзя считать armed; raw
+    метрика (75.5%) вводит в заблуждение, armed = 10.2%.
+14. **pedType mapping — гипотеза:** 4/5 → male/female подтверждена 25/25
+    известных моделей, но 24/49 моделей без гендерного имени; появление
+    других значений pedType требует новых данных.
+15. **`dynScenario != 0` при `scenarioAny=0` (7 записей):** семантика
+    переходов/остаточного сценария неясна; не строить на этом детект без
+    проверки.
+16. **Бюджет E1:** в городе 55–64 humans в 60 м, `kMaxActors=12` → покрытие
+    ~19%; нужно решение (cap/разрежение) до E1-приёмки.
 
 ---
 
-## 11. Источники
+## 12. Источники
 
 Локальные:
+- реальный лог probe-прогона:
+  `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` (21.10.2026 ~23:00,
+  157 МБ, 49 per-ped + 788 scan);
 - `docs/TESTING.md`, `docs/PROTOCOL.md`, `ROADMAP.md`
-- `src/natives.h` (проверенные хэши), `src/world_sync.cpp`, `src/coop.cpp`
+- `src/natives.h` (проверенные хэши), `src/actor_sync.cpp` (probe-режим и
+  summary-счётчики task-38), `src/config.cpp` (`npc_actor`/`npc_debug`),
+  `src/world_sync.cpp`, `src/coop.cpp`
 - `third_party/rdr2-runtime-scripthook/source/scripting_v3/RDR2.Native/NativeDecl.cs`
 - `research/rdr3-nativedb-data/natives.json`
 - `third_party/rdr2-hashdb/Peds.json` (1982 модели; имена/классы)
 - `third_party/rdr3-discoveries/clothes/metaped_outfits.lua` (890 моделей,
   outfit-хэши), `peds/peds_list.lua`, `animations/scenarios/README.md`,
   `AI/CPED_CONFIG_FLAGS/README.md`, `AI/RELATIONSHIP/README.md`
-- `tests/npc_probe_analyze.py` (анализатор; парсит и `probe:`-строки, и
-  summary `probe: scan …`), `tests/test_npc_probe_analyze.py`
-  (22 unit-теста, `ALL 22 TESTS PASSED`)
+- `tests/npc_probe_analyze.py` (анализатор: per-ped + scan pool/location/
+  segments, unarmed, pedType labels/gender-check), `tests/test_npc_probe_analyze.py`
+  (25 unit-тестов, `ALL 25 TESTS PASSED`)
 
 Web (внешний референс, не инструкции):
 - [alloc8or RDR3 nativedb](https://alloc8or.re/rdr3/nativedb/)
@@ -405,17 +551,17 @@ Web (внешний референс, не инструкции):
 
 ---
 
-## 12. Быстрый чек-лист «probe-прогон за 10 минут»
+## 13. Быстрый чек-лист «probe-прогон за 10 минут»
 
 1. `npc_actor = 1`, `npc_debug = 1` (см. §1), `world_sync = 0` на хосте;
    запустить игру.
-2. Saint-Denis/Valentine, 2–3 минуты неспешной ходьбы.
+2. Saint-Denis/Valentine, 2–3 минуты неспешной ходьбы (для animal-доли —
+   отдельный прогон в wilderness).
 3. Закрыть игру, скопировать лог в `probe_town.log`.
 4. `python tests\npc_probe_analyze.py probe_town.log` → скопировать Lead:
-   `records/unique`, H1/H2/H3/H4/H6 статусы, топ-модели/outfit/scenario,
-   `E1 plan hint`.
+   `records/unique`, pool totals/location, H1/H2/H3/H4/H5/H6, топ-модели/
+   outfit/scenario, `E1 plan hint`.
 5. Повторить для `probe_road.log` (лошади/животные) и
-   `probe_scenario.log` (салун/скамейки/кровать); помнить, что текущий probe
-   human-only и animals появятся только после all-peds режима.
+   `probe_scenario.log` (салун/скамейки/кровать).
 6. Проверить `npc_actor=0` или `npc_debug=0` → 0 строк `probe:`; запустить
-   `python tests\test_npc_probe_analyze.py` → `ALL 22 TESTS PASSED`.
+   `python tests\test_npc_probe_analyze.py` → `ALL 25 TESTS PASSED`.

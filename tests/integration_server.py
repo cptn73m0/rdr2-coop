@@ -1417,9 +1417,10 @@ def test_actor_duplicate_actor_ids(exe, tmp):
 
 def test_actor_gating_no_actor_log(exe, tmp):
     log("[test] v15 gating: no 'actor:' log lines in a normal session")
-    # This test runs even before E0 is merged: a normal session must not emit
-    # any actor: lines. After merge it guards against accidental actor traffic
-    # when npc_actor=0.
+    # Server-side gating only: mock clients never send actor messages, so this
+    # test is independent of the client-side npc_actor flag and remains valid
+    # for E1. Client-side gating (npc_actor=0 -> 0 actor:/probe: lines in
+    # rdr2-coop.log) is verified in-game by docs/NPC_E1_TESTING.md (S0/S9).
     with Server(exe, tmp / "actor_gating") as srv:
         host, guest = _actor_pair(srv)
         host.sendall(frame_bytes(TYPE_FRAME, make_frame_payload()))

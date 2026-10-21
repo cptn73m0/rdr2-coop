@@ -78,6 +78,26 @@ H3_COVERAGE_PARTIAL = 0.30
 H6_PASS = 0.05          # <= 5% human/name mismatches
 H6_WARN = 0.20
 
+# RDR2 weapon hash that means "no weapon in hands" (WEAPON_UNARMED); it must
+# not be counted as an armed NPC in weapon statistics.
+WEAPON_UNARMED = 0xA2719263
+
+# ePedType values observed/proposed for human peds (hypothesis, see docs).
+# 4/5 are the values emitted by the probe for human males/females in the
+# 23:00 run; 0..3 are intentionally left unlabelled until more data exists.
+PED_TYPE_LABELS = {
+    4: "human male (hypothesis)",
+    5: "human female (hypothesis)",
+}
+PED_TYPE_GENDERS = {4: "male", 5: "female"}
+
+# Pool-composition heuristics for scan-summary lines. Scan lines carry no
+# coordinates/timestamps, so "location segments" are inferred from the
+# human/animal composition of consecutive ~2 s windows.
+POOL_WINDOW_SECONDS = 2.0
+POOL_WILD_MAX_SHARE = 0.20   # human share < 20%  -> wilderness/animals
+POOL_TOWN_MIN_SHARE = 0.50   # human share >= 50% -> town/humans
+
 GATING_VERDICTS = ("H1", "H2", "H3", "H6")
 
 HUMAN_CLASSES = frozenset((
@@ -146,9 +166,11 @@ def parse_probe_line(line):
 def parse_probe_summary_line(line):
     """Parse the per-window summary line ``probe: scan humans=... ...``.
 
-    The client emits it after logging the candidate peds of each 2 s window:
-        probe: scan humans=13 logged=12 newCombos=2 unique=37
-    Returns a dict with keys humans/logged/new_combos/unique or None.
+    The client emits it after logging the candidate peds of each 2 s window
+    (task-38 added pool composition counters):
+        probe: scan humans=13 animals=14 total=27 logged=12 newCombos=2 unique=37
+    Returns a dict with keys humans/animals/total/logged/new_combos/unique
+    (keys not present in older client builds are simply absent) or None.
     """
     if not isinstance(line, str):
         return None
@@ -160,6 +182,8 @@ def parse_probe_summary_line(line):
         return None
     aliases = {
         "humans": "humans",
+        "animals": "animals",
+        "total": "total",
         "logged": "logged",
         "newcombos": "new_combos",
         "unique": "unique",
@@ -294,6 +318,27 @@ def class_is_animal(cls):
     return cls in ANIMAL_CLASSES
 
 
+def model_gender(name):
+    """Best-effort gender from a rdr2-hashdb ped model name.
+
+    Gender-coded prefixes (a_m_/a_f_/g_m_/g_f_/u_m_/u_f_/s_m_/s_f_) and
+    MALE(S)/FEMALE(S) tokens are used; everything else is "unknown". This is
+    used only to cross-check the pedType 4/5 -> male/female hypothesis.
+    """
+    if not name:
+        return "unknown"
+    upper = name.upper()
+    if upper.startswith(("A_F_", "G_F_", "U_F_", "S_F_")):
+        return "female"
+    if upper.startswith(("A_M_", "G_M_", "U_M_", "S_M_")):
+        return "male"
+    if "FEMALES" in upper:
+        return "female"
+    if "MALES" in upper:
+        return "male"
+    return "unknown"
+
+
 def model_name(hashdb, model_hash):
     if not hashdb:
         return None
@@ -340,6 +385,140 @@ def _counter_top(counter, top, hashdb=None):
     return rows
 
 
+# --------------------------------------------------------------------------
+# Pool composition from scan-summary lines (humans=/animals=/total=)
+# --------------------------------------------------------------------------
+
+def pool_bucket(humans, total):
+    """Heuristic location bucket for one scan window (no coords in the log)."""
+    if total <= 0:
+        return "empty"
+    share = float(humans) / float(total)
+    if share < POOL_WILD_MAX_SHARE:
+        return "wild"
+    if share < POOL_TOWN_MIN_SHARE:
+        return "mixed"
+    return "town"
+
+
+def _shares(values):
+    if not values:
+        return {"min": None, "avg": None, "max": None}
+    return {
+        "min": min(values),
+        "avg": sum(values) / float(len(values)),
+        "max": max(values),
+    }
+
+
+def pool_stats(summaries):
+    """Aggregate pool counters from ``probe: scan humans= animals= total=``.
+
+    Returns totals over all complete windows plus bucket/segment breakdowns.
+    The scan line has no coordinates/timestamps, so location/session split is
+    inferred from the human/animal composition of consecutive windows.
+    """
+    windows = []
+    for item in summaries:
+        if not isinstance(item, dict):
+            continue
+        if not all(key in item for key in ("humans", "animals", "total")):
+            continue
+        windows.append({
+            "humans": int(item.get("humans", 0)),
+            "animals": int(item.get("animals", 0)),
+            "total": int(item.get("total", 0)),
+        })
+
+    humans_sum = sum(window["humans"] for window in windows)
+    animals_sum = sum(window["animals"] for window in windows)
+    total_sum = sum(window["total"] for window in windows)
+    human_shares = [float(window["humans"]) / window["total"]
+                    for window in windows if window["total"] > 0]
+    animal_shares = [float(window["animals"]) / window["total"]
+                     for window in windows if window["total"] > 0]
+
+    result = {
+        "windows": len(windows),
+        "humans_sum": humans_sum,
+        "animals_sum": animals_sum,
+        "total_sum": total_sum,
+        "human_share": _ratio(humans_sum, total_sum),
+        "animal_share": _ratio(animals_sum, total_sum),
+        "humans_zero_windows": sum(1 for window in windows
+                                   if window["humans"] == 0),
+        "empty_windows": sum(1 for window in windows
+                             if window["total"] == 0),
+        "window_human_share": _shares(human_shares),
+        "window_animal_share": _shares(animal_shares),
+        "buckets": {},
+        "segments": [],
+        "segments_top": [],
+        "runs": {},
+    }
+
+    bucket_aggs = {}
+    for window in windows:
+        bucket = pool_bucket(window["humans"], window["total"])
+        agg = bucket_aggs.setdefault(bucket, {
+            "windows": 0,
+            "humans_sum": 0,
+            "animals_sum": 0,
+            "total_sum": 0,
+        })
+        agg["windows"] += 1
+        agg["humans_sum"] += window["humans"]
+        agg["animals_sum"] += window["animals"]
+        agg["total_sum"] += window["total"]
+
+    segments = []
+    for window in windows:
+        bucket = pool_bucket(window["humans"], window["total"])
+        if not segments or segments[-1]["bucket"] != bucket:
+            segments.append({
+                "bucket": bucket,
+                "windows": 0,
+                "humans_sum": 0,
+                "animals_sum": 0,
+                "total_sum": 0,
+            })
+        segment = segments[-1]
+        segment["windows"] += 1
+        segment["humans_sum"] += window["humans"]
+        segment["animals_sum"] += window["animals"]
+        segment["total_sum"] += window["total"]
+
+    for segment in segments:
+        count = segment["windows"]
+        segment["duration_s"] = round(count * POOL_WINDOW_SECONDS, 1)
+        segment["humans_avg"] = segment["humans_sum"] / float(count)
+        segment["animals_avg"] = segment["animals_sum"] / float(count)
+        segment["total_avg"] = segment["total_sum"] / float(count)
+        segment["human_share"] = _ratio(segment["humans_sum"],
+                                        segment["total_sum"])
+        segment["animal_share"] = _ratio(segment["animals_sum"],
+                                         segment["total_sum"])
+
+    runs = collections.Counter(segment["bucket"] for segment in segments)
+    for bucket, agg in bucket_aggs.items():
+        count = agg["windows"]
+        agg["duration_s"] = round(count * POOL_WINDOW_SECONDS, 1)
+        agg["humans_avg"] = agg["humans_sum"] / float(count)
+        agg["animals_avg"] = agg["animals_sum"] / float(count)
+        agg["total_avg"] = agg["total_sum"] / float(count)
+        agg["human_share"] = _ratio(agg["humans_sum"], agg["total_sum"])
+        agg["animal_share"] = _ratio(agg["animals_sum"], agg["total_sum"])
+        agg["runs"] = runs.get(bucket, 0)
+
+    result["buckets"] = bucket_aggs
+    result["segments"] = segments
+    result["segments_top"] = sorted(
+        segments, key=lambda item: (item["windows"], item["humans_sum"]),
+        reverse=True)[:8]
+    result["runs"] = {key: int(value) for key, value in runs.items()}
+    return result
+
+
 def analyze_records(records, hashdb=None, top=8, file_meta=None):
     """Compute all distributions/verdicts for a list of parsed probe records."""
     meta = dict(file_meta or {})
@@ -363,8 +542,9 @@ def analyze_records(records, hashdb=None, top=8, file_meta=None):
                                       if _is_nonzero(r, "pointType"))
     mounts = collections.Counter(r.get("mount", 0) for r in records
                                  if _is_nonzero(r, "mount"))
-    weapons = collections.Counter(r.get("weapon", 0) for r in records
-                                  if _is_nonzero(r, "weapon"))
+    weapon_values = [r.get("weapon", 0) for r in records]
+    weapons = collections.Counter(value for value in weapon_values
+                                  if value and value != WEAPON_UNARMED)
 
     human_counts = collections.Counter(_human_flag(r) for r in records)
     unique_human_counts = collections.Counter(_human_flag(r)
@@ -434,6 +614,54 @@ def analyze_records(records, hashdb=None, top=8, file_meta=None):
 
     ped_types = collections.Counter(r.get("pedType") for r in records
                                     if "pedType" in r)
+    ped_type_table = []
+    for value, count in sorted(ped_types.items(),
+                               key=lambda item: str(item[0])):
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            numeric = None
+        ped_type_table.append({
+            "value": value,
+            "label": PED_TYPE_LABELS.get(numeric, "unknown")
+            if numeric is not None else "unknown",
+            "count": count,
+        })
+
+    # Cross-check the pedType 4/5 -> male/female hypothesis against gender
+    # coded model names (a_m_*/a_f_*, MALES/FEMALES tokens). This is a
+    # hypothesis check only: 24/49 records in the 23:00 run had no gender
+    # coded model name and stay "unknown".
+    ped_type_gender = {
+        "known": 0,
+        "match": 0,
+        "mismatch": 0,
+        "unknown": 0,
+        "examples": [],
+    }
+    for record in records:
+        expected = PED_TYPE_GENDERS.get(record.get("pedType"))
+        if expected is None:
+            continue
+        name = model_name(hashdb, record.get("model", 0))
+        actual = model_gender(name)
+        if actual == "unknown":
+            ped_type_gender["unknown"] += 1
+            continue
+        ped_type_gender["known"] += 1
+        if actual == expected:
+            ped_type_gender["match"] += 1
+        else:
+            ped_type_gender["mismatch"] += 1
+            if len(ped_type_gender["examples"]) < 5:
+                ped_type_gender["examples"].append({
+                    "model": record.get("model", 0),
+                    "name": name,
+                    "pedType": record.get("pedType"),
+                    "expected": expected,
+                    "model_gender": actual,
+                })
+
     missions = sum(1 for r in records if _is_nonzero(r, "mission"))
 
     class_stats = {}
@@ -446,6 +674,7 @@ def analyze_records(records, hashdb=None, top=8, file_meta=None):
             "outfit_nonzero": 0,
             "mount_nonzero": 0,
             "weapon_nonzero": 0,
+            "weapon_armed": 0,
             "scenario_any": 0,
             "dyn_nonzero": 0,
             "point_nonzero": 0,
@@ -454,7 +683,9 @@ def analyze_records(records, hashdb=None, top=8, file_meta=None):
         bucket["count"] += 1
         bucket["outfit_nonzero"] += int(_is_nonzero(record, "metaOutfit"))
         bucket["mount_nonzero"] += int(_is_nonzero(record, "mount"))
-        bucket["weapon_nonzero"] += int(_is_nonzero(record, "weapon"))
+        weapon = record.get("weapon", 0)
+        bucket["weapon_nonzero"] += int(bool(weapon))
+        bucket["weapon_armed"] += int(bool(weapon) and weapon != WEAPON_UNARMED)
         bucket["scenario_any"] += int(_is_nonzero(record, "scenarioAny"))
         bucket["dyn_nonzero"] += int(_is_nonzero(record, "dynScenario"))
         bucket["point_nonzero"] += int(_is_nonzero(record, "pointType"))
@@ -479,13 +710,14 @@ def analyze_records(records, hashdb=None, top=8, file_meta=None):
     }
 
     # Per-window summary lines emitted by the client:
-    #   probe: scan humans=H logged=L newCombos=C unique=U
+    #   probe: scan humans=H animals=A total=T logged=L newCombos=C unique=U
     summaries = [item for item in (meta.get("summaries") or [])
                  if isinstance(item, dict)]
     humans_values = [int(item.get("humans", 0)) for item in summaries]
     logged_values = [int(item.get("logged", 0)) for item in summaries]
     new_combos_values = [int(item.get("new_combos", 0)) for item in summaries]
     unique_combos_values = [int(item.get("unique", 0)) for item in summaries]
+    pool = pool_stats(summaries)
     scan = {
         "windows": len(summaries),
         "humans_max": max(humans_values) if humans_values else 0,
@@ -496,6 +728,7 @@ def analyze_records(records, hashdb=None, top=8, file_meta=None):
                        if logged_values else None),
         "new_combos_total": sum(new_combos_values),
         "unique_max": max(unique_combos_values) if unique_combos_values else 0,
+        "pool": pool,
     }
 
     stats = {
@@ -528,8 +761,16 @@ def analyze_records(records, hashdb=None, top=8, file_meta=None):
             "records": len(records),
         },
         "weapon": {
-            "nonzero": sum(1 for r in records if _is_nonzero(r, "weapon")),
             "records": len(records),
+            # Raw "hash != 0" count, kept for backward compatibility/debug.
+            "nonzero": sum(1 for value in weapon_values if value),
+            "raw_nonzero": sum(1 for value in weapon_values if value),
+            # Armed = a real weapon hash, excluding WEAPON_UNARMED (0xA2719263).
+            "armed": sum(1 for value in weapon_values
+                         if value and value != WEAPON_UNARMED),
+            "unarmed": sum(1 for value in weapon_values
+                           if value == WEAPON_UNARMED),
+            "zero": sum(1 for value in weapon_values if value == 0),
         },
         "mission": {
             "nonzero": missions,
@@ -537,6 +778,10 @@ def analyze_records(records, hashdb=None, top=8, file_meta=None):
         },
         "ped_types": {str(key): value for key, value in sorted(ped_types.items(),
                                                                key=lambda kv: str(kv[0]))},
+        "ped_type": {
+            "table": ped_type_table,
+            "gender_check": ped_type_gender,
+        },
         "classes": dict(sorted(class_stats.items())),
         "models_top": _counter_top(models, top, hashdb),
         "outfits_top": _counter_top(outfits, top, None),
@@ -663,39 +908,78 @@ def build_verdicts(stats):
         verdicts.append(_verdict("H3", "scenario detection coverage", status,
                                  coverage, detail))
 
-    # H4: human vs animal pool ratio is observable.
-    known_flags = stats["human"]["human"] + stats["human"]["animal"]
-    records = stats["records"]
-    if known_flags == 0:
+    # H4: human vs animal pool ratio is observable. Prefer the scan-summary
+    # pool counters (task-38: humans=/animals=/total= count ALL peds in the
+    # radius before the human top-20 filter), because per-ped records are
+    # deliberately human-only.
+    scan = stats.get("scan") or {}
+    pool = scan.get("pool") or {}
+    if pool.get("windows") and (pool.get("total_sum") or 0) > 0:
+        human_share = pool.get("human_share")
+        animal_share = pool.get("animal_share")
+        buckets = pool.get("buckets") or {}
+
+        def _bucket_animal_share(bucket_name):
+            bucket = buckets.get(bucket_name) or {}
+            share = bucket.get("animal_share")
+            if share is None:
+                return "n/a"
+            return "%.1f%%" % (share * 100.0)
+
+        detail = (
+            "pool counters from %d scan windows: humans=%d, animals=%d, "
+            "total=%d -> human %.1f%% / animal %.1f%%; animal share is "
+            "strongly location-dependent (wild windows animal %s, town "
+            "windows animal %s); per-ped records remain human-only"
+            % (pool["windows"], pool.get("humans_sum", 0),
+               pool.get("animals_sum", 0), pool.get("total_sum", 0),
+               (human_share or 0.0) * 100.0, (animal_share or 0.0) * 100.0,
+               _bucket_animal_share("wild"), _bucket_animal_share("town")))
         verdicts.append(_verdict(
-            "H4", "human vs animal ratio observable", "INSUFFICIENT", None,
-            "human= field is missing in every record"))
-    elif stats["human"]["animal"] == 0:
-        verdicts.append(_verdict(
-            "H4", "human vs animal ratio observable", "WARN",
-            _ratio(known_flags, records),
-            "no animal records sampled; the current task-34 probe is "
-            "human-filtered (!IsHuman) or the run had no animals in range; "
-            "animal share cannot be measured from this log without an "
-            "all-peds probe mode"))
+            "H4", "human vs animal pool ratio observable", "PASS",
+            {"human_share": human_share, "animal_share": animal_share},
+            detail))
     else:
-        verdicts.append(_verdict(
-            "H4", "human vs animal ratio observable", "PASS",
-            _ratio(known_flags, records),
-            "human=%d, animal=%d (%s of records have a valid human flag)"
-            % (stats["human"]["human"], stats["human"]["animal"],
-               "%.1f%%" % (100.0 * known_flags / records))))
+        known_flags = stats["human"]["human"] + stats["human"]["animal"]
+        records = stats["records"]
+        if known_flags == 0:
+            verdicts.append(_verdict(
+                "H4", "human vs animal ratio observable", "INSUFFICIENT", None,
+                "human= field is missing in every record and no scan-summary "
+                "pool counters (humans=/animals=/total=) were found"))
+        elif stats["human"]["animal"] == 0:
+            verdicts.append(_verdict(
+                "H4", "human vs animal ratio observable", "WARN",
+                _ratio(known_flags, records),
+                "no animal records and no scan-summary pool counters; the "
+                "current probe logs only human peds per line - animal share "
+                "cannot be measured from per-ped records alone"))
+        else:
+            verdicts.append(_verdict(
+                "H4", "human vs animal ratio observable", "PASS",
+                _ratio(known_flags, records),
+                "human=%d, animal=%d (%s of records have a valid human flag)"
+                % (stats["human"]["human"], stats["human"]["animal"],
+                   "%.1f%%" % (100.0 * known_flags / records))))
 
     # H5: mount/weapon info present (informational, no gate).
+    weapon = stats["weapon"]
+    records = stats["records"]
     mount_ratio = _ratio(stats["mount"]["nonzero"], stats["mount"]["records"])
-    weapon_ratio = _ratio(stats["weapon"]["nonzero"], stats["weapon"]["records"])
+    armed_ratio = _ratio(weapon["armed"], records)
+    unarmed_ratio = _ratio(weapon["unarmed"], records)
     verdicts.append(_verdict(
-        "H5", "mount/weapon fields populated", "INFO",
-        {"mount": mount_ratio, "weapon": weapon_ratio},
-        "mount!=0: %d/%d, weapon!=0: %d/%d (informational; run a road/camp "
-        "probe to raise mount coverage)"
+        "H5", "mount/weapon fields populated (WEAPON_UNARMED excluded)",
+        "INFO",
+        {"mount": mount_ratio, "armed": armed_ratio,
+         "unarmed": unarmed_ratio},
+        "mount!=0: %d/%d (%.1f%%); armed (hash != 0 and != WEAPON_UNARMED "
+        "0xA2719263): %d/%d (%.1f%%); unarmed: %d/%d; weapon=0: %d/%d "
+        "(informational; mount coverage needs a road/camp probe)"
         % (stats["mount"]["nonzero"], stats["mount"]["records"],
-           stats["weapon"]["nonzero"], stats["weapon"]["records"])))
+           (mount_ratio or 0.0) * 100.0,
+           weapon["armed"], records, (armed_ratio or 0.0) * 100.0,
+           weapon["unarmed"], records, weapon["zero"], records)))
 
     # H6: human flag vs model name (contract sanity).
     mismatch = stats["human_name_mismatch"]
@@ -760,6 +1044,20 @@ def _fmt_pct(numerator, denominator):
     return "%.1f%%" % (ratio * 100.0)
 
 
+def _fmt_share_stats(values):
+    """Format {'min','avg','max'} shares as 'min% / avg% / max%'."""
+    if not values or values.get("avg") is None:
+        return "n/a"
+    return "%.1f%% / %.1f%% / %.1f%%" % (
+        values["min"] * 100.0, values["avg"] * 100.0, values["max"] * 100.0)
+
+
+def _fmt_number(value, digits=1):
+    if value is None:
+        return "n/a"
+    return ("%." + str(digits) + "f") % value
+
+
 def print_report(report):
     meta = report["meta"]
     stats = report["stats"]
@@ -781,20 +1079,71 @@ def print_report(report):
              stats["unique_models"], stats["unique_outfits"]))
 
     scan = stats.get("scan") or {}
+    pool = scan.get("pool") or {}
     if scan.get("windows"):
-        _print_table("Probe scan windows (client summary lines)", [
+        _print_table("Pool totals by scan windows (client summary lines)", [
             "metric", "value",
         ], [
-            ["windows", scan["windows"]],
-            ["humans in radius (max)", scan["humans_max"]],
-            ["humans in radius (avg)",
-             "%.2f" % scan["humans_avg"] if scan["humans_avg"] is not None else "n/a"],
+            ["scan windows", scan["windows"]],
+            ["windows with pool counters", pool.get("windows", 0)],
+            ["pool humans (sum)", pool.get("humans_sum", "n/a")],
+            ["pool animals (sum)", pool.get("animals_sum", "n/a")],
+            ["pool total (sum)", pool.get("total_sum", "n/a")],
+            ["human share (pool sum)",
+             _fmt_pct(pool.get("humans_sum", 0), pool.get("total_sum", 0))],
+            ["animal share (pool sum)",
+             _fmt_pct(pool.get("animals_sum", 0), pool.get("total_sum", 0))],
+            ["window human share min/avg/max",
+             _fmt_share_stats(pool.get("window_human_share"))],
+            ["window animal share min/avg/max",
+             _fmt_share_stats(pool.get("window_animal_share"))],
+            ["windows humans=0", pool.get("humans_zero_windows", 0)],
+            ["empty windows (total=0)", pool.get("empty_windows", 0)],
             ["logged peds (max)", scan["logged_max"]],
-            ["logged peds (avg)",
-             "%.2f" % scan["logged_avg"] if scan["logged_avg"] is not None else "n/a"],
+            ["logged peds (avg)", _fmt_number(scan["logged_avg"], 2)],
             ["new combos total", scan["new_combos_total"]],
             ["unique combos (max)", scan["unique_max"]],
         ])
+
+        bucket_rows = []
+        for bucket in ("wild", "mixed", "town", "empty"):
+            agg = (pool.get("buckets") or {}).get(bucket)
+            if not agg:
+                continue
+            bucket_rows.append([
+                bucket, agg["windows"], agg.get("runs", 0),
+                _fmt_number(agg.get("duration_s"), 0),
+                _fmt_number(agg.get("humans_avg"), 1),
+                _fmt_number(agg.get("animals_avg"), 1),
+                _fmt_pct(agg.get("humans_sum", 0), agg.get("total_sum", 0)),
+                _fmt_pct(agg.get("animals_sum", 0), agg.get("total_sum", 0)),
+            ])
+        _print_table("Pool by location heuristic (scan windows: wild<20% "
+                     "humans, town>=50%)", [
+            "bucket", "windows", "runs", "duration_s", "humans_avg",
+            "animals_avg", "human_share", "animal_share",
+        ], bucket_rows)
+
+        segment_rows = []
+        for index, segment in enumerate(pool.get("segments_top") or [], 1):
+            segment_rows.append([
+                index, segment["bucket"], segment["windows"],
+                _fmt_number(segment.get("duration_s"), 0),
+                _fmt_number(segment.get("humans_avg"), 1),
+                _fmt_number(segment.get("animals_avg"), 1),
+                _fmt_pct(segment.get("humans_sum", 0),
+                         segment.get("total_sum", 0)),
+                _fmt_pct(segment.get("animals_sum", 0),
+                         segment.get("total_sum", 0)),
+            ])
+        _print_table("Longest pool segments (location heuristic)", [
+            "#", "bucket", "windows", "duration_s", "humans_avg",
+            "animals_avg", "human_share", "animal_share",
+        ], segment_rows)
+        print("  NOTE: scan lines carry no coordinates; location/segment split")
+        print("        is inferred from pool composition. Animal share is")
+        print("        location-dependent (town vs wilderness) - run separate")
+        print("        probe sessions per location for exact numbers.")
 
     human = stats["human"]
     _print_table("Pool: human vs animal (human= field)", [
@@ -853,28 +1202,46 @@ def print_report(report):
          _fmt_pct(scenario["any_both_zero"], scenario["any"])],
     ])
 
+    weapon = stats["weapon"]
     _print_table("Mount / weapon / mission", [
-        "field", "nonzero", "total", "share",
+        "metric", "count", "total", "share",
     ], [
         ["mount != 0", stats["mount"]["nonzero"], stats["mount"]["records"],
          _fmt_pct(stats["mount"]["nonzero"], stats["mount"]["records"])],
-        ["weapon != 0", stats["weapon"]["nonzero"], stats["weapon"]["records"],
-         _fmt_pct(stats["weapon"]["nonzero"], stats["weapon"]["records"])],
+        ["armed (weapon != 0, != Unarmed)", weapon["armed"],
+         weapon["records"], _fmt_pct(weapon["armed"], weapon["records"])],
+        ["unarmed (0xA2719263)", weapon["unarmed"], weapon["records"],
+         _fmt_pct(weapon["unarmed"], weapon["records"])],
+        ["weapon == 0", weapon["zero"], weapon["records"],
+         _fmt_pct(weapon["zero"], weapon["records"])],
+        ["weapon != 0 (raw)", weapon["nonzero"], weapon["records"],
+         _fmt_pct(weapon["nonzero"], weapon["records"])],
         ["mission != 0", stats["mission"]["nonzero"],
          stats["mission"]["records"],
          _fmt_pct(stats["mission"]["nonzero"], stats["mission"]["records"])],
     ])
 
-    _print_table("pedType distribution (GET_PED_TYPE)", ["pedType", "records"],
-                 [[key, value] for key, value in
-                  stats["ped_types"].items()])
+    ped_type = stats.get("ped_type") or {}
+    _print_table("pedType distribution (GET_PED_TYPE; 4/5 labels are a "
+                 "hypothesis)", ["pedType", "label", "records", "share"], [
+        [row["value"], row["label"], row["count"],
+         _fmt_pct(row["count"], stats["records"])]
+        for row in ped_type.get("table") or []
+    ])
+    gender_check = ped_type.get("gender_check") or {}
+    if gender_check:
+        _print_table("pedType gender check (4=male, 5=female; vs model name)", [
+            "known", "match", "mismatch", "unknown",
+        ], [[gender_check.get("known", 0), gender_check.get("match", 0),
+             gender_check.get("mismatch", 0),
+             gender_check.get("unknown", 0)]])
 
     _print_table("Model classes (hashdb names)", [
-        "class", "records", "outfit!=0", "mount", "weapon", "scenarioAny",
+        "class", "records", "outfit!=0", "mount", "armed", "scenarioAny",
     ], [
         [name, bucket["count"], _fmt_pct(bucket["outfit_nonzero"],
                                          bucket["count"]),
-         bucket["mount_nonzero"], bucket["weapon_nonzero"],
+         bucket["mount_nonzero"], bucket.get("weapon_armed", 0),
          bucket["scenario_any"]]
         for name, bucket in stats["classes"].items()
     ])
@@ -892,7 +1259,7 @@ def print_report(report):
         ("Top dynamic scenarios", "dyn_top"),
         ("Top scenario point types", "point_top"),
         ("Top mount models/handles", "mount_top"),
-        ("Top weapons", "weapon_top"),
+        ("Top armed weapons (Unarmed excluded)", "weapon_top"),
     ):
         rows = []
         for row in stats[key]:
@@ -936,10 +1303,12 @@ def e1_plan_hint(verdicts):
                      "+ _APPLY_PED_META_PED_OUTFIT for every actor; send "
                      "metaOutfit hash in ActorOutfit (protocol v15 0x1C).")
     elif h1_status == "PARTIAL":
-        hints.append("H1 PARTIAL -> E1-A for classes with hash != 0 plus "
-                     "E1-B brute force (_IS_META_PED_OUTFIT_EQUIPPED over "
-                     "rdr3-discoveries metaped_outfits.lua per model) for the "
-                     "remaining classes.")
+        hints.append("H1 PARTIAL -> E1-A only for the minority with hash != 0; "
+                     "for the rest use E1-B brute force "
+                     "(_IS_META_PED_OUTFIT_EQUIPPED over rdr3-discoveries "
+                     "metaped_outfits.lua per model) or E1-C per-component "
+                     "asset/tint capture (GET_META_PED_ASSET_GUIDS/TINT + "
+                     "_SET_META_PED_TAG).")
     elif h1_status == "FAIL":
         hints.append("H1 FAIL -> E1-B first: brute force equipped outfits "
                      "from metaped_outfits.lua; if that also fails, E1-C "
@@ -952,9 +1321,11 @@ def e1_plan_hint(verdicts):
     h3 = by_id.get("H3", {})
     h3_status = h3.get("status")
     if h3_status == "PASS":
-        hints.append("H3 PASS -> replay scenarios from dynScenario/pointType: "
-                     "TASK_START_SCENARIO_IN_PLACE_HASH and/or create a "
-                     "scenario point + TASK_USE_SCENARIO_POINT on the guest.")
+        hints.append("H3 PASS -> replay scenarios; prefer the chain with the "
+                     "higher coverage from the verdict detail: scenario-point "
+                     "chain (CREATE_SCENARIO_POINT_HASH + TASK_USE_SCENARIO_"
+                     "POINT, keeps props) or dynamic hash "
+                     "(TASK_START_SCENARIO_IN_PLACE_HASH).")
     elif h3_status == "PARTIAL":
         hints.append("H3 PARTIAL -> implement scenario replay for the "
                      "detected subset; for undetected peds fall back to "
@@ -968,10 +1339,29 @@ def e1_plan_hint(verdicts):
                      "where NPCs sit, smoke, drink, sleep.")
 
     h4 = by_id.get("H4", {})
-    if h4.get("status") == "WARN":
+    if h4.get("status") == "PASS":
+        value = h4.get("value") or {}
+        human_share = value.get("human_share")
+        animal_share = value.get("animal_share")
+        hints.append("H4 PASS -> pool share is measurable from scan counters "
+                     "(human %s, animal %s overall); animal share is "
+                     "location-dependent -> E1 stays human-only, animals/"
+                     "horses are a separate E2 scope with per-location budgets."
+                     % ("%.1f%%" % (human_share * 100.0)
+                        if human_share is not None else "n/a",
+                        "%.1f%%" % (animal_share * 100.0)
+                        if animal_share is not None else "n/a"))
+    elif h4.get("status") == "WARN":
         hints.append("H4 WARN -> probe is human-filtered (task-34), animal "
                      "share is not measurable; add an all-peds probe mode "
                      "before E1/E2 animal scope.")
+    h5 = by_id.get("H5", {})
+    h5_value = h5.get("value") or {}
+    if isinstance(h5_value, dict) and h5_value.get("armed") is not None:
+        hints.append("H5 INFO -> armed %.0f%% of sampled humans (WEAPON_UNARMED "
+                     "0xA2719263 excluded); most NPCs are unarmed, so combat "
+                     "replication is lower priority than appearance/locomotion."
+                     % (h5_value["armed"] * 100.0))
     h2 = by_id.get("H2", {})
     if h2.get("status") in ("FAIL", "UNKNOWN"):
         hints.append("H2 not PASS -> verify _IS_META_PED_OUTFIT_EQUIPPED "

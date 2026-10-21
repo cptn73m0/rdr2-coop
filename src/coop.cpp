@@ -5322,6 +5322,15 @@ void InitNetworkClient()
         CopyInboxName(s_inbox.events.respawnedName, name);
     });
 
+    // E1 (v15): actor-репликация NPC. Колбэки только копируют данные в inbox
+    // actor_sync (без нативов/логов); игровой слой применит их в Tick.
+    g_netClient.SetActorSpawnBatch(actor_sync::OnActorSpawnBatch);
+    g_netClient.SetActorFrames(actor_sync::OnActorFrames);
+    g_netClient.SetActorDespawn(actor_sync::OnActorDespawn);
+    g_netClient.SetActorEvent(actor_sync::OnActorEvent);
+    g_netClient.SetActorOutfit(actor_sync::OnActorOutfit);
+    g_netClient.SetActorResyncRequest(actor_sync::OnActorResyncRequest);
+
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
     coopcfg::Config& cfg = coopcfg::Load();
     sh_log::Write("net: connecting to %s:%d as '%s' (model=0x%llX)\n",
@@ -5350,6 +5359,40 @@ void SendTrainSnapshot(const std::vector<uint8_t>& payload)
 bool IsWorldSyncExcluded(unsigned int handle)
 {
     return handle != 0 && (handle == s_ghost || handle == s_mount);
+}
+
+// E1: отправка actor-сообщений от хоста (вызывается actor_sync::Tick).
+void SendActorSpawnBatch(uint32_t epoch,
+                         const std::vector<net::ActorSpawn>& actors)
+{
+    g_netClient.SendActorSpawnBatch(epoch, actors);
+}
+
+void SendActorFrames(uint32_t epoch, uint16_t seq,
+                     const std::vector<net::ActorFrame>& frames)
+{
+    g_netClient.SendActorFrames(epoch, seq, frames);
+}
+
+void SendActorDespawn(const net::ActorDespawnPayload& msg)
+{
+    g_netClient.SendActorDespawn(msg);
+}
+
+void SendActorResync(uint32_t epoch, uint32_t lastSeq, uint8_t reason)
+{
+    // Гость просит хост прислать ростер/кадры заново. Троттлинг: не чаще
+    // одного запроса в секунду (несколько прокси могут одновременно
+    // обнаружить потерю кадров и запросить resync).
+    if (epoch == 0)
+        return;
+    static unsigned int s_lastResyncTick = 0;
+    if (s_lastResyncTick != 0 && (s_tickCount - s_lastResyncTick) < 60)
+        return;
+    s_lastResyncTick = s_tickCount;
+    g_netClient.SendActorResync(epoch, lastSeq, reason);
+    sh_log::Write("actor: resync request epoch=%u seq=%u reason=%u\n",
+                  epoch, lastSeq, (unsigned)reason);
 }
 
 void Tick()
@@ -5730,12 +5773,16 @@ void Tick()
         s_amHost.store(ev.joinIsHost);
         if (ev.joinHasHeading)
             s_pendingHeading = ev.joinHeading;
+        // E1: новая сетевая сессия — новая эпоха акторов, старых прокси нет.
+        actor_sync::Reset();
     }
     if (ev.hostChanged)
     {
         s_amHost.store(ev.hostChangedIsHost);
         std::snprintf(s_joinedName, sizeof(s_joinedName),
                       ev.hostChangedIsHost ? "You are now HOST" : "You are now GUEST");
+        // E1: смена роли/хоста — сбросить roster/прокси и epoch.
+        actor_sync::Reset();
         s_subtitleTicksLeft = 10 * 60;
     }
     // Порядок важен: сначала connectionLost, потом leave, потом playerJoined
@@ -5746,11 +5793,15 @@ void Tick()
         // После reconnect наряд/снаряжение надо переслать заново.
         s_sentOutfitValid = false;
         s_sentHorseOutfitValid = false;
+        // E1: связь потеряна — удалить прокси/roster акторов.
+        actor_sync::Reset();
     }
     if (ev.leave)
     {
         std::snprintf(s_leaveName, sizeof(s_leaveName), "%s", ev.leaveName);
         s_pendingLeave = true;
+        // E1: игрок вышел — акторы устарели.
+        actor_sync::Reset();
     }
     if (ev.playerJoined)
     {
@@ -5798,6 +5849,9 @@ void Tick()
         // Новому пиру наряд/снаряжение лошади надо переслать заново.
         s_sentOutfitValid = false;
         s_sentHorseOutfitValid = false;
+        // E1: новый пир — пересоздать epoch/roster, чтобы сразу ушёл
+        // ActorSpawnBatch (не ждать heartbeat).
+        actor_sync::Reset();
     }
 
     // Обработка потери соединения: чистим удалённого педа и ждём reconnect.
@@ -6413,11 +6467,23 @@ void Tick()
         }
     }
 
-    // R&D E0: каркас NPC actor sync (E-1 probe при npc_debug=1). При
-    // npc_actor=0 внутри немедленный return — без нативов/логов, поведение
-    // клиента не меняется. Вызов — в конце Tick до persist, без ранних return.
-    actor_sync::Tick(playerPed, s_tickCount, s_amHost.load(),
-                     coopcfg::Get().npcActor);
+    // E1: репликация NPC-актёров (host sender + guest proxies + lifecycle).
+    // При npc_actor=0 actor_sync::Tick сразу выходит — ноль нативов/логов.
+    // Вызов — в конце Tick, после базовой обработки, до persist.
+    {
+        actor_sync::TickContext actx;
+        actx.localPed = playerPed;
+        actx.tickCount = s_tickCount;
+        actx.amHost = s_amHost.load();
+        actx.enabled = coopcfg::Get().npcActor;
+        actx.partnerValid = s_lastKnownPosValid;
+        actx.partnerX = s_lastKnownPos.x;
+        actx.partnerY = s_lastKnownPos.y;
+        actx.partnerZ = s_lastKnownPos.z;
+        actx.partnerGhost = s_ghost;
+        actx.partnerMount = s_mount;
+        actor_sync::Tick(actx);
+    }
 
     // Persist the ped's position regularly so a returning player spawns on
     // their last known coords. Write at a low frequency to avoid hammering

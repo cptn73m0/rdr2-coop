@@ -1,6 +1,7 @@
 #pragma once
 
 #include "native_call.h"
+#include "net/protocol.h"
 
 #include <cstdint>
 #include <vector>
@@ -25,5 +26,16 @@ void SendTrainSnapshot(const std::vector<uint8_t>& payload);
 // P1: служебные сущности мода (ghost/mount), которые нельзя реплицировать
 // как NPC мира.
 bool IsWorldSyncExcluded(unsigned int handle);
+
+// E1: отправка actor-сообщений от хоста (вызывается actor_sync).
+void SendActorSpawnBatch(uint32_t epoch,
+                         const std::vector<net::ActorSpawn>& actors);
+void SendActorFrames(uint32_t epoch, uint16_t seq,
+                     const std::vector<net::ActorFrame>& frames);
+void SendActorDespawn(const net::ActorDespawnPayload& msg);
+// E1: запрос resync от гостя. ВАЖНО: в net/client пока есть только приём
+// ActorResync, но НЕ отправка (Client::SendActorResync отсутствует) — заглушка
+// до правки net-слоя (net-review), игровой слой вызывает безопасно.
+void SendActorResync(uint32_t epoch, uint32_t lastSeq, uint8_t reason);
 
 } // namespace coop

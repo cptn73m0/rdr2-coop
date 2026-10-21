@@ -281,4 +281,10 @@ constexpr unsigned long long IS_PED_A_PLAYER                  = 0x12534C348C6CB6
 constexpr unsigned long long GET_PED_TYPE                     = 0xFF059E1E4C01E63Cull;
 constexpr unsigned long long _GET_SCENARIO_POINT_TYPE_PED_IS_USING = 0x2D0571BB55879DA2ull;
 
+// E1 (actor sync): настройка прокси-педов NPC на госте/отправителе.
+constexpr unsigned long long SET_ENTITY_LOD_DIST               = 0x5FB407F0A7C877BFull;
+constexpr unsigned long long SET_PED_CAN_BE_TARGETTED          = 0x63F58F7C80513AADull;
+constexpr unsigned long long SET_MODEL_AS_NO_LONGER_NEEDED     = 0x4AD96EF928BD4F9Aull;
+constexpr unsigned long long IS_PED_IN_COMBAT                  = 0x4859F1FC66A6278Eull;
+
 } // namespace natives

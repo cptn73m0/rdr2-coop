@@ -82,12 +82,15 @@ def records(*lines):
     return [parse(line) for line in lines]
 
 
-def report_for(records_list, hashdb=None, top=5):
+def report_for(records_list, hashdb=None, top=5, summaries=None):
     file_meta = {
         "lines": len(records_list),
         "probe_marker_lines": len(records_list),
         "invalid_probe_lines": 0,
     }
+    if summaries is not None:
+        file_meta["summaries"] = summaries
+        file_meta["probe_summary_lines"] = len(summaries)
     return npa.analyze_records(records_list, hashdb=hashdb, top=top,
                                file_meta=file_meta)
 
@@ -334,6 +337,8 @@ def test_mount_weapon_mission_stats():
     stats = report["stats"]
     check_equal(stats["mount"]["nonzero"], 1, "mount count")
     check_equal(stats["weapon"]["nonzero"], 1, "weapon count")
+    check_equal(stats["weapon"]["armed"], 1, "armed count")
+    check_equal(stats["weapon"]["unarmed"], 0, "unarmed count")
     check_equal(stats["mission"]["nonzero"], 1, "mission count")
     check_equal(stats["mount_top"][0]["value"], 0x28F9976A, "mount top")
     check_equal(stats["weapon_top"][0]["value"], 0x4AAE5FFA, "weapon top")
@@ -380,7 +385,8 @@ def test_main_human_report():
                 probe_line(model=0x1001, metaOutfit=0x2001),
                 probe_line(model=0x1002, metaOutfit=0x2002,
                            scenarioAny=1, dynScenario=0xABCDEF01),
-                "probe: scan humans=2 logged=2 newCombos=2 unique=2",
+                "probe: scan humans=2 animals=1 total=3 logged=2 "
+                "newCombos=2 unique=2",
             ]) + "\n",
             encoding="utf-8")
         output = io.StringIO()
@@ -390,24 +396,32 @@ def test_main_human_report():
         text = output.getvalue()
         check_equal(code, 0, "human report exit code")
         for marker in ("E-1 NPC probe analysis", "Verdicts", "[PASS] H1",
-                       "Probe scan windows", "E1 plan hint"):
+                       "Pool totals by scan windows", "E1 plan hint"):
             check(marker in text, "human report should contain %r" % marker)
 
 
 def test_parse_summary_line():
     summary = npa.parse_probe_summary_line(
-        "probe: scan humans=13 logged=12 newCombos=2 unique=37")
+        "probe: scan humans=13 animals=14 total=27 logged=12 "
+        "newCombos=2 unique=37")
     check(summary is not None, "summary line should parse")
     check_equal(summary["humans"], 13, "humans")
+    check_equal(summary["animals"], 14, "animals")
+    check_equal(summary["total"], 27, "total")
     check_equal(summary["logged"], 12, "logged")
     check_equal(summary["new_combos"], 2, "new_combos")
     check_equal(summary["unique"], 37, "unique")
+    old = npa.parse_probe_summary_line(
+        "probe: scan humans=13 logged=12 newCombos=2 unique=37")
+    check(old is not None, "old summary format still parses")
+    check("animals" not in old, "old summary has no animals counters")
     check(npa.parse_probe_summary_line("probe: model=0x1") is None,
           "ped line is not a summary")
     check(npa.parse_probe_summary_line("probe: scan broken") is None,
           "summary without humans is rejected")
     check(npa.parse_probe_line(
-        "probe: scan humans=13 logged=12 newCombos=2 unique=37") is None,
+        "probe: scan humans=13 animals=14 total=27 logged=12 "
+        "newCombos=2 unique=37") is None,
         "summary must not be parsed as a ped record")
 
 
@@ -419,8 +433,10 @@ def test_scan_stats():
         "invalid_probe_lines": 0,
         "probe_summary_lines": 2,
         "summaries": [
-            {"humans": 10, "logged": 9, "new_combos": 4, "unique": 4},
-            {"humans": 6, "logged": 6, "new_combos": 0, "unique": 4},
+            {"humans": 10, "animals": 2, "total": 12, "logged": 9,
+             "new_combos": 4, "unique": 4},
+            {"humans": 6, "animals": 4, "total": 10, "logged": 6,
+             "new_combos": 0, "unique": 4},
         ],
     }
     report = npa.analyze_records(records_list, hashdb=None, top=3,
@@ -430,6 +446,91 @@ def test_scan_stats():
     check_equal(scan["humans_max"], 10, "scan humans max")
     check_equal(scan["logged_max"], 9, "scan logged max")
     check_equal(scan["new_combos_total"], 4, "scan new combos total")
+    pool = scan["pool"]
+    check_equal(pool["windows"], 2, "pool windows")
+    check_equal(pool["humans_sum"], 16, "pool humans sum")
+    check_equal(pool["animals_sum"], 6, "pool animals sum")
+    check_equal(pool["total_sum"], 22, "pool total sum")
+    check(abs(pool["animal_share"] - 6.0 / 22.0) < 1e-9,
+          "pool animal share")
+    # first window humans 10/12 -> town, second 6/10 -> town too
+    check_equal(pool["buckets"]["town"]["windows"], 2, "town bucket windows")
+    check_equal(len(pool["segments"]), 1, "one contiguous town segment")
+
+
+def test_pool_location_buckets_segments():
+    summaries = [
+        {"humans": 0, "animals": 20, "total": 20},
+        {"humans": 0, "animals": 21, "total": 21},
+        {"humans": 1, "animals": 19, "total": 20},
+        {"humans": 4, "animals": 16, "total": 20},   # mixed 20%
+        {"humans": 15, "animals": 5, "total": 20},    # town 75%
+        {"humans": 16, "animals": 4, "total": 20},    # town
+        {"humans": 0, "animals": 0, "total": 0},      # empty
+    ]
+    records_list = [parse(probe_line(model=0x5600, human=1))]
+    report = report_for(records_list, summaries=summaries)
+    pool = report["stats"]["scan"]["pool"]
+    check_equal(pool["windows"], 7, "pool windows")
+    check_equal(pool["buckets"]["wild"]["windows"], 3, "wild windows")
+    check_equal(pool["buckets"]["mixed"]["windows"], 1, "mixed windows")
+    check_equal(pool["buckets"]["town"]["windows"], 2, "town windows")
+    check_equal(pool["buckets"]["empty"]["windows"], 1, "empty windows")
+    check_equal(pool["runs"]["wild"], 1, "wild runs")
+    check_equal(pool["runs"]["town"], 1, "town runs")
+    check_equal(len(pool["segments"]), 4, "segments count")
+    top = pool["segments_top"][0]
+    check_equal(top["bucket"], "wild", "longest segment bucket")
+    check_equal(top["windows"], 3, "longest segment windows")
+    # H4 must now PASS via scan counters and report pool shares.
+    h4 = verdict_of(report, "H4")
+    check_equal(h4["status"], "PASS", "H4 via pool counters")
+    check(isinstance(h4["value"], dict), "H4 value is a dict")
+    check(h4["value"]["animal_share"] is not None, "H4 animal share")
+
+
+def test_weapon_unarmed_excluded():
+    lines = [
+        probe_line(model=0x5701, weapon=0),
+        probe_line(model=0x5702, weapon=0xA2719263),
+        probe_line(model=0x5703, weapon=0x4AAE5FFA),
+    ]
+    report = report_for(records(*lines))
+    weapon = report["stats"]["weapon"]
+    check_equal(weapon["nonzero"], 2, "raw weapon nonzero")
+    check_equal(weapon["unarmed"], 1, "unarmed count")
+    check_equal(weapon["armed"], 1, "armed count")
+    check_equal(weapon["zero"], 1, "zero weapon count")
+    check_equal([row["value"] for row in report["stats"]["weapon_top"]],
+                [0x4AAE5FFA], "unarmed excluded from top weapons")
+    h5 = verdict_of(report, "H5")
+    check("UNARMED" in h5["title"], "H5 title mentions Unarmed")
+    check("armed" in h5["detail"], "H5 detail has armed share")
+
+
+def test_ped_type_labels_and_gender_check():
+    hashdb = {
+        0x5801: "A_M_M_TOWNFOLK_01",
+        0x5802: "A_F_M_TOWNFOLK_01",
+        0x5803: "A_F_M_TOWNFOLK_02",
+        0x5804: "MP_MALE",
+    }
+    lines = [
+        probe_line(model=0x5801, pedType=4, human=1),
+        probe_line(model=0x5802, pedType=5, human=1),
+        probe_line(model=0x5803, pedType=4, human=1),  # female model, male type
+        probe_line(model=0x5804, pedType=4, human=1),  # gender unknown
+    ]
+    report = report_for(records(*lines), hashdb=hashdb)
+    ped_type = report["stats"]["ped_type"]
+    labels = {row["value"]: row["label"] for row in ped_type["table"]}
+    check_equal(labels[4], "human male (hypothesis)", "pedType 4 label")
+    check_equal(labels[5], "human female (hypothesis)", "pedType 5 label")
+    gender = ped_type["gender_check"]
+    check_equal(gender["known"], 3, "gender known")
+    check_equal(gender["match"], 2, "gender match")
+    check_equal(gender["mismatch"], 1, "gender mismatch")
+    check_equal(gender["unknown"], 1, "gender unknown")
 
 
 def test_read_probe_file_streaming():
@@ -440,7 +541,8 @@ def test_read_probe_file_streaming():
             + probe_line() + "\n"
             + "probe: broken model=0xZZ\n"
             + probe_line(model=0x0D7114C9, metaOutfit=0x11111111) + "\n"
-            + "probe: scan humans=2 logged=2 newCombos=2 unique=2\n"
+            + "probe: scan humans=2 animals=1 total=3 logged=2 "
+              "newCombos=2 unique=2\n"
             + "coop: another line\n",
             encoding="utf-8")
         parsed, meta = npa.read_probe_file(log)
@@ -451,6 +553,8 @@ def test_read_probe_file_streaming():
         check_equal(len(parsed), 2, "parsed records")
         check_equal(len(meta["summaries"]), 1, "parsed summaries")
         check_equal(meta["summaries"][0]["humans"], 2, "summary humans")
+        check_equal(meta["summaries"][0]["animals"], 1, "summary animals")
+        check_equal(meta["summaries"][0]["total"], 3, "summary total")
 
 
 def test_main_json_strict_and_no_data():
@@ -530,6 +634,9 @@ def main():
         test_default_hashdb_path_loads_repo_data,
         test_parse_summary_line,
         test_scan_stats,
+        test_pool_location_buckets_segments,
+        test_weapon_unarmed_excluded,
+        test_ped_type_labels_and_gender_check,
         test_read_probe_file_streaming,
         test_main_human_report,
         test_main_json_strict_and_no_data,

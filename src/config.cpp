@@ -90,6 +90,9 @@ void WriteDefaultIni()
     fputs("npc_actor = 0\n", f);
     fputs("# R&D E-1: probe-лог 20 ближайших human NPC (только при npc_actor=1).\n", f);
     fputs("npc_debug = 0\n", f);
+    fputs("# E1: максимум NPC-акторов (1..12) и радиус обнаружения вокруг игроков (м).\n", f);
+    fputs("npc_cap = 8\n", f);
+    fputs("npc_radius = 60\n", f);
     fclose(f);
 }
 
@@ -145,6 +148,20 @@ void ApplyLine(const std::string& raw, Config& out)
     else if (key == "train_debug") out.trainDebug = AsBool(val);
     else if (key == "npc_actor") out.npcActor = AsBool(val);
     else if (key == "npc_debug") out.npcDebug = AsBool(val);
+    else if (key == "npc_cap")
+    {
+        char* end = nullptr;
+        const long cap = std::strtol(val.c_str(), &end, 10);
+        if (end != val.c_str() && *end == '\0' && cap >= 1 && cap <= 12)
+            out.npcCap = static_cast<int>(cap);
+    }
+    else if (key == "npc_radius")
+    {
+        char* end = nullptr;
+        const long r = std::strtol(val.c_str(), &end, 10);
+        if (end != val.c_str() && *end == '\0' && r >= 20 && r <= 100)
+            out.npcRadius = static_cast<int>(r);
+    }
     else if (key == "ped_model")
     {
         unsigned long long m = 0;

@@ -121,13 +121,17 @@ public:
     // R&D: отправить TrainSnapshot (только хост).
     void SendTrainSnapshot(const std::vector<uint8_t>& payload);
     // E0 (v15): отправка actor-сообщений (хост). ActorResync — гостевая
-    // заявка, её шлёт игровой слой через отдельный API (пока не используется).
+    // заявка, её шлёт игровой слой через SendActorResync ниже.
     void SendActorSpawnBatch(uint32_t epoch, const std::vector<net::ActorSpawn>& actors);
     void SendActorFrames(uint32_t epoch, uint16_t seq,
                          const std::vector<net::ActorFrame>& frames);
     void SendActorDespawn(const net::ActorDespawnPayload& msg);
     void SendActorEvent(const net::ActorEventPayload& ev);
     void SendActorOutfit(uint32_t epoch, uint32_t actorId, const net::OutfitState& outfit);
+    // E1 (v15): resync-запрос гостя хосту (0x1D). Сервер валидирует и релеит
+    // ТОЛЬКО хосту. Возвращает false, если ещё нет JOIN_OK / сокет закрыт /
+    // кадр не удалось поставить в очередь.
+    bool SendActorResync(uint32_t epoch, uint32_t lastSeq, uint8_t reason);
     // Текущее состояние роли по мнению сервера (обновляется HostChanged).
     bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
