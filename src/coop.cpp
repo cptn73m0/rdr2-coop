@@ -624,8 +624,13 @@ unsigned int s_lastReplayDropLogTick = 0;
 // Безопасный интервал между per-shot задачами: 12-15 тиков (~0.2-0.25 с).
 constexpr unsigned int kShotReplayIntervalTicks = 14;
 // Если IS_PED_WEAPON_READY_TO_SHOOT недоступен/висит — через это время всё
-// равно выдаём задачу (не блокироваться навсегда).
-constexpr unsigned int kShotReplayReadyTimeoutTicks = 60;
+// равно выдаём задачу (не блокироваться навсегда). ВАЖНО: таймаут должен
+// быть МЕНЬШЕ возраста события (kShotReplayMaxAgeMs), иначе первый выстрел
+// после респавна/смены оружия/CLEAR стареет и выкидывается раньше выдачи.
+constexpr unsigned int kShotReplayReadyTimeoutTicks = 12;
+// Событие старше этого (по времени прихода) форсирует выдачу задачи без
+// ожидания ready — чтобы не потерять первый выстрел из-за «не готов».
+constexpr unsigned long long kShotReplayForceAgeMs = 250ull;
 // Если выстрел не подтвердился за 30 тиков — одна retry-попытка с длинной
 // анимацией, затем событие отбрасывается.
 constexpr unsigned int kShotReplayConfirmTimeoutTicks = 30;
@@ -634,17 +639,26 @@ constexpr unsigned int kShotReplayConfirmMaxTicks = 120; // safety в Confirmed
 constexpr int kShotReplayShotDurationMs = 500;
 constexpr int kShotReplayRetryDurationMs = 800;
 constexpr int kShotReplayBurstDurationMs = 1500;
+// На лошади длинный FullAuto-хвост не снять CLEAR'ом — режем duration.
+constexpr int kShotReplayBurstDurationMountedMs = 700;
 // Очередь >= порога = авто-огонь: один длинный task вместо серии коротких.
 constexpr int kShotReplayBurstThreshold = 4;
 constexpr unsigned int kShotReplayBurstAimIntervalTicks = 30; // ~500 мс
 constexpr unsigned int kShotReplayBurstIdleTicks = 18;        // ~300 мс тишины
-constexpr unsigned int kShotReplayBurstMaxTicks = 180;        // safety
+// Safety для burst. При непрерывном огне продлевается на каждом событии;
+// 180 тиков (3 с) вызывали видимый сброс посреди стрельбы — поднято до 1200.
+constexpr unsigned int kShotReplayBurstMaxTicks = 1200;
 constexpr float kShotReplayBurstAimMoveDist = 2.0f;           // >2 м — обновить
+// Умеренный shoot rate для burst (0..1000); сбрасывается в 0 после burst.
+constexpr int kShotReplayBurstShootRate = 300;
 // Событие старше этого возраста не показываем (300-500 мс, иначе «залпы»).
 constexpr unsigned long long kShotReplayMaxAgeMs = 400ull;
 // Firing patterns (rdr2-runtime): SingleShot / FullAuto.
 constexpr unsigned long long kShotFiringPatternSingleShot = 0x5D60E4E0ull;
 constexpr unsigned long long kShotFiringPatternFullAuto = 0xC6EE6B4Cull;
+// Последнее «сырое» действие удалённого игрока (для запрета CLEAR при
+// сценарии/сидении). Пишется в ApplyActionToGhost (игровой поток).
+uint8_t s_remoteActionRaw = 0;
 // Состояние мира от хоста (время+погода). Игровой поток: забрано из inbox в
 // начале Tick().
 net::WorldState s_worldState{};
@@ -1116,7 +1130,10 @@ unsigned int s_lastGhostTeleportTick = 0;
 constexpr unsigned int kIdleTeleportCooldownTicks = 60;
 // Тик последнего реплея наряда (heartbeat) — для редкого лога.
 unsigned int s_lastOutfitReapplyLogTick = 0;
-constexpr unsigned int kOutfitReapplyLogTicks = 5 * 60 * 60; // не чаще 5 минут
+constexpr unsigned int kOutfitReapplyLogTicks = 5 * 60 * 60; // heartbeat: 5 мин
+// Реальные СМЕНЫ наряда логируем чаще (диагностика расслоения), с дебаунсом:
+// не чаще раза в ~1 с (смена и так дебаунсится 0.5 с у отправителя).
+constexpr unsigned int kOutfitChangeLogTicks = 60;
 // Дебаунс определения move: переключаем только после нескольких подряд
 // одинаковых замеров. Иначе стоящий игрок мерцает Walk/Idle (IS_PED_WALKING
 // дрожит + скорость на месте колеблется) → пед-призрак дёргается (задачи
@@ -1927,6 +1944,18 @@ void ShootGhostAt(const Vec3& t, int durationMs = 250,
     Call();
 }
 
+// Rate авто-огня у призрака (0..1000). После burst обязательно сбрасываем,
+// иначе ghost продолжает стрелять чаще, чем нужно.
+void SetGhostShootRate(int rate)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    Init(natives::SET_PED_SHOOT_RATE);
+    Push(s_ghost);
+    Push(static_cast<unsigned long long>(static_cast<unsigned int>(rate)));
+    Call();
+}
+
 // Применить действие (action) удалённого игрока к педу призрака.
 // Вызывается из ApplyRemoteFrame (игровой поток).
 // Прицеливание/стрельба/перезарядка — реальные задачи оружия: пед стоит,
@@ -1936,6 +1965,7 @@ void ApplyActionToGhost(const net::FramePayload& f)
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     using namespace natives_api;
     const uint8_t ac = static_cast<uint8_t>(f.action);
+    s_remoteActionRaw = ac; // для запрета CLEAR при сценарии/сидении
     const bool wasCombat = (s_lastAction == static_cast<uint8_t>(net::Action::Shooting) ||
                             s_lastAction == static_cast<uint8_t>(net::Action::Reloading) ||
                             s_lastAction == static_cast<uint8_t>(net::Action::Aiming));
@@ -1995,12 +2025,15 @@ void ApplyActionToGhost(const net::FramePayload& f)
     // hold, а остальные события ждут и не проигрываются.
     if (isCombat && ac == static_cast<uint8_t>(net::Action::Shooting) &&
         !GhostShotReplayActive() &&
+        !s_shotEventsPending.load() && // есть точные Shot-события — replay сам
         s_tickCount - s_lastShootTaskTick >= 15 &&
         s_tickCount - s_lastShotEventTaskTick >= 30)
     {
         s_lastShootTaskTick = s_tickCount;
         ShootGhostForward();
-        s_shootHoldTicks = 30;
+        // Небольшой hold: per-shot replay ждёт его окончания, иначе возможен
+        // двойной выстрел. 10 тиков (~166 мс) меньше возраста события.
+        s_shootHoldTicks = 10;
         return;
     }
 
@@ -2036,16 +2069,16 @@ void ApplyActionToGhost(const net::FramePayload& f)
         sh_log::Write("coop: action=%d → aim\n", (int)ac);
         break;
     case net::Action::Shooting:
-        // Пока идёт реплей выстрелов/предыдущая shoot-анимация — не
-        // перезадаём (анимация перезапустилась бы, и выстрел потерялся бы).
-        if (GhostShotReplayActive())
+        // Пока идёт реплей выстрелов/предыдущая shoot-анимация (или в очереди
+        // есть точные Shot-события) — не перезадаём: иначе двойной выстрел.
+        if (GhostAimBlocked())
         {
             handled = false;
             break;
         }
         s_lastShootTaskTick = s_tickCount;
         ShootGhostForward();
-        s_shootHoldTicks = 30;
+        s_shootHoldTicks = 10;
         sh_log::Write("coop: action=%d → shoot\n", (int)ac);
         break;
     case net::Action::Reloading:
@@ -2336,47 +2369,54 @@ void CollectLocalOutfit(unsigned int ped, net::OutfitState& out)
 }
 
 // Удалить ВСЕ shop-предметы, которые сейчас надеты на педа (случайная базовая
-// одежда после RandomizePedComponents), и один раз обновить variation.
-// Возвращает число удалённых. Вызывается ОДИН раз при первом применении
-// наряда на нового педа («base scrub»), чтобы случайная рубашка не
-// просвечивала сквозь куртку хоста.
+// одежда после RandomizePedComponents), и обновить variation. Делаем до 2
+// проходов с ПЕРЕЧИТЫВАНИЕМ: после первого удаления движок может вернуть
+// часть базовых слоёв, второй проход добивает остатки.
+// Возвращает суммарное число удалённых. Вызывается ОДИН раз при первом
+// применении наряда на нового педа («base scrub»), чтобы случайная рубашка
+// не просвечивала сквозь куртку хоста.
 uint32_t ScrubGhostShopItems()
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return 0;
     using namespace natives_api;
-    Init(natives::GET_NUM_COMPONENT_CATEGORIES_IN_PED);
-    Push(s_ghost);
-    int categories = static_cast<int>(Call());
-    if (categories <= 0) return 0;
-    if (categories > net::kMaxOutfitComponents)
-        categories = net::kMaxOutfitComponents;
-
     static unsigned long long inA[4] = {0, 0, 0, 0};
     static unsigned long long inB[4] = {0, 0, 0, 0};
     uint32_t removed = 0;
-    for (int i = 0; i < categories; ++i)
+    for (int pass = 0; pass < 2; ++pass)
     {
-        std::memset(inA, 0, sizeof(inA));
-        std::memset(inB, 0, sizeof(inB));
-        Init(natives::GET_SHOP_ITEM_COMPONENT_AT_INDEX);
+        Init(natives::GET_NUM_COMPONENT_CATEGORIES_IN_PED);
         Push(s_ghost);
-        Push(static_cast<unsigned long long>(i));
-        Push(static_cast<unsigned long long>(1)); // p2 = true (как в rdr2-runtime)
-        Push(reinterpret_cast<unsigned long long>(inA));
-        Push(reinterpret_cast<unsigned long long>(inB));
-        const uint32_t comp = static_cast<uint32_t>(Call());
-        if (!comp) continue;
-        Init(natives::_REMOVE_SHOP_ITEM_FROM_PED);
-        Push(s_ghost);
-        Push(static_cast<unsigned long long>(comp));
-        Push(static_cast<unsigned long long>(0)); // p2
-        Push(static_cast<unsigned long long>(0)); // p3
-        Call();
-        ++removed;
-    }
-    if (removed > 0)
-    {
-        // Один UPDATE после скруба — затем наденем набор хоста и обновим ещё раз.
+        int categories = static_cast<int>(Call());
+        if (categories <= 0) break;
+        if (categories > net::kMaxOutfitComponents)
+            categories = net::kMaxOutfitComponents;
+
+        uint32_t removedThisPass = 0;
+        for (int i = 0; i < categories; ++i)
+        {
+            std::memset(inA, 0, sizeof(inA));
+            std::memset(inB, 0, sizeof(inB));
+            Init(natives::GET_SHOP_ITEM_COMPONENT_AT_INDEX);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(i));
+            Push(static_cast<unsigned long long>(1)); // p2 = true (rdr2-runtime)
+            Push(reinterpret_cast<unsigned long long>(inA));
+            Push(reinterpret_cast<unsigned long long>(inB));
+            const uint32_t comp = static_cast<uint32_t>(Call());
+            if (!comp) continue;
+            Init(natives::_REMOVE_SHOP_ITEM_FROM_PED);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(comp));
+            Push(static_cast<unsigned long long>(0)); // p2
+            Push(static_cast<unsigned long long>(0)); // p3
+            Call();
+            ++removedThisPass;
+        }
+        removed += removedThisPass;
+        if (removedThisPass == 0)
+            break; // больше нечего удалять
+        // UPDATE после прохода: применяем удаление, второй проход увидит
+        // реальное состояние педа.
         Init(natives::UPDATE_PED_VARIATION);
         Push(s_ghost);
         Push(static_cast<unsigned long long>(0)); // p1
@@ -2603,11 +2643,11 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
         sh_log::Write("coop: outfit base scrub removed=%u applied=%u%s\n",
                       removed, applied, baseScrubFull ? "" : " (surgical)");
     }
-    else if (s_tickCount - s_lastOutfitReapplyLogTick >= kOutfitReapplyLogTicks)
+    else if (s_tickCount - s_lastOutfitReapplyLogTick >= kOutfitChangeLogTicks)
     {
-        // Лог смены наряда — не чаще 5 минут (иначе засоряет лог).
+        // Реальная смена наряда: логируем чаще (дебаунс ~1 с) для диагностики.
         s_lastOutfitReapplyLogTick = s_tickCount;
-        sh_log::Write("coop: outfit reapply removed=%u applied=%u\n",
+        sh_log::Write("coop: outfit reapply changed removed=%u applied=%u\n",
                       removed, applied);
     }
     s_appliedOutfit = os;
@@ -5352,6 +5392,8 @@ void Tick()
     ULONGLONG nowMs = GetTickCount64();
     // 1) Слишком старые события (300-500 мс) не показываем — иначе «залпы».
     int droppedNow = 0;
+    int shotPending = 0;
+    unsigned long long oldestShotAgeMs = 0;
     {
         std::lock_guard<std::mutex> lk(s_shotMtx);
         while (s_shotQCount > 0 &&
@@ -5369,11 +5411,9 @@ void Tick()
             s_replayDropped += static_cast<unsigned int>(droppedNow);
         if (s_shotQCount == 0)
             s_shotEventsPending.store(false);
-    }
-    int shotPending = 0;
-    {
-        std::lock_guard<std::mutex> lk(s_shotMtx);
         shotPending = s_shotQCount;
+        if (s_shotQCount > 0 && nowMs >= s_shotQueueMs[0])
+            oldestShotAgeMs = nowMs - s_shotQueueMs[0];
     }
     if (shotPending > 0)
         s_shotReplayLastEventTick = s_tickCount;
@@ -5390,6 +5430,11 @@ void Tick()
         Init(natives::IS_PED_WEAPON_READY_TO_SHOOT); Push(s_ghost);
         ghostWeaponReady = Call() != 0;
     }
+    // Есть событие, но оружие «не готово» (после CLEAR/burst/смены оружия):
+    // держим оружие в руках (SET_CURRENT — не task, конфликта с анимацией нет).
+    // Иначе событие успевает «протухнуть» раньше ready-timeout.
+    if (shotPending > 0 && ghostExists && !s_ghostDead && !ghostWeaponReady)
+        EnsureGhostWeaponInHands();
 
     // 3) Переходы состояний + подтверждение выстрела / retry.
     switch (s_shotReplayPhase)
@@ -5462,11 +5507,17 @@ void Tick()
                 s_shotReplayBurstAimTick = s_tickCount;
                 if (aimMoved)
                     s_shotReplayBurstPoint = aim;
-                ShootGhostAt(s_shotReplayBurstPoint,
-                             kShotReplayBurstDurationMs,
+                const int burstDur = IsGhostMounted()
+                    ? kShotReplayBurstDurationMountedMs
+                    : kShotReplayBurstDurationMs;
+                ShootGhostAt(s_shotReplayBurstPoint, burstDur,
                              kShotFiringPatternFullAuto);
                 s_shotReplayBurstTick = s_tickCount;
             }
+            // Продлеваем burst на каждом приходе события: при непрерывном
+            // огне очередь не пустеет, и safety не должен рвать анимацию.
+            if (shotPending > 0)
+                s_shotReplayBurstTick = s_tickCount;
             if (shotPending == 0 &&
                 (s_tickCount - s_shotReplayLastEventTick) >
                     kShotReplayBurstIdleTicks)
@@ -5477,7 +5528,7 @@ void Tick()
             else if ((s_tickCount - s_shotReplayBurstTick) >
                      kShotReplayBurstMaxTicks)
             {
-                s_shotReplayBurst = false; // safety
+                s_shotReplayBurst = false; // safety (1200 тиков = 20 с)
                 burstEnded = true;
             }
         }
@@ -5489,28 +5540,45 @@ void Tick()
         if (s_shotReplayBurst)
             shotPending = 0; // coalesce: per-shot в burst-режиме не гоняем
     }
-    // Конец burst: длинная FullAuto-задача иначе достреливает ещё ~1-1.5 с
-    // после последнего события. Снимаем задачу (кроме верховой езды, где
-    // CLEAR_PED_TASKS может сломать посадку) и сбрасываем латч оружия.
-    if (burstEnded && ghostExists && !IsGhostMounted())
+    // Конец burst: сбрасываем shoot rate (иначе ghost стреляет чаще нормы),
+    // снимаем длинную FullAuto-задачу. На лошади CLEAR_PED_TASKS ломает
+    // посадку — вместо него пересаживаем всадника (обрывает хвост).
+    if (burstEnded && ghostExists)
     {
-        using namespace natives_api;
-        Init(natives::CLEAR_PED_TASKS);
-        Push(s_ghost);
-        Push(static_cast<unsigned long long>(1));
-        Push(static_cast<unsigned long long>(1));
-        Call();
+        SetGhostShootRate(0);
         InvalidateGhostWeaponLatch();
         s_shotReplayReadyFailSince = 0;
-        // Задача движения снята — заставим ApplyMoveToGhost выдать её заново.
-        s_lastMoveState = 0xFF;
-        s_moveTargetValid = false;
-        s_combatActive = false;
+        const bool mounted = IsGhostMounted();
+        // CLEAR не делаем в транспорте/сценарии/сидении — там свои задачи.
+        const bool inScenario =
+            s_remoteActionRaw == static_cast<uint8_t>(net::Action::InScenario) ||
+            s_remoteActionRaw == static_cast<uint8_t>(net::Action::Sitting) ||
+            s_remoteActionRaw == static_cast<uint8_t>(net::Action::Drunk);
+        if (!mounted && !s_remoteInVehicle && !inScenario)
+        {
+            using namespace natives_api;
+            Init(natives::CLEAR_PED_TASKS);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(1));
+            Push(static_cast<unsigned long long>(1));
+            Call();
+            // Задача движения снята — заставим ApplyMoveToGhost выдать её заново.
+            s_lastMoveState = 0xFF;
+            s_moveTargetValid = false;
+            s_combatActive = false;
+        }
+        else if (mounted)
+        {
+            // Пересаживаем: SET_PED_ONTO_MOUNT заменяет FullAuto-задачу и не
+            // даёт ей достреливать 0.7-1.5 с на лошади.
+            PromoteMountToGhost();
+            s_mountTaskValid = false;
+        }
     }
 
     // 5) Per-shot: только в Idle и пока очередь меньше burst-порога.
     if (!s_shotReplayBurst && s_shotReplayPhase == ShotReplayPhase::Idle &&
-        ghostExists && !s_ghostDead)
+        ghostExists && !s_ghostDead && s_shootHoldTicks == 0)
     {
         // «Готов к выстрелу» с таймаутом: лук/не-firearm не должен
         // заблокировать реплей навсегда. Если очередь пуста — таймер
@@ -5525,11 +5593,15 @@ void Tick()
             !ghostWeaponReady && s_shotReplayReadyFailSince != 0 &&
             (s_tickCount - s_shotReplayReadyFailSince) >=
                 kShotReplayReadyTimeoutTicks;
-        const bool intervalDone =
+        // Самое старое событие «стареет» — форсируем выдачу без ожидания ready,
+        // иначе оно будет выкинуто по возрасту (первый выстрел после
+        // респавна/смены оружия/CLEAR терялся).
+        const bool forceByAge = (oldestShotAgeMs > kShotReplayForceAgeMs);
+        const bool readyOk = ghostWeaponReady || readyTimeout || forceByAge;
+        const bool intervalDone = forceByAge ||
             (s_tickCount - s_lastShotEventTaskTick) >= kShotReplayIntervalTicks;
 
-        if (shotPending >= kShotReplayBurstThreshold && intervalDone &&
-            (ghostWeaponReady || readyTimeout))
+        if (shotPending >= kShotReplayBurstThreshold && intervalDone && readyOk)
         {
             // Авто-огонь: один длинный FullAuto task вместо серии коротких.
             const Vec3 aim = GhostAimPointAhead();
@@ -5538,15 +5610,11 @@ void Tick()
                 s_shotQCount = 0;
             }
             s_shotEventsPending.store(false);
-            ShootGhostAt(aim, kShotReplayBurstDurationMs,
-                         kShotFiringPatternFullAuto);
-            {
-                using namespace natives_api;
-                Init(natives::SET_PED_SHOOT_RATE);
-                Push(s_ghost);
-                Push(static_cast<unsigned long long>(500)); // 0..1000
-                Call();
-            }
+            const int burstDur = IsGhostMounted()
+                ? kShotReplayBurstDurationMountedMs
+                : kShotReplayBurstDurationMs;
+            ShootGhostAt(aim, burstDur, kShotFiringPatternFullAuto);
+            SetGhostShootRate(kShotReplayBurstShootRate);
             s_shotReplayBurst = true;
             s_shotReplayBurstTick = s_tickCount;
             s_shotReplayBurstAimTick = s_tickCount;
@@ -5556,10 +5624,10 @@ void Tick()
             s_lastShootTaskTick = s_tickCount;
             s_combatActive = true;
             s_lastAction = static_cast<uint8_t>(net::Action::Shooting);
-            sh_log::Write("coop: shot replay burst start (fullauto, rate=500)\n");
+            sh_log::Write("coop: shot replay burst start (fullauto, rate=%d)\n",
+                          kShotReplayBurstShootRate);
         }
-        else if (shotPending > 0 && intervalDone &&
-                 (ghostWeaponReady || readyTimeout))
+        else if (shotPending > 0 && intervalDone && readyOk)
         {
             Vec3 t{0.f, 0.f, 0.f};
             bool gotShot = false;
