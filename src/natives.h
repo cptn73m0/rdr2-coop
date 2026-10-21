@@ -175,6 +175,18 @@ constexpr unsigned long long _SET_PED_INFINITE_AMMO_CLIP     = 0xFBAA1E06B6BCA74
 // перезарядка, сидение, сценарий, прицеливание, пьян).
 constexpr unsigned long long IS_PED_SHOOTING             = 0x34616828CD07F1A1ull;
 constexpr unsigned long long IS_PED_RELOADING            = 0x24B100C68C645951ull;
+
+// Анимации оружия педа-призрака: доставание/убирание/перезарядка.
+constexpr unsigned long long _HIDE_PED_WEAPONS               = 0xFCCC886EDE3C63ECull;
+constexpr unsigned long long _HOLSTER_PED_WEAPONS            = 0x94A3C1B804D291ECull;
+constexpr unsigned long long _SET_WEAPON_HOLSTERED           = 0x4820A6939D7CEF28ull;
+constexpr unsigned long long _IS_WEAPON_HOLSTER_STATE_CHANGING = 0x2387D6E9C6B478AAull;
+constexpr unsigned long long _IS_PED_CURRENT_WEAPON_HOLSTERED  = 0xBDD9C235D8D1052Eull;
+constexpr unsigned long long _GET_PED_CURRENT_HELD_WEAPON      = 0x8425C5F057012DABull;
+constexpr unsigned long long _MAKE_PED_RELOAD                = 0x79E1E511FF7EFB13ull;
+constexpr unsigned long long SET_AMMO_IN_CLIP                = 0xDCD2A934D65CB497ull;
+constexpr unsigned long long _SET_FORCE_CURRENT_WEAPON_INTO_COCKED_STATE = 0x5230D3F6EE56CFE6ull;
+constexpr unsigned long long WEAPON_UNARMED = 0xA2719263ull;
 constexpr unsigned long long IS_PED_SITTING              = 0x84D0BF2B21862059ull;
 constexpr unsigned long long IS_PED_USING_ANY_SCENARIO   = 0x57AB4A3080F85143ull;
 constexpr unsigned long long IS_PED_AIMING_FROM_COVER    = 0x3998B1276A3300E5ull;

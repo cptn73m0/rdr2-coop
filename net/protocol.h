@@ -111,6 +111,10 @@ enum class PedState : uint8_t {
 // Битовые флаги (flags в кадре).
 constexpr uint8_t kFlagSprinting   = 1u << 0;
 constexpr uint8_t kFlagWeaponReady = 1u << 1;
+// Оружие у отправителя: drawn = в руках (не в кобуре), changing = идёт
+// анимация доставания/убирания. Нужны приёмнику для draw/holster анимаций.
+constexpr uint8_t kFlagWeaponDrawn    = 1u << 2;
+constexpr uint8_t kFlagWeaponChanging = 1u << 3;
 
 // Действие (action в кадре): кратковременное/контекстное поведение поверх
 // движения. Идёт в отдельном байте кадра (pad0). Приоритет ниже state

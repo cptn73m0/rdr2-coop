@@ -1199,6 +1199,46 @@ unsigned long long s_weaponEquippedHash = 0;
 // 0 = IS_WEAPON_VALID ещё не проверяли, 1 = рабочий, -1 = недоступен/неверен
 // (тогда валидацию оружия не применяем, чтобы не потерять синхронизацию).
 int s_weaponValidProbe = 0;
+// Анимации оружия у призрака: доставание / убирание / перезарядка.
+// Раньше смена weaponHash сразу делала GIVE + SET_CURRENT(equipNow=1) и REMOVE —
+// мгновенно, без анимаций и звуков. Теперь переходы играются постепенно.
+bool s_weaponDrawPending = false;    // идёт анимация доставания
+unsigned int s_weaponDrawStartTick = 0;
+bool s_weaponHolsterPending = false; // идёт анимация убирания
+unsigned int s_weaponHolsterStartTick = 0;
+bool s_reloadInProgress = false;     // TASK_RELOAD_WEAPON играется
+unsigned int s_reloadStartTick = 0;
+// В бою (TASK_SHOOT/AIM) не ждём всю анимацию доставания: форсируем экипировку
+// через ~0.33 с, иначе первые выстрелы уходят в пустоту.
+constexpr unsigned int kWeaponDrawForceTicks = 20;
+// Без боя — латч «в руках» ставим по готовности или таймауту.
+constexpr unsigned int kWeaponDrawTimeoutTicks = 90;
+// Убирание: REMOVE_WEAPON_FROM_PED только после анимации/таймаута (не спамим).
+constexpr unsigned int kWeaponHolsterTimeoutTicks = 75;
+// Перезарядка: максимум ~5 с, минимум ~0.33 с до проверки IS_PED_RELOADING.
+constexpr unsigned int kReloadTimeoutTicks = 300;
+constexpr unsigned int kReloadMinTicks = 20;
+// Закрытие/доставание: если _IS_WEAPON_HOLSTER_STATE_CHANGING не сбрасывается
+// (натив недоступен), срабатывает таймаут.
+constexpr unsigned int kWeaponChangingFallbackTicks = 20;
+// Оружие у хоста: drawn/changing приходят флагами кадра (kFlagWeaponDrawn/
+// kFlagWeaponChanging, v14 без поднятия версии).
+bool s_remoteWeaponDrawn = false;
+bool s_remoteWeaponChanging = false;
+// Локально идёт смена holster-состояния (кэш на тик для гейтов).
+bool s_weaponChangingNow = false;
+// Перезарядка: fallback _MAKE_PED_RELOAD, если TASK_RELOAD_WEAPON не стартовал.
+bool s_reloadFallbackTried = false;
+// Дебаунс смены weaponHash: отправитель может кратковременно дёргать
+// 0/hash (перезарядка/доставание/посадка) — переключаем анимации только после
+// стабильного удержания kWeaponStableTicks тиков, иначе draw/holster спамятся.
+unsigned long long s_weaponCandidateHash = 0;
+unsigned int s_weaponCandidateTicks = 0;
+constexpr unsigned int kWeaponStableTicks = 8;
+// Лог переходов оружия — редко (переходы могут дёргаться от отправителя).
+unsigned int s_lastWeaponAnimLogTick = 0;
+constexpr unsigned int kWeaponAnimLogTicks = 60; // ~1 с
+
 
 // Сбросить латч «оружие в руках»: оружие могло уйти в кобуру или смениться
 // (выход из боя, посадка/спешивание, смена/снятие оружия, респавн).
@@ -1233,7 +1273,12 @@ uint8_t s_lastAction = 0xFF;
 bool GhostShotReplayActive()
 {
     return s_shootHoldTicks > 0 ||
-           s_shotReplayPhase == ShotReplayPhase::Issued || s_shotReplayBurst;
+           s_shotReplayPhase == ShotReplayPhase::Issued || s_shotReplayBurst ||
+           // Анимации оружия (доставание/убирание/перезарядка) не перебиваем
+           // aim/shoot/движением: иначе анимация и звук обрываются. changing —
+           // и локальный натив, и флаг от хоста.
+           s_weaponDrawPending || s_weaponHolsterPending || s_reloadInProgress ||
+           s_weaponChangingNow || s_remoteWeaponChanging;
 }
 
 // Для aim: не выдавать прицел, пока в очереди есть неразобранные выстрелы
@@ -1249,6 +1294,11 @@ bool GhostAimBlocked()
 // чтобы после сброса магазина/смерти не улетели фантомные Shot пачкой.
 void ResetLocalShotDetector();
 
+// Вернуть/выключить бесконечный клип магазина (определение ниже, после
+// натив-хелперов оружия). Нужен в ResetGhostCombatState: если reset прервал
+// перезарядку (clip-infinite был временно выключен), его надо вернуть.
+void SetGhostInfiniteClip(bool on);
+
 // Полный сброс боевого состояния призрака (смерть/респавн/cleanup).
 // Оружие, hold и очередь выстрелов не должны переживать пересоздание педа:
 // иначе после смерти/респавна выстрелы молча не работают (s_lastWeapon
@@ -1262,6 +1312,20 @@ void ResetGhostCombatState()
     s_shootHoldTicks = 0;
     s_lastShootTaskTick = 0;
     s_lastShotEventTaskTick = 0;
+    // Анимации оружия не должны переживать пересоздание педа.
+    s_weaponDrawPending = false;
+    s_weaponHolsterPending = false;
+    s_weaponCandidateHash = 0;
+    s_weaponCandidateTicks = 0;
+    s_remoteWeaponDrawn = false;
+    s_remoteWeaponChanging = false;
+    s_weaponChangingNow = false;
+    s_reloadFallbackTried = false;
+    // Если reset прервал перезарядку — вернуть бесконечный клип, иначе
+    // выстрелы после респавна снова начнут тратить конечный магазин.
+    if (s_reloadInProgress && s_ghost && DoesEntityExist(s_ghost))
+        SetGhostInfiniteClip(true);
+    s_reloadInProgress = false;
     s_shotReplayPhase = ShotReplayPhase::Idle;
     s_shotReplayPhaseTick = 0;
     s_shotReplayRetried = false;
@@ -1865,6 +1929,103 @@ bool IsWeaponHashValid(unsigned long long weapon)
     return Call() != 0;
 }
 
+// Текущее оружие в руках и готово к выстрелу (натив IS_PED_WEAPON_READY_TO_SHOOT).
+bool GhostWeaponReadyNative()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return false;
+    using namespace natives_api;
+    Init(natives::IS_PED_WEAPON_READY_TO_SHOOT);
+    Push(s_ghost);
+    return Call() != 0;
+}
+
+// Пед проигрывает анимацию перезарядки (IS_PED_RELOADING).
+bool GhostIsReloadingNative()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return false;
+    using namespace natives_api;
+    Init(natives::IS_PED_RELOADING);
+    Push(s_ghost);
+    return Call() != 0;
+}
+
+// Бесконечный клип отключает анимацию перезарядки (нечего дозаряжать) —
+// на время reload выключаем clip-infinite, reserve остаётся бесконечным.
+void SetGhostInfiniteClip(bool on)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    Init(natives::_SET_PED_INFINITE_AMMO_CLIP);
+    Push(s_ghost);
+    Push(static_cast<unsigned long long>(on ? 1 : 0));
+    Call();
+}
+
+// Лог переходов оружия (доставание/убирание/перезарядка) — редко.
+void LogWeaponAnim(const char* what, unsigned long long weapon)
+{
+    if (s_tickCount - s_lastWeaponAnimLogTick < kWeaponAnimLogTicks)
+        return;
+    s_lastWeaponAnimLogTick = s_tickCount;
+    sh_log::Write("coop: weapon 0x%llX %s play\n", weapon, what);
+}
+
+// Идёт ли у педа анимация смены holster-состояния (доставание/убирание).
+bool GhostWeaponChangingNative()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return false;
+    using namespace natives_api;
+    Init(natives::_IS_WEAPON_HOLSTER_STATE_CHANGING);
+    Push(s_ghost);
+    return Call() != 0;
+}
+
+// Начать анимацию доставания: SET_CURRENT(equipNow=false) — движок играет
+// доставание и звук; латч «в руках» ставится по готовности/окончанию смены.
+void StartGhostWeaponDraw()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost) || !s_givenWeapon) return;
+    using namespace natives_api;
+    SetGhostInfiniteClip(true);
+    s_weaponHolsterPending = false;
+    s_weaponEquippedInHands = false;
+    s_weaponEquippedHash = s_givenWeapon;
+    s_weaponDrawPending = true;
+    s_weaponDrawStartTick = s_tickCount;
+    Init(natives::SET_CURRENT_PED_WEAPON);
+    Push(s_ghost);
+    Push(s_givenWeapon);
+    Push(static_cast<unsigned long long>(0)); // equipNow=false -> анимация
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Call();
+    sh_log::Write("coop: weapon 0x%llX draw play\n", s_givenWeapon);
+    LogWeaponAnim("draw", s_givenWeapon);
+}
+
+// Начать анимацию убирания: _HIDE_PED_WEAPONS(ghost, 2, false) — «unequip
+// current weapon -> WEAPON_UNARMED; immediately=false = с анимацией».
+// SET_CURRENT_PED_WEAPON(...,0) НЕ работает (0 — не валидное оружие).
+// ВАЖНО: оружие НЕ удаляем — оно должно остаться в кобуре (как у хоста).
+void StartGhostWeaponHolster()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    Init(natives::_HIDE_PED_WEAPONS);
+    Push(s_ghost);
+    Push(static_cast<unsigned long long>(2)); // p0 (как в документации натива)
+    Push(static_cast<unsigned long long>(0)); // immediately=false -> с анимацией
+    Call();
+    s_weaponDrawPending = false;
+    s_weaponEquippedInHands = false;
+    s_weaponEquippedHash = 0;
+    s_weaponHolsterPending = true;
+    s_weaponHolsterStartTick = s_tickCount;
+    sh_log::Write("coop: weapon holster play (hide weapons, keep in holster)\n");
+    LogWeaponAnim("holster", s_givenWeapon);
+}
+
 // Перед боевой задачей убедиться, что у призрака оружие В РУКАХ: без этого
 // TASK_SHOOT_AT_COORD/TASK_AIM_GUN_AT_COORD молча не работают (натив ничего
 // не делает, если оружие в кобуре). Это фикс 2d23c4b, потерянный при откате:
@@ -1898,19 +2059,49 @@ void EnsureGhostWeaponInHands()
         Push(static_cast<unsigned long long>(0));  // p12
         Call();
         s_givenWeapon = weapon;
-        // GIVE с bForceInHand=0 доставание не гарантирует — латч не ставим.
-        s_weaponEquippedInHands = false;
-        s_weaponEquippedHash = 0;
         Init(natives::SET_PED_INFINITE_AMMO);
         Push(s_ghost);
         Push(static_cast<unsigned long long>(1));
         Push(weapon);
         Call();
-        Init(natives::_SET_PED_INFINITE_AMMO_CLIP);
-        Push(s_ghost);
-        Push(static_cast<unsigned long long>(1));
-        Call();
+        SetGhostInfiniteClip(true);
         sh_log::Write("coop: weapon 0x%llX re-given (was reset)\n", weapon);
+        // Начать доставание С АНИМАЦИЕЙ (equipNow=false), а не мгновенно.
+        StartGhostWeaponDraw();
+        return;
+    }
+    // Незавершённое убирание отменяем: бой требует оружие в руках.
+    if (s_weaponHolsterPending)
+        s_weaponHolsterPending = false;
+
+    // Идёт анимация доставания: латч «в руках» ставим по готовности
+    // (IS_PED_WEAPON_READY_TO_SHOOT). В бою не ждём всю анимацию — через
+    // kWeaponDrawForceTicks форсируем equipNow=true, иначе TASK_SHOOT/AIM
+    // уходят в пустоту (первый выстрел можно потерять).
+    if (s_weaponDrawPending && s_weaponEquippedHash == weapon)
+    {
+        if (GhostWeaponReadyNative())
+        {
+            s_weaponDrawPending = false;
+            s_weaponEquippedInHands = true;
+            return;
+        }
+        if ((s_tickCount - s_weaponDrawStartTick) < kWeaponDrawForceTicks)
+            return; // даём анимации доставания доиграть
+        Init(natives::SET_CURRENT_PED_WEAPON);
+        Push(s_ghost);
+        Push(weapon);
+        Push(static_cast<unsigned long long>(1)); // equipNow (боевой приоритет)
+        Push(static_cast<unsigned long long>(0));
+        Push(static_cast<unsigned long long>(0));
+        Push(static_cast<unsigned long long>(0));
+        Call();
+        s_weaponDrawPending = false;
+        s_weaponEquippedInHands = true;
+        s_weaponEquippedHash = weapon;
+        sh_log::Write("coop: weapon 0x%llX draw forced (combat) after %u ticks\n",
+                      weapon, s_tickCount - s_weaponDrawStartTick);
+        return;
     }
     // Латч: оружие уже в руках — SET_CURRENT_PED_WEAPON не дёргаем. Иначе
     // equipNow=1 на каждый aim/shoot (10-12 раз/с) переигрывает анимацию
@@ -2122,11 +2313,41 @@ void ApplyActionToGhost(const net::FramePayload& f)
         sh_log::Write("coop: action=%d → shoot\n", (int)ac);
         break;
     case net::Action::Reloading:
+        // Перезарядку выдаём ОДИН раз на переход (switch попадает сюда только
+        // при смене action). Пока s_reloadInProgress, GhostShotReplayActive/
+        // GhostAimBlocked подавляют aim/shoot/движение — задачу не перебиваем.
+        // Бесконечный клип отключает reload-анимацию (нечего дозаряжать) —
+        // на время анимации выключаем clip-infinite, reserve остаётся.
+        if (s_reloadInProgress)
+        {
+            handled = false; // уже играется — не перевыдаём каждый кадр
+            break;
+        }
+        if (!s_weaponEquippedInHands || !s_givenWeapon || s_weaponDrawPending ||
+            s_weaponHolsterPending || s_remoteWeaponChanging)
+        {
+            handled = false; // оружие достаётся/убирается — повторим позже
+            break;
+        }
+        SetGhostInfiniteClip(false);
+        // Магазин у призрака всегда полный из-за infinite-clip — без пустого
+        // клипа TASK_RELOAD_WEAPON молча ничего не делает (нет анимации/звука).
+        // По консультации: опустить магазин в 0, затем reload; reserve
+        // остаётся бесконечным (SET_PED_INFINITE_AMMO).
+        Init(natives::SET_AMMO_IN_CLIP);
+        Push(s_ghost);
+        Push(s_givenWeapon);
+        Push(static_cast<unsigned long long>(0)); // ammo = 0
+        Call();
         Init(natives::TASK_RELOAD_WEAPON);
         Push(s_ghost);
-        Push(static_cast<unsigned long long>(0));
+        Push(static_cast<unsigned long long>(1)); // p1 (как в SDK)
         Call();
-        sh_log::Write("coop: action=%d → reload\n", (int)ac);
+        s_reloadInProgress = true;
+        s_reloadStartTick = s_tickCount;
+        s_reloadFallbackTried = false;
+        sh_log::Write("coop: action=%d → reload play\n", (int)ac);
+        LogWeaponAnim("reload", s_givenWeapon);
         break;
     default:
         sh_log::Write("coop: action=%d → none\n", (int)ac);
@@ -2134,6 +2355,77 @@ void ApplyActionToGhost(const net::FramePayload& f)
     }
     if (handled)
         s_lastAction = ac;
+}
+
+// Доиграть анимации оружия: доставание (латч по готовности/таймауту),
+// убирание (REMOVE_WEAPON_FROM_PED после анимации), перезарядка (вернуть
+// бесконечный клип после IS_PED_RELOADING=false/таймаута). Вызывается из Tick.
+void UpdateGhostWeaponAnim()
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    // Кэш «идёт смена holster-состояния» для гейтов aim/shoot/move:
+    // локальный натив + флаг kFlagWeaponChanging от хоста.
+    s_weaponChangingNow = GhostWeaponChangingNative() || s_remoteWeaponChanging;
+
+    // Доставание: снимаем pending по _IS_WEAPON_HOLSTER_STATE_CHANGING==false
+    // (+ ready или таймаут), иначе по жёсткому таймауту.
+    if (s_weaponDrawPending)
+    {
+        const unsigned int elapsed = s_tickCount - s_weaponDrawStartTick;
+        const bool ready = GhostWeaponReadyNative();
+        if ((!s_weaponChangingNow && (ready || elapsed >= kWeaponChangingFallbackTicks)) ||
+            elapsed >= kWeaponDrawTimeoutTicks)
+        {
+            s_weaponDrawPending = false;
+            s_weaponEquippedInHands = true;
+            sh_log::Write("coop: weapon 0x%llX draw done (ready=%d, changing=%d)\n",
+                          s_weaponEquippedHash, ready ? 1 : 0,
+                          s_weaponChangingNow ? 1 : 0);
+        }
+    }
+    // Убирание: pending снимаем по окончании смены/таймауту. Оружие НЕ удаляем
+    // (по консультации worldsync): оно должно остаться в кобуре, как у хоста.
+    if (s_weaponHolsterPending)
+    {
+        const unsigned int elapsed = s_tickCount - s_weaponHolsterStartTick;
+        if ((!s_weaponChangingNow && elapsed >= kWeaponChangingFallbackTicks) ||
+            elapsed >= kWeaponHolsterTimeoutTicks)
+        {
+            s_weaponHolsterPending = false;
+            InvalidateGhostWeaponLatch();
+            sh_log::Write("coop: weapon 0x%llX holster done (kept in holster)\n",
+                          s_givenWeapon);
+            LogWeaponAnim("holster done", s_givenWeapon);
+        }
+    }
+    // Перезарядка: если TASK_RELOAD_WEAPON не стартовал — fallback
+    // _MAKE_PED_RELOAD. Завершение по IS_PED_RELOADING=false или таймауту,
+    // затем вернуть бесконечный клип (выстрелы не должны теряться).
+    if (s_reloadInProgress)
+    {
+        const unsigned int elapsed = s_tickCount - s_reloadStartTick;
+        const bool reloading = GhostIsReloadingNative();
+        if (!reloading && elapsed >= 10 && !s_reloadFallbackTried)
+        {
+            s_reloadFallbackTried = true;
+            Init(natives::_MAKE_PED_RELOAD);
+            Push(s_ghost);
+            Call();
+            sh_log::Write("coop: reload fallback _MAKE_PED_RELOAD\n");
+        }
+        const unsigned int finishAt = s_reloadFallbackTried
+            ? 10 + kWeaponChangingFallbackTicks
+            : kReloadMinTicks;
+        if ((!reloading && elapsed >= finishAt) ||
+            elapsed >= kReloadTimeoutTicks)
+        {
+            s_reloadInProgress = false;
+            s_reloadFallbackTried = false;
+            SetGhostInfiniteClip(true);
+            sh_log::Write("coop: reload done (restored infinite clip)\n");
+        }
+    }
 }
 
 // Применить особое состояние педа (PedState) и оружие/здоровье из кадра
@@ -2201,29 +2493,66 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
         }
     }
 
-    // Оружие: выдать педу и взять в руку при смене. Без GIVE_WEAPON_TO_PED
-    // модель оружия не появляется (SET_CURRENT одного недостаточно), а
-    // натив требует ПОЛНЫЙ набор параметров (13) — при меньшем числе движок
-    // читает мусор и оружие «не появляется».
+    // ===== Оружие: анимации доставания/убирания (флаги кадра v14) =====
+    // Хост шлёт стабильный selectedHash (_GET_PED_CURRENT_HELD_WEAPON) и флаги:
+    // kFlagWeaponDrawn (в руках), kFlagWeaponChanging (идёт своя анимация).
+    // Доставание: GIVE + SET_CURRENT(equipNow=false) — анимация/звук.
+    // Убирание: _HIDE_PED_WEAPONS(ghost,2,false) — анимация; оружие в кобуре
+    // НЕ удаляем (иначе у призрака пропадёт оружие, которое у хоста видно).
+    const bool weaponDrawn = (f.flags & net::kFlagWeaponDrawn) != 0;
+    const bool weaponChanging = (f.flags & net::kFlagWeaponChanging) != 0;
+    s_remoteWeaponChanging = weaponChanging;
+
+    // 1) Смена выбранного оружия (с дебаунсом от 0<->hash дёрганья).
+    bool weaponChangeReady = false;
+    bool weaponGaveNew = false;
     if (f.weaponHash != s_lastWeapon)
     {
-        s_lastWeapon = f.weaponHash;
-        // weaponHash приходит из сети — в GIVE/SET_CURRENT пускаем только
-        // валидный хэш (мусор/Unarmed игнорируем; текущее оружие не снимаем).
-        const bool weaponValid = (f.weaponHash != 0) && IsWeaponHashValid(f.weaponHash);
-        if (f.weaponHash && !weaponValid)
+        if (f.weaponHash == s_weaponCandidateHash)
+            ++s_weaponCandidateTicks;
+        else
+        {
+            s_weaponCandidateHash = f.weaponHash;
+            s_weaponCandidateTicks = 1;
+        }
+        if (s_weaponCandidateTicks >= kWeaponStableTicks)
+        {
+            weaponChangeReady = true;
+            s_lastWeapon = f.weaponHash;
+            s_weaponCandidateHash = 0;
+            s_weaponCandidateTicks = 0;
+        }
+    }
+    if (weaponChangeReady && f.weaponHash)
+    {
+        // weaponHash приходит из сети — в GIVE пускаем только валидный хэш.
+        if (!IsWeaponHashValid(f.weaponHash))
         {
             sh_log::Write("coop: ignoring invalid weapon hash 0x%llX\n",
                           f.weaponHash);
         }
-        else if (weaponValid)
+        else
         {
+            // Старое оружие удаляем ТОЛЬКО при реальной смене на другое.
+            // После holster (hash тот же/0) REMOVE не делаем.
+            if (s_givenWeapon && s_givenWeapon != f.weaponHash)
+            {
+                Init(natives::REMOVE_WEAPON_FROM_PED);
+                Push(s_ghost);
+                Push(s_givenWeapon);
+                Push(static_cast<unsigned long long>(0)); // p2
+                Push(static_cast<unsigned long long>(0)); // removeReason
+                Call();
+                sh_log::Write("coop: weapon 0x%llX removed (switched to 0x%llX)\n",
+                              s_givenWeapon, f.weaponHash);
+            }
+            weaponGaveNew = true;
             Init(natives::GIVE_WEAPON_TO_PED);
             Push(s_ghost);
             Push(f.weaponHash);
             Push(static_cast<unsigned long long>(60)); // ammoCount
-            Push(static_cast<unsigned long long>(0));  // bForceInHand (0: с анимацией доставания)
-            Push(static_cast<unsigned long long>(0));  // bForceInHolster
+            Push(static_cast<unsigned long long>(0));  // bForceInHand (0: анимация)
+            Push(static_cast<unsigned long long>(weaponDrawn ? 0 : 1)); // bForceInHolster
             Push(static_cast<unsigned long long>(0));  // attachPoint = HAND_PRIMARY
             Push(static_cast<unsigned long long>(0));  // bAllowMultipleCopies
             Push(0.5f);                                // p7 (как в R* скриптах)
@@ -2233,54 +2562,45 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
             Push(0.5f);                                // permanentDegradation
             Push(static_cast<unsigned long long>(0));  // p12
             Call();
-            // Взять в руку (equipNow=true) — проигрывается доставание.
-            Init(natives::SET_CURRENT_PED_WEAPON);
-            Push(s_ghost);
-            Push(f.weaponHash);
-            Push(static_cast<unsigned long long>(1)); // equipNow
-            Push(static_cast<unsigned long long>(0)); // attachPoint
-            Push(static_cast<unsigned long long>(0));
-            Push(static_cast<unsigned long long>(0));
-            Call();
             s_givenWeapon = f.weaponHash;
-            // SET_CURRENT_PED_WEAPON(equipNow=1) уже выполнен — ставим латч,
-            // чтобы EnsureGhostWeaponInHands не переигрывал доставание.
-            s_weaponEquippedInHands = true;
-            s_weaponEquippedHash = f.weaponHash;
-            // Бесконечные патроны: каждый реплей выстрела тратит боезапас, и
-            // после ~60 выстрелов призрак замолкал (выстрелы «терялись»).
+            s_weaponEquippedInHands = false;
+            s_weaponEquippedHash = 0;
+            s_weaponDrawPending = false;
+            s_weaponHolsterPending = false;
+            s_reloadInProgress = false;
+            s_reloadFallbackTried = false;
             Init(natives::SET_PED_INFINITE_AMMO);
             Push(s_ghost);
             Push(static_cast<unsigned long long>(1));
             Push(f.weaponHash);
             Call();
-            Init(natives::_SET_PED_INFINITE_AMMO_CLIP);
-            Push(s_ghost);
-            Push(static_cast<unsigned long long>(1));
-            Call();
-            sh_log::Write("coop: weapon 0x%llX given+equipped (infinite ammo)\n",
-                          f.weaponHash);
-            // Доставание оружия сбрасывает component variation — тело педа
-            // перестаёт рисоваться. Возвращаем внешний вид.
-            RefreshGhostComponents();
-            s_outfitRefreshTicks = 90;
-        }
-        else if (s_givenWeapon)
-        {
-            // Убрали оружие — снимаем его с педа (иначе остаётся в руке).
-            Init(natives::REMOVE_WEAPON_FROM_PED);
-            Push(s_ghost);
-            Push(s_givenWeapon);
-            Push(static_cast<unsigned long long>(0));
-            Push(static_cast<unsigned long long>(0));
-            Call();
-            sh_log::Write("coop: weapon 0x%llX removed\n", s_givenWeapon);
-            s_givenWeapon = 0;
-            InvalidateGhostWeaponLatch();
-            RefreshGhostComponents();
-            s_outfitRefreshTicks = 60;
+            SetGhostInfiniteClip(true);
+            sh_log::Write("coop: weapon 0x%llX given (drawn=%d, changing=%d)\n",
+                          f.weaponHash, weaponDrawn ? 1 : 0,
+                          weaponChanging ? 1 : 0);
+            // Один refresh внешности при РЕАЛЬНОЙ смене оружия (не на каждый
+            // draw/holster) и не во время посадки/спешивания.
+            if (!GhostMountInTransition())
+            {
+                RefreshGhostComponents();
+                s_outfitRefreshTicks = 90;
+            }
         }
     }
+
+    // 2) Зеркалим смену drawn/holster-состояния хоста, когда он сам не в
+    // процессе смены (иначе анимация хоста обгонит нашу).
+    if (!weaponChanging && s_givenWeapon)
+    {
+        // weaponGaveNew: сменился ствол (даже если drawn не менялся) — всё
+        // равно нужна анимация доставания/убирания для нового оружия.
+        if (weaponDrawn && (!s_remoteWeaponDrawn || weaponGaveNew))
+            StartGhostWeaponDraw();
+        else if (!weaponDrawn && (s_remoteWeaponDrawn || weaponGaveNew))
+            StartGhostWeaponHolster();
+    }
+    if (!weaponChanging)
+        s_remoteWeaponDrawn = weaponDrawn;
 
     // Действие (стрельба/сидение/сценарий…) — при смене.
     ApplyActionToGhost(f);
@@ -3577,6 +3897,12 @@ uint8_t DetectLocalFlags(unsigned int ped)
     if (Call()) f |= net::kFlagSprinting;
     Init(natives::IS_PED_WEAPON_READY_TO_SHOOT); Push(ped);
     if (Call()) f |= net::kFlagWeaponReady;
+    // Оружие: drawn = в руках (не в кобуре), changing = идёт анимация
+    // доставания/убирания. Нужны приёмнику для draw/holster-анимаций.
+    Init(natives::_IS_PED_CURRENT_WEAPON_HOLSTERED); Push(ped);
+    if (!Call()) f |= net::kFlagWeaponDrawn;
+    Init(natives::_IS_WEAPON_HOLSTER_STATE_CHANGING); Push(ped);
+    if (Call()) f |= net::kFlagWeaponChanging;
     return f;
 }
 
@@ -4113,6 +4439,35 @@ unsigned long long GetLocalWeaponHash(unsigned int ped)
     Call();
     // Unarmed (0xA2719263) — это «без оружия», а не предмет.
     if (out == 0xA2719263ull)
+        out = 0;
+    return out;
+}
+
+// Стабильный ВЫБРАННЫЙ хэш оружия игрока (для синхронизации draw/holster):
+// GET_CURRENT_PED_WEAPON с attachPoint=0 возвращает 0, когда оружие в кобуре,
+// поэтому для флагов drawn/changing нужен _GET_PED_CURRENT_HELD_WEAPON.
+unsigned long long GetLocalSelectedWeaponHash(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::_GET_PED_CURRENT_HELD_WEAPON);
+    Push(ped);
+    unsigned long long out = static_cast<unsigned long long>(Call());
+    if (!out)
+    {
+        // Fallback: натив недоступен/вернул 0 — берём оружие в руке (при
+        // стрельбе оно не в кобуре). Иначе сломалась бы синхронизация оружия
+        // и выстрелы у призрака.
+        unsigned long long cur = 0;
+        Init(natives::GET_CURRENT_PED_WEAPON);
+        Push(ped);
+        Push(reinterpret_cast<unsigned long long>(&cur));
+        Push(static_cast<unsigned long long>(1));
+        Push(static_cast<unsigned long long>(0)); // attachPoint = HAND_PRIMARY
+        Push(static_cast<unsigned long long>(0));
+        Call();
+        out = cur;
+    }
+    if (out == natives::WEAPON_UNARMED)
         out = 0;
     return out;
 }
@@ -5584,6 +5939,10 @@ void Tick()
         s_haveFrame = false;
     }
 
+    // Доиграть анимации оружия (доставание/убирание/перезарядка) — после
+    // применения кадра, чтобы переходы этого тика успели начаться.
+    UpdateGhostWeaponAnim();
+
     // ===== Реплей выстрелов у призрака: state machine с подтверждением =====
     // Пока Issued (выстрел не подтверждён) — никаких aim/move/heading/shoot:
     // новая TASK_* заменяет предыдущую и обрывает анимацию (из пачки
@@ -5687,9 +6046,12 @@ void Tick()
     // 4) AUTO-FIRE (burst): очередь >= threshold → ОДИН длинный TASK_SHOOT
     // (FullAuto) + SET_PED_SHOOT_RATE; прицел обновляем редко (>2 м и ~500 мс).
     bool burstEnded = false;
-    // Началась посадка/спешивание — гасим burst, не переиздавая задачи
-    // (иначе TASK_SHOOT оборвёт анимацию лошади).
-    if (s_shotReplayBurst && GhostMountInTransition())
+    // Началась посадка/спешивание или перезарядка — гасим burst, не
+    // переиздавая задачи (TASK_SHOOT оборвёт анимацию).
+    if (s_shotReplayBurst &&
+        (GhostMountInTransition() || s_reloadInProgress ||
+         s_weaponDrawPending || s_weaponHolsterPending ||
+         s_weaponChangingNow || s_remoteWeaponChanging))
     {
         s_shotReplayBurst = false;
         burstEnded = true;
@@ -5755,18 +6117,22 @@ void Tick()
         // 100 = default (SDK: 0 = самый медленный); иначе per-shot после
         // burst может не успевать.
         SetGhostShootRate(kGhostShootRateDefault);
-        InvalidateGhostWeaponLatch();
+        // Перезарядка: не сбрасываем латч/задачи (иначе reload оборвётся).
+        if (!s_reloadInProgress)
+            InvalidateGhostWeaponLatch();
         s_shotReplayReadyFailSince = 0;
         const bool mounted = IsGhostMounted();
         // Идёт посадка/спешивание — НЕ трогаем задачи (CLEAR/Promote оборвут
         // TASK_MOUNT_ANIMAL/TASK_DISMOUNT_ANIMAL и сломают анимацию).
         const bool mountTransition = GhostMountInTransition();
+        // Анимацию перезарядки CLEAR_PED_TASKS тоже оборвал бы.
+        const bool reloadTransition = s_reloadInProgress;
         // CLEAR не делаем в транспорте/сценарии/сидении — там свои задачи.
         const bool inScenario =
             s_remoteActionRaw == static_cast<uint8_t>(net::Action::InScenario) ||
             s_remoteActionRaw == static_cast<uint8_t>(net::Action::Sitting) ||
             s_remoteActionRaw == static_cast<uint8_t>(net::Action::Drunk);
-        if (mountTransition)
+        if (mountTransition || reloadTransition)
         {
             // ничего не снимаем/не пересаживаем — дадим анимации доиграть
         }
@@ -5797,7 +6163,9 @@ void Tick()
     // иначе TASK_SHOOT оборвёт TASK_MOUNT_ANIMAL/TASK_DISMOUNT_ANIMAL).
     if (!s_shotReplayBurst && s_shotReplayPhase == ShotReplayPhase::Idle &&
         ghostExists && !s_ghostDead && s_shootHoldTicks == 0 &&
-        !GhostMountInTransition())
+        !GhostMountInTransition() && !s_reloadInProgress &&
+        !s_weaponDrawPending && !s_weaponHolsterPending &&
+        !s_weaponChangingNow && !s_remoteWeaponChanging)
     {
         // «Готов к выстрелу» с таймаутом: лук/не-firearm не должен
         // заблокировать реплей навсегда. Если очередь пуста — таймер
@@ -6039,7 +6407,7 @@ void Tick()
             float dx = fp.aimX - fp.x, dy = fp.aimY - fp.y, dz = fp.aimZ - fp.z;
             fp.aimDist = std::sqrt(dx * dx + dy * dy + dz * dz);
         }
-        fp.weaponHash = GetLocalWeaponHash(playerPed);
+        fp.weaponHash = GetLocalSelectedWeaponHash(playerPed);
         // Мета-наряд игрока (для синхронизации внешнего вида у партнёра).
         {
             using namespace natives_api;
