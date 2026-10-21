@@ -154,6 +154,17 @@ constexpr unsigned long long GET_SHOP_ITEM_COMPONENT_AT_INDEX    = 0x77BA37622E2
 constexpr unsigned long long APPLY_SHOP_ITEM_TO_PED              = 0xD3A7B003ED343FD9ull;
 constexpr unsigned long long _REMOVE_SHOP_ITEM_FROM_PED          = 0x0D7FFA1B2F69ED82ull;
 constexpr unsigned long long _GET_SHOP_ITEM_COMPONENT_CATEGORY   = 0x5FF9A878C3D115B8ull;
+constexpr unsigned long long REMOVE_SHOP_ITEM_FROM_PED_BY_CATEGORY = 0xDF631E4BCE1B1FC4ull;
+constexpr unsigned long long _GET_META_PED_TYPE                  = 0xEC9A1261BF0CE510ull;
+constexpr unsigned long long _SET_ACTIVE_META_PED_COMPONENTS_UPDATED = 0xAAB86462966168CEull;
+constexpr unsigned long long _UPDATE_SHOP_ITEM_WEARABLE_STATE     = 0x66B957AAC2EAAEABull;
+constexpr unsigned long long _GET_SHOP_ITEM_NUM_WEARABLE_STATES   = 0xFFCC2DB2D9953401ull;
+constexpr unsigned long long _GET_SHOP_ITEM_WEARABLE_STATE_BY_INDEX = 0x6243635AF2F1B826ull;
+
+// Реплей стрельбы педа-призрака (серия выстрелов без обрыва анимации).
+constexpr unsigned long long TASK_SHOOT_AT_ENTITY             = 0x08DA95E8298AE772ull;
+constexpr unsigned long long SET_PED_SHOOT_RATE               = 0x614DA022990752DCull;
+constexpr unsigned long long CLEAR_PED_TASKS                  = 0xE1EF3C1216AFF2CDull;
 
 // Бесконечные патроны у педа-призрака: иначе после ~60 выстрелов оружие
 // пустеет и TASK_SHOOT_AT_COORD молча ничего не делает.
