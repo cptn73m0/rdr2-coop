@@ -631,6 +631,10 @@ constexpr unsigned int kShotReplayReadyTimeoutTicks = 12;
 // Событие старше этого (по времени прихода) форсирует выдачу задачи без
 // ожидания ready — чтобы не потерять первый выстрел из-за «не готов».
 constexpr unsigned long long kShotReplayForceAgeMs = 250ull;
+// forceByAge отменяет ТОЛЬКО ready: минимальный интервал между задачами
+// всё равно соблюдаем (6 тиков ~= 100 мс), иначе две TASK_SHOOT подряд
+// перезапускают анимацию.
+constexpr unsigned int kShotReplayForceMinIntervalTicks = 6;
 // Если выстрел не подтвердился за 30 тиков — одна retry-попытка с длинной
 // анимацией, затем событие отбрасывается.
 constexpr unsigned int kShotReplayConfirmTimeoutTicks = 30;
@@ -649,8 +653,11 @@ constexpr unsigned int kShotReplayBurstIdleTicks = 18;        // ~300 мс ти�
 // 180 тиков (3 с) вызывали видимый сброс посреди стрельбы — поднято до 1200.
 constexpr unsigned int kShotReplayBurstMaxTicks = 1200;
 constexpr float kShotReplayBurstAimMoveDist = 2.0f;           // >2 м — обновить
-// Умеренный shoot rate для burst (0..1000); сбрасывается в 0 после burst.
+// Умеренный shoot rate для burst (0..1000); после burst возвращаем ДЕФОЛТ.
+// По SDK (Ped.cs:519): 100 = default, 0 = самый медленный, поэтому сброс в 0
+// оставлял бы ghost медленным и per-shot после burst мог не успевать.
 constexpr int kShotReplayBurstShootRate = 300;
+constexpr int kGhostShootRateDefault = 100;
 // Событие старше этого возраста не показываем (300-500 мс, иначе «залпы»).
 constexpr unsigned long long kShotReplayMaxAgeMs = 400ull;
 // Firing patterns (rdr2-runtime): SingleShot / FullAuto.
@@ -1297,6 +1304,13 @@ enum class MountPhase : uint8_t
 };
 MountPhase s_mountPhase = MountPhase::None;
 unsigned int s_mountPhaseTicks = 0;
+// Идёт анимация посадки/спешивания (TASK_MOUNT_ANIMAL/TASK_DISMOUNT_ANIMAL):
+// обрывать задачи (CLEAR/Promote) и выдавать стрельбу в эти фазы нельзя.
+bool GhostMountInTransition()
+{
+    return s_mountPhase == MountPhase::Mounting ||
+           s_mountPhase == MountPhase::Dismounting;
+}
 // Телепорт лошади: при отставании >25 м (раньше было 60 — на практике
 // лошадь успевала уехать за горизонт, лог `mount teleport dist=60`).
 // 8..25 м догоняем задачей с галопом 3.0.
@@ -2026,6 +2040,10 @@ void ApplyActionToGhost(const net::FramePayload& f)
     if (isCombat && ac == static_cast<uint8_t>(net::Action::Shooting) &&
         !GhostShotReplayActive() &&
         !s_shotEventsPending.load() && // есть точные Shot-события — replay сам
+        // И за последние 30 тиков Shot-события не приходили вовсе: снижаем
+        // остаточный дубль «auto-выстрел + replay того же события».
+        (s_shotReplayLastEventTick == 0 ||
+         s_tickCount - s_shotReplayLastEventTick >= 30) &&
         s_tickCount - s_lastShootTaskTick >= 15 &&
         s_tickCount - s_lastShotEventTaskTick >= 30)
     {
@@ -5487,6 +5505,13 @@ void Tick()
     // 4) AUTO-FIRE (burst): очередь >= threshold → ОДИН длинный TASK_SHOOT
     // (FullAuto) + SET_PED_SHOOT_RATE; прицел обновляем редко (>2 м и ~500 мс).
     bool burstEnded = false;
+    // Началась посадка/спешивание — гасим burst, не переиздавая задачи
+    // (иначе TASK_SHOOT оборвёт анимацию лошади).
+    if (s_shotReplayBurst && GhostMountInTransition())
+    {
+        s_shotReplayBurst = false;
+        burstEnded = true;
+    }
     if (s_shotReplayBurst)
     {
         if (ghostExists)
@@ -5545,16 +5570,25 @@ void Tick()
     // посадку — вместо него пересаживаем всадника (обрывает хвост).
     if (burstEnded && ghostExists)
     {
-        SetGhostShootRate(0);
+        // 100 = default (SDK: 0 = самый медленный); иначе per-shot после
+        // burst может не успевать.
+        SetGhostShootRate(kGhostShootRateDefault);
         InvalidateGhostWeaponLatch();
         s_shotReplayReadyFailSince = 0;
         const bool mounted = IsGhostMounted();
+        // Идёт посадка/спешивание — НЕ трогаем задачи (CLEAR/Promote оборвут
+        // TASK_MOUNT_ANIMAL/TASK_DISMOUNT_ANIMAL и сломают анимацию).
+        const bool mountTransition = GhostMountInTransition();
         // CLEAR не делаем в транспорте/сценарии/сидении — там свои задачи.
         const bool inScenario =
             s_remoteActionRaw == static_cast<uint8_t>(net::Action::InScenario) ||
             s_remoteActionRaw == static_cast<uint8_t>(net::Action::Sitting) ||
             s_remoteActionRaw == static_cast<uint8_t>(net::Action::Drunk);
-        if (!mounted && !s_remoteInVehicle && !inScenario)
+        if (mountTransition)
+        {
+            // ничего не снимаем/не пересаживаем — дадим анимации доиграть
+        }
+        else if (!mounted && !s_remoteInVehicle && !inScenario)
         {
             using namespace natives_api;
             Init(natives::CLEAR_PED_TASKS);
@@ -5577,8 +5611,11 @@ void Tick()
     }
 
     // 5) Per-shot: только в Idle и пока очередь меньше burst-порога.
+    // Во время посадки/спешивания задачи не выдаём (события пусть стареют —
+    // иначе TASK_SHOOT оборвёт TASK_MOUNT_ANIMAL/TASK_DISMOUNT_ANIMAL).
     if (!s_shotReplayBurst && s_shotReplayPhase == ShotReplayPhase::Idle &&
-        ghostExists && !s_ghostDead && s_shootHoldTicks == 0)
+        ghostExists && !s_ghostDead && s_shootHoldTicks == 0 &&
+        !GhostMountInTransition())
     {
         // «Готов к выстрелу» с таймаутом: лук/не-firearm не должен
         // заблокировать реплей навсегда. Если очередь пуста — таймер
@@ -5595,11 +5632,15 @@ void Tick()
                 kShotReplayReadyTimeoutTicks;
         // Самое старое событие «стареет» — форсируем выдачу без ожидания ready,
         // иначе оно будет выкинуто по возрасту (первый выстрел после
-        // респавна/смены оружия/CLEAR терялся).
+        // респавна/смены оружия/CLEAR терялся). forceByAge отменяет ТОЛЬКО
+        // ready — минимальный интервал между задачами всё равно соблюдаем.
         const bool forceByAge = (oldestShotAgeMs > kShotReplayForceAgeMs);
         const bool readyOk = ghostWeaponReady || readyTimeout || forceByAge;
-        const bool intervalDone = forceByAge ||
-            (s_tickCount - s_lastShotEventTaskTick) >= kShotReplayIntervalTicks;
+        const unsigned int minInterval = forceByAge
+            ? kShotReplayForceMinIntervalTicks
+            : kShotReplayIntervalTicks;
+        const bool intervalDone =
+            (s_tickCount - s_lastShotEventTaskTick) >= minInterval;
 
         if (shotPending >= kShotReplayBurstThreshold && intervalDone && readyOk)
         {
