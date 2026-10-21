@@ -1039,6 +1039,18 @@ uint8_t s_lastMoveState = 0xFF;
 // стоящий в 0.5–1 м, из-за покачивания корпуса постоянно переходит
 // Idle↔Walk и «пританцовывает» (шаффлит ногами).
 bool s_idleChase = false;
+// Сколько тиков подряд призрак далеко от цели (>3 м). Если навмеш-задача
+// застряла/не дошла, через ~30 тиков включаем принудительный спринт-догон,
+// а при большом разрыве — телепорт (призрак; точность важнее реализма).
+unsigned int s_ghostFarTicks = 0;
+// Тик последней выдачи задачи догона (не перевыдаём каждый кадр — дёргает).
+unsigned int s_lastSprintTaskTick = 0;
+// Сколько тиков подряд далёкая ошибка держится, прежде чем догонять спринтом.
+constexpr unsigned int kGhostFarTicksForSprint = 30;
+// Редкий лог телепорта призрака (не чаще раза в 5 с).
+unsigned int s_lastGhostTpLogTick = 0;
+// Тик последнего реплея наряда (heartbeat) — для редкого лога.
+unsigned int s_lastOutfitReapplyLogTick = 0;
 // Дебаунс определения move: переключаем только после нескольких подряд
 // одинаковых замеров. Иначе стоящий игрок мерцает Walk/Idle (IS_PED_WALKING
 // дрожит + скорость на месте колеблется) → пед-призрак дёргается (задачи
@@ -1164,10 +1176,10 @@ enum class MountPhase : uint8_t
 };
 MountPhase s_mountPhase = MountPhase::None;
 unsigned int s_mountPhaseTicks = 0;
-// Телепорт лошади — ТОЛЬКО при реальной потере (респавн/смена локации),
-// а не при отставании на галопе. Раньше порог был 10 м, и при быстрой
-// скачке задача не успевала — каждый раз срабатывал телепорт.
-constexpr float TELEPORT_DIST_MOUNT = 60.0f;
+// Телепорт лошади: при отставании >25 м (раньше было 60 — на практике
+// лошадь успевала уехать за горизонт, лог `mount teleport dist=60`).
+// 8..25 м догоняем задачей с галопом 3.0.
+constexpr float TELEPORT_DIST_MOUNT = 25.0f;
 // Скачок цели между соседними кадрами: настоящий телепорт игрока
 // (респавн), а не нормальное движение (на галопе ~0.3–0.5 м за кадр).
 constexpr float TELEPORT_TARGET_JUMP = 15.0f;
@@ -1372,7 +1384,7 @@ bool IsGhostMounted()
 // телепортом. SetEntityCoords на лошади с седоком ломает физику: всадник
 // слетает, лошадь «взлетает» и падает. Задача ведёт лошадь по земле, седок
 // остаётся в седле, анимации играются движком.
-void MoveMountTo(const Vec3& target)
+void MoveMountTo(const Vec3& target, float heading)
 {
     if (!s_mount || !DoesEntityExist(s_mount)) return;
     using namespace natives_api;
@@ -1410,13 +1422,23 @@ void MoveMountTo(const Vec3& target)
         if (GetGroundZForCoord(at, gz))
             at.z = gz + 0.2f;
         SetEntityCoords(s_mount, at);
+        // Heading после телепорта обязательно подтягиваем к направлению
+        // удалённого игрока (иначе лошадь смотрит куда попало).
+        SetEntityHeading(s_mount, heading);
         // Если всадник уже в седле, он переедет вместе с лошадью; ручной
         // перенос педа в этом случае только ломает посадку.
         if (!IsGhostMounted())
+        {
             SetEntityCoords(s_ghost, at);
+            SetEntityHeading(s_ghost, heading);
+        }
         PromoteMountToGhost();
+        SetEntityHeading(s_mount, heading); // Promote мог пересчитать позу
+        s_mountPhase = MountPhase::Seated;
         s_mountTaskValid = false;
         s_mountStillTicks = 0;
+        s_prevMountTarget = target;
+        s_prevMountTargetValid = true;
         sh_log::Write("coop: mount teleport (dist=%.1f jump=%.1f)\n", dist, targetJump);
         return;
     }
@@ -1441,8 +1463,12 @@ void MoveMountTo(const Vec3& target)
         if (GetGroundZForCoord(at, gz))
             at.z = gz + 0.2f;
         SetEntityCoords(s_mount, at);
+        SetEntityHeading(s_mount, heading);
         if (!IsGhostMounted())
+        {
             SetEntityCoords(s_ghost, at);
+            SetEntityHeading(s_ghost, heading);
+        }
         PromoteMountToGhost();
         s_mountTaskValid = false;
         s_mountStillTicks = 0;
@@ -1466,11 +1492,9 @@ void MoveMountTo(const Vec3& target)
         std::fabs(target.y - s_mountTaskTarget.y) < 0.5f)
         return;
 
-    // Догоняем ЗАДАЧЕЙ, а не телепортом: чем больше отставание, тем выше
-    // множитель скорости (3.0 — галоп). Раньше всегда было 2.0, лошадь не
-    // успевала за галопом, разрыв рос и срабатывал телепорт.
+    // Догоняем ЗАДАЧЕЙ, а не телепортом: 8..25 м — галоп 3.0, 3..8 м — бег.
     float speed = 1.0f;
-    if (dist > 12.0f)      speed = 3.0f;
+    if (dist > 8.0f)       speed = 3.0f;
     else if (dist > 3.0f)  speed = 2.0f;
     if (targetJump > 0.5f) speed = std::max(speed, 2.0f); // цель быстро уходит
 
@@ -1576,6 +1600,44 @@ void SetGhostFrozen(bool freeze)
     Push(s_ghost);
     Push(freeze ? 1 : 0);
     Call();
+}
+
+// Принудительная задача догона (спринт/бег) в обход retarget-логики
+// ApplyMoveToGhost. Нужна, когда TASK_FOLLOW застряла/не догнала и призрак
+// отстал на метры: обычный retarget раз в 0.25 м ошибку не исправляет.
+// speedMultiplier: 1.0 шаг, 2.0 бег, 3.0 спринт (TASK_FOLLOW + blend ratio).
+void IssueGhostFollowTask(unsigned int ped, const Vec3& target, float speedMultiplier)
+{
+    using namespace natives_api;
+    SetGhostFrozen(false);
+    Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
+    Push(ped);
+    Push(speedMultiplier > 2.5f ? 3.0f : speedMultiplier);
+    Call();
+    Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
+    Push(ped);
+    Push(target.x); Push(target.y); Push(target.z);
+    Push(speedMultiplier);
+    Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout
+    Push(0.1f);                                        // stoppingRange
+    Push(static_cast<unsigned long long>(4));          // flags
+    Push(40000.f);
+    Call();
+    s_moveTarget = target;
+    s_moveTargetValid = true;
+    s_lastSprintTaskTick = s_tickCount;
+}
+
+// Перевыдавать задачу догона каждый кадр нельзя — TASK_FOLLOW «дёргается»
+// (повторная постановка даёт рывки). Перевыдаём только если задачи нет,
+// цель заметно сместилась или прошло >15 тиков (задача могла застрять).
+bool NeedGhostCatchupTask(const Vec3& target)
+{
+    if (!s_moveTargetValid) return true;
+    if (std::fabs(target.x - s_moveTarget.x) > 1.0f ||
+        std::fabs(target.y - s_moveTarget.y) > 1.0f)
+        return true;
+    return (s_tickCount - s_lastSprintTaskTick) >= 15;
 }
 
 // Точка прицеливания педа: 15 м вперёд по его heading на уровне груди.
@@ -2205,11 +2267,6 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
                       os.model, s_ghostModel);
         return;
     }
-    // Уже надет этот же набор — пропускаем. Повторное применение
-    // НАСЛАИВАЕТ одежду (нативный APPLY_SHOP_ITEM_TO_PED не заменяет, а
-    // добавляет слой) → «сквозь одну одежду видно другую».
-    if (s_appliedOutfitValid && OutfitsEqual(os, s_appliedOutfit))
-        return;
     // Базовая вариация — ОДИН раз на педа (создание/респавн). Повторная
     // рандомизация при каждом применении наряда/refresh подмешивала случайные
     // компоненты (в категориях, где у оригинала пусто), и наряд расходился
@@ -2220,9 +2277,75 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
         s_ghostBaseRandomized = true;
     }
     SetEntityVisibleForce(s_ghost);
+
+    // Тот же набор, что уже надет (heartbeat/refresh после сброса variation):
+    // только ПЕРЕПРИМЕНЯЕМ, без remove — слои старой одежды не трогаем.
+    const bool sameSet = (os.count > 0) && (s_appliedOutfitValid ||
+                                            s_appliedOutfit.count > 0) &&
+                         OutfitsEqual(os, s_appliedOutfit);
+    uint32_t applied = 0;
+    if (sameSet)
+    {
+        for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
+        {
+            const uint32_t c = os.components[i];
+            if (!c) continue;
+            Init(natives::APPLY_SHOP_ITEM_TO_PED);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(c));
+            Push(static_cast<unsigned long long>(1)); // immediately = true
+            Push(static_cast<unsigned long long>(0)); // isMp = false
+            Push(static_cast<unsigned long long>(1)); // p4 = true
+            Call();
+            ++applied;
+        }
+        Init(natives::UPDATE_PED_VARIATION);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(0)); // p1
+        Push(static_cast<unsigned long long>(1)); // p2
+        Push(static_cast<unsigned long long>(1)); // p3
+        Push(static_cast<unsigned long long>(1)); // p4
+        Push(static_cast<unsigned long long>(0)); // p5
+        Call();
+        s_appliedOutfit = os;
+        s_appliedOutfitValid = true;
+        // Лог heartbeat-реплея — редко (иначе раз в 5 с засоряет лог).
+        if (s_tickCount - s_lastOutfitReapplyLogTick > 30 * 60)
+        {
+            s_lastOutfitReapplyLogTick = s_tickCount;
+            sh_log::Write("coop: outfit reapply removed=0 applied=%u "
+                          "(heartbeat)\n", applied);
+        }
+        return;
+    }
+
+    // Набор ИЗМЕНИЛСЯ. Перед применением нового удаляем ВСЕ shop-предметы
+    // предыдущего s_appliedOutfit: нативный APPLY_SHOP_ITEM_TO_PED наслаивает
+    // одежду, из-за чего сквозь куртку просвечивало старое исподнее/рубашка.
+    // Снимаем полностью и надеваем новый набор заново (одним UPDATE в конце).
+    uint32_t removed = 0;
+    if (s_appliedOutfitValid)
+    {
+        for (uint32_t i = 0; i < s_appliedOutfit.count &&
+                             i < net::kMaxOutfitComponents; ++i)
+        {
+            const uint32_t oldC = s_appliedOutfit.components[i];
+            if (!oldC) continue;
+            Init(natives::_REMOVE_SHOP_ITEM_FROM_PED);
+            Push(s_ghost);
+            Push(static_cast<unsigned long long>(oldC));
+            Push(static_cast<unsigned long long>(0)); // p2
+            Push(static_cast<unsigned long long>(0)); // p3
+            Call();
+            ++removed;
+        }
+    }
+
+    // Применяем новый набор в ИСХОДНОМ порядке (components идут по индексу
+    // категории от отправителя: от нижних слоёв к верхним), НЕ сортируем.
     for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
     {
-        uint32_t c = os.components[i];
+        const uint32_t c = os.components[i];
         if (!c) continue;
         Init(natives::APPLY_SHOP_ITEM_TO_PED);
         Push(s_ghost);
@@ -2231,7 +2354,9 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
         Push(static_cast<unsigned long long>(0)); // isMp = false
         Push(static_cast<unsigned long long>(1)); // p4 = true (как в rdr2-runtime)
         Call();
+        ++applied;
     }
+    // Один UPDATE в конце — без повторной RandomizePedComponents.
     Init(natives::UPDATE_PED_VARIATION);
     Push(s_ghost);
     Push(static_cast<unsigned long long>(0)); // p1=false: не сбрасывать лицо/волосы
@@ -2240,7 +2365,7 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     Push(static_cast<unsigned long long>(1)); // p4=true
     Push(static_cast<unsigned long long>(0)); // p5=false
     Call();
-    sh_log::Write("coop: outfit applied to ghost (%u shop items)\n", os.count);
+    sh_log::Write("coop: outfit reapply removed=%u applied=%u\n", removed, applied);
     s_appliedOutfit = os;
     s_appliedOutfitValid = true;
 }
@@ -2581,7 +2706,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             if (!IsGhostMounted())
                 PromoteMountToGhost();
         }
-        MoveMountTo(p);
+        MoveMountTo(p, f.heading);
         // Пока лошадь ведёт задача, НЕ перебиваем heading каждый кадр:
         // TASK_FOLLOW сам разворачивает корпус, а ручной SetEntityHeading
         // дёргает лошадь на галопе. Heading правим только когда лошадь
@@ -2643,65 +2768,132 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         if (s_tickCount % (3 * 60) == 1)
             sh_log::Write("coop: recv move=%u state=%u at (%.1f %.1f %.1f), cur=(%.1f %.1f %.1f)\n",
                           move, f.state, p.x, p.y, p.z, cur.x, cur.y, cur.z);
-        // НЕ прижимаем педа к земле во время движения: TASK_FOLLOW_NAV_MESH
-        // сам ведёт по навмешу (по земле). Ручной SetEntityCoords здесь —
-        // источник багов: GET_GROUND_Z_FOR_3D_COORD на движущемся педе даёт
-        // нестабильную высоту, пед «уходит под землю» и дёргается каждым
-        // кадром (лог lowered спамил 40.7 -> 40.7). Прижим — только в Idle.
-        // Движение задачей: не телепортируем и не лерпим — просто
-        // перенаправляем задачу идти к текущей точке кадра (топает ножками).
-        ApplyMoveToGhost(s_ghost, move, p);
+        // Общий расчёт ошибки слежения каждый кадр. Навмеш-задача может
+        // застрять/не дойти — без коррекции призрак оставался в десятках
+        // метров от оригинала, пока retarget лишь перенаправлял TASK_FOLLOW.
+        float dx = p.x - cur.x, dy = p.y - cur.y;
+        float dist = std::sqrt(dx * dx + dy * dy);
+        if (dist > 3.0f)
+            ++s_ghostFarTicks;
+        else
+            s_ghostFarTicks = 0;
+        // Большой разрыв — жёсткий телепорт (призрак; точность важнее
+        // пешего реализма), затем продолжаем движение задачей.
+        if (dist > 12.0f)
+        {
+            SetEntityCoords(s_ghost, p);
+            cur = p;
+            dist = 0.f;
+            s_moveTargetValid = false;
+            s_ghostFarTicks = 0;
+            if (s_tickCount - s_lastGhostTpLogTick > 5 * 60)
+            {
+                s_lastGhostTpLogTick = s_tickCount;
+                sh_log::Write("coop: ghost teleport (move=%u dist>12)\n", move);
+            }
+        }
+        const bool canMove = !s_combatActive && s_shootHoldTicks == 0;
+        const bool lagging = (dist > 6.0f) ||
+            (s_ghostFarTicks >= kGhostFarTicksForSprint && dist > 2.5f);
+        if (canMove && lagging)
+        {
+            // Отстали/застряли — догон спринтом (3.0), а не обычный retarget.
+            if (NeedGhostCatchupTask(p))
+                IssueGhostFollowTask(s_ghost, p, 3.0f);
+            s_lastMoveState = move;
+            s_ghostFarTicks = 0;
+        }
+        else
+        {
+            // НЕ прижимаем педа к земле во время движения: TASK_FOLLOW_NAV_MESH
+            // сам ведёт по навмешу (по земле). Ручной SetEntityCoords здесь —
+            // источник багов: GET_GROUND_Z_FOR_3D_COORD на движущемся педе даёт
+            // нестабильную высоту, пед «уходит под землю» и дёргается каждым
+            // кадром (лог lowered спамил 40.7 -> 40.7). Прижим — только в Idle.
+            ApplyMoveToGhost(s_ghost, move, p);
+        }
     }
     else
     {
         // Idle: пед стоит задачей TASK_STAND_STILL. НЕ двигаем его руками
         // (шаг за тик) и НЕ дёргаем заморозкой — это и было причиной
-        // «дёрганья в покое» (задача стоит, а мы телепаем координаты).
-        // Только два исключения:
-        //  1) цель очень далеко (>TELEPORT_DIST) — резкий перенос (загрузка);
-        //  2) пед висит выше 0.5 м над землёй — опускаем на неё.
-        // Покачивание корпуса в покое даёт микро-смещения цели. Если гонять
-        // педа задачей к точке каждый раз, когда dist > 0.5 м, он «шаффлит»
-        // ногами (Idle↔Walk). Поэтому — гистерезис:
-        //   < CLOSE  — стоим (stand still);
-        //   > RESUME — только тогда догоняем.
+        // «дёрганья в покое». Догон — только при реальном отставании:
+        //   > 4 м  — бегом (2.0);
+        //   > 10 м — телепорт по XY/Z к точке кадра (раньше сохраняли cur.z,
+        //            из-за чего призрак оставался на высоте старой позиции);
+        //   ошибка >30 тиков — принудительный спринт-догон (3.0).
         const float CLOSE = 1.5f;
         const float RESUME = 2.5f;
-        float dx = p.x - cur.x, dy = p.y - cur.y;
+        float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
         float dist = std::sqrt(dx * dx + dy * dy);
-        if (dist > TELEPORT_DIST)
+        const float dist3 = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist3 > 10.0f)
         {
-            SetEntityCoords(s_ghost, Vec3{p.x, p.y, cur.z});
-        }
-        if (dist > RESUME)
-            s_idleChase = true;
-        else if (dist < CLOSE)
+            SetEntityCoords(s_ghost, p);
+            cur = p;
+            dist = 0.f;
+            s_moveTargetValid = false;
+            s_ghostFarTicks = 0;
             s_idleChase = false;
+            if (s_tickCount - s_lastGhostTpLogTick > 5 * 60)
+            {
+                s_lastGhostTpLogTick = s_tickCount;
+                sh_log::Write("coop: ghost teleport (idle dist>10)\n");
+            }
+        }
+        if (dist > 3.0f)
+            ++s_ghostFarTicks;
+        else
+            s_ghostFarTicks = 0;
 
-        if (s_idleChase)
+        const bool canMove = !s_combatActive && s_shootHoldTicks == 0;
+        if (canMove && s_ghostFarTicks >= kGhostFarTicksForSprint && dist > 2.5f)
         {
-            // Пед реально отстал (спавн/остановился в другом месте) —
-            // подводим задачей ходьбы.
-            ApplyMoveToGhost(s_ghost,
-                             static_cast<uint8_t>(coop::MoveState::Walk), p);
+            if (NeedGhostCatchupTask(p))
+                IssueGhostFollowTask(s_ghost, p, 3.0f);
+            s_idleChase = true;
+            s_ghostFarTicks = 0;
+        }
+        else if (canMove && dist > 4.0f)
+        {
+            // Отстал на 4+ м — догоняем БЕГОМ, а не шагом (как раньше).
+            if (NeedGhostCatchupTask(p))
+                IssueGhostFollowTask(s_ghost, p, 2.0f);
+            s_idleChase = true;
+            s_ghostFarTicks = 0;
         }
         else
         {
-            // Стоит рядом с целью: не трогаем XY, только прижим при подвесе.
-            float groundZ = 0.f;
-            const bool hasGround = GetGroundZForCoord(cur, groundZ);
-            if (hasGround && (cur.z - groundZ) > 1.0f && groundZ > -100.f
-                && (s_tickCount - s_lastIdleGroundFixTick) > 60)
+            if (dist > RESUME)
+                s_idleChase = true;
+            else if (dist < CLOSE)
+                s_idleChase = false;
+
+            if (s_idleChase)
             {
-                // Опускаем на землю, если реально висим НАД ней >1 м.
-                // Троттлинг (раз в сек): без него на неровной земле пед
-                // «подтягивался» каждый кадр и дрожал.
-                s_lastIdleGroundFixTick = s_tickCount;
-                SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
+                // Мягкий догон шагом с гистерезисом — чтобы не «танцевать»
+                // на месте при покачивании корпуса рядом с целью.
+                ApplyMoveToGhost(s_ghost,
+                                 static_cast<uint8_t>(coop::MoveState::Walk), p);
             }
-            // Единый вызов для Idle: ставит/обновляет stand-still при смене
-            // состояния (сам защищён s_lastMoveState — не дёргает).
-            ApplyMoveToGhost(s_ghost, move, p);
+            else
+            {
+                // Стоит рядом с целью: не трогаем XY, только прижим при подвесе.
+                float groundZ = 0.f;
+                const bool hasGround = GetGroundZForCoord(cur, groundZ);
+                if (hasGround && (cur.z - groundZ) > 1.0f && groundZ > -100.f
+                    && (s_tickCount - s_lastIdleGroundFixTick) > 60)
+                {
+                    // Опускаем на землю, если реально висим НАД ней >1 м.
+                    // Троттлинг (раз в сек): без него на неровной земле пед
+                    // «подтягивался» каждый кадр и дрожал.
+                    s_lastIdleGroundFixTick = s_tickCount;
+                    SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
+                }
+                // Единый вызов для Idle: ставит/обновляет stand-still при смене
+                // состояния (сам защищён s_lastMoveState — не дёргает).
+                ApplyMoveToGhost(s_ghost, move, p);
+            }
         }
     }
 
@@ -3117,12 +3309,26 @@ void UpdateLocalAim(unsigned int ped)
 // Выстрел — отдельное событие (опрос состояния в кадре терял выстрелы).
 // ОСНОВНОЙ детект — уменьшение патронов в магазине (GET_AMMO_IN_CLIP):
 // он ловит и повторные попадания в одну точку, где impact coord не меняется.
-// Fallback — изменение точки попадания / начало стрельбы (лук, метательное).
+// Пока для текущего оружия ammo-детект работает, impact/latch-fallback
+// ВЫКЛЮЧЕН (иначе дубли/потери); fallback остаётся для лука/метательного,
+// где натив не отдаёт магазин.
 Vec3 s_lastImpact{0.f, 0.f, 0.f};
 bool s_localWasShooting = false;
 int  s_lastClipAmmo = -1;
-unsigned long long s_lastClipWeapon = 0;
 bool s_ammoQueryFailLogged = false;
+// Текущее оружие ammo-детекта и работает ли для него натив.
+unsigned long long s_ammoDetectWeapon = 0;
+bool s_ammoDetectActive = false;
+// Выстрелы, определённые по патронам, но ещё не отправленные: не более
+// kMaxShotsPerTick за тик, остаток уходит в следующих тиках (дробь/пачки).
+int s_pendingAmmoShots = 0;
+constexpr int kMaxShotsPerTick = 8;
+constexpr int kMaxPendingAmmoShots = 32;
+// Редкая диагностика: лог ammo-детекта по изменению N/раз в ~2 с и
+// throttled-лог отправки (не спамим на каждый выстрел авто-оружия).
+int s_lastAmmoLogCount = -1;
+unsigned int s_lastAmmoLogTick = 0;
+unsigned int s_lastShotSendLogTick = 0;
 
 // Реализация ниже (anonymous namespace), нужна здесь для детекта выстрела.
 unsigned long long GetLocalWeaponHash(unsigned int ped);
@@ -3131,8 +3337,18 @@ void UpdateLocalShotEvents(unsigned int ped)
 {
     using namespace natives_api;
 
-    // 1) Надёжный детект: патроны в магазине уменьшились = был выстрел.
+    // 0) Смена оружия: ammo-латч и неотправленный остаток старого оружия
+    // неактуальны (точки/счётчики от прошлого ствола не шлём).
     const unsigned long long weapon = GetLocalWeaponHash(ped);
+    if (weapon != s_ammoDetectWeapon)
+    {
+        s_ammoDetectWeapon = weapon;
+        s_lastClipAmmo = -1;
+        s_ammoDetectActive = false;
+        s_pendingAmmoShots = 0;
+    }
+
+    // 1) Ammo-детект: каждый тик читаем патроны в магазине.
     int clipAmmo = 0;
     bool haveAmmo = false;
     if (weapon)
@@ -3149,20 +3365,37 @@ void UpdateLocalShotEvents(unsigned int ped)
         sh_log::Write("coop: GET_AMMO_IN_CLIP failed for weapon 0x%llX; "
                       "using impact/shooting fallback\n", weapon);
     }
-    int shots = 0;
+    s_ammoDetectActive = haveAmmo;
+
+    bool reloading = false;
+    if (weapon)
+    {
+        Init(natives::IS_PED_RELOADING); Push(ped);
+        reloading = Call() != 0;
+    }
     if (haveAmmo)
     {
-        if (weapon != s_lastClipWeapon || s_lastClipAmmo < 0 ||
-            clipAmmo > s_lastClipAmmo) // смена оружия или перезарядка
+        // Смена оружия / перезарядка / первый замер — это НЕ выстрелы:
+        // просто переустанавливаем базовый счётчик.
+        if (reloading || s_lastClipAmmo < 0 || clipAmmo > s_lastClipAmmo)
         {
-            s_lastClipWeapon = weapon;
             s_lastClipAmmo = clipAmmo;
         }
         else if (clipAmmo < s_lastClipAmmo)
         {
-            shots = s_lastClipAmmo - clipAmmo;
+            const int n = s_lastClipAmmo - clipAmmo;
             s_lastClipAmmo = clipAmmo;
-            if (shots > 4) shots = 4; // дробь/дробовик — не спамим
+            s_pendingAmmoShots = std::min(s_pendingAmmoShots + n,
+                                          kMaxPendingAmmoShots);
+            // Диагностика: по изменению N или раз в ~2 с (не спамим).
+            if (n != s_lastAmmoLogCount ||
+                s_tickCount - s_lastAmmoLogTick > 2 * 60)
+            {
+                s_lastAmmoLogCount = n;
+                s_lastAmmoLogTick = s_tickCount;
+                sh_log::Write("coop: ammo detect %d shots (weapon 0x%llX, "
+                              "pending %d)\n", n, weapon, s_pendingAmmoShots);
+            }
         }
     }
 
@@ -3179,50 +3412,73 @@ void UpdateLocalShotEvents(unsigned int ped)
         haveImpact = true;
     }
 
-    // 3) Fallback для оружия/бросков без магазина.
+    // 3) Fallback (impact/latch) — только когда ammo-детект для этого оружия
+    // не работает, иначе он дублировал бы/съедал выстрелы. Для ammo-оружия
+    // просто обновляем s_lastImpact, чтобы не было ложных edge после смены.
     Init(natives::IS_PED_SHOOTING); Push(ped);
     const bool shooting = Call() != 0;
     bool fallback = false;
-    if (haveImpact)
+    if (!s_ammoDetectActive)
     {
-        if (impact.x != s_lastImpact.x || impact.y != s_lastImpact.y ||
-            impact.z != s_lastImpact.z)
+        if (haveImpact)
         {
-            s_lastImpact = impact;
-            fallback = true;
+            if (impact.x != s_lastImpact.x || impact.y != s_lastImpact.y ||
+                impact.z != s_lastImpact.z)
+            {
+                s_lastImpact = impact;
+                fallback = true;
+            }
         }
+        if (!fallback)
+        {
+            if (shooting && !s_localWasShooting)
+                fallback = true;
+            else if (!haveAmmo && shooting &&
+                     s_tickCount - s_lastShotEventTick >= 8)
+                fallback = true;
+        }
+        // Fallback не чаще ~30 Гц.
+        if (fallback && s_tickCount - s_lastShotEventTick < 2)
+            fallback = false;
     }
-    if (shots == 0 && !fallback)
+    else if (haveImpact)
     {
-        if (shooting && !s_localWasShooting)
-            fallback = true;
-        else if (!haveAmmo && shooting &&
-                 s_tickCount - s_lastShotEventTick >= 8)
-            fallback = true;
+        s_lastImpact = impact; // тихо, без отправки
     }
     s_localWasShooting = shooting;
 
-    int count = shots > 0 ? shots : (fallback ? 1 : 0);
-    // Fallback не чаще ~30 Гц; реальные патроны шлём сразу (пачка выстрелов
-    // за тик не теряется).
-    if (shots == 0 && count > 0 && s_tickCount - s_lastShotEventTick < 2)
-        count = 0;
+    const Vec3 sendPoint = haveImpact
+        ? impact
+        : Vec3{s_localAimX, s_localAimY, s_localAimZ};
 
-    for (int k = 0; k < count; ++k)
+    // 4) Отправка: ammo-очередь не более kMaxShotsPerTick за тик (остаток —
+    // в следующих тиках), fallback — не более 1.
+    int sentAmmo = 0;
+    while (s_pendingAmmoShots > 0 && sentAmmo < kMaxShotsPerTick)
     {
-        s_lastShotEventTick = s_tickCount;
         net::ShotPayload sp{};
-        if (haveImpact)
-        {
-            sp.x = impact.x; sp.y = impact.y; sp.z = impact.z;
-        }
-        else
-        {
-            sp.x = s_localAimX; sp.y = s_localAimY; sp.z = s_localAimZ;
-        }
+        sp.x = sendPoint.x; sp.y = sendPoint.y; sp.z = sendPoint.z;
         g_netClient.SendShot(sp);
-        sh_log::Write("coop: send shot (%.1f %.1f %.1f)%s\n",
-                      sp.x, sp.y, sp.z, shots > 0 ? " [ammo]" : " [fallback]");
+        --s_pendingAmmoShots;
+        s_lastShotEventTick = s_tickCount;
+        ++sentAmmo;
+    }
+    if (sentAmmo > 0 && s_tickCount - s_lastShotSendLogTick >= 60)
+    {
+        // Не чаще раза в секунду: иначе auto-огонь заливает лог.
+        s_lastShotSendLogTick = s_tickCount;
+        sh_log::Write("coop: send shot (%.1f %.1f %.1f) [ammo x%d, pending %d]\n",
+                      sendPoint.x, sendPoint.y, sendPoint.z, sentAmmo,
+                      s_pendingAmmoShots);
+    }
+    if (fallback)
+    {
+        net::ShotPayload sp{};
+        sp.x = sendPoint.x; sp.y = sendPoint.y; sp.z = sendPoint.z;
+        g_netClient.SendShot(sp);
+        s_lastShotEventTick = s_tickCount;
+        sh_log::Write("coop: send shot (%.1f %.1f %.1f) [fallback]\n",
+                      sp.x, sp.y, sp.z);
     }
 }
 

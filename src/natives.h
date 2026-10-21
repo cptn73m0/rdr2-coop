@@ -152,6 +152,8 @@ constexpr unsigned long long RESET_PED_COMPONENTS          = 0x0BFA1BD465CDFEFDu
 constexpr unsigned long long GET_NUM_COMPONENT_CATEGORIES_IN_PED = 0xA622E66EEE92A08Dull;
 constexpr unsigned long long GET_SHOP_ITEM_COMPONENT_AT_INDEX    = 0x77BA37622E22023Bull;
 constexpr unsigned long long APPLY_SHOP_ITEM_TO_PED              = 0xD3A7B003ED343FD9ull;
+constexpr unsigned long long _REMOVE_SHOP_ITEM_FROM_PED          = 0x0D7FFA1B2F69ED82ull;
+constexpr unsigned long long _GET_SHOP_ITEM_COMPONENT_CATEGORY   = 0x5FF9A878C3D115B8ull;
 
 // Бесконечные патроны у педа-призрака: иначе после ~60 выстрелов оружие
 // пустеет и TASK_SHOOT_AT_COORD молча ничего не делает.
