@@ -1049,8 +1049,13 @@ unsigned int s_lastSprintTaskTick = 0;
 constexpr unsigned int kGhostFarTicksForSprint = 30;
 // Редкий лог телепорта призрака (не чаще раза в 5 с).
 unsigned int s_lastGhostTpLogTick = 0;
+// Кулдаун телепорта в Idle (30-60 тиков): защита от телепорт-петли, когда
+// цель/пед «прыгают» вокруг порога (10 м).
+unsigned int s_lastGhostTeleportTick = 0;
+constexpr unsigned int kIdleTeleportCooldownTicks = 60;
 // Тик последнего реплея наряда (heartbeat) — для редкого лога.
 unsigned int s_lastOutfitReapplyLogTick = 0;
+constexpr unsigned int kOutfitReapplyLogTicks = 5 * 60 * 60; // не чаще 5 минут
 // Дебаунс определения move: переключаем только после нескольких подряд
 // одинаковых замеров. Иначе стоящий игрок мерцает Walk/Idle (IS_PED_WALKING
 // дрожит + скорость на месте колеблется) → пед-призрак дёргается (задачи
@@ -1114,6 +1119,12 @@ unsigned int s_lastAimTaskTick = 0;
 // Последнее применённое действие (для применения при смене).
 uint8_t s_lastAction = 0xFF;
 
+// Сброс sender-детектора выстрелов (ammo-латч, очередь, impact-точка).
+// Определение ниже, рядом со статиками детектора; вызывается из
+// ResetGhostCombatState (смерть/респавн/cleanup/model change/дисконнект),
+// чтобы после сброса магазина/смерти не улетели фантомные Shot пачкой.
+void ResetLocalShotDetector();
+
 // Полный сброс боевого состояния призрака (смерть/респавн/cleanup).
 // Оружие, hold и очередь выстрелов не должны переживать пересоздание педа:
 // иначе после смерти/респавна выстрелы молча не работают (s_lastWeapon
@@ -1131,12 +1142,17 @@ void ResetGhostCombatState()
     s_lastAimTaskValid = false;
     s_lastAction = 0xFF;
     s_lastPedState = 0xFF;
+    // Сброс состояния догона/телепортов: новый пед/локация — начинаем заново.
+    s_ghostFarTicks = 0;
+    s_lastGhostTeleportTick = 0;
     {
         std::lock_guard<std::mutex> lk(s_shotMtx);
         s_shotQCount = 0;
     }
     s_shotEventsPending.store(false);
     s_shotDropped.store(0);
+    // Sender-side детектор: baseline магазина и очередь фантомных Shot.
+    ResetLocalShotDetector();
 }
 
 // Лошадь для верховой езды удалённого игрока (0 = нет).
@@ -2309,8 +2325,8 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
         Call();
         s_appliedOutfit = os;
         s_appliedOutfitValid = true;
-        // Лог heartbeat-реплея — редко (иначе раз в 5 с засоряет лог).
-        if (s_tickCount - s_lastOutfitReapplyLogTick > 30 * 60)
+        // Лог heartbeat-реплея — не чаще 5 минут (иначе засоряет лог).
+        if (s_tickCount - s_lastOutfitReapplyLogTick >= kOutfitReapplyLogTicks)
         {
             s_lastOutfitReapplyLogTick = s_tickCount;
             sh_log::Write("coop: outfit reapply removed=0 applied=%u "
@@ -2324,7 +2340,9 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     // одежду, из-за чего сквозь куртку просвечивало старое исподнее/рубашка.
     // Снимаем полностью и надеваем новый набор заново (одним UPDATE в конце).
     uint32_t removed = 0;
-    if (s_appliedOutfitValid)
+    // P3: удаляем и при протухшем флаге, если набор прошлого наряда известен
+    // (новый пед/пересоздание) — несуществующие предметы просто не найдутся.
+    if (s_appliedOutfitValid || s_appliedOutfit.count > 0)
     {
         for (uint32_t i = 0; i < s_appliedOutfit.count &&
                              i < net::kMaxOutfitComponents; ++i)
@@ -2365,7 +2383,13 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
     Push(static_cast<unsigned long long>(1)); // p4=true
     Push(static_cast<unsigned long long>(0)); // p5=false
     Call();
-    sh_log::Write("coop: outfit reapply removed=%u applied=%u\n", removed, applied);
+    // Лог — не чаще 5 минут (heartbeat/refresh иначе засоряют лог).
+    if (s_tickCount - s_lastOutfitReapplyLogTick >= kOutfitReapplyLogTicks)
+    {
+        s_lastOutfitReapplyLogTick = s_tickCount;
+        sh_log::Write("coop: outfit reapply removed=%u applied=%u\n",
+                      removed, applied);
+    }
     s_appliedOutfit = os;
     s_appliedOutfitValid = true;
 }
@@ -2779,20 +2803,24 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             s_ghostFarTicks = 0;
         // Большой разрыв — жёсткий телепорт (призрак; точность важнее
         // пешего реализма), затем продолжаем движение задачей.
-        if (dist > 12.0f)
+        // В бою (прицел/выстрел/перезарядка) НЕ телепортируем: иначе рвётся
+        // визуал aim/shoot (позиция педа меняется под активной задачей).
+        const bool canTeleport = !s_combatActive && s_shootHoldTicks == 0;
+        if (dist > 12.0f && canTeleport)
         {
             SetEntityCoords(s_ghost, p);
             cur = p;
             dist = 0.f;
             s_moveTargetValid = false;
             s_ghostFarTicks = 0;
+            s_lastGhostTeleportTick = s_tickCount;
             if (s_tickCount - s_lastGhostTpLogTick > 5 * 60)
             {
                 s_lastGhostTpLogTick = s_tickCount;
                 sh_log::Write("coop: ghost teleport (move=%u dist>12)\n", move);
             }
         }
-        const bool canMove = !s_combatActive && s_shootHoldTicks == 0;
+        const bool canMove = canTeleport;
         const bool lagging = (dist > 6.0f) ||
             (s_ghostFarTicks >= kGhostFarTicksForSprint && dist > 2.5f);
         if (canMove && lagging)
@@ -2827,7 +2855,10 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
         float dist = std::sqrt(dx * dx + dy * dy);
         const float dist3 = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (dist3 > 10.0f)
+        // В бою не телепортируем + кулдаун от телепорт-петли вокруг порога.
+        const bool canTeleport = !s_combatActive && s_shootHoldTicks == 0;
+        if (dist3 > 10.0f && canTeleport &&
+            (s_tickCount - s_lastGhostTeleportTick) >= kIdleTeleportCooldownTicks)
         {
             SetEntityCoords(s_ghost, p);
             cur = p;
@@ -2835,6 +2866,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             s_moveTargetValid = false;
             s_ghostFarTicks = 0;
             s_idleChase = false;
+            s_lastGhostTeleportTick = s_tickCount;
             if (s_tickCount - s_lastGhostTpLogTick > 5 * 60)
             {
                 s_lastGhostTpLogTick = s_tickCount;
@@ -2846,7 +2878,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         else
             s_ghostFarTicks = 0;
 
-        const bool canMove = !s_combatActive && s_shootHoldTicks == 0;
+        const bool canMove = canTeleport;
         if (canMove && s_ghostFarTicks >= kGhostFarTicksForSprint && dist > 2.5f)
         {
             if (NeedGhostCatchupTask(p))
@@ -3322,13 +3354,36 @@ bool s_ammoDetectActive = false;
 // Выстрелы, определённые по патронам, но ещё не отправленные: не более
 // kMaxShotsPerTick за тик, остаток уходит в следующих тиках (дробь/пачки).
 int s_pendingAmmoShots = 0;
-constexpr int kMaxShotsPerTick = 8;
-constexpr int kMaxPendingAmmoShots = 32;
+constexpr int kMaxShotsPerTick = 4;       // burst: не фантомная пачка
+constexpr int kMaxPendingAmmoShots = 8;   // cap очереди после refill/смерти
 // Редкая диагностика: лог ammo-детекта по изменению N/раз в ~2 с и
 // throttled-лог отправки (не спамим на каждый выстрел авто-оружия).
 int s_lastAmmoLogCount = -1;
 unsigned int s_lastAmmoLogTick = 0;
 unsigned int s_lastShotSendLogTick = 0;
+// Гибридный fallback: ammo-детект считаем рабочим только если он недавно
+// реально ловил выстрелы. Иначе (лук/метательное/скриптовое оружие/трейнер:
+// GET_AMMO_IN_CLIP вернул true, но магазин не меняется) разрешаем impact/latch.
+unsigned int s_lastAmmoDetectTick = 0;
+bool s_ammoDetectEver = false;
+
+// Сброс sender-детектора выстрелов. Вызывается из ResetGhostCombatState
+// (смерть/респавн/cleanup/model change/дисконнект): baseline магазина и
+// очередь Shot не должны переживать смерть/refill, иначе улетают «фантомы».
+void ResetLocalShotDetector()
+{
+    s_lastClipAmmo = -1;
+    s_ammoDetectWeapon = 0;
+    s_ammoDetectActive = false;
+    s_pendingAmmoShots = 0;
+    s_lastAmmoDetectTick = 0;
+    s_ammoDetectEver = false;
+    s_lastAmmoLogCount = -1;
+    s_localWasShooting = false;
+    // s_lastImpact НЕ сбрасываем: после death/respawn impact натива может
+    // вернуть старую точку, и разница с нулём дала бы фантомный Shot.
+    s_ammoQueryFailLogged = false;
+}
 
 // Реализация ниже (anonymous namespace), нужна здесь для детекта выстрела.
 unsigned long long GetLocalWeaponHash(unsigned int ped);
@@ -3336,6 +3391,15 @@ unsigned long long GetLocalWeaponHash(unsigned int ped);
 void UpdateLocalShotEvents(unsigned int ped)
 {
     using namespace natives_api;
+
+    // Локальный игрок мёртв/умирает: магазин может читаться как 0/refill —
+    // это НЕ выстрелы. Сбрасываем baseline+очередь, чтобы не отправить
+    // фантомные Shot пачкой (гость стреляет реальными пулями).
+    if (IsPedDeadOrDying(ped))
+    {
+        ResetLocalShotDetector();
+        return;
+    }
 
     // 0) Смена оружия: ammo-латч и неотправленный остаток старого оружия
     // неактуальны (точки/счётчики от прошлого ствола не шлём).
@@ -3345,6 +3409,7 @@ void UpdateLocalShotEvents(unsigned int ped)
         s_ammoDetectWeapon = weapon;
         s_lastClipAmmo = -1;
         s_ammoDetectActive = false;
+        s_ammoDetectEver = false;
         s_pendingAmmoShots = 0;
     }
 
@@ -3375,16 +3440,20 @@ void UpdateLocalShotEvents(unsigned int ped)
     }
     if (haveAmmo)
     {
-        // Смена оружия / перезарядка / первый замер — это НЕ выстрелы:
-        // просто переустанавливаем базовый счётчик.
+        // Смена оружия / перезарядка / refill / первый замер — это НЕ выстрелы:
+        // переустанавливаем базовый счётчик и выбрасываем неотправленную
+        // очередь (иначе после скриптового refill уйдут «фантомы»).
         if (reloading || s_lastClipAmmo < 0 || clipAmmo > s_lastClipAmmo)
         {
             s_lastClipAmmo = clipAmmo;
+            s_pendingAmmoShots = 0;
         }
         else if (clipAmmo < s_lastClipAmmo)
         {
             const int n = s_lastClipAmmo - clipAmmo;
             s_lastClipAmmo = clipAmmo;
+            s_lastAmmoDetectTick = s_tickCount;
+            s_ammoDetectEver = true;
             s_pendingAmmoShots = std::min(s_pendingAmmoShots + n,
                                           kMaxPendingAmmoShots);
             // Диагностика: по изменению N или раз в ~2 с (не спамим).
@@ -3412,13 +3481,16 @@ void UpdateLocalShotEvents(unsigned int ped)
         haveImpact = true;
     }
 
-    // 3) Fallback (impact/latch) — только когда ammo-детект для этого оружия
-    // не работает, иначе он дублировал бы/съедал выстрелы. Для ammo-оружия
-    // просто обновляем s_lastImpact, чтобы не было ложных edge после смены.
+    // 3) Гибридный fallback (impact/latch). Ammo-детект «глушит» fallback
+    // только если он реально ловил выстрелы недавно (~30 тиков). Для лука/
+    // метательного/скриптового оружия (натив вернул true, но магазин не
+    // меняется) fallback работает — иначе выстрелов не было вообще.
     Init(natives::IS_PED_SHOOTING); Push(ped);
     const bool shooting = Call() != 0;
+    const bool ammoDetectFresh = s_ammoDetectActive && s_ammoDetectEver &&
+        (s_tickCount - s_lastAmmoDetectTick) <= 30;
     bool fallback = false;
-    if (!s_ammoDetectActive)
+    if (!ammoDetectFresh)
     {
         if (haveImpact)
         {
@@ -3451,8 +3523,16 @@ void UpdateLocalShotEvents(unsigned int ped)
         ? impact
         : Vec3{s_localAimX, s_localAimY, s_localAimZ};
 
+    // «Фантомы» после death/refill: очередь должна жить 1-2 тика. Если
+    // ammo-детект давно не срабатывал и пед не стреляет — сбрасываем.
+    if (s_pendingAmmoShots > 0 && !shooting &&
+        (s_tickCount - s_lastAmmoDetectTick) > 5)
+        s_pendingAmmoShots = 0;
+
     // 4) Отправка: ammo-очередь не более kMaxShotsPerTick за тик (остаток —
-    // в следующих тиках), fallback — не более 1.
+    // в следующих тиках), fallback — не более 1. Очередь пополняется только
+    // реальным уменьшением ammo, поэтому после death/refill она очищена
+    // (ResetLocalShotDetector), а мёртвый пед сюда уже не дошёл.
     int sentAmmo = 0;
     while (s_pendingAmmoShots > 0 && sentAmmo < kMaxShotsPerTick)
     {
@@ -3463,6 +3543,10 @@ void UpdateLocalShotEvents(unsigned int ped)
         s_lastShotEventTick = s_tickCount;
         ++sentAmmo;
     }
+    // Дедуп по тику: если в этом тике уже ушли ammo-Shot (или pending ещё
+    // не разобран), fallback не отправляем — иначе дубли.
+    if (fallback && (sentAmmo > 0 || s_pendingAmmoShots > 0))
+        fallback = false;
     if (sentAmmo > 0 && s_tickCount - s_lastShotSendLogTick >= 60)
     {
         // Не чаще раза в секунду: иначе auto-огонь заливает лог.
