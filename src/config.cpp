@@ -93,6 +93,8 @@ void WriteDefaultIni()
     fputs("# E1: максимум NPC-акторов (1..12) и радиус обнаружения вокруг игроков (м).\n", f);
     fputs("npc_cap = 8\n", f);
     fputs("npc_radius = 60\n", f);
+    fputs("# E2a: meta-outfit внешность NPC-прокси (0 = только random variation).\n", f);
+    fputs("npc_appearance = 1\n", f);
     fclose(f);
 }
 
@@ -162,6 +164,7 @@ void ApplyLine(const std::string& raw, Config& out)
         if (end != val.c_str() && *end == '\0' && r >= 20 && r <= 100)
             out.npcRadius = static_cast<int>(r);
     }
+    else if (key == "npc_appearance") out.npcAppearance = AsBool(val);
     else if (key == "ped_model")
     {
         unsigned long long m = 0;

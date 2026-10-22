@@ -44,6 +44,16 @@ constexpr float kHeadingDeadzone = 5.0f;
 constexpr int kLogEveryTicks = 60;      // 1 строка/с на тип
 constexpr int kSummaryEveryTicks = 300; // 1 строка/5 с
 
+// E2a: meta-outfit внешность NPC-прокси (guest) и сглаживание движения.
+constexpr int kMaxAppearanceRequestsPerTick = 2;        // бюджет REQUEST
+constexpr unsigned int kAppearanceTimeoutTicks = 180;  // 3 с ожидания наряда
+constexpr float kMotionLeadSec = 0.15f;                // lead-предсказание 0.12..0.18 с
+constexpr float kMotionLeadMaxMeters = 2.0f;           // кламп сдвига цели
+constexpr float kRetargetDistMoving = 0.6f;            // retarget движущейся цели
+constexpr float kIdleNoMoveDist = 0.5f;                // idle: ближе — не трогаем
+constexpr float kSpeedByteToMetersPerSec = 3.0f / 255.0f; // ActorFrame.speed -> м/с
+constexpr float kRadPerDeg = 0.017453292519943295f;
+
 // P3-фиксы по ревью E1 (task-45).
 constexpr unsigned int kPendingSpawnTimeoutTicks = 300; // 5 с ожидания модели
 constexpr unsigned int kNoCollisionRefreshTicks = 60;   // 1 с: повторить no-collision
@@ -123,11 +133,19 @@ struct PerfP95
         if (idx >= count) idx = count - 1;
         return static_cast<double>(tmp[idx]) / 1000.0;
     }
+
+    void Clear()
+    {
+        count = 0;
+        pos = 0;
+    }
 };
 
 PerfP95 g_perfScan;
 PerfP95 g_perfSpawn;
 PerfP95 g_perfApply;
+// E2a: ошибка позиции (target vs ped), семплим в мм, логируем/1000 = метры.
+PerfP95 g_motionErr;
 unsigned int g_lastPerfLogTick = 0;
 
 // ======================= helper natives =======================
@@ -316,6 +334,47 @@ uint32_t GetMetaOutfit(unsigned int ped)
     Init(natives::GET_PED_META_OUTFIT_HASH);
     Push(ped);
     return static_cast<uint32_t>(Call());
+}
+
+// ---------------- E2a: meta-ped-outfit запросы (per-actor, не singleton) ----------------
+// Как в coop.cpp для player-ghost: REQUEST -> HAS_LOADED -> APPLY -> RELEASE.
+int RequestMetaPedOutfit(unsigned int model, uint32_t outfit)
+{
+    using namespace natives_api;
+    Init(natives::REQUEST_META_PED_OUTFIT);
+    Push(static_cast<unsigned long long>(model));
+    Push(static_cast<unsigned long long>(outfit));
+    return static_cast<int>(Call());
+}
+
+bool HasMetaPedOutfitLoaded(int requestId)
+{
+    if (!requestId) return false;
+    using namespace natives_api;
+    Init(natives::HAS_META_PED_OUTFIT_LOADED);
+    Push(static_cast<unsigned long long>(static_cast<int>(requestId)));
+    return Call() != 0;
+}
+
+bool ApplyMetaPedOutfit(int requestId, unsigned int ped)
+{
+    if (!requestId || !ped) return false;
+    using namespace natives_api;
+    Init(natives::APPLY_PED_META_PED_OUTFIT);
+    Push(static_cast<unsigned long long>(static_cast<int>(requestId)));
+    Push(ped);
+    Push(true);
+    Push(true);
+    return Call() != 0;
+}
+
+void ReleaseMetaPedOutfitRequest(int requestId)
+{
+    if (!requestId) return;
+    using namespace natives_api;
+    Init(natives::RELEASE_META_PED_OUTFIT_REQUEST);
+    Push(static_cast<unsigned long long>(static_cast<int>(requestId)));
+    Call();
 }
 
 uint8_t GetHealthByte(unsigned int ped)
@@ -616,6 +675,14 @@ void LogProxyCap(unsigned int have, unsigned int cap)
     sh_log::Write("actor: proxy cap reached have=%u cap=%u\n", have, cap);
 }
 
+// E2a: внешность NPC — состояния requested/applied/failed (каждое изменение).
+void LogAppearance(uint32_t actorId, uint32_t model, uint32_t outfit,
+                   const char* state)
+{
+    sh_log::Write("actor: appearance id=%u model=0x%X outfit=0x%X state=%s\n",
+                  actorId, model, outfit, state);
+}
+
 // ======================= perf: actor p95 (npc_debug=1) =======================
 void LogPerfIfDue(unsigned int tick)
 {
@@ -867,7 +934,9 @@ net::ActorFrame BuildFrame(unsigned int handle, uint32_t actorId)
     const uint8_t move = MoveStateFromSpeed(speed);
     f.flags = BuildFlags(handle);
     f.animState = move;
-    float sp = speed / 10.0f; // 0..1 доля максимальной скорости
+    // E2a: ActorFrame.speed — u8 0..255 соответствует 0..3 м/с (гость
+    // использует это для lead-предсказания цели).
+    float sp = speed / 3.0f;
     if (sp < 0.f) sp = 0.f;
     if (sp > 1.f) sp = 1.f;
     f.speed = static_cast<uint8_t>(sp * 255.0f);
@@ -1164,8 +1233,10 @@ struct Proxy
     uint32_t epoch = 0;
     unsigned int handle = 0;
     unsigned int model = 0;
+    uint32_t metaOutfit = 0; // E2a: внешность (0 = random variation)
     float tx = 0.f, ty = 0.f, tz = 0.f, heading = 0.f;
     uint8_t moveState = 0;
+    uint8_t speed = 0; // E2a: ActorFrame.speed (0..255 -> 0..3 м/с)
     uint16_t flags = 0;
     unsigned int lastFrameTick = 0;
     unsigned int spawnedTick = 0;
@@ -1174,6 +1245,10 @@ struct Proxy
     Vec3 moveTarget{0.f, 0.f, 0.f};
     bool dead = false;
     bool resyncLogged = false;
+    // E2a: per-actor meta-outfit request state (не блокирует прокси).
+    int outfitRequest = 0;              // id REQUEST_META_PED_OUTFIT
+    unsigned int outfitRequestTick = 0; // тик запроса (таймаут 3 с)
+    uint8_t appearanceState = 0;        // 0 none, 1 requested, 2 applied, 3 failed
 };
 
 std::map<uint32_t, Proxy> g_proxies;
@@ -1193,6 +1268,7 @@ std::vector<net::ActorFrame> g_latestFrames;
 bool g_haveFrames = false;
 std::deque<net::ActorDespawnPayload> g_guestDespawnQueue;
 int g_modelRequestsThisTick = 0;
+int g_appearanceRequestsThisTick = 0; // E2a: бюджет REQUEST_META_PED_OUTFIT
 unsigned int g_appliedFrames = 0;
 unsigned int g_timeouts = 0;
 unsigned int g_lastNoCollisionTick = 0;
@@ -1201,6 +1277,14 @@ unsigned int g_lastNoCollisionTick = 0;
 // всё равно существует — НЕ теряем учёт (proxy остаётся в g_proxies, повтор).
 bool DeleteProxy(Proxy& proxy)
 {
+    // E2a: не оставляем висящий meta-outfit-запрос при удалении прокси.
+    if (proxy.outfitRequest)
+    {
+        ReleaseMetaPedOutfitRequest(proxy.outfitRequest);
+        proxy.outfitRequest = 0;
+        proxy.appearanceState = 3;
+    }
+
     if (!proxy.handle)
     {
         g_handleByActor.erase(proxy.actorId);
@@ -1272,18 +1356,96 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     p.epoch = g_guestEpoch;
     p.handle = handle;
     p.model = s.model;
+    p.metaOutfit = s.metaOutfit;
     p.tx = s.x; p.ty = s.y; p.tz = z;
     p.heading = s.heading;
     p.moveState = s.moveStyle;
+    p.speed = (s.moveStyle >= 3) ? 255
+            : (s.moveStyle == 2) ? 170
+            : (s.moveStyle == 1) ? 85 : 0;
     p.flags = s.flags;
     p.lastFrameTick = ctx.tickCount;
     p.spawnedTick = ctx.tickCount;
     p.lastMoveState = -1;
     p.dead = (s.flags & net::kActorFlagDead) != 0;
+    p.appearanceState = 0; // E2a: запрос наряда сделает GuestTick (бюджет)
     g_handleByActor[handle] = p.actorId;
     g_proxies[p.actorId] = p;
     LogSpawn(p.actorId, p.model, static_cast<unsigned int>(g_proxies.size()));
     return true;
+}
+
+// E2a: per-actor meta-outfit внешность (как player-ghost, но без singleton):
+// REQUEST -> HAS_LOADED -> APPLY -> RELEASE. Прокси не блокируется; при
+// таймауте/неудаче остаётся random variation (видимый не «голый» пед).
+void ProcessActorAppearance(unsigned int tick)
+{
+    if (!coopcfg::Get().npcAppearance)
+        return;
+
+    for (auto& kv : g_proxies)
+    {
+        Proxy& p = kv.second;
+        if (p.dead)
+            continue; // труп не переодеваем — скоро despawn
+        if (!p.metaOutfit || !p.handle || !DoesExist(p.handle))
+            continue;
+        if (p.appearanceState == 2 || p.appearanceState == 3)
+            continue; // applied / failed — больше не трогаем
+
+        if (p.appearanceState == 0)
+        {
+            if (g_appearanceRequestsThisTick >= kMaxAppearanceRequestsPerTick)
+                continue;
+            ++g_appearanceRequestsThisTick;
+            const int req = RequestMetaPedOutfit(p.model, p.metaOutfit);
+            p.outfitRequestTick = tick;
+            if (req)
+            {
+                p.outfitRequest = req;
+                p.appearanceState = 1;
+                LogAppearance(p.actorId, p.model, p.metaOutfit, "requested");
+            }
+            else
+            {
+                p.appearanceState = 3;
+                RandomizeComponents(p.handle);
+                SetVisible(p.handle);
+                LogAppearance(p.actorId, p.model, p.metaOutfit, "failed");
+            }
+            continue;
+        }
+
+        // state == 1 (requested): таймаут 3 с -> random variation
+        if (tick - p.outfitRequestTick > kAppearanceTimeoutTicks)
+        {
+            ReleaseMetaPedOutfitRequest(p.outfitRequest);
+            p.outfitRequest = 0;
+            p.appearanceState = 3;
+            RandomizeComponents(p.handle);
+            SetVisible(p.handle);
+            LogAppearance(p.actorId, p.model, p.metaOutfit, "failed");
+            continue;
+        }
+        if (!HasMetaPedOutfitLoaded(p.outfitRequest))
+            continue;
+
+        const bool ok = ApplyMetaPedOutfit(p.outfitRequest, p.handle);
+        ReleaseMetaPedOutfitRequest(p.outfitRequest);
+        p.outfitRequest = 0;
+        p.appearanceState = ok ? 2 : 3;
+        if (ok)
+        {
+            SetVisible(p.handle); // наряд мог пересоздать компоненты
+        }
+        else
+        {
+            RandomizeComponents(p.handle);
+            SetVisible(p.handle);
+        }
+        LogAppearance(p.actorId, p.model, p.metaOutfit,
+                      ok ? "applied" : "failed");
+    }
 }
 
 void MoveProxy(Proxy& p)
@@ -1297,8 +1459,7 @@ void MoveProxy(Proxy& p)
     const float dx = p.tx - cur.x;
     const float dy = p.ty - cur.y;
     const float dz = p.tz - cur.z;
-    const float dist2 = dx * dx + dy * dy;
-    const float dist = std::sqrt(dist2);
+    const float dist = std::sqrt(dx * dx + dy * dy);
 
     if (dist > kTeleportDist || std::fabs(dz) > 8.0f)
     {
@@ -1309,42 +1470,72 @@ void MoveProxy(Proxy& p)
         return;
     }
 
+    // E2a: ошибка позиции target-vs-ped для err_p95 (семпл в мм). Телепорты
+    // выше не семплим — это не ошибка сглаживания, а ресинк.
+    g_motionErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
+
+    // E2a: lead-предсказание цели из speed+heading (0.12..0.18 с, кламп 2 м).
+    // Это сглаживает лёгкое дёрганье, пока навмеш-задача ещё догоняет.
+    float targetX = p.tx;
+    float targetY = p.ty;
+    if (p.moveState != 0)
+    {
+        const float speedMs =
+            static_cast<float>(p.speed) * kSpeedByteToMetersPerSec;
+        float lead = speedMs * kMotionLeadSec;
+        if (lead > kMotionLeadMaxMeters) lead = kMotionLeadMaxMeters;
+        if (lead > 0.f)
+        {
+            const float rad = p.heading * kRadPerDeg;
+            targetX += -std::sin(rad) * lead;
+            targetY += std::cos(rad) * lead;
+        }
+    }
+
     if (p.moveState == 0)
     {
-        if (p.lastMoveState != 0)
+        // idle: не двигаем. StandStill — только при переходе из движения
+        // и если пед заметно в стороне (micro-move <0.5 м не трогаем).
+        if (p.lastMoveState != 0 && p.lastMoveState != -1 &&
+            dist > kIdleNoMoveDist)
         {
             SetMoveBlend(p.handle, 0.0f);
             StandStill(p.handle);
-            p.lastMoveState = 0;
             p.moveTaskValid = false;
         }
+        p.lastMoveState = 0;
     }
     else
     {
+        // retarget только при смещении предсказанной цели >0.6 м или смене
+        // move state — задачу не перевыдаём каждый тик.
         const bool targetMoved =
             !p.moveTaskValid ||
-            std::fabs(p.tx - p.moveTarget.x) > kRetargetDist ||
-            std::fabs(p.ty - p.moveTarget.y) > kRetargetDist;
+            std::fabs(targetX - p.moveTarget.x) > kRetargetDistMoving ||
+            std::fabs(targetY - p.moveTarget.y) > kRetargetDistMoving;
         const bool stateChanged = p.lastMoveState != static_cast<int>(p.moveState);
         if (targetMoved || stateChanged)
         {
             const float speed = (p.moveState >= 3) ? 3.0f
                               : (p.moveState == 2) ? 2.0f : 1.0f;
             SetMoveBlend(p.handle, speed);
-            // P3-фикс (task-45): последний арг — heading, не 40000.f.
-            // 0.f = без принудительного разворота (heading ведём отдельно).
-            FollowNavmesh(p.handle, p.tx, p.ty, p.tz, speed, 0.f);
-            p.moveTarget = Vec3{p.tx, p.ty, p.tz};
+            // Последний арг native — heading; 0.f: корпус ведёт навмеш.
+            FollowNavmesh(p.handle, targetX, targetY, p.tz, speed, 0.f);
+            p.moveTarget = Vec3{targetX, targetY, p.tz};
             p.moveTaskValid = true;
             p.lastMoveState = static_cast<int>(p.moveState);
         }
     }
 
-    float norm = p.heading - GetHeading(p.handle);
-    while (norm > 180.f) norm -= 360.f;
-    while (norm < -180.f) norm += 360.f;
-    if (std::fabs(norm) > kHeadingDeadzone)
-        SetHeadingNative(p.handle, p.heading);
+    // E2a: heading руками — только в idle (в walk/run ведёт навмеш).
+    if (p.moveState == 0)
+    {
+        float norm = p.heading - GetHeading(p.handle);
+        while (norm > 180.f) norm -= 360.f;
+        while (norm < -180.f) norm += 360.f;
+        if (std::fabs(norm) > kHeadingDeadzone)
+            SetHeadingNative(p.handle, p.heading);
+    }
 }
 
 // P3-фикс (task-45): только ставит акторов в pending; epoch-change и
@@ -1405,12 +1596,14 @@ void GuestResetState()
     g_appliedFrames = 0;
     g_timeouts = 0;
     g_lastNoCollisionTick = 0;
+    g_motionErr.Clear();
 }
 
 void GuestTick(const TickContext& ctx)
 {
     const unsigned int tick = ctx.tickCount;
     g_modelRequestsThisTick = 0;
+    g_appearanceRequestsThisTick = 0;
 
     // 1) inbox: spawn/despawn/frames. Под мьютексом — ТОЛЬКО копирование;
     // нативы (в т.ч. удаление прокси при смене epoch) — после unlock.
@@ -1554,6 +1747,10 @@ void GuestTick(const TickContext& ctx)
     }
     g_perfSpawn.AddUs(QpcDeltaUs(perfSpawnStart));
 
+    // 3b) E2a: внешность — meta-outfit request/apply для новых и ожидающих
+    // прокси (бюджет 2 REQUEST/тик, таймаут 3 с, не блокирует прокси).
+    ProcessActorAppearance(tick);
+
     // 4) кадры -> target позиция/флаги; 5) движение — замеряем p95 apply.
     const unsigned long long perfApplyStart = QpcNow();
     if (g_haveFrames)
@@ -1567,6 +1764,7 @@ void GuestTick(const TickContext& ctx)
             p.tx = f.x; p.ty = f.y; p.tz = f.z;
             p.heading = f.heading;
             p.moveState = f.animState;
+            p.speed = f.speed; // E2a: 0..255 -> 0..3 м/с для lead-предсказания
             p.flags = static_cast<uint16_t>(f.flags);
             p.dead = (f.flags & net::kActorFlagDead) != 0;
             p.lastFrameTick = tick;
@@ -1638,6 +1836,13 @@ void GuestTick(const TickContext& ctx)
                       g_appliedFrames, g_timeouts);
         g_appliedFrames = 0;
         g_timeouts = 0;
+        // E2a: p95 ошибки позиции (target vs ped) — только при npc_debug=1.
+        if (coopcfg::Get().npcDebug)
+        {
+            sh_log::Write("actor: motion err_p95=%.2f\n",
+                          g_motionErr.P95Ms() / 1000.0);
+            g_motionErr.Clear();
+        }
     }
 }
 

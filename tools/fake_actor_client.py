@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import socket
 import struct
 import sys
@@ -60,6 +61,9 @@ FRAME_MIN_SIZE = 12  # x,y,z,heading; only the first 12 bytes are needed here
 DEFAULT_MODEL = 0x54D8BE8E  # a_m_m_rancher_01 (same as tools/fake_client.ps1)
 PEDS_JSON = Path(__file__).resolve().parents[1] / "third_party" / "rdr2-hashdb" / "Peds.json"
 DEFAULT_LOG = Path(__file__).resolve().with_name("fake_actor_client.log")
+DEFAULT_PROBE_LOG = Path(r"E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log")
+PROBE_OUTFIT_RE = re.compile(
+    r"probe:\s*model=0x([0-9A-Fa-f]+)\s+metaOutfit=0x([0-9A-Fa-f]+)")
 
 HUMAN_PREFIXES = ("A_M_M_", "A_M_O_", "G_M_M_", "S_M_M_")
 # Prefer ordinary town/ranch humans for a believable test crowd; avoid corpse/
@@ -253,11 +257,12 @@ def join_session(sock: socket.socket, name: str, model: int, log: Log,
 # ---------------------------------------------------------------------------
 def pack_actor_spawn(actor_id: int, epoch: int, model: int,
                      x: float, y: float, z: float, heading: float,
-                     health: int = 200, move_style: int = 0) -> bytes:
+                     health: int = 200, move_style: int = 0,
+                     meta_outfit: int = 0) -> bytes:
     return struct.pack(
         "<IHBBIIIIIffffBBBBhhhHII",
         actor_id, epoch & 0xFFFF, 0, 0,          # actorId, epoch, kind, flags
-        model & 0xFFFFFFFF, 0, 0, 0, 0,          # model, meta, mount, weapon, scenario
+        model & 0xFFFFFFFF, meta_outfit & 0xFFFFFFFF, 0, 0, 0,  # model, meta, ...
         float(x), float(y), float(z), float(heading),
         health & 0xFF, move_style & 0xFF, 0, 0,  # health, moveStyle, phase, pad
         0, 0, 0, 0,                              # vx, vy, vz, pad2
@@ -306,7 +311,7 @@ def validate_spawn_batch(payload: bytes):
     for i in range(count):
         rec = payload[ACTOR_SPAWN_BATCH_HEADER + i * ACTOR_SPAWN_SIZE:
                       ACTOR_SPAWN_BATCH_HEADER + (i + 1) * ACTOR_SPAWN_SIZE]
-        (actor_id, _epoch16, _kind, _flags, model, _meta, _mount, _weapon,
+        (actor_id, _epoch16, _kind, _flags, model, meta, _mount, _weapon,
          _scenario, x, y, z, heading, health, move_style, _phase, _pad,
          _vx, _vy, _vz, _pad2, _res1, _res2) = struct.unpack_from(
             "<IHBBIIIIIffffBBBBhhhHII", rec, 0)
@@ -318,7 +323,8 @@ def validate_spawn_batch(payload: bytes):
         if not all(is_finite_coord(v) for v in (x, y, z, heading)):
             raise ValueError(f"spawn actorId={actor_id}: non-finite coords")
         records.append({
-            "actorId": actor_id, "model": model, "x": x, "y": y, "z": z,
+            "actorId": actor_id, "model": model, "metaOutfit": meta,
+            "x": x, "y": y, "z": z,
             "heading": heading, "health": health, "moveStyle": move_style,
         })
     return epoch, records
@@ -412,17 +418,51 @@ def parse_model_list(text: str, num: int):
     return models[:num]
 
 
+def load_outfit_pairs(path: Path):
+    """Parse `probe: model=0x... metaOutfit=0x...` lines -> [(model, meta), ...].
+
+    Only pairs with metaOutfit != 0 and model != 0 are used (E2a: NPCs whose
+    meta-outfit is known and can be sent in ActorSpawn.metaOutfit).
+    """
+    if not path.is_file():
+        return [], f"outfit log not found: {path} (fallback: metaOutfit=0)"
+    pairs = []
+    seen = set()
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                match = PROBE_OUTFIT_RE.search(line)
+                if not match:
+                    continue
+                model = int(match.group(1), 16) & 0xFFFFFFFF
+                meta = int(match.group(2), 16) & 0xFFFFFFFF
+                if model == 0 or meta == 0:
+                    continue
+                key = (model, meta)
+                if key in seen:
+                    continue
+                seen.add(key)
+                pairs.append(key)
+    except OSError as exc:
+        return [], f"cannot read outfit log {path}: {exc} (fallback: metaOutfit=0)"
+    return pairs, None
+
+
 # ---------------------------------------------------------------------------
 # HOST mode: fake host sends 5 NPC actors to the real game guest.
 # ---------------------------------------------------------------------------
 class Actor:
-    def __init__(self, actor_id: int, model: int, center, phase: float,
-                 spawn_time: float):
+    def __init__(self, actor_id: int, model: int, meta_outfit: int, center,
+                 phase: float, spawn_time: float, motion: str = "circle",
+                 direction: float = 0.0):
         self.actor_id = actor_id
         self.model = model
+        self.meta_outfit = meta_outfit
         self.center = center  # (x, y, z)
         self.phase = phase
         self.spawn_time = spawn_time
+        self.motion = motion  # circle | line | idle
+        self.direction = direction
 
 
 class FakeHost:
@@ -448,47 +488,100 @@ class FakeHost:
         self.next_ping_at = 0.0
         self.lost = False
         self.rc = 1
+        self._outfit_logged = False
+
+    # -- actor construction -------------------------------------------------
+    @staticmethod
+    def _motion_for(index: int, pattern: str) -> str:
+        if pattern == "circle":
+            return "circle"
+        if pattern == "line":
+            return "line"
+        # mixed: 2 circle, 2 line, 1+ idle (E2a: check standing actors too)
+        if index < 2:
+            return "circle"
+        if index < 4:
+            return "line"
+        return "idle"
+
+    def _model_and_meta(self, index: int):
+        pairs = getattr(self.args, "outfit_pairs", []) or []
+        if pairs:
+            return pairs[index % len(pairs)]
+        return self.args.models[index % max(1, len(self.args.models))], 0
+
+    def _new_actor(self, actor_id: int, center, spawn_time: float) -> Actor:
+        index = actor_id - 1
+        angle = math.radians(72.0 * index)
+        dist = 3.0 + 0.75 * (index % 4)  # 3.0 .. 5.25 m around the guest
+        cx = center[0] + dist * math.cos(angle)
+        cy = center[1] + dist * math.sin(angle)
+        model, meta = self._model_and_meta(index)
+        motion = self._motion_for(index, self.args.pattern)
+        return Actor(actor_id, model, meta, (cx, cy, center[2]), angle,
+                     spawn_time, motion, angle)
+
+    def _make_actors(self, center):
+        now = time.monotonic()
+        return [self._new_actor(i + 1, center, now)
+                for i in range(self.args.num)]
 
     # -- payload helpers ----------------------------------------------------
     def _spawn_records(self, actors):
         return [pack_actor_spawn(a.actor_id, self.epoch, a.model,
                                  a.center[0], a.center[1], a.center[2],
-                                 math.degrees(a.phase) % 360.0)
+                                 math.degrees(a.phase) % 360.0,
+                                 move_style=0 if a.motion == "idle" else 1,
+                                 meta_outfit=a.meta_outfit)
                 for a in actors]
 
     def _send_spawn(self, actors, why: str = "") -> None:
         if not actors:
             return
+        if not self._outfit_logged:
+            self._outfit_logged = True
+            self.log.write(
+                f"fakehost: outfits pairs={len(getattr(self.args, 'outfit_pairs', []))} "
+                f"pattern={self.args.pattern}")
         payload = pack_spawn_batch(self.epoch, self._spawn_records(actors))
         send_frame(self.sock, MSG_ACTOR_SPAWN_BATCH, payload)
         self.spawns_sent += len(actors)
         self.log.write(f"fakehost: spawn epoch={self.epoch} n={len(actors)}"
                        + (f" ({why})" if why else ""))
 
-    def _make_actors(self, center):
-        models = self.args.models
-        actors = []
-        for i in range(self.args.num):
-            angle = math.radians(72.0 * i)
-            dist = 3.0 + 0.75 * (i % 4)  # 3.0 .. 5.25 m around the guest
-            cx = center[0] + dist * math.cos(angle)
-            cy = center[1] + dist * math.sin(angle)
-            actors.append(Actor(i + 1, models[i], (cx, cy, center[2]),
-                                angle, time.monotonic()))
-        return actors
-
     def _frames_payload(self):
         now = time.monotonic()
         records = []
         for a in self.actors:
             t = now - a.spawn_time
-            omega = self.args.speed / max(0.1, self.args.circle_radius)
-            theta = a.phase + t * omega
-            x = a.center[0] + self.args.circle_radius * math.cos(theta)
-            y = a.center[1] + self.args.circle_radius * math.sin(theta)
-            heading = (math.degrees(theta) + 90.0) % 360.0
+            if a.motion == "idle":
+                x, y = a.center[0], a.center[1]
+                heading = math.degrees(a.phase) % 360.0
+                anim_state, speed = 0, 0
+            elif a.motion == "line":
+                # Walk 4 m forward and back along a.direction (2 m each side).
+                cycle = (t * self.args.speed) % 8.0
+                if cycle < 4.0:
+                    offset = -2.0 + cycle
+                    forward = True
+                else:
+                    offset = 2.0 - (cycle - 4.0)
+                    forward = False
+                x = a.center[0] + offset * math.cos(a.direction)
+                y = a.center[1] + offset * math.sin(a.direction)
+                heading = (math.degrees(a.direction) +
+                           (0.0 if forward else 180.0)) % 360.0
+                anim_state, speed = 1, 64
+            else:
+                omega = self.args.speed / max(0.1, self.args.circle_radius)
+                theta = a.phase + t * omega
+                x = a.center[0] + self.args.circle_radius * math.cos(theta)
+                y = a.center[1] + self.args.circle_radius * math.sin(theta)
+                heading = (math.degrees(theta) + 90.0) % 360.0
+                anim_state, speed = 1, 64
             records.append(pack_actor_frame(a.actor_id, x, y, a.center[2],
-                                            heading, self.frame_seq))
+                                            heading, self.frame_seq,
+                                            anim_state=anim_state, speed=speed))
         return pack_frames_batch(self.epoch, self.frame_seq, records)
 
     # -- loop ---------------------------------------------------------------
@@ -512,6 +605,16 @@ class FakeHost:
             self.log.write("fakehost: models: " + ", ".join(
                 f"0x{m:08X} ({n})" for m, n in
                 zip(a.models, getattr(a, "model_names", []))))
+            if a.outfit_warning:
+                self.log.write(f"fakehost: WARN {a.outfit_warning}")
+            if a.outfit_pairs:
+                sample = ", ".join(f"0x{m:08X}:0x{meta:08X}"
+                                   for m, meta in a.outfit_pairs[:5])
+                self.log.write(f"fakehost: outfits from log: "
+                               f"{len(a.outfit_pairs)} pair(s): {sample}")
+            else:
+                self.log.write("fakehost: outfits: none in log, "
+                               "metaOutfit=0 (E1 fallback)")
             start = time.monotonic()
             deadline = start + a.duration
             reader = FrameReader()
@@ -622,9 +725,7 @@ class FakeHost:
         if self.next_respawn is not None and now >= self.next_respawn:
             self.next_respawn = None
             center = self.guest_pos or (0.0, 0.0, 0.0)
-            actor = Actor(5, a.models[4],
-                          (center[0] + 3.0, center[1] - 3.0, center[2]),
-                          math.radians(180.0), now)
+            actor = self._new_actor(5, center, now)
             self.actors.append(actor)
             try:
                 self._send_spawn([actor], "respawn")
@@ -655,6 +756,8 @@ class FakeGuest:
         self.frame_records = 0
         self.despawns = 0
         self.errors = 0
+        self.outfits_nonzero = 0
+        self.models_nonzero = 0
         self.unique_ids = set()
         self.known_ids = set()
         self.current_epoch = 0
@@ -703,6 +806,10 @@ class FakeGuest:
         for rec in records:
             self.unique_ids.add(rec["actorId"])
             self.known_ids.add(rec["actorId"])
+            if rec["metaOutfit"] != 0:
+                self.outfits_nonzero += 1
+            if rec["model"] != 0:
+                self.models_nonzero += 1
         self.log.write(f"fakeguest: spawn batch epoch={epoch} n={len(records)} "
                        f"ids={[r['actorId'] for r in records]}")
 
@@ -800,6 +907,8 @@ class FakeGuest:
                     f"fakeguest: latency spawn->first frame "
                     f"≈{(self.first_frame_at - self.first_spawn_at) * 1000.0:.0f} ms, "
                     f"max actor gap ≈{self.max_gap * 1000.0:.0f} ms")
+            self.log.write(f"fakeguest: outfits nonzero={self.outfits_nonzero}")
+            self.log.write(f"fakeguest: models nonzero={self.models_nonzero}")
             if self.spawn_batches >= 1 and self.frames_msgs >= 10:
                 rc = 0
                 self.log.write("fakeguest: PASS")
@@ -851,6 +960,14 @@ def build_parser() -> argparse.ArgumentParser:
     host = ap.add_argument_group("host mode")
     host.add_argument("--num", type=int, default=5,
                       help="number of human NPC actors (1..12)")
+    host.add_argument("--pattern", choices=("circle", "line", "mixed"),
+                      default="circle",
+                      help="movement pattern: circle; line (4 m back/forth); "
+                           "mixed (2 circle, 2 line, rest idle)")
+    host.add_argument("--outfits-from-log", default=str(DEFAULT_PROBE_LOG),
+                      help="parse `probe: model=... metaOutfit=...` pairs from "
+                           "the game log and send them in ActorSpawn.metaOutfit "
+                           "(pass empty string to disable)")
     host.add_argument("--circle-radius", type=float, default=3.0,
                       help="circle radius around the spawn point, meters")
     host.add_argument("--speed", type=float, default=1.0,
@@ -898,6 +1015,13 @@ def resolve_args(args):
             args.model_names = names
         if not hasattr(args, "model_names"):
             args.model_names = []
+        # E2a: optional model+metaOutfit pairs from a probe log. If none are
+        # found, keep the E1 behaviour (metaOutfit=0).
+        args.outfit_pairs = []
+        args.outfit_warning = None
+        if args.outfits_from_log:
+            args.outfit_pairs, args.outfit_warning = load_outfit_pairs(
+                Path(args.outfits_from_log))
     if args.duration < 1:
         raise SystemExit("--duration must be >= 1 second")
     return args

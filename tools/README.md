@@ -69,6 +69,52 @@ stdout и в `tools/fake_actor_client.log` (append; файл `*.log` уже
 5. Проверить, что игра-гость не зависла/не задублировала NPC; остановить
    fake host (Ctrl+C → LEAVE).
 
+### E2a: внешность NPC (metaOutfit) и паттерны движения
+
+E2a проверяет, что вместе с `ActorSpawn` уходит `metaOutfit` (внешность NPC),
+а стоящие NPC не «дёргаются». Нужен probe-лог игрового хоста с `npc_debug=1`
+(строки `probe: model=0x... metaOutfit=0x...`; пары с `metaOutfit=0`
+игнорируются).
+
+**Визуальный тест: fake host → игровой гость (как ТЕСТ A)**
+```powershell
+# сервер v15
+.\build-server-ci\Release\rdr2_coop_server.exe 7777
+
+# fake host: берём до 5 разных пар model+metaOutfit из лога игры,
+# смешанный паттерн (2 круга, 2 линии, 1 стоит)
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --outfits-from-log "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
+  --pattern mixed --num 5 --duration 300 --despawn-after 30
+
+# затем запустить игру-гостя (npc_actor=1); смотреть на 5 NPC рядом.
+```
+Ожидаемые строки:
+```
+fakehost: outfits from log: N pair(s): 0x...:0x...
+fakehost: outfits pairs=N pattern=mixed
+fakehost: spawn epoch=1 n=5
+fakehost: frames sent=...
+```
+В игре-госте: 5 NPC с разной внешностью; 2 идут по кругу, 2 — вперёд-назад
+по 4 м, 1 стоит неподвижно (не дёргается); actorId=5 — стоящий, через 30 с
+исчезает.
+
+**Проверка, что metaOutfit уходит в сеть: игровой хост → fake guest**
+```powershell
+# игра подключена ПЕРВОЙ (хост) с npc_actor=1, npc_debug=1;
+# затем:
+python tools\fake_actor_client.py --mode guest --name TestGuest --duration 120
+```
+Ожидаемые строки:
+```
+fakeguest: spawn batch epoch=... n=...
+fakeguest: outfits nonzero=N
+fakeguest: models nonzero=N
+```
+Если `outfits nonzero=0` — игровой хост не шлёт metaOutfit (проверить E2a
+и `npc_debug`), либо в логе нет пар с `metaOutfit != 0`.
+
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 
 **Порядок: сервер → игра-хост → fake guest.**
@@ -100,6 +146,8 @@ stdout и в `tools/fake_actor_client.log` (append; файл `*.log` уже
 | `--duration` | 300 (host) / 120 (guest) | сколько секунд работать |
 | `--model 0x...` | `0x54D8BE8E` | модель ped'а для JOIN |
 | `--num` | 5 | число NPC (только host, 1..12) |
+| `--pattern` | `circle` | `circle` / `line` (4 м назад-вперёд) / `mixed` (2 круга, 2 линии, остальные стоят) |
+| `--outfits-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | пары `model+metaOutfit` из probe-лога; пустая строка — выкл. |
 | `--circle-radius` | 3.0 | радиус круга движения NPC, м |
 | `--speed` | 1.0 | скорость движения NPC, м/с |
 | `--despawn-after` | 30 | через сколько секунд удалить actorId=5 |

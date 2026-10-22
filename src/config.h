@@ -50,6 +50,9 @@ struct Config {
     // обнаружения вокруг игроков в метрах (20..100, default 60).
     int npcCap = 8;
     int npcRadius = 60;
+    // E2a: применять meta-outfit (внешность) на прокси NPC (default 1).
+    // При 0 — поведение E1: только random variation.
+    bool npcAppearance = true;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —
