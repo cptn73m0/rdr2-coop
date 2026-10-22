@@ -161,6 +161,54 @@ fakeguest: speed min=... max=... u8 (scale 8 m/s); gait min=... max=...
 Для walk-круга на 1 м/с: `speed avg≈32`, `gait avg≈1.000`, `pad_zero=0`;
 для `--pattern mixed` `pad_zero>0` (стоящий actorId5), `gait avg<1.0`.
 
+### E2b: конные NPC (`--mounted`)
+
+E2b сдаёт в `ActorSpawn`:
+- `flags |= mounted (bit0)` для всадников;
+- `reserved` (u32) = **хэш модели лошади** (`A_C_HORSE_*` из `Peds.json`,
+  fallback 3–4 известных модели);
+- `moveStyle = RideHorse (3)`; кадры несут mounted-флаг, скорость/gait —
+  как задано (`--gait 1.0` шаг / `2.0` галоп).
+
+Первые `--mounted N` акторов (из `--num`) — верхом; позиции/heading по общему
+паттерну. `--mount-model` задаёт один явный хэш для всех всадников.
+
+**A/B-тест конных (fake host → игровой гость):**
+```powershell
+# шаг: 3 всадника из 5, круг
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --pattern circle --mounted 3 --gait 1.0 --duration 300
+
+# галоп: перезапустить после «шага»
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --pattern circle --mounted 3 --gait 2.0 --duration 300
+
+# все 5 верхом, своя лошадь:
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --mounted 5 --gait 2.0 --mount-model 0x88D6A59E
+```
+Ожидаемые строки host:
+```
+fakehost: mounted=3/5 mount_models=0x... (A_C_HORSE_...), ...
+fakehost: spawn epoch=1 n=5
+fakehost: frames sent=...
+```
+В игре-госте: 3 всадника (первые 3 actorId) и 2 пеших; при `--gait 1.0`
+лошади идут шагом, при `--gait 2.0` — быстрее (галоп); лошади не должны
+дёргаться/телепортироваться.
+
+**Проверка полей в сети (игровой хост → fake guest):**
+```powershell
+python tools\fake_actor_client.py --mode guest --name TestGuest --duration 120
+```
+Ожидаемые строки:
+```
+fakeguest: mounted=N
+fakeguest: mounted reserved_ok=N reserved_zero=0
+```
+`reserved_zero>0` или `ERROR ActorSpawnBatch: mounted actorId=... reserved=0` —
+игровой хост не передал модель лошади (проверить E2b).
+
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 
 **Порядок: сервер → игра-хост → fake guest.**
@@ -193,7 +241,9 @@ fakeguest: speed min=... max=... u8 (scale 8 m/s); gait min=... max=...
 | `--model 0x...` | `0x54D8BE8E` | модель ped'а для JOIN |
 | `--num` | 5 | число NPC (только host, 1..12) |
 | `--pattern` | `circle` | `circle` / `line` (4 м назад-вперёд) / `mixed` (2 круга, 2 линии, остальные стоят) |
-| `--gait` | 1.0 | E2a.2 gait движущихся актёров: `1.0` walk, `2.0` run (уходит в `ActorFrame.pad=gait*1000`; idle=0) |
+| `--gait` | 1.0 | E2a.2 gait движущихся актёров: `1.0` walk, `2.0` run/галоп (уходит в `ActorFrame.pad=gait*1000`; idle=0) |
+| `--mounted` | 0 | E2b: сколько из `--num` акторов верхом (первые N; 0..num); flags bit0 + `ActorSpawn.reserved=mount model` |
+| `--mount-model` | — | E2b: явный хэш лошади для всех всадников (иначе `A_C_HORSE_*` из Peds.json) |
 | `--outfits-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | пары `model+metaOutfit` из probe-лога; пустая строка — выкл. |
 | `--circle-radius` | 3.0 | радиус круга движения NPC, м |
 | `--speed` | 1.0 | базовая скорость движения, м/с (фактическая = speed*gait; в кадр идёт speed/8*255) |

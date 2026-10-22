@@ -66,6 +66,16 @@ PROBE_OUTFIT_RE = re.compile(
     r"probe:\s*model=0x([0-9A-Fa-f]+)\s+metaOutfit=0x([0-9A-Fa-f]+)")
 
 HUMAN_PREFIXES = ("A_M_M_", "A_M_O_", "G_M_M_", "S_M_M_")
+HORSE_PREFIX = "A_C_HORSE_"
+# E2b fallback horse models (A_C_HORSE_* from Peds.json) if the DB is missing.
+DEFAULT_MOUNT_MODELS = [
+    2295768478,  # A_C_HORSE_ARABIAN_BLACK
+    3844913586,  # A_C_HORSE_AMERICANPAINT_OVERO
+    3850356320,  # A_C_HORSE_ANDALUSIAN_DARKBAY
+    3266891371,  # A_C_HORSE_APPALOOSA_BLACKSNOWFLAKE
+]
+K_ACTOR_FLAG_MOUNTED = 1 << 0
+K_MOVE_STYLE_RIDE_HORSE = 3
 # Prefer ordinary town/ranch humans for a believable test crowd; avoid corpse/
 # undead variants that are technically human peds but look broken as NPCs.
 MODEL_GOOD_WORDS = ("TOWNFOLK", "RANCHER", "FARMER", "LABOURER", "LIVERY",
@@ -258,15 +268,16 @@ def join_session(sock: socket.socket, name: str, model: int, log: Log,
 def pack_actor_spawn(actor_id: int, epoch: int, model: int,
                      x: float, y: float, z: float, heading: float,
                      health: int = 200, move_style: int = 0,
-                     meta_outfit: int = 0) -> bytes:
+                     meta_outfit: int = 0, flags: int = 0,
+                     mount_model: int = 0) -> bytes:
     return struct.pack(
         "<IHBBIIIIIffffBBBBhhhHII",
-        actor_id, epoch & 0xFFFF, 0, 0,          # actorId, epoch, kind, flags
+        actor_id, epoch & 0xFFFF, 0, flags & 0xFF,  # actorId/epoch/kind/flags
         model & 0xFFFFFFFF, meta_outfit & 0xFFFFFFFF, 0, 0, 0,  # model, meta, ...
         float(x), float(y), float(z), float(heading),
         health & 0xFF, move_style & 0xFF, 0, 0,  # health, moveStyle, phase, pad
         0, 0, 0, 0,                              # vx, vy, vz, pad2
-        0, 0,                                    # reserved, reserved2
+        mount_model & 0xFFFFFFFF, 0,             # reserved = mount model, reserved2
     )
 
 
@@ -276,9 +287,10 @@ def pack_spawn_batch(epoch: int, records) -> bytes:
 
 def pack_actor_frame(actor_id: int, x: float, y: float, z: float,
                      heading: float, seq: int, anim_state: int = 1,
-                     speed: int = 0, pad: int = 0) -> bytes:
-    return struct.pack("<IHBBffffIHH", actor_id, 0, anim_state & 0xFF,
-                       speed & 0xFF, float(x), float(y), float(z),
+                     speed: int = 0, pad: int = 0, flags: int = 0) -> bytes:
+    return struct.pack("<IHBBffffIHH", actor_id, flags & 0xFFFF,
+                       anim_state & 0xFF, speed & 0xFF,
+                       float(x), float(y), float(z),
                        float(heading), 0, seq & 0xFFFF, pad & 0xFFFF)
 
 
@@ -337,9 +349,9 @@ def validate_spawn_batch(payload: bytes):
     for i in range(count):
         rec = payload[ACTOR_SPAWN_BATCH_HEADER + i * ACTOR_SPAWN_SIZE:
                       ACTOR_SPAWN_BATCH_HEADER + (i + 1) * ACTOR_SPAWN_SIZE]
-        (actor_id, _epoch16, _kind, _flags, model, meta, _mount, _weapon,
+        (actor_id, _epoch16, _kind, flags, model, meta, _mount, _weapon,
          _scenario, x, y, z, heading, health, move_style, _phase, _pad,
-         _vx, _vy, _vz, _pad2, _res1, _res2) = struct.unpack_from(
+         _vx, _vy, _vz, _pad2, reserved, _res2) = struct.unpack_from(
             "<IHBBIIIIIffffBBBBhhhHII", rec, 0)
         if actor_id == 0:
             raise ValueError(f"spawn record #{i}: actorId=0")
@@ -352,6 +364,7 @@ def validate_spawn_batch(payload: bytes):
             "actorId": actor_id, "model": model, "metaOutfit": meta,
             "x": x, "y": y, "z": z,
             "heading": heading, "health": health, "moveStyle": move_style,
+            "flags": flags, "mountModel": reserved,
         })
     return epoch, records
 
@@ -444,6 +457,42 @@ def parse_model_list(text: str, num: int):
     return models[:num]
 
 
+def parse_single_hash(text: str) -> int:
+    value = int(str(text), 0) & 0xFFFFFFFF
+    if value == 0:
+        raise ValueError("hash must be non-zero")
+    return value
+
+
+def load_mount_models(num: int, peds_json: Path):
+    """Return up to `num` A_C_HORSE_* model hashes (or the fallback list)."""
+    if num <= 0:
+        return [], []
+    found = []
+    if peds_json.is_file():
+        try:
+            data = json.loads(peds_json.read_text(encoding="utf-8"))
+            for key, name in data.items():
+                name_u = str(name).upper()
+                if not name_u.startswith(HORSE_PREFIX):
+                    continue
+                try:
+                    model = int(key) & 0xFFFFFFFF
+                except ValueError:
+                    continue
+                if model:
+                    found.append((name_u, model))
+        except (OSError, ValueError):
+            found = []
+    found.sort(key=lambda item: item[0])
+    if not found:
+        names = ["A_C_HORSE_FALLBACK_%02d" % (i + 1)
+                 for i in range(len(DEFAULT_MOUNT_MODELS))]
+        return list(DEFAULT_MOUNT_MODELS), names
+    selected = found[:num]
+    return [m for _n, m in selected], [n for n, _m in selected]
+
+
 def load_outfit_pairs(path: Path):
     """Parse `probe: model=0x... metaOutfit=0x...` lines -> [(model, meta), ...].
 
@@ -480,7 +529,8 @@ def load_outfit_pairs(path: Path):
 class Actor:
     def __init__(self, actor_id: int, model: int, meta_outfit: int, center,
                  phase: float, spawn_time: float, motion: str = "circle",
-                 direction: float = 0.0, gait: float = 1.0):
+                 direction: float = 0.0, gait: float = 1.0,
+                 mounted: bool = False, mount_model: int = 0):
         self.actor_id = actor_id
         self.model = model
         self.meta_outfit = meta_outfit
@@ -490,6 +540,8 @@ class Actor:
         self.motion = motion  # circle | line | idle
         self.direction = direction
         self.gait = gait  # E2a.2 gait ratio: 0 idle, 1 walk, 2 run
+        self.mounted = mounted  # E2b: actor rides a horse
+        self.mount_model = mount_model  # E2b: ActorSpawn.reserved
 
 
 class FakeHost:
@@ -546,8 +598,13 @@ class FakeHost:
         model, meta = self._model_and_meta(index)
         motion = self._motion_for(index, self.args.pattern)
         gait = 0.0 if motion == "idle" else self.args.gait
+        mounted = actor_id <= self.args.mounted
+        mount_model = 0
+        if mounted and self.args.mount_models:
+            mount_model = self.args.mount_models[
+                (actor_id - 1) % len(self.args.mount_models)]
         return Actor(actor_id, model, meta, (cx, cy, center[2]), angle,
-                     spawn_time, motion, angle, gait)
+                     spawn_time, motion, angle, gait, mounted, mount_model)
 
     def _make_actors(self, center):
         now = time.monotonic()
@@ -556,11 +613,15 @@ class FakeHost:
 
     # -- payload helpers ----------------------------------------------------
     def _spawn_records(self, actors):
-        return [pack_actor_spawn(a.actor_id, self.epoch, a.model,
-                                 a.center[0], a.center[1], a.center[2],
-                                 math.degrees(a.phase) % 360.0,
-                                 move_style=move_style_for_gait(a.gait),
-                                 meta_outfit=a.meta_outfit)
+        return [pack_actor_spawn(
+                    a.actor_id, self.epoch, a.model,
+                    a.center[0], a.center[1], a.center[2],
+                    math.degrees(a.phase) % 360.0,
+                    move_style=(K_MOVE_STYLE_RIDE_HORSE if a.mounted
+                                else move_style_for_gait(a.gait)),
+                    meta_outfit=a.meta_outfit,
+                    flags=(K_ACTOR_FLAG_MOUNTED if a.mounted else 0),
+                    mount_model=a.mount_model)
                 for a in actors]
 
     def _send_spawn(self, actors, why: str = "") -> None:
@@ -570,7 +631,8 @@ class FakeHost:
             self._outfit_logged = True
             self.log.write(
                 f"fakehost: outfits pairs={len(getattr(self.args, 'outfit_pairs', []))} "
-                f"pattern={self.args.pattern} gait={self.args.gait:.1f}")
+                f"pattern={self.args.pattern} gait={self.args.gait:.1f} "
+                f"mounted={self.args.mounted}/{self.args.num}")
         payload = pack_spawn_batch(self.epoch, self._spawn_records(actors))
         send_frame(self.sock, MSG_ACTOR_SPAWN_BATCH, payload)
         self.spawns_sent += len(actors)
@@ -587,10 +649,15 @@ class FakeHost:
             move_speed = (self.args.speed * a.gait) if a.gait > 0 else 0.0
             speed_u8 = encode_speed_u8(move_speed)
             gait_pad = encode_gait_pad(a.gait)
+            # E2b: mounted actors keep RideHorse animState and mounted flag;
+            # position/heading logic is the same as for walking actors.
+            anim_state = K_MOVE_STYLE_RIDE_HORSE if a.mounted \
+                else move_style_for_gait(a.gait)
+            flags = K_ACTOR_FLAG_MOUNTED if a.mounted else 0
             if a.motion == "idle":
                 x, y = a.center[0], a.center[1]
                 heading = math.degrees(a.phase) % 360.0
-                anim_state, speed_u8, gait_pad = 0, 0, 0
+                speed_u8, gait_pad = 0, 0
             elif a.motion == "line":
                 # Walk/run 4 m forward and back along a.direction.
                 traveled = (t * move_speed) % 8.0
@@ -604,18 +671,17 @@ class FakeHost:
                 y = a.center[1] + offset * math.sin(a.direction)
                 heading = (math.degrees(a.direction) +
                            (0.0 if forward else 180.0)) % 360.0
-                anim_state = move_style_for_gait(a.gait)
             else:
                 omega = move_speed / max(0.1, self.args.circle_radius)
                 theta = a.phase + t * omega
                 x = a.center[0] + self.args.circle_radius * math.cos(theta)
                 y = a.center[1] + self.args.circle_radius * math.sin(theta)
                 heading = (math.degrees(theta) + 90.0) % 360.0
-                anim_state = move_style_for_gait(a.gait)
             records.append(pack_actor_frame(a.actor_id, x, y, a.center[2],
                                             heading, self.frame_seq,
                                             anim_state=anim_state,
-                                            speed=speed_u8, pad=gait_pad))
+                                            speed=speed_u8, pad=gait_pad,
+                                            flags=flags))
         return pack_frames_batch(self.epoch, self.frame_seq, records)
 
     # -- loop ---------------------------------------------------------------
@@ -649,6 +715,13 @@ class FakeHost:
             else:
                 self.log.write("fakehost: outfits: none in log, "
                                "metaOutfit=0 (E1 fallback)")
+            if a.mounted:
+                self.log.write(
+                    f"fakehost: mounted={a.mounted}/{a.num} mount_models=" +
+                    ", ".join(f"0x{m:08X} ({n})" for m, n in
+                              zip(a.mount_models, a.mount_model_names)))
+            else:
+                self.log.write("fakehost: mounted=0")
             start = time.monotonic()
             deadline = start + a.duration
             reader = FrameReader()
@@ -792,6 +865,11 @@ class FakeGuest:
         self.errors = 0
         self.outfits_nonzero = 0
         self.models_nonzero = 0
+        # E2b: mounted actors (flags bit0) and their ActorSpawn.reserved mount
+        # model hash. Heartbeat spawn batches repeat actorIds, so use sets.
+        self.mounted_ids = set()
+        self.mounted_reserved_ok = set()
+        self.mounted_reserved_zero = set()
         # E2a.2: speed/gait statistics from ActorFrame (speed u8 on 0..8 m/s
         # scale, pad = gait*1000).
         self.speed_min = 255
@@ -855,6 +933,15 @@ class FakeGuest:
                 self.outfits_nonzero += 1
             if rec["model"] != 0:
                 self.models_nonzero += 1
+            if rec["flags"] & K_ACTOR_FLAG_MOUNTED:
+                actor_id = rec["actorId"]
+                self.mounted_ids.add(actor_id)
+                if rec["mountModel"] != 0:
+                    self.mounted_reserved_ok.add(actor_id)
+                elif actor_id not in self.mounted_reserved_zero:
+                    self.mounted_reserved_zero.add(actor_id)
+                    self._error(f"ActorSpawnBatch: mounted actorId={actor_id} "
+                                f"has reserved(mountModel)=0")
         self.log.write(f"fakeguest: spawn batch epoch={epoch} n={len(records)} "
                        f"ids={[r['actorId'] for r in records]}")
 
@@ -968,6 +1055,10 @@ class FakeGuest:
                     f"max actor gap ≈{self.max_gap * 1000.0:.0f} ms")
             self.log.write(f"fakeguest: outfits nonzero={self.outfits_nonzero}")
             self.log.write(f"fakeguest: models nonzero={self.models_nonzero}")
+            self.log.write(f"fakeguest: mounted={len(self.mounted_ids)}")
+            self.log.write(
+                f"fakeguest: mounted reserved_ok={len(self.mounted_reserved_ok)} "
+                f"reserved_zero={len(self.mounted_reserved_zero)}")
             speed_avg = (self.speed_sum / self.speed_count
                          if self.speed_count else 0.0)
             gait_avg = (self.gait_sum / self.gait_count
@@ -1038,6 +1129,12 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--gait", type=float, choices=(1.0, 2.0), default=1.0,
                       help="E2a.2 gait ratio for moving actors: 1.0 walk, "
                            "2.0 run (sent as ActorFrame.pad=gait*1000; idle=0)")
+    host.add_argument("--mounted", type=int, default=0,
+                      help="E2b: how many of --num actors ride a horse "
+                           "(first N actors; 0..num)")
+    host.add_argument("--mount-model", default=None,
+                      help="E2b: explicit horse model hash for all mounted "
+                           "actors (default: A_C_HORSE_* from Peds.json)")
     host.add_argument("--outfits-from-log", default=str(DEFAULT_PROBE_LOG),
                       help="parse `probe: model=... metaOutfit=...` pairs from "
                            "the game log and send them in ActorSpawn.metaOutfit "
@@ -1098,6 +1195,28 @@ def resolve_args(args):
         if args.outfits_from_log:
             args.outfit_pairs, args.outfit_warning = load_outfit_pairs(
                 Path(args.outfits_from_log))
+        # E2b: mounted actor support. Mount model hashes are sent in
+        # ActorSpawn.reserved; first --mounted actors get the mounted flag.
+        if not 0 <= args.mounted <= args.num:
+            raise SystemExit(f"--mounted must be 0..{args.num}")
+        args.mount_models = []
+        args.mount_model_names = []
+        if args.mounted:
+            if args.mount_model:
+                try:
+                    model = parse_single_hash(args.mount_model)
+                except (ValueError, TypeError) as exc:
+                    raise SystemExit(f"--mount-model: {exc}")
+                args.mount_models = [model]
+                args.mount_model_names = ["--mount-model"]
+            else:
+                try:
+                    args.mount_models, args.mount_model_names = load_mount_models(
+                        args.mounted, Path(args.peds_json))
+                except RuntimeError as exc:
+                    raise SystemExit(str(exc))
+                if not args.mount_models:
+                    raise SystemExit("cannot load A_C_HORSE_* mount models")
     if args.duration < 1:
         raise SystemExit("--duration must be >= 1 second")
     return args

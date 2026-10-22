@@ -68,6 +68,21 @@ constexpr unsigned int kGaitRefreshTicks = 10;   // gait не реже 1 раз�
 constexpr float kFollowHeadingSentinel = 40000.f; // «не поворачивать» (как в rdr2-runtime)
 constexpr float kIdleNoMoveDist = 0.5f;          // idle: ближе — не трогаем
 
+// E2b: всадник + лошадь как ОДИН actor. ActorSpawn.reserved = хэш модели
+// лошади (0 = пеший); протокол/размер не меняются. Host moveStyle=RideHorse
+// (3, как договорено в E2b) для всадника; гость ведёт ЛОШАДЬ, rider в седле.
+constexpr uint8_t kMoveStyleRideHorse = 3;          // host moveStyle для всадника
+constexpr int kMaxMountsPerTick = 1;                // создание лошади/тик
+constexpr unsigned int kMountDismountDelayTicks = 45;  // 0.75 с — удалить horse
+constexpr unsigned int kMountDeathDeleteTicks = 150;   // 2.5 с — удалить horse
+constexpr unsigned int kMountReseatCheckTicks = 60;    // 1 с — reseat watchdog
+constexpr int kMountMaxSeatAttempts = 3;            // после — fallback пешком
+// Причины actor: mount despawn (контракт игрового слоя).
+constexpr unsigned int kMountReasonDismount = 1;
+constexpr unsigned int kMountReasonDespawn = 2;
+constexpr unsigned int kMountReasonDead = 3;
+constexpr unsigned int kMountReasonSeatFailed = 4;
+
 // P3-фиксы по ревью E1 (task-45).
 constexpr unsigned int kPendingSpawnTimeoutTicks = 300; // 5 с ожидания модели
 constexpr unsigned int kNoCollisionRefreshTicks = 60;   // 1 с: повторить no-collision
@@ -741,6 +756,22 @@ void LogAppearance(uint32_t actorId, uint32_t model, uint32_t outfit,
                   actorId, model, outfit, state);
 }
 
+// E2b: логи всадника/лошади (гейт enabled снаружи — module пути).
+void LogMountSpawn(uint32_t actorId, uint32_t model)
+{
+    sh_log::Write("actor: mount spawn id=%u model=0x%X\n", actorId, model);
+}
+
+void LogMountFailed(uint32_t actorId, const char* reason)
+{
+    sh_log::Write("actor: mount failed id=%u reason=%s\n", actorId, reason);
+}
+
+void LogMountDespawn(uint32_t actorId, unsigned int reason)
+{
+    sh_log::Write("actor: mount despawn id=%u reason=%u\n", actorId, reason);
+}
+
 // ======================= perf: actor p95 (npc_debug=1) =======================
 void LogPerfIfDue(unsigned int tick)
 {
@@ -971,7 +1002,23 @@ net::ActorSpawn BuildSpawn(unsigned int handle, uint32_t actorId)
     s.flags = static_cast<uint8_t>(BuildFlags(handle));
     s.model = GetModelOf(handle);
     s.metaOutfit = GetMetaOutfit(handle);
-    s.mountActorId = 0; // E1: human-only, лошади не акторы
+    // E2b: всадник — один actor. ActorSpawn.reserved = хэш модели лошади
+    // (только когда флаг mounted); mountActorId не используем (лошадь не
+    // отдельный actor, чтобы не менять протокол/идентификаторы).
+    const unsigned int mountHandle = GetMountOf(handle);
+    const bool mounted = mountHandle != 0 && DoesExist(mountHandle);
+    if (mounted)
+    {
+        s.flags |= net::kActorFlagMounted;
+        s.reserved = GetModelOf(mountHandle);
+        s.moveStyle = kMoveStyleRideHorse;
+    }
+    else
+    {
+        s.reserved = 0;
+        s.moveStyle = MoveStateFromSpeed(GetSpeed(handle));
+    }
+    s.mountActorId = 0;
     const uint32_t held = GetHeldWeapon(handle);
     s.weaponHash = held ? held : GetCurrentWeapon(handle);
     s.scenarioHash = GetDynamicScenario(handle);
@@ -979,7 +1026,6 @@ net::ActorSpawn BuildSpawn(unsigned int handle, uint32_t actorId)
     s.x = p.x; s.y = p.y; s.z = p.z;
     s.heading = GetHeading(handle);
     s.health = GetHealthByte(handle);
-    s.moveStyle = MoveStateFromSpeed(GetSpeed(handle));
     s.phase = 0;
     return s;
 }
@@ -988,9 +1034,17 @@ net::ActorFrame BuildFrame(unsigned int handle, uint32_t actorId)
 {
     net::ActorFrame f{};
     f.actorId = actorId;
-    const float speed = GetSpeed(handle);
-    const uint8_t move = MoveStateFromSpeed(speed);
+    // E2b: для всадника скорость/heading берём с лошади (rider стоит на месте
+    // относительно седла), moveState=RideHorse; гость по флагу mounted ведёт
+    // лошадь трейл-целью.
+    const unsigned int mountHandle = GetMountOf(handle);
+    const bool mounted = mountHandle != 0 && DoesExist(mountHandle);
+    const float speed = mounted ? GetSpeed(mountHandle) : GetSpeed(handle);
+    const uint8_t move = mounted ? kMoveStyleRideHorse
+                                 : MoveStateFromSpeed(speed);
     f.flags = BuildFlags(handle);
+    if (mounted)
+        f.flags |= net::kActorFlagMounted;
     f.animState = move;
     // E2a.2: ActorFrame.speed — u8 0..255 соответствует 0..8 м/с (шкала
     // поднята с 3 м/с: sprint/галоп больше не сатурируется на 3).
@@ -1006,7 +1060,7 @@ net::ActorFrame BuildFrame(unsigned int handle, uint32_t actorId)
     f.pad = static_cast<uint16_t>(gait * 1000.0f + 0.5f);
     const Vec3 p = GetCoords(handle);
     f.x = p.x; f.y = p.y; f.z = p.z;
-    f.heading = GetHeading(handle);
+    f.heading = mounted ? GetHeading(mountHandle) : GetHeading(handle);
     f.targetActorId = 0;
     f.seq = g_frameSeq;
     return f;
@@ -1335,6 +1389,23 @@ struct Proxy
     unsigned int taskIssuedTick = 0;
     unsigned int lastMotionUpdateTick = 0;
     unsigned int lastStatusTick = 0;
+    // E2b: лошадь всадника (один actor = rider+horse; mountModel = reserved).
+    unsigned int mountHandle = 0;
+    unsigned int mountModel = 0;   // ActorSpawn.reserved (хэш модели лошади)
+    bool mounted = false;          // текущее состояние из кадров (flags)
+    bool mountFailedLogged = false;
+    unsigned int dismountTick = 0; // тик, когда mounted стало 0
+    unsigned int mountDeathTick = 0; // тик смерти rider (horse удаляем позже)
+    unsigned int lastReseatTick = 0;
+    int mountSeatAttempts = 0;
+    // Долгоживущая go-to задача для ЛОШАДИ (rider не двигаем).
+    uint32_t mountTaskHash = 0;
+    bool mountTaskActive = false;
+    unsigned int mountLastUpdateTick = 0;
+    unsigned int mountLastStatusTick = 0;
+    unsigned int mountLastGaitTick = 0;
+    float mountLastGait = -1.f;
+    Vec3 mountMoveTarget{0.f, 0.f, 0.f};
 };
 
 std::map<uint32_t, Proxy> g_proxies;
@@ -1355,6 +1426,7 @@ bool g_haveFrames = false;
 std::deque<net::ActorDespawnPayload> g_guestDespawnQueue;
 int g_modelRequestsThisTick = 0;
 int g_appearanceRequestsThisTick = 0; // E2a: бюджет REQUEST_META_PED_OUTFIT
+int g_mountsCreatedThisTick = 0;      // E2b: <=1 лошадь/тик
 unsigned int g_appliedFrames = 0;
 unsigned int g_timeouts = 0;
 unsigned int g_lastNoCollisionTick = 0;
@@ -1362,6 +1434,81 @@ unsigned int g_lastNoCollisionTick = 0;
 unsigned int g_motionIssued = 0;
 unsigned int g_motionReissue = 0;
 unsigned int g_motionGaitRestart = 0;
+
+// E2b: общая настройка созданного педа (rider или horse) — mission/visible/
+// invincible/LOD/no-collision + ground snap у вызывающего.
+unsigned int CreatePedWithSetup(unsigned int model, float x, float y, float z,
+                                float heading, const TickContext& ctx,
+                                bool isMount)
+{
+    const unsigned int handle = CreatePed(model, x, y, z, heading);
+    if (!handle)
+        return 0;
+    SetMissionEntity(handle);
+    SetInvincible(handle, true);
+    SetVisible(handle);
+    SetLodDist(handle, kActorLodDist);
+    SetNoCollisionWith(handle, ctx.localPed);
+    SetNoCollisionWith(handle, ctx.partnerGhost);
+    SetNoCollisionWith(handle, ctx.partnerMount);
+    SetCanBeTargetted(handle, false);
+    SetBlockingOfNonTemporaryEvents(handle, true);
+    RandomizeComponents(handle);
+    SetCoordsNative(handle, x, y, z);
+    SetHeadingNative(handle, heading);
+    if (isMount)
+        SetMoveBlend(handle, 3.0f);
+    return handle;
+}
+
+// Удаление одной сущности прокси с mission-unmark; при неудаче (DoesExist)
+// НЕ теряем учёт: handle остаётся, вызывающий сохраняет proxy (как в E1).
+bool DeleteEntitySafe(unsigned int& handle, unsigned int model,
+                      uint32_t actorId)
+{
+    if (!handle)
+        return true;
+    SetMissionEntityFlag(handle, false);
+    DeletePedHandle(handle);
+    if (DoesExist(handle))
+    {
+        LogDeleteFailed(actorId, handle);
+        return false;
+    }
+    SetModelAsNoLongerNeeded(model);
+    handle = 0;
+    return true;
+}
+
+// E2b: удалить лошадь прокси; возвращает true, когда учёт можно чистить.
+bool TryDeleteMount(Proxy& p, unsigned int reason)
+{
+    if (!p.mountHandle)
+        return true;
+    if (!DeleteEntitySafe(p.mountHandle, p.mountModel, p.actorId))
+        return false;
+    p.mounted = false;
+    p.mountDeathTick = 0;
+    LogMountDespawn(p.actorId, reason);
+    return true;
+}
+
+// E2b: посадить rider в седло лошади (seatIndex -1 = любое, p3=false).
+bool SeatRiderOnMount(Proxy& p)
+{
+    if (!p.handle || !p.mountHandle)
+        return false;
+    if (!DoesExist(p.handle) || !DoesExist(p.mountHandle))
+        return false;
+    using namespace natives_api;
+    Init(natives::SET_PED_ONTO_MOUNT);
+    Push(p.handle);
+    Push(p.mountHandle);
+    Push(static_cast<unsigned long long>(0xFFFFFFFF)); // seatIndex -1
+    Push(false);
+    Call();
+    return true;
+}
 
 // P2-фикс (task-45): перед DELETE_PED снимаем mission-entity; если сущность
 // всё равно существует — НЕ теряем учёт (proxy остаётся в g_proxies, повтор).
@@ -1375,25 +1522,29 @@ bool DeleteProxy(Proxy& proxy)
         proxy.appearanceState = 3;
     }
 
-    if (!proxy.handle)
+    bool ok = true;
+
+    // E2b: всадник — это rider+horse; удаляем обе сущности. Если хоть одна
+    // не удалилась — proxy остаётся в учёте (повтор/таймаут), не теряем.
+    if (proxy.handle)
+    {
+        if (DeleteEntitySafe(proxy.handle, proxy.model, proxy.actorId))
+            g_handleByActor.erase(proxy.actorId);
+        else
+            ok = false;
+    }
+    else
     {
         g_handleByActor.erase(proxy.actorId);
-        return true;
     }
 
-    SetMissionEntityFlag(proxy.handle, false);
-    DeletePedHandle(proxy.handle);
-
-    if (DoesExist(proxy.handle))
+    if (proxy.mountHandle)
     {
-        LogDeleteFailed(proxy.actorId, proxy.handle);
-        return false;
+        if (!TryDeleteMount(proxy, kMountReasonDespawn))
+            ok = false;
     }
 
-    SetModelAsNoLongerNeeded(proxy.model);
-    g_handleByActor.erase(proxy.actorId);
-    proxy.handle = 0;
-    return true;
+    return ok;
 }
 
 void DeleteAllProxies()
@@ -1419,27 +1570,28 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
         return false;
     }
 
+    // E2b: всадник. Пока модель лошади не загружена или исчерпан бюджет
+    // (1 лошадь/тик) — pending ждёт; при неудаче CREATE_PED rider остаётся
+    // пешим (fallback, лог actor: mount failed).
+    const bool wantMount =
+        (s.flags & net::kActorFlagMounted) != 0 && s.reserved != 0;
+    if (wantMount)
+    {
+        if (!HasModelLoaded(s.reserved))
+            return false;
+        if (g_mountsCreatedThisTick >= kMaxMountsPerTick)
+            return false;
+    }
+
     float z = s.z;
     float gz = 0.f;
     if (GroundZ(s.x, s.y, s.z + 1.0f, gz))
         z = gz + 0.2f;
 
-    const unsigned int handle = CreatePed(s.model, s.x, s.y, z, s.heading);
+    const unsigned int handle =
+        CreatePedWithSetup(s.model, s.x, s.y, z, s.heading, ctx, false);
     if (!handle)
         return false;
-
-    SetMissionEntity(handle);
-    SetInvincible(handle, true);
-    SetVisible(handle);
-    SetLodDist(handle, kActorLodDist);
-    SetNoCollisionWith(handle, ctx.localPed);
-    SetNoCollisionWith(handle, ctx.partnerGhost);
-    SetNoCollisionWith(handle, ctx.partnerMount);
-    SetCanBeTargetted(handle, false);
-    SetBlockingOfNonTemporaryEvents(handle, true);
-    RandomizeComponents(handle);
-    SetCoordsNative(handle, s.x, s.y, z);
-    SetHeadingNative(handle, s.heading);
 
     Proxy p;
     p.actorId = s.actorId;
@@ -1480,9 +1632,44 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     p.taskIssuedTick = ctx.tickCount;
     p.lastMotionUpdateTick = ctx.tickCount;
     p.lastStatusTick = ctx.tickCount;
+    // E2b: состояние лошади (mountModel = ActorSpawn.reserved).
+    p.mountModel = wantMount ? s.reserved : 0;
+    p.mountTaskHash = natives::SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD;
+    p.mountTaskActive = false;
+    p.mountLastUpdateTick = ctx.tickCount;
+    p.mountLastStatusTick = ctx.tickCount;
+    p.mountLastGaitTick = ctx.tickCount;
     // E2a.2: максимальный move-blend задаём один раз; фактический gait
     // хоста держим через SET_PED_DESIRED_MOVE_BLEND_RATIO.
     SetMoveBlend(handle, 3.0f);
+
+    // E2b: создать лошадь и посадить rider (fallback — rider пеший).
+    if (wantMount)
+    {
+        ++g_mountsCreatedThisTick;
+        const unsigned int horse = CreatePedWithSetup(
+            s.reserved, s.x, s.y, z, s.heading, ctx, true);
+        if (horse)
+        {
+            SetNoCollisionWith(horse, handle);
+            p.mountHandle = horse;
+            p.mountModel = s.reserved;
+            p.mounted = true;
+            p.mountSeatAttempts = 0;
+            p.lastReseatTick = ctx.tickCount;
+            p.mountLastGait = -1.f;
+            SeatRiderOnMount(p);
+            LogMountSpawn(p.actorId, s.reserved);
+        }
+        else
+        {
+            p.mounted = false;
+            p.mountModel = 0;
+            p.mountFailedLogged = true;
+            LogMountFailed(p.actorId, "create");
+        }
+    }
+
     g_handleByActor[handle] = p.actorId;
     g_proxies[p.actorId] = p;
     LogSpawn(p.actorId, p.model, static_cast<unsigned int>(g_proxies.size()));
@@ -1645,12 +1832,225 @@ bool ComputeTrailTarget(const Proxy& p, float proxyX, float proxyY,
     return true;
 }
 
+// E2b: ведение всадника — двигаем ЛОШАДЬ (rider в седле, задач ему не даём).
+// Цель — трейл от rider-кадра (позиции хоста), gait из pad; reseat-watchdog.
+void MoveMountedProxy(Proxy& p)
+{
+    const unsigned int horse = p.mountHandle;
+    if (!horse || !DoesExist(horse) || !DoesExist(p.handle))
+        return;
+    const unsigned int tick = g_logTick;
+
+    // Reseat-watchdog раз в ~1 с: rider мог «сползти»/движок снял.
+    if (tick - p.lastReseatTick >= kMountReseatCheckTicks)
+    {
+        p.lastReseatTick = tick;
+        bool onHorse = false;
+        {
+            using namespace natives_api;
+            Init(natives::IS_PED_ON_MOUNT);
+            Push(p.handle);
+            onHorse = Call() != 0;
+            if (onHorse)
+            {
+                Init(natives::GET_MOUNT);
+                Push(p.handle);
+                onHorse = static_cast<unsigned int>(Call()) == horse;
+            }
+        }
+        if (onHorse)
+        {
+            p.mountSeatAttempts = 0;
+        }
+        else
+        {
+            SeatRiderOnMount(p);
+            ++p.mountSeatAttempts;
+            if (p.mountSeatAttempts == kMountMaxSeatAttempts)
+                LogMountFailed(p.actorId, "seat");
+            else if (p.mountSeatAttempts > kMountMaxSeatAttempts)
+            {
+                // Не смогли удержать в седле — fallback пешком, лошадь удалить.
+                LogMountFailed(p.actorId, "seat-fallback");
+                p.mounted = false;
+                p.dismountTick = tick;
+                p.taskActive = false;
+                p.moveTaskValid = false;
+                return;
+            }
+        }
+    }
+
+    const Vec3 horsePos = GetCoords(horse);
+    const float dx = p.tx - horsePos.x;
+    const float dy = p.ty - horsePos.y;
+    const float dz = p.tz - horsePos.z;
+    const float dist = std::sqrt(dx * dx + dy * dy);
+
+    if (dist > kTeleportDist || std::fabs(dz) > 8.0f)
+    {
+        // Телепорт: обе сущности в цель, затем reseat.
+        SetCoordsNative(horse, p.tx, p.ty, p.tz);
+        SetHeadingNative(horse, p.heading);
+        SetCoordsNative(p.handle, p.tx, p.ty, p.tz);
+        SeatRiderOnMount(p);
+        p.mountTaskActive = false;
+        p.lastReseatTick = tick;
+        return;
+    }
+
+    g_motionErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
+
+    const float rawSpeedMs =
+        static_cast<float>(p.speed) * kSpeedByteToMetersPerSec;
+    p.ewmaSpeed = p.ewmaSpeed * (1.0f - kVelocityEwma) +
+                  rawSpeedMs * kVelocityEwma;
+
+    float gait = (p.gaitQ > 0)
+        ? static_cast<float>(p.gaitQ) / 1000.0f
+        : ((p.moveState >= 3) ? 3.0f : (p.moveState == 2) ? 2.0f : 1.0f);
+    if (gait < 0.1f) gait = 0.1f;
+    if (gait > 3.0f) gait = 3.0f;
+
+    // Всадник движется, если едет лошадь: moveState=RideHorse не означает
+    // «движется», поэтому смотрим сглаженную скорость.
+    const bool hostMoving = p.ewmaSpeed > 0.15f;
+    float targetX = p.tx;
+    float targetY = p.ty;
+    float gotoGait = gait;
+    bool idleStand = false;
+
+    if (!hostMoving)
+    {
+        // Хост остановил лошадь: StandStill только когда лошадь уже рядом.
+        if (dist < kArriveDistMeters)
+        {
+            if (p.mountTaskActive)
+            {
+                SetDesiredMoveBlend(horse, 0.0f);
+                StandStill(horse);
+                p.mountTaskActive = false;
+                p.mountLastGait = 0.f;
+                p.mountLastGaitTick = tick;
+            }
+            idleStand = true;
+        }
+        else
+        {
+            gotoGait = 1.0f;
+        }
+    }
+    else
+    {
+        float L = kLookaheadBase + p.ewmaSpeed * kLookaheadPerSpeed;
+        if (L < kLookaheadMinMeters) L = kLookaheadMinMeters;
+        if (L > kLookaheadMaxMeters) L = kLookaheadMaxMeters;
+        if (p.ewmaSpeed < kSlowHostSpeed)
+        {
+            L = kSlowCatchupStep;
+            targetX = p.tx;
+            targetY = p.ty;
+        }
+        else if (!ComputeTrailTarget(p, horsePos.x, horsePos.y, L,
+                                     targetX, targetY))
+        {
+            const float rad = p.heading * kRadPerDeg;
+            targetX = p.tx - std::sin(rad) * L;
+            targetY = p.ty + std::cos(rad) * L;
+        }
+    }
+
+    if (!idleStand)
+    {
+        // Одна долгоживущая задача для лошади + in-place update.
+        bool needIssue = !p.mountTaskActive;
+        const bool wasActive = p.mountTaskActive;
+        if (!needIssue &&
+            tick - p.mountLastStatusTick >= kMotionStatusCheckTicks)
+        {
+            p.mountLastStatusTick = tick;
+            const int st = GetScriptTaskStatus(horse, p.mountTaskHash);
+            if (st == 7 || st == 8)
+            {
+                needIssue = true;
+                p.mountTaskActive = false;
+            }
+        }
+        if (needIssue)
+        {
+            FollowNavmesh(horse, targetX, targetY, p.tz, gotoGait,
+                          kFollowHeadingSentinel);
+            p.mountTaskHash = natives::SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD;
+            p.mountTaskActive = true;
+            p.mountLastUpdateTick = tick;
+            p.mountLastStatusTick = tick;
+            p.mountMoveTarget = Vec3{targetX, targetY, p.tz};
+            if (wasActive)
+                ++g_motionReissue;
+            else
+                ++g_motionIssued;
+        }
+        else if (tick - p.mountLastUpdateTick >= kMotionUpdateTicks)
+        {
+            UpdateTaskGoToCoord(horse, targetX, targetY, p.tz, gotoGait,
+                                kFollowStoppingRange);
+            p.mountLastUpdateTick = tick;
+            p.mountMoveTarget = Vec3{targetX, targetY, p.tz};
+        }
+
+        if (std::fabs(gotoGait - p.mountLastGait) > 0.01f)
+        {
+            SetDesiredMoveBlend(horse, gotoGait);
+            p.mountLastGait = gotoGait;
+            p.mountLastGaitTick = tick;
+            ++g_motionGaitRestart;
+        }
+        else if (tick - p.mountLastGaitTick >= kGaitRefreshTicks)
+        {
+            SetDesiredMoveBlend(horse, gotoGait);
+            p.mountLastGaitTick = tick;
+        }
+    }
+}
+
 void MoveProxy(Proxy& p)
 {
     if (!DoesExist(p.handle))
+    {
+        // E2b: rider пропал (битый handle/движок удалил) — лошадь не бросаем.
+        if (p.mountHandle)
+            TryDeleteMount(p, kMountReasonDespawn);
         return;
+    }
+
+    const unsigned int tickNow = g_logTick;
     if (p.dead)
+    {
+        // E2b: rider мёртв — лошадь не двигаем, удаляем с задержкой 2.5 с.
+        if (p.mountHandle)
+        {
+            if (!p.mountDeathTick)
+                p.mountDeathTick = tickNow;
+            else if (tickNow - p.mountDeathTick > kMountDeathDeleteTicks)
+                TryDeleteMount(p, kMountReasonDead);
+        }
         return; // труп не двигаем; хост пришлёт despawn
+    }
+
+    if (p.mounted)
+    {
+        if (p.mountHandle && DoesExist(p.mountHandle))
+        {
+            MoveMountedProxy(p);
+            return;
+        }
+        p.mounted = false;
+        if (!p.mountFailedLogged)
+        {
+            p.mountFailedLogged = true;
+            LogMountFailed(p.actorId, "no-horse");
+        }
+    }
 
     const Vec3 cur = GetCoords(p.handle);
     const float dx = p.tx - cur.x;
@@ -1891,6 +2291,7 @@ void GuestResetState()
     g_timeouts = 0;
     g_lastNoCollisionTick = 0;
     g_motionErr.Clear();
+    g_mountsCreatedThisTick = 0;
 }
 
 void GuestTick(const TickContext& ctx)
@@ -1898,6 +2299,7 @@ void GuestTick(const TickContext& ctx)
     const unsigned int tick = ctx.tickCount;
     g_modelRequestsThisTick = 0;
     g_appearanceRequestsThisTick = 0;
+    g_mountsCreatedThisTick = 0;
 
     // 1) inbox: spawn/despawn/frames. Под мьютексом — ТОЛЬКО копирование;
     // нативы (в т.ч. удаление прокси при смене epoch) — после unlock.
@@ -2014,6 +2416,20 @@ void GuestTick(const TickContext& ctx)
         if (tick - it->firstSeenTick > kPendingSpawnTimeoutTicks)
         {
             LogSpawnTimeout(s.actorId);
+            // E2b fallback: всадник, чья модель лошади так и не загрузилась,
+            // не должен пропасть — спавним rider пешим (как в E1).
+            const bool wantMount =
+                (s.flags & net::kActorFlagMounted) != 0 && s.reserved != 0;
+            if (wantMount && HasModelLoaded(s.model))
+            {
+                net::ActorSpawn fallback = s;
+                fallback.flags = static_cast<uint8_t>(
+                    fallback.flags & ~net::kActorFlagMounted);
+                fallback.reserved = 0;
+                fallback.moveStyle = 0;
+                if (CreateProxy(fallback, ctx))
+                    LogMountFailed(s.actorId, "model-timeout");
+            }
             g_pendingSpawnIds.erase(s.actorId);
             it = g_pendingSpawns.erase(it);
             continue;
@@ -2023,6 +2439,19 @@ void GuestTick(const TickContext& ctx)
             if (g_modelRequestsThisTick < kMaxModelRequestsPerTick)
             {
                 RequestModel(s.model);
+                ++g_modelRequestsThisTick;
+            }
+            ++it;
+            continue;
+        }
+        // E2b: модель лошади (reserved) — тот же бюджет model requests (≤2/тик).
+        const bool wantMount =
+            (s.flags & net::kActorFlagMounted) != 0 && s.reserved != 0;
+        if (wantMount && !HasModelLoaded(s.reserved))
+        {
+            if (g_modelRequestsThisTick < kMaxModelRequestsPerTick)
+            {
+                RequestModel(s.reserved);
                 ++g_modelRequestsThisTick;
             }
             ++it;
@@ -2093,6 +2522,31 @@ void GuestTick(const TickContext& ctx)
             p.gaitQ = f.pad;   // E2a.2: desired gait хоста (ratio*1000)
             p.flags = static_cast<uint16_t>(f.flags);
             p.dead = (f.flags & net::kActorFlagDead) != 0;
+            // E2b: состояние всадника из кадров хоста (spawn мог прийти без
+            // лошади/fake-host мог пересесть) — reseat/переход в пеший режим.
+            const bool frameMounted =
+                (f.flags & net::kActorFlagMounted) != 0 && !p.dead;
+            if (frameMounted && !p.mounted && p.mountHandle &&
+                DoesExist(p.mountHandle))
+            {
+                p.mounted = true;
+                p.dismountTick = 0;
+                p.mountSeatAttempts = 0;
+                p.lastReseatTick = tick;
+                SeatRiderOnMount(p);
+            }
+            else if (!frameMounted && p.mounted)
+            {
+                p.mounted = false;
+                p.dismountTick = tick;
+                p.taskActive = false;
+                p.moveTaskValid = false;
+            }
+            if (frameMounted && !p.mountHandle && !p.mountFailedLogged)
+            {
+                p.mountFailedLogged = true;
+                LogMountFailed(p.actorId, "no-model");
+            }
             p.lastFrameTick = tick;
             p.resyncLogged = false;
             ++g_appliedFrames;
@@ -2103,6 +2557,24 @@ void GuestTick(const TickContext& ctx)
     // 5) движение/поворот каждый тик
     for (auto& kv : g_proxies)
         MoveProxy(kv.second);
+
+    // E2b: удалить лошадь после слезания/смерти с задержкой (учёт не теряем:
+    // TryDeleteMount при неудаче оставляет mountHandle на повтор/таймаут).
+    for (auto& kv : g_proxies)
+    {
+        Proxy& p = kv.second;
+        if (!p.mountHandle) continue;
+        if (!p.mounted && p.dismountTick &&
+            tick - p.dismountTick > kMountDismountDelayTicks)
+        {
+            TryDeleteMount(p, kMountReasonDismount);
+        }
+        if (p.dead && p.mountDeathTick &&
+            tick - p.mountDeathTick > kMountDeathDeleteTicks)
+        {
+            TryDeleteMount(p, kMountReasonDead);
+        }
+    }
 
     // P3-фикс (task-45): повторяем no-collision раз в ~1 с — partnerGhost
     // мог появиться уже после спавна прокси (в момент спавна он был 0).
@@ -2117,6 +2589,14 @@ void GuestTick(const TickContext& ctx)
             SetNoCollisionWith(p.handle, ctx.localPed);
             SetNoCollisionWith(p.handle, ctx.partnerGhost);
             SetNoCollisionWith(p.handle, ctx.partnerMount);
+            // E2b: лошадь — тоже не толкаем игроков и rider.
+            if (p.mountHandle && DoesExist(p.mountHandle))
+            {
+                SetNoCollisionWith(p.mountHandle, ctx.localPed);
+                SetNoCollisionWith(p.mountHandle, ctx.partnerGhost);
+                SetNoCollisionWith(p.mountHandle, ctx.partnerMount);
+                SetNoCollisionWith(p.mountHandle, p.handle);
+            }
         }
     }
     g_perfApply.AddUs(QpcDeltaUs(perfApplyStart));
