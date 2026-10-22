@@ -92,7 +92,7 @@ python tools\fake_actor_client.py --mode host --name TestHost `
 Ожидаемые строки:
 ```
 fakehost: outfits from log: N pair(s): 0x...:0x...
-fakehost: outfits pairs=N pattern=mixed
+fakehost: outfits pairs=N pattern=mixed gait=1.0
 fakehost: spawn epoch=1 n=5
 fakehost: frames sent=...
 ```
@@ -114,6 +114,52 @@ fakeguest: models nonzero=N
 ```
 Если `outfits nonzero=0` — игровой хост не шлёт metaOutfit (проверить E2a
 и `npc_debug`), либо в логе нет пар с `metaOutfit != 0`.
+
+### E2a.2: speed scale 8 м/с и gait в ActorFrame
+
+E2a.2 использует два поля `ActorFrame` (размер кадра не менялся):
+- `speed` (u8) — **фактическая скорость в м/с на шкале 0..8**:
+  `speed_u8 = clamp(round(actual_m_s / 8 * 255), 0, 255)`;
+- `pad` (u16) — **gait** (`GET_PED_DESIRED_MOVE_BLEND_RATIO * 1000`):
+  walk = 1000, run = 2000, sprint = 3000, idle = 0. Если `pad=0`, гость
+  использует fallback по `moveState`; для чистого A/B фейковый хост всегда
+  шлёт gait.
+
+Fake host: `--gait 1.0` (walk, default) или `--gait 2.0` (run). Скорость
+движения = `--speed * --gait` (default `--speed 1.0`), spawn `moveStyle`
+согласован (0 idle / 1 walk / 2 run). Стоящие акторы шлют `speed=0, pad=0`.
+
+**A/B-тест ходьбы (игра-гость):**
+```powershell
+# A: walk, круг
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --pattern circle --gait 1.0 --duration 300
+
+# B: run, линия вперёд-назад 4 м (перезапустить после A)
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --pattern line --gait 2.0 --duration 300
+```
+Ожидаемые строки host:
+```
+fakehost: outfits pairs=N pattern=circle gait=1.0
+fakehost: spawn epoch=1 n=5
+fakehost: frames sent=...
+```
+В игре-госте: NPC идут плавно без рывков; в B — быстрее (run), скорость
+пропорциональна gait; стоящих нет (pattern circle/line).
+
+**Проверка полей в сети (игровой хост → fake guest):**
+```powershell
+# игра-хост первой с npc_actor=1, затем:
+python tools\fake_actor_client.py --mode guest --name TestGuest --duration 120
+```
+Ожидаемые строки (E2a.2):
+```
+fakeguest: speed avg=... gait avg=... pad_zero=N
+fakeguest: speed min=... max=... u8 (scale 8 m/s); gait min=... max=...
+```
+Для walk-круга на 1 м/с: `speed avg≈32`, `gait avg≈1.000`, `pad_zero=0`;
+для `--pattern mixed` `pad_zero>0` (стоящий actorId5), `gait avg<1.0`.
 
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 
@@ -147,9 +193,10 @@ fakeguest: models nonzero=N
 | `--model 0x...` | `0x54D8BE8E` | модель ped'а для JOIN |
 | `--num` | 5 | число NPC (только host, 1..12) |
 | `--pattern` | `circle` | `circle` / `line` (4 м назад-вперёд) / `mixed` (2 круга, 2 линии, остальные стоят) |
+| `--gait` | 1.0 | E2a.2 gait движущихся актёров: `1.0` walk, `2.0` run (уходит в `ActorFrame.pad=gait*1000`; idle=0) |
 | `--outfits-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | пары `model+metaOutfit` из probe-лога; пустая строка — выкл. |
 | `--circle-radius` | 3.0 | радиус круга движения NPC, м |
-| `--speed` | 1.0 | скорость движения NPC, м/с |
+| `--speed` | 1.0 | базовая скорость движения, м/с (фактическая = speed*gait; в кадр идёт speed/8*255) |
 | `--despawn-after` | 30 | через сколько секунд удалить actorId=5 |
 | `--respawn-after` | 10 | через сколько после despawn вернуть actorId=5 (0 = выкл.) |
 | `--peds-json` | `third_party/rdr2-hashdb/Peds.json` | откуда брать хэши моделей |

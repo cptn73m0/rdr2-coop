@@ -276,10 +276,10 @@ def pack_spawn_batch(epoch: int, records) -> bytes:
 
 def pack_actor_frame(actor_id: int, x: float, y: float, z: float,
                      heading: float, seq: int, anim_state: int = 1,
-                     speed: int = 64) -> bytes:
+                     speed: int = 0, pad: int = 0) -> bytes:
     return struct.pack("<IHBBffffIHH", actor_id, 0, anim_state & 0xFF,
                        speed & 0xFF, float(x), float(y), float(z),
-                       float(heading), 0, seq & 0xFFFF, 0)
+                       float(heading), 0, seq & 0xFFFF, pad & 0xFFFF)
 
 
 def pack_frames_batch(epoch: int, seq: int, records) -> bytes:
@@ -292,6 +292,32 @@ def pack_actor_despawn(epoch: int, actor_id: int, reason: int) -> bytes:
 
 def is_finite_coord(v: float) -> bool:
     return math.isfinite(v) and abs(v) < 1.0e5
+
+
+# E2a.2: ActorFrame.speed is u8 on the 0..8 m/s scale; ActorFrame.pad is
+# GET_PED_DESIRED_MOVE_BLEND_RATIO*1000 (gait: walk=1000, run=2000, ...).
+K_SPEED_SCALE_MPS = 8.0
+K_GAIT_MAX = 6.5
+
+
+def encode_speed_u8(speed_m_s: float) -> int:
+    value = int(round(max(0.0, speed_m_s) / K_SPEED_SCALE_MPS * 255.0))
+    return max(0, min(255, value))
+
+
+def encode_gait_pad(gait: float) -> int:
+    value = int(round(max(0.0, min(K_GAIT_MAX, gait)) * 1000.0))
+    return max(0, min(65535, value))
+
+
+def move_style_for_gait(gait: float) -> int:
+    if gait >= 3.0:
+        return 3  # sprint
+    if gait >= 2.0:
+        return 2  # run
+    if gait >= 0.3:
+        return 1  # walk
+    return 0      # idle
 
 
 def validate_spawn_batch(payload: bytes):
@@ -348,7 +374,7 @@ def validate_frames(payload: bytes):
         rec = payload[ACTOR_FRAMES_HEADER + i * ACTOR_FRAME_SIZE:
                       ACTOR_FRAMES_HEADER + (i + 1) * ACTOR_FRAME_SIZE]
         (actor_id, _flags, anim_state, speed, x, y, z, heading,
-         _target, rec_seq, _pad) = struct.unpack_from("<IHBBffffIHH", rec, 0)
+         _target, rec_seq, pad) = struct.unpack_from("<IHBBffffIHH", rec, 0)
         if actor_id == 0:
             raise ValueError(f"frame #{i}: actorId=0")
         if actor_id in seen:
@@ -357,7 +383,7 @@ def validate_frames(payload: bytes):
         if not all(is_finite_coord(v) for v in (x, y, z, heading)):
             raise ValueError(f"frame actorId={actor_id}: non-finite coords")
         records.append({"actorId": actor_id, "animState": anim_state,
-                        "speed": speed, "seq": rec_seq})
+                        "speed": speed, "pad": pad, "seq": rec_seq})
     return epoch, seq, records
 
 
@@ -454,7 +480,7 @@ def load_outfit_pairs(path: Path):
 class Actor:
     def __init__(self, actor_id: int, model: int, meta_outfit: int, center,
                  phase: float, spawn_time: float, motion: str = "circle",
-                 direction: float = 0.0):
+                 direction: float = 0.0, gait: float = 1.0):
         self.actor_id = actor_id
         self.model = model
         self.meta_outfit = meta_outfit
@@ -463,6 +489,7 @@ class Actor:
         self.spawn_time = spawn_time
         self.motion = motion  # circle | line | idle
         self.direction = direction
+        self.gait = gait  # E2a.2 gait ratio: 0 idle, 1 walk, 2 run
 
 
 class FakeHost:
@@ -518,8 +545,9 @@ class FakeHost:
         cy = center[1] + dist * math.sin(angle)
         model, meta = self._model_and_meta(index)
         motion = self._motion_for(index, self.args.pattern)
+        gait = 0.0 if motion == "idle" else self.args.gait
         return Actor(actor_id, model, meta, (cx, cy, center[2]), angle,
-                     spawn_time, motion, angle)
+                     spawn_time, motion, angle, gait)
 
     def _make_actors(self, center):
         now = time.monotonic()
@@ -531,7 +559,7 @@ class FakeHost:
         return [pack_actor_spawn(a.actor_id, self.epoch, a.model,
                                  a.center[0], a.center[1], a.center[2],
                                  math.degrees(a.phase) % 360.0,
-                                 move_style=0 if a.motion == "idle" else 1,
+                                 move_style=move_style_for_gait(a.gait),
                                  meta_outfit=a.meta_outfit)
                 for a in actors]
 
@@ -542,7 +570,7 @@ class FakeHost:
             self._outfit_logged = True
             self.log.write(
                 f"fakehost: outfits pairs={len(getattr(self.args, 'outfit_pairs', []))} "
-                f"pattern={self.args.pattern}")
+                f"pattern={self.args.pattern} gait={self.args.gait:.1f}")
         payload = pack_spawn_batch(self.epoch, self._spawn_records(actors))
         send_frame(self.sock, MSG_ACTOR_SPAWN_BATCH, payload)
         self.spawns_sent += len(actors)
@@ -554,34 +582,40 @@ class FakeHost:
         records = []
         for a in self.actors:
             t = now - a.spawn_time
+            # E2a.2: actual movement speed (m/s) and gait ratio for this actor.
+            # speed_u8 is on the 0..8 m/s scale, pad is gait*1000.
+            move_speed = (self.args.speed * a.gait) if a.gait > 0 else 0.0
+            speed_u8 = encode_speed_u8(move_speed)
+            gait_pad = encode_gait_pad(a.gait)
             if a.motion == "idle":
                 x, y = a.center[0], a.center[1]
                 heading = math.degrees(a.phase) % 360.0
-                anim_state, speed = 0, 0
+                anim_state, speed_u8, gait_pad = 0, 0, 0
             elif a.motion == "line":
-                # Walk 4 m forward and back along a.direction (2 m each side).
-                cycle = (t * self.args.speed) % 8.0
-                if cycle < 4.0:
-                    offset = -2.0 + cycle
+                # Walk/run 4 m forward and back along a.direction.
+                traveled = (t * move_speed) % 8.0
+                if traveled < 4.0:
+                    offset = -2.0 + traveled
                     forward = True
                 else:
-                    offset = 2.0 - (cycle - 4.0)
+                    offset = 2.0 - (traveled - 4.0)
                     forward = False
                 x = a.center[0] + offset * math.cos(a.direction)
                 y = a.center[1] + offset * math.sin(a.direction)
                 heading = (math.degrees(a.direction) +
                            (0.0 if forward else 180.0)) % 360.0
-                anim_state, speed = 1, 64
+                anim_state = move_style_for_gait(a.gait)
             else:
-                omega = self.args.speed / max(0.1, self.args.circle_radius)
+                omega = move_speed / max(0.1, self.args.circle_radius)
                 theta = a.phase + t * omega
                 x = a.center[0] + self.args.circle_radius * math.cos(theta)
                 y = a.center[1] + self.args.circle_radius * math.sin(theta)
                 heading = (math.degrees(theta) + 90.0) % 360.0
-                anim_state, speed = 1, 64
+                anim_state = move_style_for_gait(a.gait)
             records.append(pack_actor_frame(a.actor_id, x, y, a.center[2],
                                             heading, self.frame_seq,
-                                            anim_state=anim_state, speed=speed))
+                                            anim_state=anim_state,
+                                            speed=speed_u8, pad=gait_pad))
         return pack_frames_batch(self.epoch, self.frame_seq, records)
 
     # -- loop ---------------------------------------------------------------
@@ -758,6 +792,17 @@ class FakeGuest:
         self.errors = 0
         self.outfits_nonzero = 0
         self.models_nonzero = 0
+        # E2a.2: speed/gait statistics from ActorFrame (speed u8 on 0..8 m/s
+        # scale, pad = gait*1000).
+        self.speed_min = 255
+        self.speed_max = 0
+        self.speed_sum = 0
+        self.speed_count = 0
+        self.pad_zero = 0
+        self.gait_min = float("inf")
+        self.gait_max = 0.0
+        self.gait_sum = 0.0
+        self.gait_count = 0
         self.unique_ids = set()
         self.known_ids = set()
         self.current_epoch = 0
@@ -838,6 +883,20 @@ class FakeGuest:
             elif seq < self.last_seq and not (self.last_seq > 60000 and seq < 5000):
                 self._error(f"ActorFrames: seq regressed {self.last_seq} -> {seq}")
         self.last_seq = seq
+        for rec in records:
+            speed = rec["speed"]
+            pad = rec["pad"]
+            gait = pad / 1000.0
+            self.speed_sum += speed
+            self.speed_count += 1
+            self.speed_min = min(self.speed_min, speed)
+            self.speed_max = max(self.speed_max, speed)
+            self.gait_sum += gait
+            self.gait_count += 1
+            self.gait_min = min(self.gait_min, gait)
+            self.gait_max = max(self.gait_max, gait)
+            if pad == 0:
+                self.pad_zero += 1
         unknown = [r["actorId"] for r in records
                    if r["actorId"] not in self.known_ids]
         if unknown and self.frames_msgs <= 5:
@@ -909,6 +968,18 @@ class FakeGuest:
                     f"max actor gap ≈{self.max_gap * 1000.0:.0f} ms")
             self.log.write(f"fakeguest: outfits nonzero={self.outfits_nonzero}")
             self.log.write(f"fakeguest: models nonzero={self.models_nonzero}")
+            speed_avg = (self.speed_sum / self.speed_count
+                         if self.speed_count else 0.0)
+            gait_avg = (self.gait_sum / self.gait_count
+                        if self.gait_count else 0.0)
+            self.log.write(f"fakeguest: speed avg={speed_avg:.1f} "
+                           f"gait avg={gait_avg:.3f} "
+                           f"pad_zero={self.pad_zero}")
+            if self.speed_count:
+                self.log.write(
+                    f"fakeguest: speed min={self.speed_min} "
+                    f"max={self.speed_max} u8 (scale 8 m/s); "
+                    f"gait min={self.gait_min:.3f} max={self.gait_max:.3f}")
             if self.spawn_batches >= 1 and self.frames_msgs >= 10:
                 rc = 0
                 self.log.write("fakeguest: PASS")
@@ -964,6 +1035,9 @@ def build_parser() -> argparse.ArgumentParser:
                       default="circle",
                       help="movement pattern: circle; line (4 m back/forth); "
                            "mixed (2 circle, 2 line, rest idle)")
+    host.add_argument("--gait", type=float, choices=(1.0, 2.0), default=1.0,
+                      help="E2a.2 gait ratio for moving actors: 1.0 walk, "
+                           "2.0 run (sent as ActorFrame.pad=gait*1000; idle=0)")
     host.add_argument("--outfits-from-log", default=str(DEFAULT_PROBE_LOG),
                       help="parse `probe: model=... metaOutfit=...` pairs from "
                            "the game log and send them in ActorSpawn.metaOutfit "
@@ -971,7 +1045,9 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--circle-radius", type=float, default=3.0,
                       help="circle radius around the spawn point, meters")
     host.add_argument("--speed", type=float, default=1.0,
-                      help="actor walk speed on the circle, m/s")
+                      help="base movement speed for moving actors, m/s "
+                           "(actual = speed*gait; converted to ActorFrame.speed "
+                           "on the 0..8 m/s scale)")
     host.add_argument("--despawn-after", type=float, default=30.0,
                       help="seconds from spawn to ActorDespawn id=5")
     host.add_argument("--respawn-after", type=float, default=10.0,
