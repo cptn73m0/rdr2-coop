@@ -47,12 +47,26 @@ constexpr int kSummaryEveryTicks = 300; // 1 строка/5 с
 // E2a: meta-outfit внешность NPC-прокси (guest) и сглаживание движения.
 constexpr int kMaxAppearanceRequestsPerTick = 2;        // бюджет REQUEST
 constexpr unsigned int kAppearanceTimeoutTicks = 180;  // 3 с ожидания наряда
-constexpr float kMotionLeadSec = 0.15f;                // lead-предсказание 0.12..0.18 с
-constexpr float kMotionLeadMaxMeters = 2.0f;           // кламп сдвига цели
-constexpr float kRetargetDistMoving = 0.6f;            // retarget движущейся цели
-constexpr float kIdleNoMoveDist = 0.5f;                // idle: ближе — не трогаем
-constexpr float kSpeedByteToMetersPerSec = 3.0f / 255.0f; // ActorFrame.speed -> м/с
 constexpr float kRadPerDeg = 0.017453292519943295f;
+
+// E2a.2: smooth walk gait — trail-following (полилиния позиций хоста) +
+// одна долгоживущая go-to задача с in-place update цели.
+constexpr int kTrailLen = 10;                    // 1 с истории позиций (10 Гц)
+constexpr float kVelocityEwma = 0.3f;            // EWMA скорости/направления
+constexpr float kSpeedByteToMetersPerSec = 8.0f / 255.0f; // ActorFrame.speed -> 0..8 м/с
+constexpr float kLookaheadBase = 0.5f;           // L = 0.5 + hostSpeed*0.45
+constexpr float kLookaheadPerSpeed = 0.45f;
+constexpr float kLookaheadMinMeters = 0.9f;      // clamp L
+constexpr float kLookaheadMaxMeters = 3.0f;
+constexpr float kSlowHostSpeed = 0.2f;           // хост почти стоит
+constexpr float kSlowCatchupStep = 0.3f;         // цель = позиция хоста + 0.3 по трейлу
+constexpr float kArriveDistMeters = 0.5f;        // idle: ближе — StandStill
+constexpr float kFollowStoppingRange = 0.25f;    // 0.2..0.3: не гасим задачу у точки
+constexpr unsigned int kMotionUpdateTicks = 6;   // in-place update цели 10 Гц
+constexpr unsigned int kMotionStatusCheckTicks = 6; // проверка status 10 Гц
+constexpr unsigned int kGaitRefreshTicks = 10;   // gait не реже 1 раза в ~10 тиков
+constexpr float kFollowHeadingSentinel = 40000.f; // «не поворачивать» (как в rdr2-runtime)
+constexpr float kIdleNoMoveDist = 0.5f;          // idle: ближе — не трогаем
 
 // P3-фиксы по ревью E1 (task-45).
 constexpr unsigned int kPendingSpawnTimeoutTicks = 300; // 5 с ожидания модели
@@ -527,6 +541,50 @@ void SetMoveBlend(unsigned int ped, float value)
     Call();
 }
 
+// E2a.2: держим желаемый gait (walk/run/sprint) без перезапуска анимации.
+void SetDesiredMoveBlend(unsigned int ped, float value)
+{
+    using namespace natives_api;
+    Init(natives::SET_PED_DESIRED_MOVE_BLEND_RATIO);
+    Push(ped);
+    Push(value);
+    Call();
+}
+
+// E2a.2: фактический desired gait хоста (упаковывается в ActorFrame.pad).
+float GetDesiredMoveBlendRatio(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::GET_PED_DESIRED_MOVE_BLEND_RATIO);
+    Push(ped);
+    return CallFloat();
+}
+
+// E2a.2: статус script-задачи (7 not_found / 8 finished → задачу надо выдать заново).
+int GetScriptTaskStatus(unsigned int ped, uint32_t taskHash)
+{
+    using namespace natives_api;
+    Init(natives::GET_SCRIPT_TASK_STATUS);
+    Push(ped);
+    Push(static_cast<unsigned long long>(taskHash));
+    Push(true);
+    return static_cast<int>(Call());
+}
+
+// E2a.2: in-place update уже бегущей go-to задачи (не перезапускает анимацию).
+void UpdateTaskGoToCoord(unsigned int ped, float x, float y, float z,
+                         float speed, float tolerance)
+{
+    using namespace natives_api;
+    Init(natives::_UPDATE_TASK_GO_TO_COORD_WITH_OFFSET);
+    Push(ped);
+    Push(x); Push(y); Push(z);
+    Push(0.f); Push(0.f); Push(0.f); // offset XYZ
+    Push(speed);
+    Push(tolerance);
+    Call();
+}
+
 void FollowNavmesh(unsigned int ped, float x, float y, float z, float speed,
                    float heading)
 {
@@ -536,7 +594,7 @@ void FollowNavmesh(unsigned int ped, float x, float y, float z, float speed,
     Push(x); Push(y); Push(z);
     Push(speed);
     Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
-    Push(0.5f);                                        // stoppingRange
+    Push(kFollowStoppingRange);                        // 0.25: не гасим у точки
     Push(static_cast<unsigned long long>(4));          // flags
     Push(heading);                                     // p8: heading (0 = авто)
     Call();
@@ -934,12 +992,18 @@ net::ActorFrame BuildFrame(unsigned int handle, uint32_t actorId)
     const uint8_t move = MoveStateFromSpeed(speed);
     f.flags = BuildFlags(handle);
     f.animState = move;
-    // E2a: ActorFrame.speed — u8 0..255 соответствует 0..3 м/с (гость
-    // использует это для lead-предсказания цели).
-    float sp = speed / 3.0f;
+    // E2a.2: ActorFrame.speed — u8 0..255 соответствует 0..8 м/с (шкала
+    // поднята с 3 м/с: sprint/галоп больше не сатурируется на 3).
+    float sp = speed / 8.0f;
     if (sp < 0.f) sp = 0.f;
     if (sp > 1.f) sp = 1.f;
     f.speed = static_cast<uint8_t>(sp * 255.0f);
+    // E2a.2: gait хоста (GET_PED_DESIRED_MOVE_BLEND_RATIO, 0..3) пакуем в
+    // ActorFrame.pad без изменения размера кадра/протокола.
+    float gait = GetDesiredMoveBlendRatio(handle);
+    if (gait < 0.f) gait = 0.f;
+    if (gait > 6.5f) gait = 6.5f; // защита от мусора: 0..6.5 -> 0..6500
+    f.pad = static_cast<uint16_t>(gait * 1000.0f + 0.5f);
     const Vec3 p = GetCoords(handle);
     f.x = p.x; f.y = p.y; f.z = p.z;
     f.heading = GetHeading(handle);
@@ -1249,6 +1313,28 @@ struct Proxy
     int outfitRequest = 0;              // id REQUEST_META_PED_OUTFIT
     unsigned int outfitRequestTick = 0; // тик запроса (таймаут 3 с)
     uint8_t appearanceState = 0;        // 0 none, 1 requested, 2 applied, 3 failed
+    // E2a.2: trail движения (последние ~1 с позиций) и сглаженные
+    // скорость/направление для lookahead-ведения цели.
+    struct TrailPoint
+    {
+        float x = 0.f, y = 0.f, z = 0.f;
+    };
+    TrailPoint trail[kTrailLen]{};
+    int trailCount = 0;
+    int trailHead = 0;
+    float dirX = 0.f;
+    float dirY = 1.f;
+    bool dirValid = false;
+    float ewmaSpeed = 0.f; // м/с
+    uint16_t gaitQ = 0;    // E2a.2: gait хоста из ActorFrame.pad (ratio*1000)
+    float lastGait = -1.f;
+    unsigned int lastGaitTick = 0;
+    // E2a.2: одна долгоживущая go-to задача + in-place update цели.
+    uint32_t taskHash = 0;
+    bool taskActive = false;
+    unsigned int taskIssuedTick = 0;
+    unsigned int lastMotionUpdateTick = 0;
+    unsigned int lastStatusTick = 0;
 };
 
 std::map<uint32_t, Proxy> g_proxies;
@@ -1272,6 +1358,10 @@ int g_appearanceRequestsThisTick = 0; // E2a: бюджет REQUEST_META_PED_OUTF
 unsigned int g_appliedFrames = 0;
 unsigned int g_timeouts = 0;
 unsigned int g_lastNoCollisionTick = 0;
+// E2a.2: счётчики движения за окно сводки (5 с), лог при npc_debug=1.
+unsigned int g_motionIssued = 0;
+unsigned int g_motionReissue = 0;
+unsigned int g_motionGaitRestart = 0;
 
 // P2-фикс (task-45): перед DELETE_PED снимаем mission-entity; если сущность
 // всё равно существует — НЕ теряем учёт (proxy остаётся в g_proxies, повтор).
@@ -1369,6 +1459,30 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     p.lastMoveState = -1;
     p.dead = (s.flags & net::kActorFlagDead) != 0;
     p.appearanceState = 0; // E2a: запрос наряда сделает GuestTick (бюджет)
+    // E2a.2: стартовый trail/направление для lookahead (heading = взгляд педа).
+    p.trail[0].x = s.x;
+    p.trail[0].y = s.y;
+    p.trail[0].z = z;
+    p.trailCount = 1;
+    p.trailHead = 1 % kTrailLen;
+    {
+        const float rad = s.heading * kRadPerDeg;
+        p.dirX = -std::sin(rad);
+        p.dirY = std::cos(rad);
+        p.dirValid = true;
+    }
+    p.ewmaSpeed = static_cast<float>(p.speed) * kSpeedByteToMetersPerSec;
+    p.gaitQ = static_cast<uint16_t>(p.moveState * 1000);
+    p.lastGait = static_cast<float>(p.moveState);
+    p.lastGaitTick = ctx.tickCount;
+    p.taskHash = natives::SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD;
+    p.taskActive = false;
+    p.taskIssuedTick = ctx.tickCount;
+    p.lastMotionUpdateTick = ctx.tickCount;
+    p.lastStatusTick = ctx.tickCount;
+    // E2a.2: максимальный move-blend задаём один раз; фактический gait
+    // хоста держим через SET_PED_DESIRED_MOVE_BLEND_RATIO.
+    SetMoveBlend(handle, 3.0f);
     g_handleByActor[handle] = p.actorId;
     g_proxies[p.actorId] = p;
     LogSpawn(p.actorId, p.model, static_cast<unsigned int>(g_proxies.size()));
@@ -1448,6 +1562,89 @@ void ProcessActorAppearance(unsigned int tick)
     }
 }
 
+// E2a.2: точка на полилинии трейла впереди ПРОКСИ на advance метров.
+// Трейл — последние позиции ХОСТА (10 Гц); прокси может отставать, поэтому
+// находим проекцию прокси на полилинию и идём вперёд по ней (фактический
+// маршрут хоста, без срезания углов). Публичного геттера navmesh-пути нет.
+bool ComputeTrailTarget(const Proxy& p, float proxyX, float proxyY,
+                        float advance, float& outX, float& outY)
+{
+    if (p.trailCount <= 0)
+        return false;
+
+    auto pointAt = [&](int k) -> const Proxy::TrailPoint& {
+        const int idx =
+            (p.trailHead - p.trailCount + k + kTrailLen * 2) % kTrailLen;
+        return p.trail[idx];
+    };
+
+    if (p.trailCount == 1)
+    {
+        const Proxy::TrailPoint& pt = pointAt(0);
+        outX = pt.x;
+        outY = pt.y;
+        return true;
+    }
+
+    // 1) проекция прокси на ближайший сегмент + длина пути до неё.
+    float cum = 0.f;
+    float bestDist2 = 1e30f;
+    float bestS = 0.f;
+    for (int k = 1; k < p.trailCount; ++k)
+    {
+        const Proxy::TrailPoint& a = pointAt(k - 1);
+        const Proxy::TrailPoint& b = pointAt(k);
+        const float sx = b.x - a.x;
+        const float sy = b.y - a.y;
+        const float len2 = sx * sx + sy * sy;
+        if (len2 > 1e-6f)
+        {
+            float t = ((proxyX - a.x) * sx + (proxyY - a.y) * sy) / len2;
+            if (t < 0.f) t = 0.f;
+            if (t > 1.f) t = 1.f;
+            const float px = a.x + sx * t;
+            const float py = a.y + sy * t;
+            const float ddx = proxyX - px;
+            const float ddy = proxyY - py;
+            const float d2 = ddx * ddx + ddy * ddy;
+            if (d2 < bestDist2)
+            {
+                bestDist2 = d2;
+                bestS = cum + t * std::sqrt(len2);
+            }
+            cum += std::sqrt(len2);
+        }
+    }
+
+    // 2) вперёд по полилинии на advance (не выходим за newest точку хоста).
+    float targetS = bestS + advance;
+    if (targetS > cum) targetS = cum;
+    float s = 0.f;
+    for (int k = 1; k < p.trailCount; ++k)
+    {
+        const Proxy::TrailPoint& a = pointAt(k - 1);
+        const Proxy::TrailPoint& b = pointAt(k);
+        const float sx = b.x - a.x;
+        const float sy = b.y - a.y;
+        const float segLen = std::sqrt(sx * sx + sy * sy);
+        if (segLen > 1e-6f)
+        {
+            if (s + segLen >= targetS)
+            {
+                const float t = (targetS - s) / segLen;
+                outX = a.x + sx * t;
+                outY = a.y + sy * t;
+                return true;
+            }
+            s += segLen;
+        }
+    }
+    const Proxy::TrailPoint& last = pointAt(p.trailCount - 1);
+    outX = last.x;
+    outY = last.y;
+    return true;
+}
+
 void MoveProxy(Proxy& p)
 {
     if (!DoesExist(p.handle))
@@ -1466,6 +1663,7 @@ void MoveProxy(Proxy& p)
         SetCoordsNative(p.handle, p.tx, p.ty, p.tz);
         SetHeadingNative(p.handle, p.heading);
         p.moveTaskValid = false;
+        p.taskActive = false;
         p.lastMoveState = -1;
         return;
     }
@@ -1474,61 +1672,136 @@ void MoveProxy(Proxy& p)
     // выше не семплим — это не ошибка сглаживания, а ресинк.
     g_motionErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
 
-    // E2a: lead-предсказание цели из speed+heading (0.12..0.18 с, кламп 2 м).
-    // Это сглаживает лёгкое дёрганье, пока навмеш-задача ещё догоняет.
+    // E2a.2: сглаженная скорость хоста из кадра (EWMA 0.3).
+    const float rawSpeedMs =
+        static_cast<float>(p.speed) * kSpeedByteToMetersPerSec;
+    p.ewmaSpeed = p.ewmaSpeed * (1.0f - kVelocityEwma) +
+                  rawSpeedMs * kVelocityEwma;
+
+    // E2a.2: gait из ActorFrame.pad (фактический desired у хоста), fallback —
+    // по moveState, если fake-host/старый кадр пришли без pad.
+    float gait = (p.gaitQ > 0)
+        ? static_cast<float>(p.gaitQ) / 1000.0f
+        : ((p.moveState >= 3) ? 3.0f : (p.moveState == 2) ? 2.0f : 1.0f);
+    if (gait < 0.1f) gait = 0.1f;
+    if (gait > 3.0f) gait = 3.0f;
+
+    const unsigned int tick = g_logTick;
     float targetX = p.tx;
     float targetY = p.ty;
-    if (p.moveState != 0)
-    {
-        const float speedMs =
-            static_cast<float>(p.speed) * kSpeedByteToMetersPerSec;
-        float lead = speedMs * kMotionLeadSec;
-        if (lead > kMotionLeadMaxMeters) lead = kMotionLeadMaxMeters;
-        if (lead > 0.f)
-        {
-            const float rad = p.heading * kRadPerDeg;
-            targetX += -std::sin(rad) * lead;
-            targetY += std::cos(rad) * lead;
-        }
-    }
+    float gotoGait = gait;
+    bool idleStand = false;
 
     if (p.moveState == 0)
     {
-        // idle: не двигаем. StandStill — только при переходе из движения
-        // и если пед заметно в стороне (micro-move <0.5 м не трогаем).
-        if (p.lastMoveState != 0 && p.lastMoveState != -1 &&
-            dist > kIdleNoMoveDist)
+        // Хост стоит: StandStill только если прокси уже <0.5 м от позиции
+        // хоста; иначе догоняем пешком (после лага/телепорта).
+        if (dist < kArriveDistMeters)
         {
-            SetMoveBlend(p.handle, 0.0f);
-            StandStill(p.handle);
+            if (p.lastMoveState != 0)
+            {
+                SetDesiredMoveBlend(p.handle, 0.0f);
+                StandStill(p.handle);
+                p.lastGait = 0.f;
+                p.lastGaitTick = tick;
+            }
+            p.taskActive = false;
             p.moveTaskValid = false;
+            p.lastMoveState = 0;
+            idleStand = true;
         }
-        p.lastMoveState = 0;
+        else
+        {
+            targetX = p.tx;
+            targetY = p.ty;
+            gotoGait = 1.0f;
+            p.lastMoveState = 0;
+        }
     }
     else
     {
-        // retarget только при смещении предсказанной цели >0.6 м или смене
-        // move state — задачу не перевыдаём каждый тик.
-        const bool targetMoved =
-            !p.moveTaskValid ||
-            std::fabs(targetX - p.moveTarget.x) > kRetargetDistMoving ||
-            std::fabs(targetY - p.moveTarget.y) > kRetargetDistMoving;
-        const bool stateChanged = p.lastMoveState != static_cast<int>(p.moveState);
-        if (targetMoved || stateChanged)
+        // Хост движется: цель = точка на трейле впереди прокси.
+        // L = clamp(0.5 + hostSpeed*0.45, 0.9, 3.0); медленный хост -> 0.3.
+        float L = kLookaheadBase + p.ewmaSpeed * kLookaheadPerSpeed;
+        if (L < kLookaheadMinMeters) L = kLookaheadMinMeters;
+        if (L > kLookaheadMaxMeters) L = kLookaheadMaxMeters;
+        if (p.ewmaSpeed < kSlowHostSpeed)
         {
-            const float speed = (p.moveState >= 3) ? 3.0f
-                              : (p.moveState == 2) ? 2.0f : 1.0f;
-            SetMoveBlend(p.handle, speed);
-            // Последний арг native — heading; 0.f: корпус ведёт навмеш.
-            FollowNavmesh(p.handle, targetX, targetY, p.tz, speed, 0.f);
+            L = kSlowCatchupStep;
+            targetX = p.tx;
+            targetY = p.ty;
+        }
+        else if (!ComputeTrailTarget(p, cur.x, cur.y, L, targetX, targetY))
+        {
+            // Трейла ещё нет — по heading хоста.
+            const float rad = p.heading * kRadPerDeg;
+            targetX = p.tx - std::sin(rad) * L;
+            targetY = p.ty + std::cos(rad) * L;
+        }
+        p.lastMoveState = static_cast<int>(p.moveState);
+    }
+
+    if (!idleStand)
+    {
+        // Одна долгоживущая задача: in-place update цели; ре-issue только
+        // если задача реально завершилась (status 7 not_found / 8 finished).
+        bool needIssue = !p.taskActive;
+        const bool wasActive = p.taskActive;
+        if (!needIssue &&
+            tick - p.lastStatusTick >= kMotionStatusCheckTicks)
+        {
+            p.lastStatusTick = tick;
+            const int st = GetScriptTaskStatus(p.handle, p.taskHash);
+            if (st == 7 || st == 8)
+            {
+                needIssue = true;
+                p.taskActive = false;
+            }
+        }
+        if (needIssue)
+        {
+            // heading sentinel 40000 = «не поворачивать» (как в rdr2-runtime).
+            FollowNavmesh(p.handle, targetX, targetY, p.tz, gotoGait,
+                          kFollowHeadingSentinel);
+            p.taskHash = natives::SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD;
+            p.taskActive = true;
+            p.taskIssuedTick = tick;
+            p.lastMotionUpdateTick = tick;
+            p.lastStatusTick = tick;
             p.moveTarget = Vec3{targetX, targetY, p.tz};
             p.moveTaskValid = true;
-            p.lastMoveState = static_cast<int>(p.moveState);
+            if (wasActive)
+                ++g_motionReissue; // задача завершилась и выдана заново
+            else
+                ++g_motionIssued;  // самая первая задача для прокси
+        }
+        else if (tick - p.lastMotionUpdateTick >= kMotionUpdateTicks)
+        {
+            // in-place update: не перезапускает анимацию/gait.
+            UpdateTaskGoToCoord(p.handle, targetX, targetY, p.tz, gotoGait,
+                                kFollowStoppingRange);
+            p.lastMotionUpdateTick = tick;
+            p.moveTarget = Vec3{targetX, targetY, p.tz};
+        }
+
+        // Gait: держим из кадра хоста; при изменении — сразу, иначе раз в
+        // ~10 тиков (без перезапуска задачи/анимации).
+        if (std::fabs(gotoGait - p.lastGait) > 0.01f)
+        {
+            SetDesiredMoveBlend(p.handle, gotoGait);
+            p.lastGait = gotoGait;
+            p.lastGaitTick = tick;
+            ++g_motionGaitRestart;
+        }
+        else if (tick - p.lastGaitTick >= kGaitRefreshTicks)
+        {
+            SetDesiredMoveBlend(p.handle, gotoGait);
+            p.lastGaitTick = tick;
         }
     }
 
     // E2a: heading руками — только в idle (в walk/run ведёт навмеш).
-    if (p.moveState == 0)
+    if (p.moveState == 0 && !idleStand)
     {
         float norm = p.heading - GetHeading(p.handle);
         while (norm > 180.f) norm -= 360.f;
@@ -1536,6 +1809,27 @@ void MoveProxy(Proxy& p)
         if (std::fabs(norm) > kHeadingDeadzone)
             SetHeadingNative(p.handle, p.heading);
     }
+}
+
+// E2a.2: трейл движения (последние ~1 с позиций) — по нему сглаживаем
+// направление и ведём прокси по фактическому маршруту хоста без срезания углов.
+void AppendTrailPoint(Proxy& p, float x, float y, float z)
+{
+    if (p.trailCount > 0)
+    {
+        const int last = (p.trailHead - 1 + kTrailLen) % kTrailLen;
+        const float dx = x - p.trail[last].x;
+        const float dy = y - p.trail[last].y;
+        if (dx * dx + dy * dy < 0.0025f)
+            return; // <5 см — не засоряем окно
+    }
+    Proxy::TrailPoint& pt = p.trail[p.trailHead];
+    pt.x = x;
+    pt.y = y;
+    pt.z = z;
+    p.trailHead = (p.trailHead + 1) % kTrailLen;
+    if (p.trailCount < kTrailLen)
+        ++p.trailCount;
 }
 
 // P3-фикс (task-45): только ставит акторов в pending; epoch-change и
@@ -1761,10 +2055,42 @@ void GuestTick(const TickContext& ctx)
             if (it == g_proxies.end())
                 continue;
             Proxy& p = it->second;
+            // E2a.2: направление из фактического смещения (трейл), EWMA 0.3;
+            // heading — fallback для первого кадра/стояния.
+            const float oldTx = p.tx;
+            const float oldTy = p.ty;
+            const float segX = f.x - oldTx;
+            const float segY = f.y - oldTy;
+            const float seg2 = segX * segX + segY * segY;
+            if (seg2 > 0.0025f) // >5 см
+            {
+                const float inv = 1.0f / std::sqrt(seg2);
+                const float nx = segX * inv;
+                const float ny = segY * inv;
+                if (p.dirValid)
+                {
+                    p.dirX = p.dirX * (1.0f - kVelocityEwma) + nx * kVelocityEwma;
+                    p.dirY = p.dirY * (1.0f - kVelocityEwma) + ny * kVelocityEwma;
+                    const float l = std::sqrt(p.dirX * p.dirX + p.dirY * p.dirY);
+                    if (l > 0.0001f)
+                    {
+                        p.dirX /= l;
+                        p.dirY /= l;
+                    }
+                }
+                else
+                {
+                    p.dirX = nx;
+                    p.dirY = ny;
+                    p.dirValid = true;
+                }
+            }
+            AppendTrailPoint(p, f.x, f.y, f.z);
             p.tx = f.x; p.ty = f.y; p.tz = f.z;
             p.heading = f.heading;
             p.moveState = f.animState;
-            p.speed = f.speed; // E2a: 0..255 -> 0..3 м/с для lead-предсказания
+            p.speed = f.speed; // E2a.2: 0..255 -> 0..8 м/с (lookahead/трейл)
+            p.gaitQ = f.pad;   // E2a.2: desired gait хоста (ratio*1000)
             p.flags = static_cast<uint16_t>(f.flags);
             p.dead = (f.flags & net::kActorFlagDead) != 0;
             p.lastFrameTick = tick;
@@ -1836,11 +2162,18 @@ void GuestTick(const TickContext& ctx)
                       g_appliedFrames, g_timeouts);
         g_appliedFrames = 0;
         g_timeouts = 0;
-        // E2a: p95 ошибки позиции (target vs ped) — только при npc_debug=1.
+        // E2a.2: motion issued/reissue/gait_restart + err_p95 — только при
+        // npc_debug=1 (для оценки "до/после" сглаживания ходьбы).
         if (coopcfg::Get().npcDebug)
         {
-            sh_log::Write("actor: motion err_p95=%.2f\n",
-                          g_motionErr.P95Ms() / 1000.0);
+            sh_log::Write(
+                "actor: motion issued=%u reissue=%u gait_restart=%u "
+                "err_p95=%.2f\n",
+                g_motionIssued, g_motionReissue, g_motionGaitRestart,
+                g_motionErr.P95Ms() / 1000.0);
+            g_motionIssued = 0;
+            g_motionReissue = 0;
+            g_motionGaitRestart = 0;
             g_motionErr.Clear();
         }
     }

@@ -208,8 +208,24 @@ constexpr unsigned long long GET_PED_MAX_STAMINA           = 0xCB42AFE2B613EE55u
 // Ограничение скорости анимации педа (для шага/бега — чтобы пед-призрак
 // шёл шагом, а не бежал, при движении задачей TASK_GO_*).
 constexpr unsigned long long SET_PED_MAX_MOVE_BLEND_RATIO   = 0x433083750C5E064Aull;
+// E2a.2: удержание gait без перезапуска анимации (walk 1.0 / run 2.0 / sprint 3.0).
+constexpr unsigned long long SET_PED_DESIRED_MOVE_BLEND_RATIO = 0x1E982AC8716912C5ull;
+// E2a.2: чтение фактического desired gait хоста (упаковывается в ActorFrame.pad).
+constexpr unsigned long long GET_PED_DESIRED_MOVE_BLEND_RATIO = 0x8517D4A6CA8513EDull;
+// E2a.2: in-place update уже запущенной go-to задачи (ped,x,y,z,offX,Y,Z,speed,tolerance).
+constexpr unsigned long long _UPDATE_TASK_GO_TO_COORD_WITH_OFFSET = 0x3FFCD7BBA074CC80ull;
+// E2a.2: статус script-задачи педа (7 not_found / 8 finished — нужен ре-issue).
+constexpr unsigned long long GET_SCRIPT_TASK_STATUS          = 0x77F1BEB8863288D5ull;
+// E2a.2 (резерв, если понадобится FORCE_PED_MOTION_STATE): сигнатура
+// FORCE_PED_MOTION_STATE(ped, motionStateHash, p2, p3, p4) — хэши walk/jog/run
+// в оффлайн-данных не зафиксированы, поэтому пока не используется.
+constexpr unsigned long long FORCE_PED_MOTION_STATE          = 0xF28965D04F570DCAull;
 // Плавное анимированное движение педа к координатам (walk/run по скорости).
 constexpr unsigned long long TASK_FOLLOW_NAV_MESH_TO_COORD  = 0x15D3A79D4E44B913ull;
+
+// E2a.2: хэши script-задач для GET_SCRIPT_TASK_STATUS (не нативы).
+constexpr uint32_t SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD = 0x2A89B8A7u;
+constexpr uint32_t SCRIPT_TASK_STAND_STILL              = 0xC572E06Au;
 
 // Spike 1 (модель A): признак mission entity — приоритет репликации мира
 // и фильтр для прокси-сущностей на госте.
