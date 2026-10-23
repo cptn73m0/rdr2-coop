@@ -320,11 +320,13 @@ def pack_spawn_batch(epoch: int, records) -> bytes:
 
 def pack_actor_frame(actor_id: int, x: float, y: float, z: float,
                      heading: float, seq: int, anim_state: int = 1,
-                     speed: int = 0, pad: int = 0, flags: int = 0) -> bytes:
+                     speed: int = 0, pad: int = 0, flags: int = 0,
+                     target_actor_id: int = 0) -> bytes:
     return struct.pack("<IHBBffffIHH", actor_id, flags & 0xFFFF,
                        anim_state & 0xFF, speed & 0xFF,
                        float(x), float(y), float(z),
-                       float(heading), 0, seq & 0xFFFF, pad & 0xFFFF)
+                       float(heading), target_actor_id & 0xFFFFFFFF,
+                       seq & 0xFFFF, pad & 0xFFFF)
 
 
 def pack_frames_batch(epoch: int, seq: int, records) -> bytes:
@@ -421,7 +423,7 @@ def validate_frames(payload: bytes):
         rec = payload[ACTOR_FRAMES_HEADER + i * ACTOR_FRAME_SIZE:
                       ACTOR_FRAMES_HEADER + (i + 1) * ACTOR_FRAME_SIZE]
         (actor_id, flags, anim_state, speed, x, y, z, heading,
-         _target, rec_seq, pad) = struct.unpack_from("<IHBBffffIHH", rec, 0)
+         target, rec_seq, pad) = struct.unpack_from("<IHBBffffIHH", rec, 0)
         if actor_id == 0:
             raise ValueError(f"frame #{i}: actorId=0")
         if actor_id in seen:
@@ -430,7 +432,7 @@ def validate_frames(payload: bytes):
         if not all(is_finite_coord(v) for v in (x, y, z, heading)):
             raise ValueError(f"frame actorId={actor_id}: non-finite coords")
         records.append({"actorId": actor_id, "flags": flags,
-                        "animState": anim_state,
+                        "animState": anim_state, "targetActorId": target,
                         "speed": speed, "pad": pad, "seq": rec_seq})
     return epoch, seq, records
 
@@ -618,6 +620,8 @@ class Actor:
         self.dead = False  # E3a: dead flag/health=0 until revive
         self.dead_pos = None  # fixed corpse position
         self.dead_heading = 0.0
+        self.combat_hold_key = None  # E3b: static aim/shoot pose cache
+        self.combat_hold = None
 
 
 class FakeHost:
@@ -650,6 +654,7 @@ class FakeHost:
         self._aim_logged = False
         self._shoot_logged = False
         self._reload_logged = False
+        self._reload_state = False
 
     # -- actor construction -------------------------------------------------
     @staticmethod
@@ -789,11 +794,16 @@ class FakeHost:
         return x, y, (math.degrees(theta) + 90.0) % 360.0
 
     def _combat_state(self, a: Actor, now: float):
-        """E3b flags timeline. Returns (flags, idle_start_offset|None)."""
+        """E3b flags timeline.
+
+        Returns (flags, hold_start|None, targetActorId).
+        hold_start is the offset from actor spawn at which x/y/heading must be
+        frozen for the whole aim/shoot window (no per-frame heading updates).
+        """
         a_args = self.args
         flags = K_ACTOR_FLAG_COMBAT if getattr(a_args, "combat", False) else 0
         if a.scenario or a.dead:
-            return flags, None
+            return flags, None, 0
         elapsed = now - a.spawn_time
         aim_after = getattr(a_args, "aim_after", 0.0)
         shoot_after = getattr(a_args, "shoot_after", 0.0)
@@ -801,20 +811,23 @@ class FakeHost:
         aim_active = aim_after > 0 and aim_after <= elapsed < aim_after + 8.0
         shoot_active = (shoot_after > 0 and
                         shoot_after <= elapsed < shoot_after + 3.0)
+        # E3b.1: 1 s reload impulse every 8 s (not every 4 s).
         reload_active = (reload_after > 0 and elapsed >= reload_after and
-                         ((elapsed - reload_after) % 4.0) < 1.0)
+                         ((elapsed - reload_after) % 8.0) < 1.0)
         if aim_active or shoot_active:
             flags |= K_ACTOR_FLAG_AIMING | K_ACTOR_FLAG_DRAWN
         if reload_active:
             flags |= K_ACTOR_FLAG_RELOADING | K_ACTOR_FLAG_DRAWN
         if getattr(a_args, "drawn", False) and elapsed >= 3.0:
             flags |= K_ACTOR_FLAG_DRAWN
-        idle_start = None
+        starts = []
         if aim_active:
-            idle_start = aim_after
-        elif shoot_active:
-            idle_start = shoot_after
-        return flags, idle_start
+            starts.append(aim_after)
+        if shoot_active:
+            starts.append(shoot_after)
+        hold_start = min(starts) if starts else None
+        target = 1 if shoot_active else 0
+        return flags, hold_start, target
 
     def _frames_payload(self):
         now = time.monotonic()
@@ -825,7 +838,7 @@ class FakeHost:
                 flags |= K_ACTOR_FLAG_MOUNTED
             if a.scenario:
                 flags |= K_ACTOR_FLAG_SCENARIO
-            combat_flags, idle_start = self._combat_state(a, now)
+            combat_flags, hold_start, target = self._combat_state(a, now)
             flags |= combat_flags
             move_speed = (self.args.speed * a.gait) if a.gait > 0 else 0.0
             speed_u8 = encode_speed_u8(move_speed)
@@ -841,11 +854,18 @@ class FakeHost:
                 x, y = a.center[0], a.center[1]
                 heading = math.degrees(a.phase) % 360.0
                 anim_state, speed_u8, gait_pad = 0, 0, 0
-            elif idle_start is not None:
-                # E3b: aiming/shooting actor stands still (Aiming, anim=0).
-                x, y, heading = self._motion_pos(a, a.spawn_time + idle_start)
+            elif hold_start is not None:
+                # E3b.1: freeze x,y AND heading at the window start; cache the
+                # pose so heading cannot drift from the movement pattern.
+                hold_key = a.spawn_time + hold_start
+                if a.combat_hold_key != hold_key or a.combat_hold is None:
+                    a.combat_hold_key = hold_key
+                    a.combat_hold = self._motion_pos(a, hold_key)
+                x, y, heading = a.combat_hold
                 anim_state, speed_u8, gait_pad = 0, 0, 0
             else:
+                a.combat_hold_key = None
+                a.combat_hold = None
                 x, y, heading = self._motion_pos(a, now)
                 anim_state = (K_MOVE_STYLE_RIDE_HORSE if a.mounted
                               else move_style_for_gait(a.gait))
@@ -853,7 +873,8 @@ class FakeHost:
                                             heading, self.frame_seq,
                                             anim_state=anim_state,
                                             speed=speed_u8, pad=gait_pad,
-                                            flags=flags))
+                                            flags=flags,
+                                            target_actor_id=target))
         return pack_frames_batch(self.epoch, self.frame_seq, records)
 
     # -- loop ---------------------------------------------------------------
@@ -1032,10 +1053,13 @@ class FakeHost:
                     not self._shoot_logged):
                 self._shoot_logged = True
                 self.log.write("fakehost: shoot")
-            if (a.reload_after > 0 and elapsed >= a.reload_after and
-                    not self._reload_logged):
-                self._reload_logged = True
-                self.log.write("fakehost: reload")
+            if a.reload_after > 0:
+                reload_active = (elapsed >= a.reload_after and
+                                 ((elapsed - a.reload_after) % 8.0) < 1.0)
+                if reload_active != self._reload_state:
+                    self._reload_state = reload_active
+                    self.log.write("fakehost: reload " +
+                                   ("on" if reload_active else "off"))
         # E3a: one actor (last id) dies; dead flag + health=0, frames fixed.
         if self.next_death is not None and now >= self.next_death:
             self.next_death = None
@@ -1138,6 +1162,7 @@ class FakeGuest:
         self.aim_frames = 0
         self.reload_frames = 0
         self.combat_frames = 0
+        self.target_frames = 0
         # E2a.2: speed/gait statistics from ActorFrame (speed u8 on 0..8 m/s
         # scale, pad = gait*1000).
         self.speed_min = 255
@@ -1277,6 +1302,8 @@ class FakeGuest:
                 self.reload_frames += 1
             if rec["flags"] & K_ACTOR_FLAG_COMBAT:
                 self.combat_frames += 1
+            if rec["targetActorId"] != 0:
+                self.target_frames += 1
         unknown = [r["actorId"] for r in records
                    if r["actorId"] not in self.known_ids]
         if unknown and self.frames_msgs <= 5:
@@ -1364,6 +1391,8 @@ class FakeGuest:
                 f"reload_frames={self.reload_frames}")
             self.log.write(
                 f"fakeguest: combat_frames={self.combat_frames}")
+            self.log.write(
+                f"fakeguest: target_frames={self.target_frames}")
             speed_avg = (self.speed_sum / self.speed_count
                          if self.speed_count else 0.0)
             gait_avg = (self.gait_sum / self.gait_count

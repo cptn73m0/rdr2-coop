@@ -518,9 +518,9 @@ void TaskShootAtCoordEntity(unsigned int ped, float x, float y, float z)
     Init(natives::TASK_SHOOT_AT_COORD);
     Push(ped);
     Push(x); Push(y); Push(z);
-    Push(static_cast<unsigned long long>(200));        // duration ~1 выстрел
-    Push(static_cast<unsigned long long>(0x5D60E4E0)); // SingleShot
-    Push(static_cast<unsigned long long>(0));          // p6
+    Push(static_cast<unsigned long long>(200)); // duration ~1 выстрел
+    Push(static_cast<unsigned long long>(0));   // firingPattern=0 (E3b.1)
+    Push(static_cast<unsigned long long>(0));   // p6
     Call();
 }
 
@@ -531,6 +531,19 @@ void TaskReloadWeaponEntity(unsigned int ped)
     Push(ped);
     Push(true); // p1 (как в SDK/coop)
     Call();
+}
+
+// E3b.1: патроны в магазине (для диагностики reload/shoot).
+int GetAmmoInClipEntity(unsigned int ped, uint32_t weaponHash)
+{
+    using namespace natives_api;
+    int ammo = 0;
+    Init(natives::GET_AMMO_IN_CLIP);
+    Push(ped);
+    Push(reinterpret_cast<unsigned long long>(&ammo));
+    Push(static_cast<unsigned long long>(weaponHash));
+    Call();
+    return ammo;
 }
 
 // ---------------- E2a: meta-ped-outfit запросы (per-actor, не singleton) ----------------
@@ -1117,6 +1130,17 @@ void LogWeaponEvent(uint32_t actorId, uint32_t hash, const char* state)
 {
     sh_log::Write("actor: weapon id=%u hash=0x%X state=%s\n",
                   actorId, hash, state);
+}
+
+// E3b.1: диагностика оружейного состояния движка (npc_debug=1, 1 строка/5 с).
+void LogWeaponDebug(uint32_t actorId, bool ready, bool armed, uint32_t cur,
+                    uint32_t hash, int ammo, bool drawn)
+{
+    sh_log::Write(
+        "actor: weapon dbg id=%u ready=%d armed=%d cur=0x%X hash=0x%X "
+        "ammo=%d drawn=%d\n",
+        actorId, ready ? 1 : 0, armed ? 1 : 0, cur, hash, ammo,
+        drawn ? 1 : 0);
 }
 
 void LogDeath(uint32_t actorId)
@@ -1811,6 +1835,18 @@ struct Proxy
     unsigned int lastShootTick = 0;
     bool reloadInProgress = false;
     unsigned int reloadStartTick = 0;
+    // E3b.1: aim захватывается ОДИН раз на эпизод Aiming; reissue только при
+    // смене оружия / heading > 25° / 5 с (не от джиттера).
+    bool aimCaptured = false;
+    float aimCaptureX = 0.f, aimCaptureY = 0.f, aimCaptureZ = 0.f;
+    float aimCaptureHeading = 0.f;
+    uint32_t aimWeapon = 0;
+    unsigned int aimCaptureTick = 0;
+    bool prevAimFlag = false;
+    // E3b.1: готовность оружия (draw/equip ждём до 2 с) и диагностика.
+    unsigned int equipWaitStartTick = 0;
+    bool equipWaitActive = false;
+    unsigned int lastWeaponDbgTick = 0;
 };
 
 std::map<uint32_t, Proxy> g_proxies;
@@ -2679,6 +2715,9 @@ void ApplyProxyDeath(Proxy& p)
     p.weaponAimTaskActive = false;
     p.aimPointValid = false;
     p.reloadInProgress = false;
+    p.aimCaptured = false;
+    p.prevAimFlag = false;
+    p.equipWaitActive = false;
     p.deathApplied = true;
     LogDeath(p.actorId);
 }
@@ -2712,6 +2751,9 @@ void ApplyProxyRevive(Proxy& p)
     p.weaponAimTaskActive = false;
     p.aimPointValid = false;
     p.reloadInProgress = false;
+    p.aimCaptured = false;
+    p.prevAimFlag = false;
+    p.equipWaitActive = false;
     LogRevive(p.actorId);
 }
 
@@ -2976,7 +3018,13 @@ void ProcessActorWeapons(unsigned int tick)
         if (!p.handle || !DoesExist(p.handle))
             continue;
         if (p.dead || p.mounted || p.scenarioFlag)
-            continue; // не ломаем труп/седло/позу
+        {
+            // Труп/седло/поза — никаких боевых задач и латчей.
+            p.aimCaptured = false;
+            p.weaponAimTaskActive = false;
+            p.prevAimFlag = false;
+            continue;
+        }
         int taskCalls = 0;
 
         const uint32_t wantWeapon =
@@ -2990,8 +3038,9 @@ void ProcessActorWeapons(unsigned int tick)
                 RemoveWeaponFromPedEntity(p.handle, p.weaponGiven);
                 p.weaponGiven = 0;
                 p.weaponInHands = false;
-                p.weaponDrawPending = false;
-                p.weaponHolsterPending = false;
+                p.aimCaptured = false;
+                p.weaponAimTaskActive = false;
+                p.equipWaitActive = false;
             }
             if (wantWeapon)
             {
@@ -3004,118 +3053,159 @@ void ProcessActorWeapons(unsigned int tick)
         if (!p.weaponGiven)
         {
             p.weaponInHands = false;
+            p.aimCaptured = false;
+            p.prevAimFlag = false;
             continue;
         }
 
-        // 2) Дождаться анимации draw/holster; при залипании — форс equipNow.
-        if (p.weaponDrawPending)
-        {
-            if (IsWeaponReady(p.handle))
-            {
-                p.weaponDrawPending = false;
-                p.weaponInHands = true;
-            }
-            else if (tick - p.weaponDrawStartTick >= kWeaponDrawForceTicks)
-            {
-                SetCurrentPedWeaponEntity(p.handle, p.weaponGiven, true);
-                p.weaponDrawPending = false;
-                p.weaponInHands = true;
-            }
-        }
-        if (p.weaponHolsterPending &&
-            tick - p.weaponHolsterStartTick >= kWeaponChangeWaitTicks)
-            p.weaponHolsterPending = false;
-
-        // 3) Drawn <-> holster (не спамим: ждём Changing/анимацию).
-        if (!p.weaponChangingFlag && !p.weaponDrawPending &&
-            !p.weaponHolsterPending)
-        {
-            if (p.weaponDrawnFlag && !p.weaponInHands)
-            {
-                SetCurrentPedWeaponEntity(p.handle, p.weaponGiven, false);
-                p.weaponDrawPending = true;
-                p.weaponDrawStartTick = tick;
-                LogWeaponEvent(p.actorId, p.weaponGiven, "drawn");
-            }
-            else if (!p.weaponDrawnFlag && p.weaponInHands)
-            {
-                HidePedWeaponsEntity(p.handle);
-                p.weaponHolsterPending = true;
-                p.weaponHolsterStartTick = tick;
-                p.weaponInHands = false;
-                p.weaponAimTaskActive = false;
-                LogWeaponEvent(p.actorId, p.weaponGiven, "holstered");
-            }
-        }
-
-        // 4) Бой: shoot-сигнал = targetActorId (хост) ИЛИ Aiming+Combat
-        // (упрощённый визуал боевых NPC); aim = Aiming || shoot-пульс.
+        // E3b.1: боевые желания нужны и для draw/holster (не убираем оружие,
+        // пока идет aim/shoot/reload, даже если Drawn-флаг ещё не поднялся).
         const bool wantShoot =
             p.weaponShootPulse || (p.weaponAimFlag && p.weaponCombatFlag);
         const bool wantAim = p.weaponAimFlag || p.weaponShootPulse;
-        if ((wantAim || p.weaponReloadFlag) && !p.weaponInHands &&
-            !p.weaponDrawPending)
+        const bool wantReload = p.weaponReloadFlag;
+
+        // 2) DRAW: Drawn (или боевая задача) -> SET_CURRENT_PED_WEAPON(
+        // equipNow=true) и проверка ФАКТИЧЕСКОГО holster-состояния движка.
+        if ((p.weaponDrawnFlag || wantAim || wantReload) && !p.weaponInHands)
         {
-            // Боевая задача требует оружие в руках — экипируем мгновенно.
             SetCurrentPedWeaponEntity(p.handle, p.weaponGiven, true);
-            p.weaponInHands = true;
-            p.weaponHolsterPending = false;
+            if (!p.equipWaitActive)
+            {
+                p.equipWaitActive = true;
+                p.equipWaitStartTick = tick;
+            }
+            if (GetCurrentWeapon(p.handle) == p.weaponGiven &&
+                !IsWeaponHolstered(p.handle))
+            {
+                p.weaponInHands = true;
+                p.equipWaitActive = false;
+                LogWeaponEvent(p.actorId, p.weaponGiven, "drawn");
+            }
+        }
+        else if (!p.weaponDrawnFlag && !wantAim && !wantShoot && !wantReload &&
+                 p.weaponInHands)
+        {
+            HidePedWeaponsEntity(p.handle);
+            p.weaponInHands = false;
+            p.aimCaptured = false;
+            p.weaponAimTaskActive = false;
+            p.equipWaitActive = false;
+            LogWeaponEvent(p.actorId, p.weaponGiven, "holstered");
         }
 
-        const Vec3 pos = GetCoords(p.handle);
-        const float rad = p.heading * kRadPerDeg;
-        const float aimX = pos.x - std::sin(rad) * kWeaponAimDistance;
-        const float aimY = pos.y + std::cos(rad) * kWeaponAimDistance;
-        const float aimZ = pos.z;
+        // 3) Готовность: armed = current == hash и оружие НЕ в кобуре;
+        // ready = armed && IS_PED_WEAPON_READY_TO_SHOOT.
+        const uint32_t cur = GetCurrentWeapon(p.handle);
+        const bool armed =
+            cur == p.weaponGiven && !IsWeaponHolstered(p.handle);
+        if (armed)
+            p.weaponInHands = true;
+        const bool ready = armed && IsWeaponReady(p.handle);
 
-        // 5) Aim: не перевыдавать каждый тик; обновлять при сдвиге точки,
-        // смене оружия и не чаще kWeaponAimReissueTicks.
-        if (wantAim && p.weaponInHands)
+        // Ждём готовности до 2 с (120 тиков): добираем экипировку, если не armed.
+        if ((wantAim || wantShoot || wantReload) && !armed &&
+            !p.equipWaitActive)
         {
-            const bool moved =
-                !p.aimPointValid ||
-                std::fabs(aimX - p.aimPointX) > 0.5f ||
-                std::fabs(aimY - p.aimPointY) > 0.5f ||
-                std::fabs(aimZ - p.aimPointZ) > 0.5f;
-            if (moved && taskCalls < 2 &&
-                (tick - p.lastAimTaskTick) >= kWeaponAimReissueTicks)
+            SetCurrentPedWeaponEntity(p.handle, p.weaponGiven, true);
+            p.equipWaitActive = true;
+            p.equipWaitStartTick = tick;
+        }
+        const bool equipExpired =
+            p.equipWaitActive && (tick - p.equipWaitStartTick) > 120;
+
+        const bool shootDue = wantShoot && ready && taskCalls < 2 &&
+            (tick - p.lastShootTick) >= kWeaponShootCooldownTicks;
+
+        // 4) AIM: точка захватывается ОДИН раз при переходе Aiming 0->1;
+        // reissue только при смене оружия / heading>25° / 5 с. Лог — старт.
+        const bool aimEdge = wantAim && !p.prevAimFlag;
+        if (aimEdge && ready && taskCalls < 2)
+        {
+            const Vec3 pos = GetCoords(p.handle);
+            const float rad = p.heading * kRadPerDeg;
+            p.aimCaptureX = pos.x - std::sin(rad) * kWeaponAimDistance;
+            p.aimCaptureY = pos.y + std::cos(rad) * kWeaponAimDistance;
+            p.aimCaptureZ = pos.z;
+            p.aimCaptureHeading = p.heading;
+            p.aimWeapon = p.weaponGiven;
+            p.aimCaptured = true;
+            p.aimCaptureTick = tick;
+            p.weaponAimTaskActive = true;
+            p.lastAimTaskTick = tick;
+            if (!shootDue)
             {
-                TaskAimGunAtCoordEntity(p.handle, aimX, aimY, aimZ);
-                p.weaponAimTaskActive = true;
-                p.lastAimTaskTick = tick;
-                p.aimPointX = aimX;
-                p.aimPointY = aimY;
-                p.aimPointZ = aimZ;
-                p.aimPointValid = true;
+                TaskAimGunAtCoordEntity(p.handle, p.aimCaptureX, p.aimCaptureY,
+                                        p.aimCaptureZ);
                 ++taskCalls;
                 LogWeaponEvent(p.actorId, p.weaponGiven, "aim");
+            }
+        }
+        else if (wantAim && p.aimCaptured && ready && !shootDue &&
+                 taskCalls < 2)
+        {
+            float dHeading = std::fabs(p.heading - p.aimCaptureHeading);
+            while (dHeading > 180.f) dHeading = std::fabs(dHeading - 360.f);
+            const bool weaponChanged = p.aimWeapon != p.weaponGiven;
+            const bool headingChanged = dHeading > 25.f;
+            const bool timed = (tick - p.aimCaptureTick) > 300; // 5 с
+            const bool needReissue = !p.weaponAimTaskActive ||
+                                     weaponChanged || headingChanged || timed;
+            if (needReissue)
+            {
+                if (weaponChanged || headingChanged || timed)
+                {
+                    const Vec3 pos = GetCoords(p.handle);
+                    const float rad = p.heading * kRadPerDeg;
+                    p.aimCaptureX = pos.x - std::sin(rad) * kWeaponAimDistance;
+                    p.aimCaptureY = pos.y + std::cos(rad) * kWeaponAimDistance;
+                    p.aimCaptureZ = pos.z;
+                    p.aimCaptureHeading = p.heading;
+                    p.aimWeapon = p.weaponGiven;
+                    p.aimCaptureTick = tick;
+                }
+                TaskAimGunAtCoordEntity(p.handle, p.aimCaptureX, p.aimCaptureY,
+                                        p.aimCaptureZ);
+                p.weaponAimTaskActive = true;
+                p.lastAimTaskTick = tick;
+                ++taskCalls;
             }
         }
         else if (!wantAim && p.weaponAimTaskActive)
         {
             StandStill(p.handle);
             p.weaponAimTaskActive = false;
-            p.aimPointValid = false;
             p.taskActive = false;
             p.moveTaskValid = false;
             ++taskCalls;
         }
+        if (!wantAim)
+        {
+            p.aimCaptured = false;
+            p.weaponAimTaskActive = false;
+        }
 
-        // 6) Shoot: <= 1/с; заменяет aim-задачу (как у player-ghost).
-        if (wantShoot && p.weaponInHands && taskCalls < 2 &&
+        // 5) SHOOT: только ready && armed, <=1/с, firingPattern=0.
+        if (wantShoot && ready && taskCalls < 2 &&
             (tick - p.lastShootTick) >= kWeaponShootCooldownTicks)
         {
-            TaskShootAtCoordEntity(p.handle, aimX, aimY, aimZ);
+            const Vec3 pos = GetCoords(p.handle);
+            const float rad = p.heading * kRadPerDeg;
+            const float sx = pos.x - std::sin(rad) * kWeaponAimDistance;
+            const float sy = pos.y + std::cos(rad) * kWeaponAimDistance;
+            TaskShootAtCoordEntity(p.handle, sx, sy, pos.z);
             p.lastShootTick = tick;
-            p.weaponAimTaskActive = false;
-            p.aimPointValid = false;
+            p.weaponAimTaskActive = false; // shoot заменяет aim
+            p.aimCaptured = true;          // точку не теряем (reissue молча)
             ++taskCalls;
             LogWeaponEvent(p.actorId, p.weaponGiven, "shoot");
         }
 
-        // 7) Reload: rising edge; клип в 0, чтобы анимация реально играла.
-        if (p.weaponReloadFlag && !p.reloadInProgress && p.weaponInHands &&
-            taskCalls < 2)
+        // 6) RELOAD: сначала отключить infinite clip (иначе магазин мгновенно
+        // полный и TASK_RELOAD_WEAPON не играет), затем ammo=0, затем reload;
+        // вернуть infinite clip через 2 с или при снятии флага.
+        if (wantReload && armed && (ready || equipExpired) && taskCalls < 2 &&
+            !p.reloadInProgress)
         {
             SetPedInfiniteClipEntity(p.handle, false);
             SetAmmoInClipEntity(p.handle, p.weaponGiven, 0);
@@ -3126,14 +3216,28 @@ void ProcessActorWeapons(unsigned int tick)
             LogWeaponEvent(p.actorId, p.weaponGiven, "reload");
         }
         else if (p.reloadInProgress &&
-                 (!p.weaponReloadFlag ||
+                 (!wantReload ||
                   tick - p.reloadStartTick >= kWeaponReloadTimeoutTicks))
         {
             SetPedInfiniteClipEntity(p.handle, true);
             p.reloadInProgress = false;
         }
+        if (equipExpired)
+            p.equipWaitActive = false; // следующий retry на след. тике
+
+        // 7) Диагностика движка: 1 строка / 5 с при npc_debug=1.
+        if (coopcfg::Get().npcDebug && (tick - p.lastWeaponDbgTick) >= 300)
+        {
+            p.lastWeaponDbgTick = tick;
+            const int ammo = GetAmmoInClipEntity(p.handle, p.weaponGiven);
+            LogWeaponDebug(p.actorId, ready, armed, cur, p.weaponGiven, ammo,
+                           p.weaponInHands);
+        }
+
+        p.prevAimFlag = wantAim;
     }
 }
+
 
 void AppendTrailPoint(Proxy& p, float x, float y, float z)
 {

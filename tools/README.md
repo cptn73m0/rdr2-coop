@@ -298,11 +298,13 @@ E3b сдаёт `ActorSpawn.weaponHash` (по умолчанию
 - `--combat`: флаг Combat (16) постоянно (и в spawn, и в кадрах);
 - `--drawn`: первые 3 с оружие в кобуре, затем Drawn (4); лог
   `fakehost: weapon drawn`;
-- `--aim-after SEC`: через SEC — Aiming (128) + Drawn на 8 с, актор стоит
-  (anim=0, speed=0); затем снимается;
-- `--shoot-after SEC`: через SEC — Drawn|Aiming на 3 с (shoot-поза/импульсы);
-- `--reload-after SEC`: через SEC — Reloading (64) импульсами по 1 с каждые
-  4 с;
+- `--aim-after SEC`: через SEC — Aiming (128) + Drawn на 8 с; **x,y и
+  heading фиксируются на момент начала окна** (актор стоит, heading не
+  дрейфует от circle-паттерна, клиент не перевыдаёт aim); anim=0, speed=0;
+- `--shoot-after SEC`: через SEC — Drawn|Aiming на 3 с (shoot), в кадрах
+  `targetActorId=1`; вне окна `targetActorId=0`;
+- `--reload-after SEC`: через SEC — Reloading (64) импульсами **1 с каждые
+  8 с**; переходы логируются `fakehost: reload on/off`;
 - `--weapon HASH` — явный хэш оружия (0 = без оружия).
 
 **Тест E3b (fake host → игровой гость):**
@@ -318,11 +320,13 @@ fakehost: combat flags drawn=1 aim_after=4.0 shoot_after=6.0 reload_after=5.0 co
 fakehost: weapon drawn
 fakehost: aim
 fakehost: shoot
-fakehost: reload
+fakehost: reload on
+fakehost: reload off
 fakehost: spawn epoch=1 n=5
 ```
 В игре-госте: все NPC с револьвером; через 3 с достают его, позже целятся
-(стоят), стреляют (Drawn|Aiming), перезаряжаются.
+(стоят неподвижно), стреляют (Drawn|Aiming + targetActorId=1),
+перезаряжаются.
 
 **Проверка полей в сети (игровой хост → fake guest):**
 ```powershell
@@ -332,10 +336,11 @@ python tools\fake_actor_client.py --mode guest --name TestGuest --duration 120
 ```
 fakeguest: weapon_spawns=N drawn_frames=... aim_frames=... reload_frames=...
 fakeguest: combat_frames=...
+fakeguest: target_frames=N
 ```
 `weapon_spawns=N` — уникальные actorId с `weaponHash!=0`; остальные — число
 кадров с соответствующим флагом (`drawn=4`, `aim=128`, `reload=64`,
-`combat=16`).
+`combat=16`); `target_frames=N` — кадры с `targetActorId!=0` (shoot-окно).
 
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 
@@ -381,7 +386,7 @@ fakeguest: combat_frames=...
 | `--drawn` | off | E3b: через 3 с после спавна флаг Drawn (4) |
 | `--aim-after` | 0 (off) | E3b: через SEC — Aiming+Drawn на 8 с, актор стоит |
 | `--shoot-after` | 0 (off) | E3b: через SEC — Drawn\|Aiming на 3 с (shoot) |
-| `--reload-after` | 0 (off) | E3b: через SEC — Reloading (64) импульсами 1 с каждые 4 с |
+| `--reload-after` | 0 (off) | E3b: через SEC — Reloading (64) импульсами 1 с каждые 8 с; логи on/off |
 | `--combat` | off | E3b: флаг Combat (16) |
 | `--dead-after` | 0 | E3a: через сколько секунд после первого спавна убить последний actorId (0 = off) |
 | `--revive-after` | 10 | E3a: через сколько после смерти возродить (0 = остаётся мёртвым) |
