@@ -86,6 +86,11 @@ constexpr unsigned int kMountReasonSeatFailed = 4;
 // E3a: сценарий (поза) и смерть/труп.
 constexpr unsigned int kScenarioVerifyTicks = 120; // 2 с на вход в сценарий
 constexpr int kHumanMaxHealth = 200;              // fallback, если натив вернул 0
+// E3a.3: оптимистичное подтверждение — после TASK_START_SCENARIO_IN_PLACE_HASH
+// считаем позу применённой (verify-геттеры для части поз врут). Варпающие
+// fallback'и (scenario point / at-position) оставлены заготовкой под флагом,
+// но в цепочке НЕ используются: они переставляли/сваривали NPC.
+constexpr bool kScenarioFallbackEnabled = false;
 
 // P3-фиксы по ревью E1 (task-45).
 constexpr unsigned int kPendingSpawnTimeoutTicks = 300; // 5 с ожидания модели
@@ -920,8 +925,18 @@ void LogMountDespawn(uint32_t actorId, unsigned int reason)
 }
 
 // E3a: сценарии/позы NPC и смерть/труп (гейт enabled снаружи).
-void LogScenarioApply(uint32_t actorId, uint32_t hash, bool ok)
+// E3a.3: если verify != nullptr — диагностическая строка оптимистичного
+// подтверждения (state=ok verify=flag|assumed).
+void LogScenarioApply(uint32_t actorId, uint32_t hash, bool ok,
+                      const char* verify = nullptr)
 {
+    if (verify)
+    {
+        sh_log::Write(
+            "actor: scenario apply id=%u hash=0x%X state=%s verify=%s\n",
+            actorId, hash, ok ? "ok" : "failed", verify);
+        return;
+    }
     sh_log::Write("actor: scenario apply id=%u hash=0x%X state=%s\n",
                   actorId, hash, ok ? "ok" : "failed");
 }
@@ -2505,8 +2520,7 @@ void ProcessActorScenarios(unsigned int tick)
         const bool want = p.scenarioFlag && !p.mounted;
         if (!want)
         {
-            if (p.scenarioState == 1 || p.scenarioState == 2 ||
-                p.scenarioState == 3 || p.scenarioState == 4)
+            if (p.scenarioState != 0)
             {
                 // Хост вышел из сценария — снимаем задачу, вернём движение.
                 StandStill(p.handle);
@@ -2538,20 +2552,19 @@ void ProcessActorScenarios(unsigned int tick)
             else if (p.scenarioState == 1 &&
                      tick - p.scenarioTick > kScenarioVerifyTicks)
             {
-                StandStill(p.handle);
-                LogScenarioFailed(p.actorId, 0, "inplace");
+                // Хэш так и не пришёл — не двигаем, но не варпаем.
                 LogScenarioApply(p.actorId, 0, false);
                 p.scenarioState = 5;
             }
             continue;
         }
 
-        // Первый запуск / смена хэша (state 5 = failed: при новом hash — retry).
+        // Первый запуск / смена хэша: ровно один in-place вызов.
         const bool needApply =
             p.scenarioState == 0 || p.scenarioApplied != p.scenarioHash;
         if (needApply)
         {
-            // Снять текущую позу/движение, очистить старый point.
+            // Снять текущую позу/движение, очистить старый point (если был).
             if (p.scenarioPoint)
             {
                 DeleteScenarioPoint(p.scenarioPoint);
@@ -2562,7 +2575,8 @@ void ProcessActorScenarios(unsigned int tick)
             SetMoveBlend(p.handle, 0.0f);
             p.taskActive = false;
             p.moveTaskValid = false;
-            // a) in-place (быстрый путь; для «стоячих» сценариев в чистом поле)
+            // E3a.3: единственный путь применения позы — in-place. Верификация
+            // ниже только диагностика; варпающих fallback'ов в цепочке нет.
             StartScenarioInPlace(p.handle, p.scenarioHash);
             p.scenarioState = 1;
             p.scenarioTick = tick;
@@ -2572,89 +2586,70 @@ void ProcessActorScenarios(unsigned int tick)
 
         if (p.scenarioState == 1)
         {
-            if (IsPedInScenario(p.handle))
+            if (tick - p.scenarioTick > kScenarioVerifyTicks)
             {
+                // Оптимистичное подтверждение: поза уже играет (verify-геттеры
+                // для части сценариев врут). state=ok в любом случае.
+                const bool flagOk = IsPedInScenario(p.handle);
                 p.scenarioState = 2;
-                LogScenarioApply(p.actorId, p.scenarioHash, true);
+                LogScenarioApply(p.actorId, p.scenarioHash, true,
+                                 flagOk ? "flag" : "assumed");
             }
-            else if (tick - p.scenarioTick > kScenarioVerifyTicks)
+            continue;
+        }
+
+        // E3a.3: fallback-цепочка (scenario point / at-position) НЕ используется
+        // в рабочей цепочке — оставлена заготовкой под kScenarioFallbackEnabled=false:
+        // она переставляла/сваривала NPC. При включении флага — старый путь.
+        if constexpr (kScenarioFallbackEnabled)
+        {
+            if (p.scenarioState == 3)
             {
-                // b) scenario point (канонический путь для sit/work с пропом).
-                LogScenarioFailed(p.actorId, p.scenarioHash, "inplace");
-                StandStill(p.handle);
-                const Vec3 pos = GetCoords(p.handle);
-                const float heading = GetHeading(p.handle);
-                const int point = CreateScenarioPointHash(
-                    p.scenarioHash, pos.x, pos.y, pos.z, heading);
-                if (point && DoesScenarioPointExist(point))
+                if (IsPedInScenario(p.handle))
                 {
-                    p.scenarioPoint = point;
-                    p.scenarioPointType = GetScenarioPointType(point);
-                    UseScenarioPoint(p.handle, point);
-                    p.scenarioState = 3;
+                    p.scenarioState = 2;
+                    LogScenarioPoint(p.actorId, p.scenarioHash, p.scenarioPoint,
+                                     p.scenarioPointType, true);
+                    LogScenarioApply(p.actorId, p.scenarioHash, true);
                 }
-                else
+                else if (tick - p.scenarioTick > kScenarioVerifyTicks)
                 {
-                    if (point) DeleteScenarioPoint(point);
-                    LogScenarioPoint(p.actorId, p.scenarioHash, point, 0, false);
-                    // c) at-position c sitting=true.
+                    LogScenarioPoint(p.actorId, p.scenarioHash, p.scenarioPoint,
+                                     p.scenarioPointType, false);
+                    StandStill(p.handle);
+                    if (p.scenarioPoint)
+                    {
+                        DeleteScenarioPoint(p.scenarioPoint);
+                        p.scenarioPoint = 0;
+                        p.scenarioPointType = 0;
+                    }
+                    const Vec3 pos = GetCoords(p.handle);
                     StartScenarioAtPosition(p.handle, p.scenarioHash,
-                                            pos.x, pos.y, pos.z, heading, true);
+                                            pos.x, pos.y, pos.z,
+                                            GetHeading(p.handle), true);
                     p.scenarioState = 4;
+                    p.scenarioTick = tick;
                 }
-                p.scenarioTick = tick;
+                continue;
             }
-            continue;
-        }
-
-        if (p.scenarioState == 3)
-        {
-            if (IsPedInScenario(p.handle))
+            if (p.scenarioState == 4)
             {
-                p.scenarioState = 2;
-                LogScenarioPoint(p.actorId, p.scenarioHash, p.scenarioPoint,
-                                 p.scenarioPointType, true);
-                LogScenarioApply(p.actorId, p.scenarioHash, true);
-            }
-            else if (tick - p.scenarioTick > kScenarioVerifyTicks)
-            {
-                LogScenarioPoint(p.actorId, p.scenarioHash, p.scenarioPoint,
-                                 p.scenarioPointType, false);
-                StandStill(p.handle);
-                if (p.scenarioPoint)
+                if (IsPedInScenario(p.handle))
                 {
-                    DeleteScenarioPoint(p.scenarioPoint);
-                    p.scenarioPoint = 0;
-                    p.scenarioPointType = 0;
+                    p.scenarioState = 2;
+                    LogScenarioApply(p.actorId, p.scenarioHash, true);
                 }
-                const Vec3 pos = GetCoords(p.handle);
-                StartScenarioAtPosition(p.handle, p.scenarioHash,
-                                        pos.x, pos.y, pos.z,
-                                        GetHeading(p.handle), true);
-                p.scenarioState = 4;
-                p.scenarioTick = tick;
+                else if (tick - p.scenarioTick > kScenarioVerifyTicks)
+                {
+                    LogScenarioFailed(p.actorId, p.scenarioHash, "atpos");
+                    StandStill(p.handle);
+                    LogScenarioApply(p.actorId, p.scenarioHash, false);
+                    p.scenarioState = 5;
+                }
+                continue;
             }
-            continue;
         }
-
-        if (p.scenarioState == 4)
-        {
-            if (IsPedInScenario(p.handle))
-            {
-                p.scenarioState = 2;
-                LogScenarioApply(p.actorId, p.scenarioHash, true);
-            }
-            else if (tick - p.scenarioTick > kScenarioVerifyTicks)
-            {
-                // d) всё не удалось: fallback stand (+ state=failed).
-                LogScenarioFailed(p.actorId, p.scenarioHash, "atpos");
-                StandStill(p.handle);
-                LogScenarioApply(p.actorId, p.scenarioHash, false);
-                p.scenarioState = 5;
-            }
-            continue;
-        }
-        // state 2 (active) / 5 (failed): поза держится/стоим, движение не выдаём.
+        // state 2 (ok/поза держится) / 5 (не двигаем): ничего не делаем.
     }
 }
 
