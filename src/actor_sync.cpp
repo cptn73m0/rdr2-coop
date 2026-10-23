@@ -300,6 +300,64 @@ bool IsMissionEntity(unsigned int handle)
     return Call() != 0;
 }
 
+// E3c: kind semantics (wire-compatible v16, ActorSpawn.kind):
+// 0 = human (как E1-E3b), 1 = animal (дичь/скот), 2 = horse (A_C_HORSE_*).
+bool IsHorseModel(uint32_t model)
+{
+    using namespace natives_api;
+    Init(natives::_IS_THIS_MODEL_A_HORSE);
+    Push(static_cast<unsigned long long>(model));
+    return Call() != 0;
+}
+
+bool IsBirdEntity(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::_GET_IS_BIRD);
+    Push(handle);
+    return Call() != 0;
+}
+
+bool IsFishEntity(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::_IS_META_PED_FISH);
+    Push(handle);
+    return Call() != 0;
+}
+
+uint8_t DetectActorKind(unsigned int handle)
+{
+    if (IsHumanPed(handle))
+        return net::kActorKindHuman;
+    return IsHorseModel(GetModelOf(handle)) ? 2u : 1u;
+}
+
+bool IsAnimalKind(uint8_t kind)
+{
+    return kind == 1u || kind == 2u;
+}
+
+// E3c: у лошади есть всадник (тогда она уходит как mounted-пара human, а не
+// отдельным animal-актором) или это животное/лошадь игрока.
+bool HasRider(unsigned int mount)
+{
+    using namespace natives_api;
+    Init(natives::_GET_RIDER_OF_MOUNT);
+    Push(mount);
+    Push(false);
+    const unsigned int rider = static_cast<unsigned int>(Call());
+    return rider != 0 && rider != 0xFFFFFFFFu && DoesExist(rider);
+}
+
+bool IsAnimalControlledByPlayer(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::_IS_ANIMAL_CONTROLLED_BY_A_PLAYER);
+    Push(ped);
+    return Call() != 0;
+}
+
 unsigned int GetMountOf(unsigned int ped)
 {
     using namespace natives_api;
@@ -1362,6 +1420,18 @@ void LogWeaponDebug(uint32_t actorId, bool ready, bool armed, uint32_t cur,
         shootTasks);
 }
 
+// E3c: животные и трупы лошадей.
+void LogAnimalSpawn(uint32_t actorId, unsigned int kind, uint32_t model)
+{
+    sh_log::Write("actor: animal spawn id=%u kind=%u model=0x%X\n",
+                  actorId, kind, model);
+}
+
+void LogAnimalDeath(uint32_t actorId)
+{
+    sh_log::Write("actor: animal death id=%u\n", actorId);
+}
+
 void LogDeath(uint32_t actorId)
 {
     sh_log::Write("actor: death id=%u\n", actorId);
@@ -1566,6 +1636,7 @@ struct RosterEntry
 {
     uint32_t actorId = 0;
     uint32_t model = 0;
+    uint8_t kind = 0; // E3c: 0 human, 1 animal, 2 horse
     unsigned int lastSeenTick = 0;
     // E2c: поздний резолв meta-outfit перебором кандидатов модели.
     uint32_t metaOutfit = 0;   // найденный/нативный outfit hash (в спавн)
@@ -1600,45 +1671,57 @@ uint32_t MakeEpoch(unsigned int tickCount)
 }
 
 net::ActorSpawn BuildSpawn(unsigned int handle, uint32_t actorId,
-                           uint32_t resolvedMetaOutfit)
+                           uint32_t resolvedMetaOutfit, uint8_t kind)
 {
     net::ActorSpawn s{};
     s.actorId = actorId;
     s.epoch = static_cast<uint16_t>(g_hostEpoch & 0xFFFFu);
-    s.kind = net::kActorKindHuman;
-    s.flags = static_cast<uint8_t>(BuildFlags(handle));
+    s.kind = kind;
     s.model = GetModelOf(handle);
     // E2c: нативный hash истинный, если !=0; иначе — поздний резолв из roster
-    // (перебор кандидатов модели на хосте).
+    // (перебор кандидатов модели на хосте). Для лошадей это седло/сбруя.
     const uint32_t nativeOutfit = GetMetaOutfit(handle);
     s.metaOutfit = nativeOutfit ? nativeOutfit : resolvedMetaOutfit;
-    // E2b: всадник — один actor. ActorSpawn.reserved = хэш модели лошади
-    // (только когда флаг mounted); mountActorId не используем (лошадь не
-    // отдельный actor, чтобы не менять протокол/идентификаторы).
-    const unsigned int mountHandle = GetMountOf(handle);
-    const bool mounted = mountHandle != 0 && DoesExist(mountHandle);
-    if (mounted)
+    const bool dead = IsDeadPed(handle);
+    if (kind == net::kActorKindHuman)
     {
-        s.flags |= net::kActorFlagMounted;
-        s.reserved = GetModelOf(mountHandle);
-        s.moveStyle = kMoveStyleRideHorse;
+        s.flags = static_cast<uint8_t>(BuildFlags(handle));
+        // E2b: всадник — один actor. ActorSpawn.reserved = хэш модели лошади
+        // (только когда флаг mounted); mountActorId не используем (лошадь не
+        // отдельный actor, чтобы не менять протокол/идентификаторы).
+        const unsigned int mountHandle = GetMountOf(handle);
+        const bool mounted = mountHandle != 0 && DoesExist(mountHandle);
+        if (mounted)
+        {
+            s.flags |= net::kActorFlagMounted;
+            s.reserved = GetModelOf(mountHandle);
+            s.moveStyle = kMoveStyleRideHorse;
+        }
+        else
+        {
+            s.reserved = 0;
+            s.moveStyle = MoveStateFromSpeed(GetSpeed(handle));
+        }
+        s.mountActorId = 0;
+        const uint32_t held = GetHeldWeapon(handle);
+        s.weaponHash = held ? held : GetCurrentWeapon(handle);
+        // E3a: сценарий-поза (sit/work). Для мёртвых сценарий не шлём.
+        const bool scenario = !dead && IsScenarioActive(handle);
+        s.scenarioHash = scenario ? GetHostScenarioHash(handle) : 0;
+        if (dead)
+            s.flags &= static_cast<uint8_t>(~net::kActorFlagScenario);
     }
     else
     {
+        // E3c: животные/бесхозные лошади — без оружия/сценария/всадника.
+        // Dead flag нужен гостю, чтобы показать труп (лошадиный труп).
+        s.flags = dead ? static_cast<uint8_t>(net::kActorFlagDead) : 0;
         s.reserved = 0;
+        s.mountActorId = 0;
         s.moveStyle = MoveStateFromSpeed(GetSpeed(handle));
+        s.weaponHash = 0;
+        s.scenarioHash = 0;
     }
-    s.mountActorId = 0;
-    const uint32_t held = GetHeldWeapon(handle);
-    s.weaponHash = held ? held : GetCurrentWeapon(handle);
-    // E3a: сценарий-поза (sit/work). Для мёртвых сценарий не шлём: dead flag +
-    // health=0, труп остаётся на месте.
-    const bool dead = IsDeadPed(handle);
-    const bool scenario = !dead && IsScenarioActive(handle);
-    // E3a.1: dyn2 даёт валидные scenario-hash поз (sit/work); dyn1 — fallback.
-    s.scenarioHash = scenario ? GetHostScenarioHash(handle) : 0;
-    if (dead)
-        s.flags &= static_cast<uint8_t>(~net::kActorFlagScenario);
     const Vec3 p = GetCoords(handle);
     s.x = p.x; s.y = p.y; s.z = p.z;
     s.heading = GetHeading(handle);
@@ -1722,10 +1805,14 @@ void HostDiscovery(const TickContext& ctx)
     {
         unsigned int handle = 0;
         float distance2 = 1e30f;
+        uint8_t kind = 0; // E3c: 0 human
     };
     static std::vector<Cand> candidates;
+    static std::vector<Cand> animalCandidates; // E3c: животные/бесхозные лошади
     candidates.clear();
+    animalCandidates.clear();
     candidates.reserve(64);
+    animalCandidates.reserve(64);
 
     const Vec3 local = GetCoords(ctx.localPed);
     const unsigned int localMount = GetMountOf(ctx.localPed);
@@ -1775,10 +1862,75 @@ void HostDiscovery(const TickContext& ctx)
         Cand c;
         c.handle = handle;
         c.distance2 = d2;
+        c.kind = net::kActorKindHuman;
         candidates.push_back(c);
     }
 
+    // E3c: ВТОРОЙ проход — животные и бесхозные лошади. Только наземные
+    // (!bird/!fish), живые, не mission, в радиусе; cap позже (npc_animal_cap).
+    static std::unordered_set<uint32_t> loggedAnimalSkips;
+    for (int i = 0; i < count; ++i)
+    {
+        const unsigned int handle = static_cast<unsigned int>(handles[i]);
+        if (!handle || handle == ctx.localPed || handle == localMount)
+            continue;
+        if (handle == ctx.partnerGhost || handle == ctx.partnerMount)
+            continue;
+        if (coop::IsWorldSyncExcluded(handle))
+            continue;
+        if (!DoesExist(handle))
+            continue;
+        const Vec3 p = GetCoords(handle);
+        const float dx = p.x - local.x;
+        const float dy = p.y - local.y;
+        float d2 = dx * dx + dy * dy;
+        if (ctx.partnerValid)
+        {
+            const float px = p.x - ctx.partnerX;
+            const float py = p.y - ctx.partnerY;
+            const float d2p = px * px + py * py;
+            if (d2p < d2) d2 = d2p;
+        }
+        if (d2 > radius2)
+            continue;
+        if (IsPlayerPed(handle))
+            continue;
+        if (IsHumanPed(handle))
+            continue;
+        if (IsMissionEntity(handle))
+            continue;
+        if (IsDeadPed(handle))
+            continue;
+        // E3c: только бесхозные наземные животные; всадников и лошадей
+        // игроков не дублируем (rider идёт как human mounted-пара).
+        if (HasRider(handle))
+            continue;
+        if (IsAnimalControlledByPlayer(handle))
+            continue;
+        const uint32_t model = GetModelOf(handle);
+        if (IsBirdEntity(handle) || IsFishEntity(handle))
+        {
+            if (coopcfg::Get().npcDebug &&
+                loggedAnimalSkips.insert(model).second)
+            {
+                sh_log::Write(
+                    "actor: animal skip model=0x%X reason=not-ground\n",
+                    model);
+            }
+            continue;
+        }
+        Cand c;
+        c.handle = handle;
+        c.distance2 = d2;
+        c.kind = IsHorseModel(model) ? 2u : 1u;
+        animalCandidates.push_back(c);
+    }
+
     std::sort(candidates.begin(), candidates.end(),
+              [](const Cand& a, const Cand& b) {
+                  return a.distance2 < b.distance2;
+              });
+    std::sort(animalCandidates.begin(), animalCandidates.end(),
               [](const Cand& a, const Cand& b) {
                   return a.distance2 < b.distance2;
               });
@@ -1816,22 +1968,37 @@ void HostDiscovery(const TickContext& ctx)
         Cand c;
         c.handle = handle;
         c.distance2 = d2;
-        candidates.push_back(c);
+        c.kind = kv.second.kind;
+        if (c.kind == net::kActorKindHuman)
+            candidates.push_back(c);
+        else
+            animalCandidates.push_back(c);
         present.insert(handle);
     }
     std::sort(candidates.begin(), candidates.end(),
               [](const Cand& a, const Cand& b) {
                   return a.distance2 < b.distance2;
               });
+    std::sort(animalCandidates.begin(), animalCandidates.end(),
+              [](const Cand& a, const Cand& b) {
+                  return a.distance2 < b.distance2;
+              });
 
-    // 1) уже известные акторы, которые всё ещё в кандидатах
+    // E3c: люди занимают слоты первыми, животные — свободные ПОСЛЕ них
+    // (общий roster <= kMaxActors 12; npc_animal_cap=0 выключает животных).
+    int animalCap = coopcfg::Get().npcAnimalCap;
+    if (animalCap < 0) animalCap = 0;
+    if (animalCap > net::kMaxActors) animalCap = net::kMaxActors;
+
+    // 1) уже известные люди, которые всё ещё в кандидатах
     for (const auto& kv : g_roster)
     {
         if (static_cast<int>(selected.size()) >= cap) break;
+        if (kv.second.kind != net::kActorKindHuman) continue;
         if (present.count(kv.first))
             selected.push_back(kv.first);
     }
-    // 2) добор новыми ближайшими
+    // 2) добор новыми ближайшими людьми
     std::unordered_set<unsigned int> selectedSet(selected.begin(), selected.end());
     for (const Cand& c : candidates)
     {
@@ -1839,6 +2006,29 @@ void HostDiscovery(const TickContext& ctx)
         if (selectedSet.count(c.handle)) continue;
         selected.push_back(c.handle);
         selectedSet.insert(c.handle);
+    }
+    // 3) животные: известные (hysteresis) + новые, пока есть слоты/cap
+    int remaining = net::kMaxActors - static_cast<int>(selected.size());
+    if (animalCap > remaining) animalCap = remaining;
+    int animalsSelected = 0;
+    for (const auto& kv : g_roster)
+    {
+        if (animalsSelected >= animalCap) break;
+        if (kv.second.kind == net::kActorKindHuman) continue;
+        if (present.count(kv.first))
+        {
+            selected.push_back(kv.first);
+            selectedSet.insert(kv.first);
+            ++animalsSelected;
+        }
+    }
+    for (const Cand& c : animalCandidates)
+    {
+        if (animalsSelected >= animalCap) break;
+        if (selectedSet.count(c.handle)) continue;
+        selected.push_back(c.handle);
+        selectedSet.insert(c.handle);
+        ++animalsSelected;
     }
 
     // 3) остальных из roster — despawn (умер/вытеснен/ушёл)
@@ -1885,12 +2075,17 @@ void HostDiscovery(const TickContext& ctx)
         e.actorId = g_nextActorId++;
         if (e.actorId == 0) e.actorId = g_nextActorId++;
         e.model = GetModelOf(handle);
+        e.kind = DetectActorKind(handle);
         e.lastSeenTick = tick;
         // E2c: нативный outfit (если есть) или перебор кандидатов позже.
+        // E3c: животных не сканируем (kind!=human -> resolver пропускает).
         e.metaOutfit = GetMetaOutfit(handle);
-        e.outfitState = e.metaOutfit ? 2u : 0u;
+        e.outfitState = (e.kind == net::kActorKindHuman)
+                            ? (e.metaOutfit ? 2u : 0u)
+                            : 2u;
         g_roster[handle] = e;
-        newSpawns.push_back(BuildSpawn(handle, e.actorId, e.metaOutfit));
+        newSpawns.push_back(BuildSpawn(handle, e.actorId, e.metaOutfit,
+                                       e.kind));
     }
 
     // 5) спавн-батч: новые акторы ИЛИ heartbeat (join/resync/20-).
@@ -1906,7 +2101,8 @@ void HostDiscovery(const TickContext& ctx)
             {
                 if (!DoesExist(kv.first)) continue;
                 out.push_back(BuildSpawn(kv.first, kv.second.actorId,
-                                         kv.second.metaOutfit));
+                                         kv.second.metaOutfit,
+                                         kv.second.kind));
             }
             // E2c-b: heartbeat/join/resync — переслать asset/tint всем.
             for (auto& kv : g_roster)
@@ -1976,6 +2172,7 @@ void ProcessHostOutfitResolution(unsigned int tick)
     for (const auto& kv : g_roster)
     {
         const RosterEntry& e = kv.second;
+        if (e.kind != net::kActorKindHuman) continue; // E3c: animals без резолва
         if (e.metaOutfit != 0 || e.outfitState == 3) continue;
         order.push_back(kv.first);
     }
@@ -1995,6 +2192,7 @@ void ProcessHostOutfitResolution(unsigned int tick)
         auto it = g_roster.find(handle);
         if (it == g_roster.end()) continue;
         RosterEntry& e = it->second;
+        if (e.kind != net::kActorKindHuman) continue;
         if (e.metaOutfit != 0 || e.outfitState == 3) continue;
 
         const uint32_t* hashes = nullptr;
@@ -2063,6 +2261,8 @@ void ProcessHostAppearanceCapture(unsigned int tick)
         if (it == g_roster.end())
             continue;
         RosterEntry& e = it->second;
+        if (e.kind != net::kActorKindHuman)
+            continue; // E3c: asset capture только для людей
         const bool due =
             e.lastAppearanceCaptureTick == 0 ||
             (tick - e.lastAppearanceCaptureTick) >=
@@ -2208,6 +2408,7 @@ struct Proxy
     uint32_t epoch = 0;
     unsigned int handle = 0;
     unsigned int model = 0;
+    uint8_t kind = 0;        // E3c: 0 human, 1 animal, 2 horse
     uint32_t metaOutfit = 0; // E2a: внешность (0 = random variation)
     float tx = 0.f, ty = 0.f, tz = 0.f, heading = 0.f;
     uint8_t moveState = 0;
@@ -2541,6 +2742,7 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     p.epoch = g_guestEpoch;
     p.handle = handle;
     p.model = s.model;
+    p.kind = s.kind; // E3c: 0 human, 1 animal, 2 horse
     p.metaOutfit = s.metaOutfit;
     p.tx = s.x; p.ty = s.y; p.tz = z;
     p.heading = s.heading;
@@ -2556,6 +2758,7 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     p.appearanceState = 0; // E2a: запрос наряда сделает GuestTick (бюджет)
     // E2c-b (v16): asset/tint мог прийти ДО создания прокси — применить сразу
     // после CREATE_PED; assets приоритетнее metaOutfit (E2a не запускаем).
+    if (p.kind == net::kActorKindHuman)
     {
         auto pa = g_pendingAppearanceAssets.find(s.actorId);
         if (pa != g_pendingAppearanceAssets.end())
@@ -2652,7 +2855,11 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     g_handleByActor[handle] = p.actorId;
     g_proxies[p.actorId] = p;
     ++g_perfGuestSpawns;
-    LogSpawn(p.actorId, p.model, static_cast<unsigned int>(g_proxies.size()));
+    if (p.kind == net::kActorKindHuman)
+        LogSpawn(p.actorId, p.model,
+                 static_cast<unsigned int>(g_proxies.size()));
+    else
+        LogAnimalSpawn(p.actorId, p.kind, p.model);
     return true;
 }
 
@@ -2747,6 +2954,8 @@ void ProcessGuestAppearanceAssets(unsigned int tick)
     for (auto& kv : g_proxies)
     {
         Proxy& p = kv.second;
+        if (p.kind != net::kActorKindHuman)
+            continue; // E3c: assets не применяем для животных
         if (!p.appearanceAssetsApplyNeeded)
             continue;
         if (!p.handle || !DoesExist(p.handle) || p.dead ||
@@ -3323,7 +3532,10 @@ void ApplyProxyDeath(Proxy& p)
     p.firePhase = 0;
     p.fireShotWorked = false;
     p.deathApplied = true;
-    LogDeath(p.actorId);
+    if (p.kind == net::kActorKindHuman)
+        LogDeath(p.actorId);
+    else
+        LogAnimalDeath(p.actorId);
 }
 
 // E3a: оживление (dead-флаг снят): resurrect + health max + invincible,
@@ -3430,6 +3642,8 @@ void ProcessActorScenarios(unsigned int tick)
     for (auto& kv : g_proxies)
     {
         Proxy& p = kv.second;
+        if (p.kind != net::kActorKindHuman)
+            continue; // E3c: животные без сценариев
         if (!p.handle || !DoesExist(p.handle))
             continue;
         if (p.dead)
@@ -3630,6 +3844,8 @@ void ProcessActorWeapons(unsigned int tick)
         Proxy& p = kv.second;
         if (!p.handle || !DoesExist(p.handle))
             continue;
+        if (p.kind != net::kActorKindHuman)
+            continue; // E3c: у животных нет оружия/боя
         if (p.dead || p.mounted || p.scenarioFlag)
         {
             // Труп/седло/поза — никаких боевых задач и латчей.
@@ -4351,6 +4567,8 @@ void GuestTick(const TickContext& ctx)
                 continue;
             }
             Proxy& p = it->second;
+            if (p.kind != net::kActorKindHuman)
+                continue; // E3c: animals assets не нужны
             if (p.outfitRequest)
             {
                 ReleaseMetaPedOutfitRequest(p.outfitRequest);
@@ -4439,7 +4657,12 @@ void GuestTick(const TickContext& ctx)
             if (p.dead && !p.deathApplied)
                 ApplyProxyDeath(p);
             else if (!p.dead && p.deathApplied)
-                ApplyProxyRevive(p);
+            {
+                if (p.kind == net::kActorKindHuman)
+                    ApplyProxyRevive(p);
+                else
+                    p.dead = true; // E3c: животных не оживляем — остаётся труп
+            }
             // E2b: состояние всадника из кадров хоста (spawn мог прийти без
             // лошади/fake-host мог пересесть) — reseat/переход в пеший режим.
             const bool frameMounted =
@@ -4565,9 +4788,20 @@ void GuestTick(const TickContext& ctx)
     if (tick - g_lastSummaryLogTick >= kSummaryEveryTicks)
     {
         g_lastSummaryLogTick = tick;
-        sh_log::Write("actor: proxies=%u appliedFrames=%u timeouts=%u\n",
-                      static_cast<unsigned int>(g_proxies.size()),
-                      g_appliedFrames, g_timeouts);
+        unsigned int animals = 0, horses = 0, corpses = 0;
+        for (const auto& kv : g_proxies)
+        {
+            const Proxy& p = kv.second;
+            if (p.kind == net::kActorKindHuman) continue;
+            ++animals;
+            if (p.kind == 2u) ++horses;
+            if (p.dead) ++corpses;
+        }
+        sh_log::Write(
+            "actor: proxies=%u appliedFrames=%u timeouts=%u "
+            "animals=%u horses=%u corpses=%u\n",
+            static_cast<unsigned int>(g_proxies.size()), g_appliedFrames,
+            g_timeouts, animals, horses, corpses);
         g_appliedFrames = 0;
         g_timeouts = 0;
         // E2a.2: motion issued/reissue/gait_restart + err_p95 — только при

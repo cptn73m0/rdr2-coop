@@ -323,6 +323,13 @@ constexpr unsigned long long GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_
 // тип педа. Только чтение; используются actor_sync probe (npc_debug=1).
 constexpr unsigned long long _IS_META_PED_OUTFIT_EQUIPPED     = 0x98082246107A6ACFull;
 constexpr unsigned long long IS_PED_HUMAN                     = 0xB980061DA992779Dull;
+// E3c: определение животных/птиц/рыб и лошадиных моделей (kind 1/2).
+constexpr unsigned long long _IS_THIS_MODEL_A_HORSE     = 0x772A1969F649E902ull;
+constexpr unsigned long long _GET_IS_BIRD               = 0xC346A546612C49A9ull;
+constexpr unsigned long long _IS_META_PED_FISH          = 0x118D476A6F1A13F1ull;
+// E3c: только бесхозные лошади (без всадника) и не лошади игроков.
+constexpr unsigned long long _GET_RIDER_OF_MOUNT             = 0xB676EFDA03DADA52ull;
+constexpr unsigned long long _IS_ANIMAL_CONTROLLED_BY_A_PLAYER = 0x0E2F43516F998269ull;
 constexpr unsigned long long IS_PED_A_PLAYER                  = 0x12534C348C6CB68Bull;
 constexpr unsigned long long GET_PED_TYPE                     = 0xFF059E1E4C01E63Cull;
 constexpr unsigned long long _GET_SCENARIO_POINT_TYPE_PED_IS_USING = 0x2D0571BB55879DA2ull;

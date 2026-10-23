@@ -67,6 +67,16 @@ MSG_ACTOR_OUTFIT = 0x1C
 MSG_ACTOR_RESYNC = 0x1D
 
 K_MAX_ACTORS = 12
+K_ACTOR_KIND_HUMAN = 0
+K_ACTOR_KIND_ANIMAL = 1
+K_ACTOR_KIND_HORSE = 2
+# E3c: ground animals only (no fish/birds); some E3c task names differ from the
+# actual Peds.json entries (A_C_WOLF_01 -> A_C_WOLF, A_C_BISON_01 -> A_C_BUFFALO_01).
+DEFAULT_ANIMAL_NAMES = (
+    "A_C_DEER_01", "A_C_BOAR_01", "A_C_WOLF", "A_C_BUFFALO_01",
+    "A_C_PRONGHORN_01", "A_C_ELK_01", "A_C_COYOTE_01", "A_C_FOX_01",
+    "A_C_RABBIT_01", "A_C_BUCK_01", "A_C_MOOSE_01",
+)
 K_MAX_PAYLOAD = 64 * 1024
 ACTOR_SPAWN_SIZE = 64
 ACTOR_FRAME_SIZE = 32
@@ -334,10 +344,10 @@ def pack_actor_spawn(actor_id: int, epoch: int, model: int,
                      health: int = 200, move_style: int = 0,
                      meta_outfit: int = 0, flags: int = 0,
                      mount_model: int = 0, scenario_hash: int = 0,
-                     weapon_hash: int = 0) -> bytes:
+                     weapon_hash: int = 0, kind: int = K_ACTOR_KIND_HUMAN) -> bytes:
     return struct.pack(
         "<IHBBIIIIIffffBBBBhhhHII",
-        actor_id, epoch & 0xFFFF, 0, flags & 0xFF,  # actorId/epoch/kind/flags
+        actor_id, epoch & 0xFFFF, kind & 0xFF, flags & 0xFF,  # actorId/epoch/kind/flags
         model & 0xFFFFFFFF, meta_outfit & 0xFFFFFFFF,
         0, weapon_hash & 0xFFFFFFFF,              # mountActorId, weaponHash
         scenario_hash & 0xFFFFFFFF,              # scenarioHash
@@ -442,19 +452,23 @@ def validate_spawn_batch(payload: bytes):
     for i in range(count):
         rec = payload[ACTOR_SPAWN_BATCH_HEADER + i * ACTOR_SPAWN_SIZE:
                       ACTOR_SPAWN_BATCH_HEADER + (i + 1) * ACTOR_SPAWN_SIZE]
-        (actor_id, _epoch16, _kind, flags, model, meta, _mount, weapon,
+        (actor_id, _epoch16, kind, flags, model, meta, _mount, weapon,
          scenario, x, y, z, heading, health, move_style, _phase, _pad,
          _vx, _vy, _vz, _pad2, reserved, _res2) = struct.unpack_from(
             "<IHBBIIIIIffffBBBBhhhHII", rec, 0)
         if actor_id == 0:
             raise ValueError(f"spawn record #{i}: actorId=0")
+        if kind not in (K_ACTOR_KIND_HUMAN, K_ACTOR_KIND_ANIMAL,
+                        K_ACTOR_KIND_HORSE):
+            raise ValueError(f"spawn record #{i}: unknown kind={kind}")
         if actor_id in seen:
             raise ValueError(f"spawn batch duplicate actorId={actor_id}")
         seen.add(actor_id)
         if not all(is_finite_coord(v) for v in (x, y, z, heading)):
             raise ValueError(f"spawn actorId={actor_id}: non-finite coords")
         records.append({
-            "actorId": actor_id, "model": model, "metaOutfit": meta,
+            "actorId": actor_id, "kind": kind, "model": model,
+            "metaOutfit": meta,
             "x": x, "y": y, "z": z,
             "heading": heading, "health": health, "moveStyle": move_style,
             "flags": flags, "mountModel": reserved,
@@ -657,6 +671,57 @@ def load_scenario_hashes(path: Path, wanted: int):
     return fallback, warning
 
 
+def _peds_name_map(peds_json: Path):
+    if not peds_json.is_file():
+        raise RuntimeError(f"peds hash DB not found: {peds_json}")
+    try:
+        data = json.loads(peds_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read {peds_json}: {exc}") from exc
+    by_name = {}
+    for key, name in data.items():
+        try:
+            model = int(key) & 0xFFFFFFFF
+        except ValueError:
+            continue
+        if model:
+            by_name[str(name).upper()] = model
+    return by_name
+
+
+def load_animal_models(num: int, peds_json: Path):
+    """E3c: N ground animals (kind=1); curated list, no fish/birds."""
+    if num <= 0:
+        return [], []
+    by_name = _peds_name_map(peds_json)
+    found = [(name, by_name[name]) for name in DEFAULT_ANIMAL_NAMES
+             if name in by_name]
+    if not found:
+        raise RuntimeError(f"no ground animal models in {peds_json}")
+    models = [model for _name, model in found]
+    names = [name for name, _model in found]
+    # Cycle if the requested count is larger than the curated list.
+    return ([models[i % len(models)] for i in range(num)],
+            [names[i % len(names)] for i in range(num)])
+
+
+def load_horse_models(num: int, peds_json: Path):
+    """E3c: first N A_C_HORSE_* models from Peds.json (kind=2)."""
+    if num <= 0:
+        return [], []
+    by_name = _peds_name_map(peds_json)
+    horse_names = sorted(name for name in by_name
+                         if name.startswith("A_C_HORSE_") and
+                         not name.startswith("A_C_HORSEMULE"))
+    if not horse_names:
+        raise RuntimeError(f"no A_C_HORSE_* models in {peds_json}")
+    selected = horse_names[:num]
+    if not selected:
+        raise RuntimeError(f"no A_C_HORSE_* models in {peds_json}")
+    return ([by_name[name] for name in selected],
+            list(selected))
+
+
 def load_outfit_pairs(path: Path):
     """Parse `probe: model=0x... metaOutfit=0x...` lines -> [(model, meta), ...].
 
@@ -696,8 +761,11 @@ class Actor:
                  direction: float = 0.0, gait: float = 1.0,
                  mounted: bool = False, mount_model: int = 0,
                  scenario: bool = False, scenario_hash: int = 0,
-                 scenario_name: str = "", weapon_hash: int = 0):
+                 scenario_name: str = "", weapon_hash: int = 0,
+                 kind: int = K_ACTOR_KIND_HUMAN, model_name: str = ""):
         self.actor_id = actor_id
+        self.kind = kind  # E3c: ActorSpawn.kind (0 human, 1 animal, 2 horse)
+        self.model_name = model_name
         self.model = model
         self.meta_outfit = meta_outfit
         self.center = center  # (x, y, z)
@@ -776,26 +844,62 @@ class FakeHost:
         return self.args.models[index % max(1, len(self.args.models))], 0
 
     def _new_actor(self, actor_id: int, center, spawn_time: float) -> Actor:
-        index = actor_id - 1
-        scenario = actor_id <= self.args.scenario
+        human_count = self.args.num
+        animal_count = self.args.animals
+        total = human_count + animal_count + self.args.horses
+        if actor_id <= human_count:
+            kind = K_ACTOR_KIND_HUMAN
+            index = actor_id - 1
+            local_index = index
+        elif actor_id <= human_count + animal_count:
+            kind = K_ACTOR_KIND_ANIMAL
+            index = actor_id - 1
+            local_index = actor_id - human_count - 1
+        else:
+            kind = K_ACTOR_KIND_HORSE
+            index = actor_id - 1
+            local_index = actor_id - human_count - animal_count - 1
+
+        scenario = kind == K_ACTOR_KIND_HUMAN and actor_id <= self.args.scenario
         if scenario:
             # E3a.4: spread scenario actors on a wide ring so they do not share
             # the same scenario point (the game warps to the nearest one).
             n = max(1, self.args.scenario)
-            angle = (2.0 * math.pi * index / n) if n > 1 else math.pi
+            angle = (2.0 * math.pi * local_index / n) if n > 1 else math.pi
             dist = self.args.scenario_spacing
         else:
-            num = max(1, self.args.num)
-            # Distinct spawn ring around the guest: angle 2*pi*i/num, radius 3..6 m.
-            # Every actor also moves around its OWN spawn point (a.center).
-            angle = (2.0 * math.pi * index / num) if num > 1 else math.pi
-            dist = 4.5 if num == 1 else (3.0 + 3.0 * index / (num - 1))
+            n = max(1, total)
+            # Distinct spawn ring around the guest: angle 2*pi*i/total,
+            # radius 3..6 m. Every actor moves around its own spawn point.
+            angle = (2.0 * math.pi * index / n) if n > 1 else math.pi
+            dist = 4.5 if n == 1 else (3.0 + 3.0 * index / (n - 1))
         cx = center[0] + dist * math.cos(angle)
         cy = center[1] + dist * math.sin(angle)
-        model, meta = self._model_and_meta(index)
-        motion = self._motion_for(index, self.args.pattern)
+
+        if kind == K_ACTOR_KIND_ANIMAL:
+            model = self.args.animal_models[
+                local_index % len(self.args.animal_models)]
+            animal_name = self.args.animal_names[
+                local_index % len(self.args.animal_names)]
+            motion = self.args.pattern
+            if motion == "mixed":
+                motion = "circle" if local_index % 2 == 0 else "line"
+            meta = 0
+        elif kind == K_ACTOR_KIND_HORSE:
+            model = self.args.horse_models[
+                local_index % len(self.args.horse_models)]
+            animal_name = self.args.horse_names[
+                local_index % len(self.args.horse_names)]
+            motion = self.args.pattern
+            if motion == "mixed":
+                motion = "line" if local_index % 2 == 0 else "circle"
+            meta = 0
+        else:
+            model, meta = self._model_and_meta(index)
+            animal_name = ""
+            motion = self._motion_for(index, self.args.pattern)
         gait = 0.0 if motion == "idle" else self.args.gait
-        mounted = actor_id <= self.args.mounted
+        mounted = kind == K_ACTOR_KIND_HUMAN and actor_id <= self.args.mounted
         mount_model = 0
         if mounted and self.args.mount_models:
             mount_model = self.args.mount_models[
@@ -809,18 +913,19 @@ class FakeHost:
                 scenario_name = self.args.scenario_names_list[
                     idx % len(self.args.scenario_names_list)]
         weapon_hash = 0
-        if getattr(self.args, "weapon_hashes", None):
+        if kind == K_ACTOR_KIND_HUMAN and getattr(self.args, "weapon_hashes", None):
             weapon_hash = self.args.weapon_hashes[
                 (actor_id - 1) % len(self.args.weapon_hashes)]
         return Actor(actor_id, model, meta, (cx, cy, center[2]), angle,
                      spawn_time, motion, angle, gait, mounted, mount_model,
                      scenario, scenario_hash, scenario_name,
-                     weapon_hash=weapon_hash)
+                     weapon_hash=weapon_hash, kind=kind, model_name=animal_name)
 
     def _make_actors(self, center):
         now = time.monotonic()
+        total = self.args.num + self.args.animals + self.args.horses
         return [self._new_actor(i + 1, center, now)
-                for i in range(self.args.num)]
+                for i in range(total)]
 
     # -- payload helpers ----------------------------------------------------
     def _spawn_records(self, actors):
@@ -833,7 +938,8 @@ class FakeHost:
                 flags |= K_ACTOR_FLAG_SCENARIO
             if a.dead:
                 flags |= K_ACTOR_FLAG_DEAD
-            if getattr(self.args, "combat", False):
+            if (getattr(self.args, "combat", False) and
+                    a.kind == K_ACTOR_KIND_HUMAN):
                 flags |= K_ACTOR_FLAG_COMBAT
             if a.mounted:
                 move_style = K_MOVE_STYLE_RIDE_HORSE
@@ -851,7 +957,8 @@ class FakeHost:
                 flags=flags,
                 mount_model=a.mount_model,
                 scenario_hash=a.scenario_hash,
-                weapon_hash=a.weapon_hash))
+                weapon_hash=a.weapon_hash,
+                kind=a.kind))
         return records
 
     def _send_spawn(self, actors, why: str = "") -> None:
@@ -1023,6 +1130,17 @@ class FakeHost:
             self.log.write("fakehost: models: " + ", ".join(
                 f"0x{m:08X} ({n})" for m, n in
                 zip(a.models, getattr(a, "model_names", []))))
+            animal_models = ", ".join(
+                f"0x{m:08X} ({n})" for m, n in
+                zip(getattr(a, "animal_models", []),
+                    getattr(a, "animal_names", [])))
+            horse_models = ", ".join(
+                f"0x{m:08X} ({n})" for m, n in
+                zip(getattr(a, "horse_models", []),
+                    getattr(a, "horse_names", [])))
+            self.log.write(
+                f"fakehost: animals={a.animals} horses={a.horses} "
+                f"models=animal:[{animal_models}] horse:[{horse_models}]")
             if a.outfit_warning:
                 self.log.write(f"fakehost: WARN {a.outfit_warning}")
             if a.outfit_pairs:
@@ -1340,6 +1458,13 @@ class FakeGuest:
         self.reload_frames = 0
         self.combat_frames = 0
         self.target_frames = 0
+        # E3c: kinds from ActorSpawn.kind (0 human, 1 animal, 2 horse).
+        self.actor_kinds = {}
+        self.kind_ids = {"human": set(), "animal": set(), "horse": set()}
+        self.animal_frames = 0
+        self.animal_dead_frames = 0
+        self.horse_frames = 0
+        self.horse_dead_frames = 0
         # E2c-b v16: ActorAppearance (0x1E) validation/stats.
         self.appearance_msgs = 0
         self.appearance_actors = set()
@@ -1416,6 +1541,13 @@ class FakeGuest:
             meta_outfit = rec["metaOutfit"]
             self.unique_ids.add(actor_id)
             self.known_ids.add(actor_id)
+            kind = rec["kind"]
+            kind_name = {K_ACTOR_KIND_HUMAN: "human",
+                         K_ACTOR_KIND_ANIMAL: "animal",
+                         K_ACTOR_KIND_HORSE: "horse"}.get(kind)
+            if kind_name is not None:
+                self.actor_kinds[actor_id] = kind_name
+                self.kind_ids[kind_name].add(actor_id)
             # E2c: first spawn can carry metaOutfit=0; a later heartbeat spawn
             # for the same actorId may resolve it to a hash (0 -> hash).
             if actor_id not in self.outfit_first_seen:
@@ -1514,6 +1646,16 @@ class FakeGuest:
             speed = rec["speed"]
             pad = rec["pad"]
             gait = pad / 1000.0
+            kind_name = self.actor_kinds.get(rec["actorId"])
+            is_dead = bool(rec["flags"] & K_ACTOR_FLAG_DEAD)
+            if kind_name == "animal":
+                self.animal_frames += 1
+                if is_dead:
+                    self.animal_dead_frames += 1
+            elif kind_name == "horse":
+                self.horse_frames += 1
+                if is_dead:
+                    self.horse_dead_frames += 1
             self.speed_sum += speed
             self.speed_count += 1
             self.speed_min = min(self.speed_min, speed)
@@ -1651,6 +1793,15 @@ class FakeGuest:
                 f"outfit_updates={self.outfit_updates} "
                 f"resolved_late={len(self.resolved_late_ids)}")
             self.log.write(f"fakeguest: models nonzero={self.models_nonzero}")
+            self.log.write(
+                f"fakeguest: kinds human={len(self.kind_ids['human'])} "
+                f"animal={len(self.kind_ids['animal'])} "
+                f"horse={len(self.kind_ids['horse'])}")
+            self.log.write(
+                f"fakeguest: animal_frames={self.animal_frames} "
+                f"animal_dead_frames={self.animal_dead_frames} "
+                f"horse_frames={self.horse_frames} "
+                f"horse_dead_frames={self.horse_dead_frames}")
             self.log.write(f"fakeguest: mounted={len(self.mounted_ids)}")
             self.log.write(
                 f"fakeguest: mounted reserved_ok={len(self.mounted_reserved_ok)} "
@@ -1747,7 +1898,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     host = ap.add_argument_group("host mode")
     host.add_argument("--num", type=int, default=5,
-                      help="number of human NPC actors (1..12)")
+                      help="number of human NPC actors (0..12; 0 useful with "
+                           "--animals/--horses for a pure E3c scene)")
+    host.add_argument("--animals", type=int, default=0,
+                      help="E3c: extra actors kind=1 (ground animals, no "
+                           "fish/birds) moving by --pattern")
+    host.add_argument("--horses", type=int, default=0,
+                      help="E3c: extra actors kind=2 loose horses "
+                           "(A_C_HORSE_* from Peds.json) moving by --pattern")
     host.add_argument("--pattern", choices=("circle", "line", "mixed"),
                       default="circle",
                       help="movement pattern: circle; line (4 m back/forth); "
@@ -1849,8 +2007,8 @@ def resolve_args(args):
     except ValueError:
         raise SystemExit(f"--model must be a hash (hex or decimal): {args.model!r}")
     if args.mode == "host":
-        if not 1 <= args.num <= K_MAX_ACTORS:
-            raise SystemExit(f"--num must be 1..{K_MAX_ACTORS}")
+        if not 0 <= args.num <= K_MAX_ACTORS:
+            raise SystemExit(f"--num must be 0..{K_MAX_ACTORS}")
         if args.circle_radius <= 0 or args.speed <= 0:
             raise SystemExit("--circle-radius/--speed must be > 0")
         if args.despawn_after < 0 or args.respawn_after < 0:
@@ -1869,6 +2027,21 @@ def resolve_args(args):
             args.model_names = names
         if not hasattr(args, "model_names"):
             args.model_names = []
+        if args.animals < 0 or args.horses < 0:
+            raise SystemExit("--animals/--horses must be >= 0")
+        if args.num + args.animals + args.horses > K_MAX_ACTORS:
+            raise SystemExit(
+                f"--num + --animals + --horses must be <= {K_MAX_ACTORS} "
+                f"(got {args.num}+{args.animals}+{args.horses})")
+        if args.num + args.animals + args.horses < 1:
+            raise SystemExit("need at least one actor: --num/--animals/--horses")
+        try:
+            args.animal_models, args.animal_names = load_animal_models(
+                args.animals, Path(args.peds_json))
+            args.horse_models, args.horse_names = load_horse_models(
+                args.horses, Path(args.peds_json))
+        except RuntimeError as exc:
+            raise SystemExit(str(exc))
         # E2a: optional model+metaOutfit pairs from a probe log. If none are
         # found, keep the E1 behaviour (metaOutfit=0).
         args.outfit_pairs = []

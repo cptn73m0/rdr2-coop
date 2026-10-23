@@ -2,7 +2,7 @@
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v16 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E3b/E2c (actor-репликация NPC) на
+Заменяет второй ПК при тестировании E1–E3c/E2c (actor-репликация NPC) на
 одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v16;
 игра запускается только на одном ПК.
 
@@ -378,6 +378,52 @@ fakeguest: target_frames=N
 кадров с соответствующим флагом (`drawn=4`, `aim=128`, `reload=64`,
 `combat=16`); `target_frames=N` — кадры с `targetActorId!=0` (shoot-окно).
 
+### E3c: животные и свободные лошади
+
+Протокол v16 не менялся: `ActorSpawn.kind` = **0 human, 1 animal, 2 horse**.
+Host-флаги добавляют акторов сверх `--num` (людей):
+
+- `--animals N` — N наземных животных kind=1; модели берутся из
+  `Peds.json` (A_C_DEER_01, A_C_BOAR_01, A_C_WOLF, A_C_BUFFALO_01,
+  A_C_PRONGHORN_01, A_C_ELK_01 и т.п.; **без рыб/птиц**), двигаются по
+  `--pattern`;
+- `--horses N` — N свободных лошадей kind=2, первые N `A_C_HORSE_*` из
+  `Peds.json`, двигаются по `--pattern`;
+- всего акторов `--num + --animals + --horses ≤ 12`; у животных/лошадей
+  `metaOutfit=0`, `weaponHash=0`, `scenarioHash=0`, без mounted-флагов.
+  Лог: `fakehost: animals=... horses=... models=...`.
+
+**Тест E3c (fake host → игра-гость):**
+```powershell
+# 5 людей (default) + 3 животных + 2 лошади, все двигаются
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --animals 3 --horses 2 --pattern mixed `
+  --despawn-after 0 --duration 120
+
+# только животные/лошади (без людей): --num 0
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --num 0 --animals 3 --horses 2 --pattern mixed `
+  --despawn-after 0 --duration 120
+```
+Ожидаемые строки host:
+```
+fakehost: animals=3 horses=2 models=animal:[0x... (A_C_DEER_01), ...] horse:[...]
+fakehost: spawn epoch=1 n=10
+```
+Fake guest:
+```powershell
+python tools\fake_actor_client.py --mode guest --name TestGuest --duration 120
+```
+```
+fakeguest: kinds human=5 animal=3 horse=2
+fakeguest: animal_frames=... animal_dead_frames=... horse_frames=... horse_dead_frames=...
+```
+`kinds` — уникальные actorId по `kind` из spawn-записей; `*_frames` — кадры
+этого kind; `*_dead_frames` — кадры с dead-флагом. Ожидаемо `errors=0`;
+животные/лошади двигаются по паттерну без телепортов. Для визуального теста
+запустить fake host **до** игры-гостя; гость увидит животных/лошадей рядом с
+собой (fake guest не нужен).
+
 ### E2c: поздние outfit-обновления (metaOutfit resolver)
 
 E2c: игровой хост подбирает `metaOutfit` для NPC, у которых он был 0, и
@@ -490,7 +536,9 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 | `--duration` | 300 (host) / 120 (guest) | сколько секунд работать |
 | `--outfit-wait` | 0 | guest: после первого spawn слушать ещё SEC секунд для поздних metaOutfit-обновлений (E2c) |
 | `--model 0x...` | `0x54D8BE8E` | модель ped'а для JOIN |
-| `--num` | 5 | число NPC (только host, 1..12) |
+| `--num` | 5 | число human NPC (host, 0..12; 0 = только animals/horses); сумма `num+animals+horses` ≤12 |
+| `--animals` | 0 | E3c: N животных kind=1 (наземные, без рыб/птиц), модели из Peds.json |
+| `--horses` | 0 | E3c: N свободных лошадей kind=2 (первые A_C_HORSE_*), двигаются |
 | `--pattern` | `circle` | `circle` / `line` (4 м назад-вперёд) / `mixed` (2 круга, 2 линии, остальные стоят) |
 | `--gait` | 1.0 | E2a.2 gait движущихся актёров: `1.0` walk, `2.0` run/галоп (уходит в `ActorFrame.pad=gait*1000`; idle=0) |
 | `--mounted` | 0 | E2b: сколько из `--num` акторов верхом (первые N; 0..num); flags bit0 + `ActorSpawn.reserved=mount model` |
