@@ -64,6 +64,7 @@ DEFAULT_LOG = Path(__file__).resolve().with_name("fake_actor_client.log")
 DEFAULT_PROBE_LOG = Path(r"E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log")
 PROBE_OUTFIT_RE = re.compile(
     r"probe:\s*model=0x([0-9A-Fa-f]+)\s+metaOutfit=0x([0-9A-Fa-f]+)")
+SCENARIO_HASH_RE = re.compile(r"dynScenario=0x([0-9A-Fa-f]+)")
 
 HUMAN_PREFIXES = ("A_M_M_", "A_M_O_", "G_M_M_", "S_M_M_")
 HORSE_PREFIX = "A_C_HORSE_"
@@ -75,7 +76,13 @@ DEFAULT_MOUNT_MODELS = [
     3266891371,  # A_C_HORSE_APPALOOSA_BLACKSNOWFLAKE
 ]
 K_ACTOR_FLAG_MOUNTED = 1 << 0
+K_ACTOR_FLAG_DEAD = 1 << 1
+K_ACTOR_FLAG_SCENARIO = 1 << 5
 K_MOVE_STYLE_RIDE_HORSE = 3
+# E3a fallback scenario hashes (dynScenario values seen in probe logs).
+FALLBACK_SCENARIO_HASHES = [
+    0x62A4554D, 0xF6CD006D, 0x4BF802FE, 0x85AE7E5D, 0x189292F9,
+]
 # Prefer ordinary town/ranch humans for a believable test crowd; avoid corpse/
 # undead variants that are technically human peds but look broken as NPCs.
 MODEL_GOOD_WORDS = ("TOWNFOLK", "RANCHER", "FARMER", "LABOURER", "LIVERY",
@@ -269,11 +276,12 @@ def pack_actor_spawn(actor_id: int, epoch: int, model: int,
                      x: float, y: float, z: float, heading: float,
                      health: int = 200, move_style: int = 0,
                      meta_outfit: int = 0, flags: int = 0,
-                     mount_model: int = 0) -> bytes:
+                     mount_model: int = 0, scenario_hash: int = 0) -> bytes:
     return struct.pack(
         "<IHBBIIIIIffffBBBBhhhHII",
         actor_id, epoch & 0xFFFF, 0, flags & 0xFF,  # actorId/epoch/kind/flags
-        model & 0xFFFFFFFF, meta_outfit & 0xFFFFFFFF, 0, 0, 0,  # model, meta, ...
+        model & 0xFFFFFFFF, meta_outfit & 0xFFFFFFFF, 0, 0,
+        scenario_hash & 0xFFFFFFFF,              # model, meta, mount, weapon, scenario
         float(x), float(y), float(z), float(heading),
         health & 0xFF, move_style & 0xFF, 0, 0,  # health, moveStyle, phase, pad
         0, 0, 0, 0,                              # vx, vy, vz, pad2
@@ -350,7 +358,7 @@ def validate_spawn_batch(payload: bytes):
         rec = payload[ACTOR_SPAWN_BATCH_HEADER + i * ACTOR_SPAWN_SIZE:
                       ACTOR_SPAWN_BATCH_HEADER + (i + 1) * ACTOR_SPAWN_SIZE]
         (actor_id, _epoch16, _kind, flags, model, meta, _mount, _weapon,
-         _scenario, x, y, z, heading, health, move_style, _phase, _pad,
+         scenario, x, y, z, heading, health, move_style, _phase, _pad,
          _vx, _vy, _vz, _pad2, reserved, _res2) = struct.unpack_from(
             "<IHBBIIIIIffffBBBBhhhHII", rec, 0)
         if actor_id == 0:
@@ -365,6 +373,7 @@ def validate_spawn_batch(payload: bytes):
             "x": x, "y": y, "z": z,
             "heading": heading, "health": health, "moveStyle": move_style,
             "flags": flags, "mountModel": reserved,
+            "scenarioHash": scenario,
         })
     return epoch, records
 
@@ -386,7 +395,7 @@ def validate_frames(payload: bytes):
     for i in range(count):
         rec = payload[ACTOR_FRAMES_HEADER + i * ACTOR_FRAME_SIZE:
                       ACTOR_FRAMES_HEADER + (i + 1) * ACTOR_FRAME_SIZE]
-        (actor_id, _flags, anim_state, speed, x, y, z, heading,
+        (actor_id, flags, anim_state, speed, x, y, z, heading,
          _target, rec_seq, pad) = struct.unpack_from("<IHBBffffIHH", rec, 0)
         if actor_id == 0:
             raise ValueError(f"frame #{i}: actorId=0")
@@ -395,7 +404,8 @@ def validate_frames(payload: bytes):
         seen.add(actor_id)
         if not all(is_finite_coord(v) for v in (x, y, z, heading)):
             raise ValueError(f"frame actorId={actor_id}: non-finite coords")
-        records.append({"actorId": actor_id, "animState": anim_state,
+        records.append({"actorId": actor_id, "flags": flags,
+                        "animState": anim_state,
                         "speed": speed, "pad": pad, "seq": rec_seq})
     return epoch, seq, records
 
@@ -493,6 +503,38 @@ def load_mount_models(num: int, peds_json: Path):
     return [m for _n, m in selected], [n for n, _m in selected]
 
 
+def load_scenario_hashes(path: Path, wanted: int):
+    """Parse unique non-zero `dynScenario=0x...` hashes from a probe log (E3a).
+
+    Falls back to known in-game scenario hashes if the log is missing or has no
+    scenario records.
+    """
+    if wanted <= 0:
+        return [], None
+    hashes = []
+    seen = set()
+    if path.is_file():
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    match = SCENARIO_HASH_RE.search(line)
+                    if not match:
+                        continue
+                    value = int(match.group(1), 16) & 0xFFFFFFFF
+                    if value == 0 or value in seen:
+                        continue
+                    seen.add(value)
+                    hashes.append(value)
+        except OSError:
+            hashes = []
+    if hashes:
+        return hashes, None
+    fallback = list(FALLBACK_SCENARIO_HASHES)
+    warning = (f"no dynScenario hashes in {path}; using fallback "
+               f"{len(fallback)} scenario hash(es)")
+    return fallback, warning
+
+
 def load_outfit_pairs(path: Path):
     """Parse `probe: model=0x... metaOutfit=0x...` lines -> [(model, meta), ...].
 
@@ -530,7 +572,8 @@ class Actor:
     def __init__(self, actor_id: int, model: int, meta_outfit: int, center,
                  phase: float, spawn_time: float, motion: str = "circle",
                  direction: float = 0.0, gait: float = 1.0,
-                 mounted: bool = False, mount_model: int = 0):
+                 mounted: bool = False, mount_model: int = 0,
+                 scenario: bool = False, scenario_hash: int = 0):
         self.actor_id = actor_id
         self.model = model
         self.meta_outfit = meta_outfit
@@ -542,6 +585,11 @@ class Actor:
         self.gait = gait  # E2a.2 gait ratio: 0 idle, 1 walk, 2 run
         self.mounted = mounted  # E2b: actor rides a horse
         self.mount_model = mount_model  # E2b: ActorSpawn.reserved
+        self.scenario = scenario  # E3a: in scenario (sits/works in place)
+        self.scenario_hash = scenario_hash  # E3a: ActorSpawn.scenarioHash
+        self.dead = False  # E3a: dead flag/health=0 until revive
+        self.dead_pos = None  # fixed corpse position
+        self.dead_heading = 0.0
 
 
 class FakeHost:
@@ -562,6 +610,8 @@ class FakeHost:
         self.spawn_time = None
         self.next_despawn = None
         self.next_respawn = None
+        self.next_death = None
+        self.next_revive = None
         self.next_frame_at = None
         self.next_log_at = None
         self.next_ping_at = 0.0
@@ -603,8 +653,14 @@ class FakeHost:
         if mounted and self.args.mount_models:
             mount_model = self.args.mount_models[
                 (actor_id - 1) % len(self.args.mount_models)]
+        scenario = actor_id <= self.args.scenario
+        scenario_hash = 0
+        if scenario and self.args.scenario_hashes:
+            scenario_hash = self.args.scenario_hashes[
+                (actor_id - 1) % len(self.args.scenario_hashes)]
         return Actor(actor_id, model, meta, (cx, cy, center[2]), angle,
-                     spawn_time, motion, angle, gait, mounted, mount_model)
+                     spawn_time, motion, angle, gait, mounted, mount_model,
+                     scenario, scenario_hash)
 
     def _make_actors(self, center):
         now = time.monotonic()
@@ -613,16 +669,32 @@ class FakeHost:
 
     # -- payload helpers ----------------------------------------------------
     def _spawn_records(self, actors):
-        return [pack_actor_spawn(
-                    a.actor_id, self.epoch, a.model,
-                    a.center[0], a.center[1], a.center[2],
-                    math.degrees(a.phase) % 360.0,
-                    move_style=(K_MOVE_STYLE_RIDE_HORSE if a.mounted
-                                else move_style_for_gait(a.gait)),
-                    meta_outfit=a.meta_outfit,
-                    flags=(K_ACTOR_FLAG_MOUNTED if a.mounted else 0),
-                    mount_model=a.mount_model)
-                for a in actors]
+        records = []
+        for a in actors:
+            flags = 0
+            if a.mounted:
+                flags |= K_ACTOR_FLAG_MOUNTED
+            if a.scenario:
+                flags |= K_ACTOR_FLAG_SCENARIO
+            if a.dead:
+                flags |= K_ACTOR_FLAG_DEAD
+            if a.mounted:
+                move_style = K_MOVE_STYLE_RIDE_HORSE
+            elif a.scenario or a.dead:
+                move_style = 0
+            else:
+                move_style = move_style_for_gait(a.gait)
+            records.append(pack_actor_spawn(
+                a.actor_id, self.epoch, a.model,
+                a.center[0], a.center[1], a.center[2],
+                math.degrees(a.phase) % 360.0,
+                health=0 if a.dead else 200,
+                move_style=move_style,
+                meta_outfit=a.meta_outfit,
+                flags=flags,
+                mount_model=a.mount_model,
+                scenario_hash=a.scenario_hash))
+        return records
 
     def _send_spawn(self, actors, why: str = "") -> None:
         if not actors:
@@ -632,51 +704,67 @@ class FakeHost:
             self.log.write(
                 f"fakehost: outfits pairs={len(getattr(self.args, 'outfit_pairs', []))} "
                 f"pattern={self.args.pattern} gait={self.args.gait:.1f} "
-                f"mounted={self.args.mounted}/{self.args.num}")
+                f"mounted={self.args.mounted}/{self.args.num} "
+                f"scenario={self.args.scenario}/{self.args.num}")
         payload = pack_spawn_batch(self.epoch, self._spawn_records(actors))
         send_frame(self.sock, MSG_ACTOR_SPAWN_BATCH, payload)
         self.spawns_sent += len(actors)
         self.log.write(f"fakehost: spawn epoch={self.epoch} n={len(actors)}"
                        + (f" ({why})" if why else ""))
 
+    def _motion_pos(self, a: Actor, now: float):
+        """Current position/heading of a walking actor (used for death freeze)."""
+        t = now - a.spawn_time
+        move_speed = (self.args.speed * a.gait) if a.gait > 0 else 0.0
+        if a.motion == "idle":
+            return (a.center[0], a.center[1],
+                    math.degrees(a.phase) % 360.0)
+        if a.motion == "line":
+            traveled = (t * move_speed) % 8.0
+            if traveled < 4.0:
+                offset = -2.0 + traveled
+                forward = True
+            else:
+                offset = 2.0 - (traveled - 4.0)
+                forward = False
+            x = a.center[0] + offset * math.cos(a.direction)
+            y = a.center[1] + offset * math.sin(a.direction)
+            heading = (math.degrees(a.direction) +
+                       (0.0 if forward else 180.0)) % 360.0
+            return x, y, heading
+        omega = move_speed / max(0.1, self.args.circle_radius)
+        theta = a.phase + t * omega
+        x = a.center[0] + self.args.circle_radius * math.cos(theta)
+        y = a.center[1] + self.args.circle_radius * math.sin(theta)
+        return x, y, (math.degrees(theta) + 90.0) % 360.0
+
     def _frames_payload(self):
         now = time.monotonic()
         records = []
         for a in self.actors:
-            t = now - a.spawn_time
-            # E2a.2: actual movement speed (m/s) and gait ratio for this actor.
-            # speed_u8 is on the 0..8 m/s scale, pad is gait*1000.
+            flags = 0
+            if a.mounted:
+                flags |= K_ACTOR_FLAG_MOUNTED
+            if a.scenario:
+                flags |= K_ACTOR_FLAG_SCENARIO
             move_speed = (self.args.speed * a.gait) if a.gait > 0 else 0.0
             speed_u8 = encode_speed_u8(move_speed)
             gait_pad = encode_gait_pad(a.gait)
-            # E2b: mounted actors keep RideHorse animState and mounted flag;
-            # position/heading logic is the same as for walking actors.
-            anim_state = K_MOVE_STYLE_RIDE_HORSE if a.mounted \
-                else move_style_for_gait(a.gait)
-            flags = K_ACTOR_FLAG_MOUNTED if a.mounted else 0
-            if a.motion == "idle":
+            if a.dead:
+                # E3a: corpse stays fixed, no movement/animation.
+                x, y = a.dead_pos[0], a.dead_pos[1]
+                heading = a.dead_heading
+                anim_state, speed_u8, gait_pad = 0, 0, 0
+                flags |= K_ACTOR_FLAG_DEAD
+            elif a.scenario:
+                # E3a: scenario actors stand/sit in place (idle).
                 x, y = a.center[0], a.center[1]
                 heading = math.degrees(a.phase) % 360.0
-                speed_u8, gait_pad = 0, 0
-            elif a.motion == "line":
-                # Walk/run 4 m forward and back along a.direction.
-                traveled = (t * move_speed) % 8.0
-                if traveled < 4.0:
-                    offset = -2.0 + traveled
-                    forward = True
-                else:
-                    offset = 2.0 - (traveled - 4.0)
-                    forward = False
-                x = a.center[0] + offset * math.cos(a.direction)
-                y = a.center[1] + offset * math.sin(a.direction)
-                heading = (math.degrees(a.direction) +
-                           (0.0 if forward else 180.0)) % 360.0
+                anim_state, speed_u8, gait_pad = 0, 0, 0
             else:
-                omega = move_speed / max(0.1, self.args.circle_radius)
-                theta = a.phase + t * omega
-                x = a.center[0] + self.args.circle_radius * math.cos(theta)
-                y = a.center[1] + self.args.circle_radius * math.sin(theta)
-                heading = (math.degrees(theta) + 90.0) % 360.0
+                x, y, heading = self._motion_pos(a, now)
+                anim_state = (K_MOVE_STYLE_RIDE_HORSE if a.mounted
+                              else move_style_for_gait(a.gait))
             records.append(pack_actor_frame(a.actor_id, x, y, a.center[2],
                                             heading, self.frame_seq,
                                             anim_state=anim_state,
@@ -722,6 +810,15 @@ class FakeHost:
                               zip(a.mount_models, a.mount_model_names)))
             else:
                 self.log.write("fakehost: mounted=0")
+            if a.scenario:
+                assigned = a.scenario_hashes[:a.scenario]
+                self.log.write(
+                    f"fakehost: scenario={a.scenario}/{a.num} hashes=" +
+                    ", ".join(f"0x{h:08X}" for h in assigned))
+                if a.scenario_warning:
+                    self.log.write(f"fakehost: WARN {a.scenario_warning}")
+            else:
+                self.log.write("fakehost: scenario=0")
             start = time.monotonic()
             deadline = start + a.duration
             reader = FrameReader()
@@ -803,7 +900,11 @@ class FakeHost:
         self.actors = self._make_actors(self.guest_pos)
         self.spawned = True
         self.spawn_time = now
-        self.next_despawn = now + self.args.despawn_after
+        self.next_despawn = (now + self.args.despawn_after
+                             if self.args.despawn_after > 0 else None)
+        self.next_death = (now + self.args.dead_after
+                           if self.args.dead_after > 0 else None)
+        self.next_revive = None
         self.next_frame_at = now
         self.next_log_at = now + 1.0
         self.frames_sent = 0
@@ -813,7 +914,40 @@ class FakeHost:
 
     def _update_timers(self, now: float) -> None:
         a = self.args
-        # Despawn actor 5 once: it disappears from subsequent frame batches.
+        # E3a: one actor (last id) dies; dead flag + health=0, frames fixed.
+        if self.next_death is not None and now >= self.next_death:
+            self.next_death = None
+            target = next((x for x in self.actors if x.actor_id == a.num), None)
+            if target is not None and not target.dead:
+                if target.scenario:
+                    pos = (target.center[0], target.center[1],
+                           math.degrees(target.phase) % 360.0)
+                else:
+                    pos = self._motion_pos(target, now)
+                target.dead = True
+                target.dead_pos = (pos[0], pos[1], target.center[2])
+                target.dead_heading = pos[2]
+                try:
+                    self._send_spawn([target], "dead")
+                except OSError as exc:
+                    self.log.write(f"fakehost: death spawn failed: {exc}")
+                self.log.write(f"fakehost: death id={target.actor_id}")
+                if a.revive_after > 0:
+                    self.next_revive = now + a.revive_after
+        # E3a: revive the same actor: dead=0, health 200, normal frames resume.
+        if self.next_revive is not None and now >= self.next_revive:
+            self.next_revive = None
+            target = next((x for x in self.actors if x.actor_id == a.num), None)
+            if target is not None and target.dead:
+                target.dead = False
+                target.dead_pos = None
+                target.spawn_time = now
+                try:
+                    self._send_spawn([target], "revive")
+                except OSError as exc:
+                    self.log.write(f"fakehost: revive spawn failed: {exc}")
+                self.log.write(f"fakehost: revive id={target.actor_id}")
+        # Despawn actor 5 once (0 = disabled): it disappears from frame batches.
         if self.next_despawn is not None and now >= self.next_despawn:
             self.next_despawn = None
             target = next((x for x in self.actors if x.actor_id == 5), None)
@@ -870,6 +1004,11 @@ class FakeGuest:
         self.mounted_ids = set()
         self.mounted_reserved_ok = set()
         self.mounted_reserved_zero = set()
+        # E3a: scenario actors (flags bit5 + scenarioHash) and dead frames.
+        self.scenario_ids = set()
+        self.scenario_zero = set()
+        self.dead_frames = 0
+        self.dead_ids = set()
         # E2a.2: speed/gait statistics from ActorFrame (speed u8 on 0..8 m/s
         # scale, pad = gait*1000).
         self.speed_min = 255
@@ -942,6 +1081,16 @@ class FakeGuest:
                     self.mounted_reserved_zero.add(actor_id)
                     self._error(f"ActorSpawnBatch: mounted actorId={actor_id} "
                                 f"has reserved(mountModel)=0")
+            # E3a: scenarioHash != 0 is what the fake guest reports; a scenario
+            # flag without a hash is an invalid spawn.
+            if rec["scenarioHash"] != 0:
+                self.scenario_ids.add(rec["actorId"])
+            elif rec["flags"] & K_ACTOR_FLAG_SCENARIO:
+                actor_id = rec["actorId"]
+                if actor_id not in self.scenario_zero:
+                    self.scenario_zero.add(actor_id)
+                    self._error(f"ActorSpawnBatch: scenario actorId={actor_id} "
+                                f"has scenarioHash=0")
         self.log.write(f"fakeguest: spawn batch epoch={epoch} n={len(records)} "
                        f"ids={[r['actorId'] for r in records]}")
 
@@ -984,6 +1133,9 @@ class FakeGuest:
             self.gait_max = max(self.gait_max, gait)
             if pad == 0:
                 self.pad_zero += 1
+            if rec["flags"] & K_ACTOR_FLAG_DEAD:
+                self.dead_frames += 1
+                self.dead_ids.add(rec["actorId"])
         unknown = [r["actorId"] for r in records
                    if r["actorId"] not in self.known_ids]
         if unknown and self.frames_msgs <= 5:
@@ -1059,6 +1211,9 @@ class FakeGuest:
             self.log.write(
                 f"fakeguest: mounted reserved_ok={len(self.mounted_reserved_ok)} "
                 f"reserved_zero={len(self.mounted_reserved_zero)}")
+            self.log.write(
+                f"fakeguest: scenarios={len(self.scenario_ids)} "
+                f"dead_frames={self.dead_frames}")
             speed_avg = (self.speed_sum / self.speed_count
                          if self.speed_count else 0.0)
             gait_avg = (self.gait_sum / self.gait_count
@@ -1135,6 +1290,20 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--mount-model", default=None,
                       help="E2b: explicit horse model hash for all mounted "
                            "actors (default: A_C_HORSE_* from Peds.json)")
+    host.add_argument("--scenario", type=int, default=0,
+                      help="E3a: how many of --num actors are in a scenario "
+                           "(first N; idle, scenario flag + scenarioHash)")
+    host.add_argument("--scenario-from-log", default=str(DEFAULT_PROBE_LOG),
+                      help="E3a: parse unique dynScenario=0x... hashes from "
+                           "this probe log (empty string disables)")
+    host.add_argument("--scenario-hash", default=None,
+                      help="E3a: explicit scenario hash for all scenario actors")
+    host.add_argument("--dead-after", type=float, default=0.0,
+                      help="E3a: seconds after first spawn to mark the last "
+                           "actor dead (0 = off)")
+    host.add_argument("--revive-after", type=float, default=10.0,
+                      help="E3a: seconds after death to revive that actor "
+                           "(0 = stay dead)")
     host.add_argument("--outfits-from-log", default=str(DEFAULT_PROBE_LOG),
                       help="parse `probe: model=... metaOutfit=...` pairs from "
                            "the game log and send them in ActorSpawn.metaOutfit "
@@ -1146,7 +1315,8 @@ def build_parser() -> argparse.ArgumentParser:
                            "(actual = speed*gait; converted to ActorFrame.speed "
                            "on the 0..8 m/s scale)")
     host.add_argument("--despawn-after", type=float, default=30.0,
-                      help="seconds from spawn to ActorDespawn id=5")
+                      help="seconds from spawn to ActorDespawn id=5 "
+                           "(0 = disabled)")
     host.add_argument("--respawn-after", type=float, default=10.0,
                       help="seconds after despawn to respawn id=5 (0 = disable)")
     host.add_argument("--peds-json", default=str(PEDS_JSON),
@@ -1217,6 +1387,32 @@ def resolve_args(args):
                     raise SystemExit(str(exc))
                 if not args.mount_models:
                     raise SystemExit("cannot load A_C_HORSE_* mount models")
+        # E3a: scenarios + death/revive.
+        if not 0 <= args.scenario <= args.num:
+            raise SystemExit(f"--scenario must be 0..{args.num}")
+        args.scenario_hashes = []
+        args.scenario_warning = None
+        if args.scenario:
+            if args.scenario_hash:
+                try:
+                    args.scenario_hashes = [parse_single_hash(args.scenario_hash)]
+                except (ValueError, TypeError) as exc:
+                    raise SystemExit(f"--scenario-hash: {exc}")
+            else:
+                source = getattr(args, "scenario_from_log", "") or ""
+                hashes, warning = load_scenario_hashes(Path(source),
+                                                       args.scenario) \
+                    if source else ([], None)
+                if hashes:
+                    args.scenario_hashes = hashes
+                    args.scenario_warning = warning
+                else:
+                    args.scenario_hashes = list(FALLBACK_SCENARIO_HASHES)
+                    args.scenario_warning = (
+                        f"no scenario log; using {len(args.scenario_hashes)} "
+                        f"fallback hash(es)")
+        if args.dead_after < 0 or args.revive_after < 0:
+            raise SystemExit("--dead-after/--revive-after must be >= 0")
     if args.duration < 1:
         raise SystemExit("--duration must be >= 1 second")
     return args

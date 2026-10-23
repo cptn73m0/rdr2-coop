@@ -209,6 +209,55 @@ fakeguest: mounted reserved_ok=N reserved_zero=0
 `reserved_zero>0` или `ERROR ActorSpawnBatch: mounted actorId=... reserved=0` —
 игровой хост не передал модель лошади (проверить E2b).
 
+### E3a: сценарии + смерть/возрождение
+
+E3a сдаёт в `ActorSpawn`:
+- `flags |= scenario (bit5)` для первых `--scenario N` акторов;
+- `ActorSpawn.scenarioHash` = один из уникальных `dynScenario=0x...` из
+  probe-лога (по умолчанию тот же `rdr2-coop.log`), fallback — 5 известных
+  хэшей; `--scenario-hash` задаёт явный хэш;
+- у сценарных акторов `moveStyle=0`, в кадрах — scenario-флаг,
+  `animState=0, speed=0, pad=0`, позиция фиксирована (стоят/сидят);
+  остальные акторы двигаются по `--pattern`.
+- `--dead-after SEC` (default 0 = off): через SEC после первого спавна
+  **последний actorId** получает `dead flag (bit1) + health=0`; кадры
+  мёртвого — `speed=0, animState=0`, позиция зафиксирована (труп).
+- `--revive-after SEC` (default 10): через SEC после смерти dead-флаг
+  снимается, `health=200`, кадры снова обычные; `0` — остаётся мёртвым.
+
+**Тест E3a (fake host → игровой гость):**
+```powershell
+# 2 сценарных (сидят) + 3 ходят по кругу
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --scenario 2 --pattern circle --despawn-after 0 --duration 300
+
+# сценарии + смерть последнего через 20 с и возрождение через 10 с
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --scenario 2 --pattern circle --dead-after 20 --revive-after 10 `
+  --despawn-after 0 --respawn-after 0 --duration 300
+```
+Ожидаемые строки host:
+```
+fakehost: scenario=2/5 hashes=0x..., 0x...
+fakehost: spawn epoch=1 n=5
+fakehost: death id=5
+fakehost: revive id=5
+```
+В игре-госте: 2 NPC сидят/работают на месте, 3 идут; через 20 с последний
+падает (труп, health=0), через 10 с снова живой.
+
+**Проверка полей в сети (игровой хост → fake guest):**
+```powershell
+python tools\fake_actor_client.py --mode guest --name TestGuest --duration 120
+```
+Ожидаемые строки E3a:
+```
+fakeguest: scenarios=N dead_frames=M
+```
+`scenarios=N` — число уникальных actorId с `scenarioHash!=0`;
+`dead_frames=M` — сколько кадров пришло с dead-флагом (в начале 0, после
+смерти растёт; после revive перестаёт).
+
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 
 **Порядок: сервер → игра-хост → fake guest.**
@@ -244,10 +293,15 @@ fakeguest: mounted reserved_ok=N reserved_zero=0
 | `--gait` | 1.0 | E2a.2 gait движущихся актёров: `1.0` walk, `2.0` run/галоп (уходит в `ActorFrame.pad=gait*1000`; idle=0) |
 | `--mounted` | 0 | E2b: сколько из `--num` акторов верхом (первые N; 0..num); flags bit0 + `ActorSpawn.reserved=mount model` |
 | `--mount-model` | — | E2b: явный хэш лошади для всех всадников (иначе `A_C_HORSE_*` из Peds.json) |
+| `--scenario` | 0 | E3a: сколько из `--num` акторов в сценарии (первые N; idle + flags bit5 + scenarioHash) |
+| `--scenario-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | E3a: откуда брать `dynScenario=0x...` (пустая строка — fallback) |
+| `--scenario-hash` | — | E3a: явный scenarioHash для всех сценарных акторов |
+| `--dead-after` | 0 | E3a: через сколько секунд после первого спавна убить последний actorId (0 = off) |
+| `--revive-after` | 10 | E3a: через сколько после смерти возродить (0 = остаётся мёртвым) |
 | `--outfits-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | пары `model+metaOutfit` из probe-лога; пустая строка — выкл. |
 | `--circle-radius` | 3.0 | радиус круга движения NPC, м |
 | `--speed` | 1.0 | базовая скорость движения, м/с (фактическая = speed*gait; в кадр идёт speed/8*255) |
-| `--despawn-after` | 30 | через сколько секунд удалить actorId=5 |
+| `--despawn-after` | 30 | через сколько секунд удалить actorId=5 (0 = выкл.; для E3-теста смерти ставьте 0) |
 | `--respawn-after` | 10 | через сколько после despawn вернуть actorId=5 (0 = выкл.) |
 | `--peds-json` | `third_party/rdr2-hashdb/Peds.json` | откуда брать хэши моделей |
 | `--models` | — | свои модели (hex через запятую, ≥`--num`) |
