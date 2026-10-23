@@ -198,6 +198,8 @@ constexpr unsigned long long GET_ENTITY_SPEED             = 0xFB6BA510A533DF81ul
 // а умирал только вместе с оригиналом (сервер шлёт Died).
 constexpr unsigned long long SET_ENTITY_INVINCIBLE         = 0xA5C38736C426FCB8ull;
 constexpr unsigned long long SET_ENTITY_HEALTH             = 0xAC2767ED8BDFAB15ull;
+// E3a: максимальный health педа (для revive после смертельного флага).
+constexpr unsigned long long GET_ENTITY_MAX_HEALTH         = 0x15D757606D170C3Cull;
 // Возрождение педа (когда оригинал ожил после смерти).
 constexpr unsigned long long RESURRECT_PED                 = 0x71BC8E838B9C6035ull;
 // Выносливость педа: чтобы пед-призрак не «отдувался» (не играл анимацию

@@ -83,6 +83,10 @@ constexpr unsigned int kMountReasonDespawn = 2;
 constexpr unsigned int kMountReasonDead = 3;
 constexpr unsigned int kMountReasonSeatFailed = 4;
 
+// E3a: сценарий (поза) и смерть/труп.
+constexpr unsigned int kScenarioVerifyTicks = 90; // 1.5 с на вход в сценарий
+constexpr int kHumanMaxHealth = 200;              // fallback, если натив вернул 0
+
 // P3-фиксы по ревью E1 (task-45).
 constexpr unsigned int kPendingSpawnTimeoutTicks = 300; // 5 с ожидания модели
 constexpr unsigned int kNoCollisionRefreshTicks = 60;   // 1 с: повторить no-collision
@@ -491,6 +495,50 @@ void SetInvincible(unsigned int handle, bool value)
     Call();
 }
 
+// E3a: health/смерть/оживление/сценарий-поза.
+void SetEntityHealthValue(unsigned int handle, int health)
+{
+    using namespace natives_api;
+    Init(natives::SET_ENTITY_HEALTH);
+    Push(handle);
+    Push(health);
+    Push(static_cast<unsigned long long>(0)); // entityKilledBy
+    Call();
+}
+
+int GetEntityMaxHealthValue(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::GET_ENTITY_MAX_HEALTH);
+    Push(handle);
+    Push(false);
+    return static_cast<int>(Call());
+}
+
+void ResurrectPedEntity(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::RESURRECT_PED);
+    Push(handle);
+    Call();
+}
+
+// TASK_START_SCENARIO_IN_PLACE_HASH(ped, hash, duration, playEnterAnim,
+// conditionalHash, heading, p6) — 7 арг по NativeDecl.
+void StartScenarioInPlace(unsigned int ped, uint32_t scenarioHash)
+{
+    using namespace natives_api;
+    Init(natives::TASK_START_SCENARIO_IN_PLACE_HASH);
+    Push(ped);
+    Push(static_cast<unsigned long long>(scenarioHash));
+    Push(static_cast<unsigned long long>(0xFFFFFFFF)); // duration -1 (бессрочно)
+    Push(true);                                        // playEnterAnim
+    Push(static_cast<unsigned long long>(0));          // conditionalHash
+    Push(0.f);                                         // heading (как есть)
+    Push(false);                                       // p6
+    Call();
+}
+
 void SetVisible(unsigned int handle)
 {
     using namespace natives_api;
@@ -772,6 +820,23 @@ void LogMountDespawn(uint32_t actorId, unsigned int reason)
     sh_log::Write("actor: mount despawn id=%u reason=%u\n", actorId, reason);
 }
 
+// E3a: сценарии/позы NPC и смерть/труп (гейт enabled снаружи).
+void LogScenarioApply(uint32_t actorId, uint32_t hash, bool ok)
+{
+    sh_log::Write("actor: scenario apply id=%u hash=0x%X state=%s\n",
+                  actorId, hash, ok ? "ok" : "failed");
+}
+
+void LogDeath(uint32_t actorId)
+{
+    sh_log::Write("actor: death id=%u\n", actorId);
+}
+
+void LogRevive(uint32_t actorId)
+{
+    sh_log::Write("actor: revive id=%u\n", actorId);
+}
+
 // ======================= perf: actor p95 (npc_debug=1) =======================
 void LogPerfIfDue(unsigned int tick)
 {
@@ -1021,7 +1086,13 @@ net::ActorSpawn BuildSpawn(unsigned int handle, uint32_t actorId)
     s.mountActorId = 0;
     const uint32_t held = GetHeldWeapon(handle);
     s.weaponHash = held ? held : GetCurrentWeapon(handle);
-    s.scenarioHash = GetDynamicScenario(handle);
+    // E3a: сценарий-поза (sit/work). Для мёртвых сценарий не шлём: dead flag +
+    // health=0, труп остаётся на месте.
+    const bool dead = IsDeadPed(handle);
+    const bool scenario = !dead && IsScenarioActive(handle);
+    s.scenarioHash = scenario ? GetDynamicScenario(handle) : 0;
+    if (dead)
+        s.flags &= static_cast<uint8_t>(~net::kActorFlagScenario);
     const Vec3 p = GetCoords(handle);
     s.x = p.x; s.y = p.y; s.z = p.z;
     s.heading = GetHeading(handle);
@@ -1045,6 +1116,9 @@ net::ActorFrame BuildFrame(unsigned int handle, uint32_t actorId)
     f.flags = BuildFlags(handle);
     if (mounted)
         f.flags |= net::kActorFlagMounted;
+    // E3a: у мёртвых сценарий не реплицируем (только dead flag + труп).
+    if (IsDeadPed(handle))
+        f.flags &= static_cast<uint16_t>(~net::kActorFlagScenario);
     f.animState = move;
     // E2a.2: ActorFrame.speed — u8 0..255 соответствует 0..8 м/с (шкала
     // поднята с 3 м/с: sprint/галоп больше не сатурируется на 3).
@@ -1406,6 +1480,13 @@ struct Proxy
     unsigned int mountLastGaitTick = 0;
     float mountLastGait = -1.f;
     Vec3 mountMoveTarget{0.f, 0.f, 0.f};
+    // E3a: сценарий (поза) и смерть/труп.
+    uint32_t scenarioHash = 0;    // ActorSpawn.scenarioHash (dyn scenario)
+    uint32_t scenarioApplied = 0; // какой hash реально применяли
+    bool scenarioFlag = false;    // kActorFlagScenario из кадров
+    uint8_t scenarioState = 0;    // 0 none, 1 applying, 2 active, 3 failed
+    unsigned int scenarioTick = 0;
+    bool deathApplied = false;    // health=0 + invincible=false применены
 };
 
 std::map<uint32_t, Proxy> g_proxies;
@@ -1668,6 +1749,21 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
             p.mountFailedLogged = true;
             LogMountFailed(p.actorId, "create");
         }
+    }
+
+    // E3a: сценарий/смерть. Если actor уже мёртв в спавне — сразу труп
+    // (invincible off + health 0), без ожидания кадров; сценарий не применяем.
+    p.scenarioHash = s.scenarioHash;
+    p.scenarioFlag = (s.flags & net::kActorFlagScenario) != 0;
+    p.scenarioState = 0;
+    p.scenarioApplied = 0;
+    p.deathApplied = false;
+    if (p.dead)
+    {
+        SetInvincible(handle, false);
+        SetEntityHealthValue(handle, 0);
+        p.deathApplied = true;
+        LogDeath(p.actorId);
     }
 
     g_handleByActor[handle] = p.actorId;
@@ -2052,6 +2148,12 @@ void MoveProxy(Proxy& p)
         }
     }
 
+    // E3a: пока хост в сценарии-позе (sit/work), движение не выдаём — поза
+    // держится сценарной задачей (ProcessActorScenarios). При снятии флага
+    // движение возобновится на следующем тике.
+    if (p.scenarioFlag)
+        return;
+
     const Vec3 cur = GetCoords(p.handle);
     const float dx = p.tx - cur.x;
     const float dy = p.ty - cur.y;
@@ -2211,6 +2313,129 @@ void MoveProxy(Proxy& p)
     }
 }
 
+// E3a: смерть прокси по dead-флагу хоста: снять бессмертие, health 0 — остаётся
+// труп на месте (mission entity не исчезает/не респавнится сам).
+void ApplyProxyDeath(Proxy& p)
+{
+    if (!p.handle || !DoesExist(p.handle))
+        return;
+    p.taskActive = false;
+    p.moveTaskValid = false;
+    p.scenarioState = 0;
+    p.scenarioApplied = 0;
+    SetInvincible(p.handle, false);
+    SetEntityHealthValue(p.handle, 0);
+    p.deathApplied = true;
+    LogDeath(p.actorId);
+}
+
+// E3a: оживление (dead-флаг снят): resurrect + health max + invincible,
+// затем сценарий/движение вернутся обычным путём.
+void ApplyProxyRevive(Proxy& p)
+{
+    if (!p.handle || !DoesExist(p.handle))
+        return;
+    ResurrectPedEntity(p.handle);
+    int maxHp = GetEntityMaxHealthValue(p.handle);
+    if (maxHp <= 0) maxHp = kHumanMaxHealth;
+    SetEntityHealthValue(p.handle, maxHp);
+    SetInvincible(p.handle, true);
+    SetVisible(p.handle);
+    SetLodDist(p.handle, kActorLodDist);
+    p.deathApplied = false;
+    p.mountDeathTick = 0;
+    p.taskActive = false;
+    p.moveTaskValid = false;
+    if (p.scenarioFlag && p.scenarioHash)
+        p.scenarioState = 0; // переприменить позу после revive
+    LogRevive(p.actorId);
+}
+
+// E3a: сценарии-позы (sit/work). Пока сценарий активен — движение не выдаётся
+// (MoveProxy проверяет scenarioFlag); при снятии флага возвращаем движение.
+void ProcessActorScenarios(unsigned int tick)
+{
+    for (auto& kv : g_proxies)
+    {
+        Proxy& p = kv.second;
+        if (!p.handle || !DoesExist(p.handle))
+            continue;
+        if (p.dead)
+            continue; // труп в сценарий не сажаем
+
+        const bool want = p.scenarioFlag && !p.mounted;
+        if (!want)
+        {
+            if (p.scenarioState == 1 || p.scenarioState == 2)
+            {
+                // Хост вышел из сценария — снимаем задачу, вернём движение.
+                StandStill(p.handle);
+                p.taskActive = false;
+                p.moveTaskValid = false;
+            }
+            p.scenarioState = 0;
+            p.scenarioApplied = 0;
+            continue;
+        }
+
+        if (!p.scenarioHash)
+        {
+            // Флаг есть, хэша ещё нет (heartbeat не принёс) — стоим и ждём.
+            if (p.scenarioState == 0)
+            {
+                StandStill(p.handle);
+                p.taskActive = false;
+                p.moveTaskValid = false;
+                p.scenarioState = 1;
+                p.scenarioTick = tick;
+            }
+            else if (p.scenarioState == 1 &&
+                     tick - p.scenarioTick > kScenarioVerifyTicks)
+            {
+                p.scenarioState = 3;
+                LogScenarioApply(p.actorId, 0, false);
+            }
+            continue;
+        }
+
+        const bool needApply =
+            p.scenarioState == 0 ||
+            (p.scenarioState != 2 && p.scenarioApplied != p.scenarioHash);
+        if (needApply)
+        {
+            // Снять текущее движение и посадить в сцену.
+            StandStill(p.handle);
+            SetMoveBlend(p.handle, 0.0f);
+            p.taskActive = false;
+            p.moveTaskValid = false;
+            StartScenarioInPlace(p.handle, p.scenarioHash);
+            p.scenarioState = 1;
+            p.scenarioTick = tick;
+            p.scenarioApplied = p.scenarioHash;
+            continue;
+        }
+
+        if (p.scenarioState == 1)
+        {
+            const bool active = IsScenarioActive(p.handle) ||
+                                GetDynamicScenario(p.handle) != 0;
+            if (active)
+            {
+                p.scenarioState = 2;
+                LogScenarioApply(p.actorId, p.scenarioHash, true);
+            }
+            else if (tick - p.scenarioTick > kScenarioVerifyTicks)
+            {
+                // Не встал в сцену — fallback stand + лог failed.
+                p.scenarioState = 3;
+                StandStill(p.handle);
+                LogScenarioApply(p.actorId, p.scenarioHash, false);
+            }
+        }
+        // state==2: поза держится, движение не выдаём.
+    }
+}
+
 // E2a.2: трейл движения (последние ~1 с позиций) — по нему сглаживаем
 // направление и ведём прокси по фактическому маршруту хоста без срезания углов.
 void AppendTrailPoint(Proxy& p, float x, float y, float z)
@@ -2240,8 +2465,21 @@ void QueueSpawnBatch(uint32_t epoch,
 {
     for (const net::ActorSpawn& s : actors)
     {
-        if (g_proxies.count(s.actorId))
+        // E3a: heartbeat-спавн для уже созданного актора обновляет хэш
+        // сценария (сценарий мог начаться/смениться после первого спавна).
+        auto existing = g_proxies.find(s.actorId);
+        if (existing != g_proxies.end())
+        {
+            Proxy& p = existing->second;
+            if (!p.dead && s.scenarioHash != 0 &&
+                p.scenarioApplied != s.scenarioHash)
+            {
+                p.scenarioHash = s.scenarioHash;
+                p.scenarioFlag = true;
+                p.scenarioState = 0; // применить заново в ProcessActorScenarios
+            }
             continue;
+        }
         if (g_pendingSpawnIds.count(s.actorId))
             continue;
         if (g_pendingSpawns.size() >=
@@ -2474,6 +2712,9 @@ void GuestTick(const TickContext& ctx)
     // прокси (бюджет 2 REQUEST/тик, таймаут 3 с, не блокирует прокси).
     ProcessActorAppearance(tick);
 
+    // 3c) E3a: сценарии-позы (sit/work) + fallback stand при неудаче.
+    ProcessActorScenarios(tick);
+
     // 4) кадры -> target позиция/флаги; 5) движение — замеряем p95 apply.
     const unsigned long long perfApplyStart = QpcNow();
     if (g_haveFrames)
@@ -2522,6 +2763,13 @@ void GuestTick(const TickContext& ctx)
             p.gaitQ = f.pad;   // E2a.2: desired gait хоста (ratio*1000)
             p.flags = static_cast<uint16_t>(f.flags);
             p.dead = (f.flags & net::kActorFlagDead) != 0;
+            // E3a: сценарий-флаг из кадров; смерть/оживление — health/invincible.
+            p.scenarioFlag =
+                (f.flags & net::kActorFlagScenario) != 0 && !p.mounted;
+            if (p.dead && !p.deathApplied)
+                ApplyProxyDeath(p);
+            else if (!p.dead && p.deathApplied)
+                ApplyProxyRevive(p);
             // E2b: состояние всадника из кадров хоста (spawn мог прийти без
             // лошади/fake-host мог пересесть) — reseat/переход в пеший режим.
             const bool frameMounted =
