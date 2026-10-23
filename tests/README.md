@@ -4,8 +4,8 @@
 по TCP: JOIN (включая гонку одновременных JOIN), роли/лимиты, host-only
 сообщения, точные размеры, WorldSnapshot, мусорные кадры, ретрансляцию
 Leave/PlayerLeft/Died/Respawned/HorseOutfit, connection cap/per-IP rate limit,
-`players.txt` persistence/recovery, graceful shutdown, а также v15 E0
-actor-сообщения (spawn/frames/despawn/event/outfit/resync) — когда они есть в
+`players.txt` persistence/recovery, graceful shutdown, а также actor-сообщения
+v16 (spawn/frames/despawn/event/outfit/resync/appearance) — когда они есть в
 `net/protocol.h`.
 
 ## Требования
@@ -27,11 +27,13 @@ actor-сообщения (spawn/frames/despawn/event/outfit/resync) — когд
 wearable[96] u32). Если размер в `net/protocol.h` изменится, тест упадёт и
 потребует осознанного обновления тестов/документации под новую версию.
 
-Для протокола v15 (E0/E1) при наличии `Actor*`-сообщений в header также
-пинятся: `kMaxActors=12`, `ActorSpawn=64 B`, `ActorFrame=32 B`,
+Для протокола v16 при наличии `Actor*`-сообщений в header также пинятся:
+`kMaxActors=12`, `ActorSpawn=64 B`, `ActorFrame=32 B`,
 `ActorSpawnBatch≤776 B`, `ActorFrames≤392 B`, `ActorDespawn/ActorResync=12 B`,
-`ActorEvent=32 B`, `ActorOutfit=792 B`; ID 0x18–0x1D. Если header откатить
-на v14, actor-тесты скипаются с `[skip]` и не валят базовый suite.
+`ActorEvent=32 B`, `ActorOutfit=792 B`, `ActorAppearanceHeader=12 B`,
+`ActorAppearanceEntry=28 B`, `kActorAppearanceMaxComponents=16`,
+`ActorAppearance max=460 B`; ID 0x18–0x1E. Если header откатить на v14,
+actor-тесты скипаются с `[skip]` и не валят базовый suite.
 
 ## Запуск
 
@@ -47,7 +49,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 `--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
 `KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто (20 базовых сценариев + 7 actor-тестов v15)
+## Что покрыто (20 базовых сценариев + 9 actor-тестов v16)
 
 | Тест | Проверка |
 |---|---|
@@ -72,7 +74,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_graceful_shutdown` | сервер корректно завершается по тест-хуку и сохраняет players.txt |
 | `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта; первый игрок = HOST |
 
-### v15 E0 actor-тесты (условные: активны при `PROTO≥15` и наличии Actor* в header)
+### actor-тесты (v15 base + v16 appearance; активны при наличии `Actor*` в header)
 
 | Тест | Проверка |
 |---|---|
@@ -83,14 +85,17 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_actor_validation_drops` | epoch=0, actorId=0, non-finite/absurd coords, unknown type drop (0x18–0x1C) |
 | `test_actor_duplicate_actor_ids` | duplicate actorId в spawn/frames-батче → сервер дропает батч целиком (O(count²), лог не пишется) |
 | `test_actor_gating_no_actor_log` | обычная сессия без actor-сообщений → в `server_console.log` **0 строк `actor:`** (серверный gating) |
+| `test_actor_appearance_host_only` | 0x1E: host→guest byte-identical; count 1/16 (max 460 B) relay; count 17/oversized drop; guest→host blocked |
+| `test_actor_appearance_validation` | 0x1E: точный размер `12+count*28`; count 0/17, epoch=0, actorId=0, reserved!=0, short/long drop; сервер жив |
 
-### NPC actor-репликация (E1–E3b) — что проверено
+### NPC actor-репликация (E1–E3b + E2c-b) — что проверено
 
 Wire/relay/валидация actor-сообщений покрыты actor-тестами выше
-(27/27 автоматических сценариев на `build-server-ci`). Клиентская логика
-NPC проверена на **одном ПК** с fake host/guest
-(`tools/fake_actor_client.py`, см. `tools/README.md`), двух-ПК приёмка ещё
-впереди (ARINA офлайн/старая сборка).
+(**29/29** автоматических сценариев на `build-server-ci`, protocol v16:
+appearance=on, 16 компонентов / 460 B). Клиентская логика
+NPC/E2c-b проверена на **одном ПК** с fake host/guest и реальным хостом
+(`tools/fake_actor_client.py`, см. `tools/README.md`); двух-ПК визуальная
+приёмка E2c-b ещё pending (ARINA v16 задеплоена, второй ПК пока не запускается).
 
 - **E1 (human-only):** discovery/roster, spawn heartbeat/frames/despawn,
   guest-прокси, resync, gating `npc_actor=0` → 0 `actor:`/`probe:` строк.
@@ -104,15 +109,20 @@ NPC проверена на **одном ПК** с fake host/guest
   `state=shoot=1450`, `reload=385`, `weapon fail=0`.
 - **E2c-a:** host outfit brute-force resolver (890 моделей / 4568 кандидатов)
   механически работает, но random ambient NPC без именованного outfit:
-  `resolved=0/failed=11` в полевом тесте. Fake guest отслеживает
-  `outfits nonzero=N outfit_updates=K resolved_late=Q` и `--outfit-wait`.
-  E2c-b asset/tint — протокол v16 0x1E, тесты появятся после сообщения.
+  `resolved=0/failed=11`; fake guest отслеживает `outfits nonzero=N
+  outfit_updates=K resolved_late=Q` и `--outfit-wait`.
+- **E2c-b (v16):** `ActorAppearance` (0x1E) — host-only relay, exact
+  `12+count*28` (count 1..16, max 460 B), `reserved=0`; host capture
+  `count=8-10 valid=8-10`, fake guest `appearance_msgs=504
+  appearance_actors=8 entry_max=10 errors=0`. Визуал — 2-ПК pending.
+  Fake guest отслеживает appearance-статистику (`--outfit-wait`).
 - Используемые сообщения: **0x18** `ActorSpawnBatch` (спавн + heartbeat),
   **0x19** `ActorFrames` (10 Гц), **0x1A** `ActorDespawn` (gone/dead/evicted),
-  **0x1D** `ActorResync` (guest→host; Client::SendActorResync, троттлинг ≤1/с);
-  0x1B/0x1C зарезервированы/не применяются. **0x1E** — только в v16.
+  **0x1D** `ActorResync` (guest→host; Client::SendActorResync, троттлинг ≤1/с),
+  **0x1E** `ActorAppearance` (host→guest, E2c-b); 0x1B/0x1C
+  зарезервированы/не применяются.
 - Флаги INI: `npc_actor=1` (default 0), `npc_cap` 1..12 (default 8),
-  `npc_radius` 20..100 (default 60), `npc_appearance=1` (E2a),
+  `npc_radius` 20..100 (default 60), `npc_appearance=1` (E2a + E2c-b),
   `npc_debug=1` — probe-логи.
 - `test_actor_gating_no_actor_log` — **серверный** тест (mock-клиенты не шлют
   actor-сообщения), поэтому клиентский gating проверяется вручную

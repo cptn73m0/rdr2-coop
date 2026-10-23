@@ -1,36 +1,42 @@
-# NPC actor replication (E1–E3b) — in-game test plan and acceptance metrics
+# NPC actor replication (E1–E3b + E2c-b) — in-game test plan and acceptance metrics
 
-**Статус (23.10.2026):** E1–E3b реализованы в клиенте (`src/actor_sync.*`,
-флаг `npc_actor=0` по умолчанию) и **проверены на одном ПК** fake host/guest
-(`tools/fake_actor_client.py`): E1 human-only, E2a meta-outfit (5/5 applied,
-failed=0), E2b всадники (mount spawn ×9, failed=0), E3a сценарии/смерть,
-E3b оружие/бой (shoot=1450, reload=385, weapon fail=0). E2c-a resolver
-механически работает (resolved=0/failed=11 для random ambient NPC);
-**E2c-b asset/tint — протокол v16 0x1E в разработке**. Двух-ПК приёмка ещё
-впереди: второй ПК ARINA офлайн/старая сборка.
+**Статус (23.10.2026):** E1–E3b и **E2c-b** реализованы в клиенте
+(`src/actor_sync.*`, флаг `npc_actor=0` по умолчанию); текущий протокол —
+**v16**. E1–E3b проверены на одном ПК fake host/guest: E1 human-only,
+E2a meta-outfit (5/5 applied, failed=0), E2b всадники (mount spawn ×9,
+failed=0), E3a сценарии/смерть, E3b оружие/бой (shoot=1450, reload=385,
+weapon fail=0). E2c-a resolver механически работает (resolved=0/failed=11
+для random ambient NPC); **E2c-b (ActorAppearance 0x1E)** реализован и
+провалидирован на реальном хосте (`asset capture count=8-10 valid=8-10`) и
+fake guest v16 (`appearance_msgs=504 appearance_actors=8 entry_max=10
+errors=0`). **Двух-ПК визуальная приёмка E2c-b pending:** ARINA v16
+задеплоена (ASI `63588AD3`, server `4EDAE4B6`), но пользователь пока не
+запускает второй ПК.
 
 E1 — human-only NPC: хост находит до `npc_cap` (default 8, max 12) ближайших
 human NPC в радиусе `npc_radius` (default 60 м) и шлёт spawn/frames/despawn
 (0x18/0x19/0x1A) + heartbeat; гость держит прокси-педов. E2/E3 добавляют
 `metaOutfit`, всадников, сценарии/смерть и оружие через поля/флаги тех же
-сообщений. Mission NPC, животные, транспорт и трупы (кроме human NPC) не
-реплицируются; 0x1B/0x1C зарезервированы; resync 0x1D реализован (≤1/с).
-E2c-b (asset/tint) ждёт v16 0x1E.
+сообщений; **E2c-b** передаёт asset/tint в `ActorAppearance` (0x1E,
+host-only, count 1..16, max 460 B) и применяет у гостя. Mission NPC,
+животные, транспорт и трупы (кроме human NPC) не реплицируются; 0x1B/0x1C
+зарезервированы; resync 0x1D реализован (≤1/с).
 
 Автоматизированная часть — wire/relay/validation: `tests/integration_server.py`
-(27 сценариев, actor-тесты) + 7 C++ тестов; клиентская логика проверяется
-в игре/fake-клиентами.
+(**29 сценариев**, protocol v16, appearance=on) + 7 C++ тестов; клиентская
+логика проверяется в игре/fake-клиентами.
 
 ## 0. Флаги и предусловия
 
-- Оба ПК: одна и та же сборка (protocol v15: `net/protocol.h`,
-  `kProtocolVersion=15`), один `rdr2_coop_server.exe` v15. **ARINA сейчас
-  офлайн/старая сборка — перед двух-ПК тестом дозалить `.asi`/INI.**
+- Оба ПК: одна и та же сборка (protocol v16: `net/protocol.h`,
+  `kProtocolVersion=16`), один `rdr2_coop_server.exe` v16. **ARINA уже
+  задеплоена v16-парой (ASI `63588AD3`, server `4EDAE4B6`, INI ок), но
+  двух-ПК прогон пока не начат.** Откат на v15-пару — `dist\npc-e2c-v15\`.
 - INI на обоих ПК (кроме указанных):
   - `npc_actor = 1` — включить NPC-репликацию;
   - `npc_cap = 12` — для проверки 8–12 NPC в городе (default 8; допустимо 1..12);
   - `npc_radius = 60` — default; despawn-гистерезис +10 м (70 м);
-  - `npc_appearance = 1` — meta-outfit внешность (E2a, default 1);
+  - `npc_appearance = 1` — meta-outfit E2a + asset/tint E2c-b (default 1);
   - `npc_debug = 1` — probe-лог `probe: scan humans=...` (только хост);
     после прогона выключить;
   - остальные экспериментальные флаги — **0** (`world_sync=0`, `action_sync=0`,
@@ -103,7 +109,7 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 - При `npc_cap=8` (default) ожидаемые proxies 8, а не 8–12; для приёмки E1
   городского сценария используйте `npc_cap=12`.
 
-## 3. Игровой чек-лист (E1, два ПК)
+## 3. Игровой чек-лист (E1–E3b + E2c-b, два ПК)
 
 | # | Сценарий / условия | Шаги | Ожидаемо (визуал + лог) | Артефакт | Pass |
 |---|---|---|---|---|---|
@@ -121,11 +127,12 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 | **S11** | E2b всадники | `npc_cap=12`; найти всадников; спровоцировать dismount/despawn | rider+mount — одна пара; mount spawn ×9, failed=0; при dismount/despawn лошадь и всадник убираются без залипаний | скрины/видео, лог | [ ] |
 | **S12** | E3a сценарии + смерть/возрождение | 2 сценарных NPC (`--scenario-names` smoking/standing), двое курят; убить NPC | Сценарии подтверждены («двое курят на разных местах»); анти-наложение: skip 8 м / warp revert 3 м; труп остаётся; revive работает | скрины/видео, лог | [ ] |
 | **S13** | E3b оружие/бой | NPC с валидным weapon hash; draw → aim → shoot → reload | Оружие достаётся, прицел без дёргания, серии выстрелов + переприцеливание, reload; weapon fail=0; state=shoot=1450/reload=385 (по логу) | видео, host/guest лог | [ ] |
-| **S14** | E2c-a outfit resolver (опционально) | Host с resolver; fake guest (`--mode guest --outfit-wait 60`) | `fakeguest: outfits nonzero=… outfit_updates=… resolved_late=…`; для random ambient ожидаемо resolved=0/failed=11 — E2c-b после v16 | fake guest лог | [ ] |
+| **S14** | E2c-a/E2c-b внешность | Host с E2c-b capture; fake guest (`--mode guest --outfit-wait 60`) | `fakeguest: appearance_msgs>0 appearance_actors>0 entry_max` 8..16, `errors=0`; host log `asset capture count=8-10 valid=8-10`; для E2c-a `outfit_updates/resolved_late`; визуал на 2 ПК — pending | fake guest log, host log, скрины | [ ] |
 
-Дополнительно: сценарные позы курящих/стоящих на разных точках (E3a),
-ночь/дождь (LOD/видимость), E2c-b asset/tint — после протокола v16 0x1E.
-Транспорт/животные/лошадиные трупы по-прежнему вне NPC-репликации.
+Дополнительно: визуальная проверка E2c-b на **двух ПК** (сейчас pending),
+сценарные позы курящих/стоящих на разных точках (E3a), ночь/дождь
+(LOD/видимость). Транспорт/животные/лошадиные трупы по-прежнему вне
+NPC-репликации.
 
 ## 4. Откат и аварийные действия
 
@@ -155,7 +162,10 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
   ответа/восстановления — это E1-дефект, а не ограничение.
 - **0x1B ActorEvent / 0x1C ActorOutfit** зарезервированы: принимаются, но не
   применяются; E2a использует `metaOutfit` в heartbeat-spawn (0x18), E2c-b
-  asset/tint — отдельный v16 0x1E.
+  — отдельный `ActorAppearance` 0x1E (v16).
+- **E2c-b**: реализован и провалидирован по данным (host capture 8-10
+  valid, fake guest errors=0), но **визуальная двух-ПК приёмка pending** —
+  проверять host/guest внешность по S14.
 - **Только human NPC**: животные, транспорт и лошадиные трупы не
   реплицируются; mission NPC исключены; мёртвые human NPC — E3a (dead flag +
   health=0), труп/возрождение подтверждены.
@@ -164,10 +174,11 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
   одного actorId, а не идентичная картинка A/B.
 - **E2c-a resolver**: механически работает (890 моделей/4568 кандидатов,
   бюджет 24 натива/тик), но random ambient NPC без именованного outfit —
-  `resolved=0/failed=11`; **E2c-b asset/tint ждёт v16 0x1E**, тогда проверять
-  `fakeguest: outfit_updates/resolved_late` и визуал.
-- **Двух-ПК приёмка не пройдена**: ARINA офлайн/старая сборка (нужен дозалив
-  `.asi`/INI); текущие E1–E3b — однопК-проверки fake host/guest.
+  `resolved=0/failed=11`; это закрывает E2c-b asset/tint, проверять
+  `appearance_msgs/appearance_actors/entry_max/errors` и визуал.
+- **Двух-ПК приёмка не пройдена**: ARINA v16 задеплоена, но двух-ПК прогон
+  ещё не начат; текущие E1–E3b/E2c-b — однопК-проверки fake host/guest +
+  реальный хост для capture.
 - **Tick budget** не инструментирован (нет `perf:` лога): точная p95-оценка
   только внешним профайлером/OBS; FPS-метрики из `scan: fps=` — основной
   автоматический прокси.

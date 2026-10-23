@@ -407,11 +407,12 @@ Exit 0/PASS — как обычно (≥1 spawn-batch и ≥10 frames).
 
 ### E2c-b (v16): ActorAppearance (0x1E)
 
-`ActorAppearance` (0x1E) — asset/tint внешность NPC, хост → сервер → гость.
-Fake guest валидирует: header 12 B (`epoch:u32, actorId:u32, count:u8, pad3`),
-`count` в 1..16, точный размер `12 + count*28`, `epoch!=0`, `actorId!=0`,
-`reserved==0` в каждой 28-байтной записи; предупреждает, если appearance
-пришёл раньше ActorSpawn. Финальные строки:
+`ActorAppearance` (0x1E) — asset/tint внешность NPC, хост → сервер → гость;
+**реализовано и задеплоено (protocol v16)**. Fake guest валидирует: header
+12 B (`epoch:u32, actorId:u32, count:u8, pad3`), `count` в 1..16, точный
+размер `12 + count*28` (max 460 B), `epoch!=0`, `actorId!=0`, `reserved==0`
+в каждой 28-байтной записи; предупреждает, если appearance пришёл раньше
+ActorSpawn. Финальные строки:
 ```
 fakeguest: appearance_entries avg=8.00 max=8
 fakeguest: appearance_msgs=N appearance_actors=U entry_max=M errors=E
@@ -423,13 +424,14 @@ actorId; `entry_max` — максимум записей в сообщении; 
 **Проверка E2c-b (игра-хост первой, fake guest вторым):**
 ```powershell
 python tools\fake_actor_client.py --mode guest --name TestGuest `
-  --outfit-wait 60 --duration 120
+  --outfit-wait 60 --duration 300
 ```
-Ожидаемо от реального хоста: `appearance_msgs>0 appearance_actors>0
-entry_max` 8..16, `errors=0`. Для дымового теста без игры: fake host
-`--appearance` шлёт синтетические записи (drawable=model hash, tints=255),
-fake guest показывает `appearance_msgs=5 appearance_actors=5 entry_max=8
-errors=0` на 5 акторах.
+Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
+valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (ARINA v16 задеплоена) —
+pending. Для дымового теста без игры fake host `--appearance` шлёт
+синтетические записи (drawable=model hash, tints=255), fake guest показывает
+`appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
 
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 

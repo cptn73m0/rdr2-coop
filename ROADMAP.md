@@ -5,14 +5,16 @@
 
 **Актуально на:** 23.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** v15 (actor-репликация NPC E1–E3b, 0x18–0x1D);
-**v16 (0x1E actor asset/tint для E2c-b)** — в разработке.
+**Текущий протокол:** **v16** (actor-репликация NPC E1–E3b + E2c-b,
+0x18–0x1E). v15↔v16 несовместимы; откат v15-пары — `dist\npc-e2c-v15\`.
 Рабочая база/игровой стабильный тег — **stable-v14** (пед-призрак, лошадь,
 одежда shop+wearable, выстрелы, время/погода). NPC-репликация реализована и
-проверена на **одном ПК** (fake host/guest): E1 human-only, E2a meta-outfit,
-E2b всадники, E3a сценарии/смерть, E3b оружие/бой; E2c-a resolver работает
-механически, E2c-b — v16. `npc_actor=0` по умолчанию; второй ПК ARINA офлайн
-(старая сборка), двух-ПК приёмка ещё впереди.
+проверена на **одном ПК**: E1 human-only, E2a meta-outfit, E2b всадники,
+E3a сценарии/смерть, E3b оружие/бой, E2c-b asset/tint — по данным реального
+хоста (capture 8-10 valid, fake guest errors=0). Теги этапов: `npc-e0`,
+`npc-e1`, `npc-e2`, `npc-e2b`, `npc-e3`, `npc-e3b`, `npc-e2c-b`.
+`npc_actor=0` по умолчанию; ARINA v16 задеплоена (ASI `63588AD3`, server
+`4EDAE4B6`), но двух-ПК визуальная приёмка ещё **pending**.
 
 ---
 
@@ -37,7 +39,8 @@ E2b всадники, E3a сценарии/смерть, E3b оружие/бой
 - [x] Спавн повторного игрока на сохранённой позиции
 - [x] Обработка дисконнекта: удаление педа и метки
 - [x] Явные роли HOST/GUEST, лимит 2 игрока, `JoinRejected`
-- [x] Версия протокола в JOIN (v15), отказ при несовпадении
+- [x] Версия протокола в JOIN (v16), отказ при несовпадении; v15-откат в
+      `dist\npc-e2c-v15\`
 
 ## Фаза 3 — Сеть — готово (база)
 
@@ -67,15 +70,16 @@ E2b всадники, E3a сценарии/смерть, E3b оружие/бой
 
 ## Фаза 5 — P1: репликация мира/NPC
 
-### NPC-репликация — E1–E3b реализованы, E2c-b в работе (v16)
+### NPC-репликация — E1–E3b + E2c-b реализованы; 2-ПК приёмка pending
 - [x] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (22% NPC имеют
       metaOutfit hash; сценарии/модели/лошади/оружие)
-- [x] E0: протокол v15 `actor`-сообщения 0x18–0x1D, `kMaxActors=12`,
+- [x] E0: протокол actor-сообщения 0x18–0x1E, `kMaxActors=12`,
       static_assert размеров
 - [x] E0: серверный host-only relay + валидация (exact size, count≤12,
       epoch/actorId!=0, finite coords, duplicate actorId), resync guest→host
-- [x] E0: integration-тесты v15 (host-only, размеры/лимиты, epoch/actorId,
-      NaN/Inf, resync-направление, gating `actor:`=0); 27/27 на build-server-ci
+- [x] E0: integration-тесты v16 (host-only, размеры/лимиты, epoch/actorId,
+      NaN/Inf, resync-направление, gating `actor:`=0, appearance 16comp/460B);
+      **29/29** на build-server-ci
 - [x] E1: human-only discovery 10 Гц вокруг обоих игроков, cap 12, roster
       actorId/epoch, spawn heartbeat 2.5 с, frames 10 Гц, despawn
       gone/dead/evicted, resync 0x1D; guest-прокси spawn≤2/тик + model load,
@@ -96,12 +100,20 @@ E2b всадники, E3a сценарии/смерть, E3b оружие/бой
       `gen_metaped_outfits.h`, 890 моделей / 4568 кандидатов,
       `_IS_META_PED_OUTFIT_EQUIPPED`, бюджет 24 натива/тик, heartbeat) —
       механически работает; для random ambient NPC resolved=0/failed=11
-- [ ] **E2c-b:** asset/tint capture+apply, протокол **v16 0x1E** — в работе
+- [x] **E2c-b:** protocol v16 **ActorAppearance (0x1E)**: header 12B + entry
+      28B (count 1..16, max 460B), host-only relay, точный размер; host
+      capture (`_GET_NUM_COMPONENTS_IN_PED`/`GET_META_PED_ASSET_GUIDS/TINT`,
+      fingerprint, budget 1 актор/тик период 2с) + guest apply
+      (reset+`_SET_META_PED_TAG`+commit+`UPDATE_PED_VARIATION`, readback,
+      fallback; asset > metaOutfit). Валидация: host `capture count=8-10
+      valid=8-10`, fake guest `appearance_msgs=504 appearance_actors=8
+      entry_max=10 errors=0`; визуал — 2-ПК pending
 - [ ] E3c backlog: животные/лошадиные трупы, транспорт/NPC-водители,
       mission-акторы (вне текущего human-only E1–E3b)
-- [ ] E4 backlog: двух-ПК приёмка (ARINA: дозалив актуальной сборки),
-      host migration/resync под нагрузкой, Tick p95/FPS-бюджеты и игровой
-      чек-лист «неотличимости»; `npc_actor` не включать в рабочую сборку до неё
+- [ ] E4 backlog: **двух-ПК визуальная приёмка E2c-b** (ARINA v16 задеплоена,
+      прогон не начат), host migration/resync под нагрузкой, Tick p95/FPS
+      бюджеты и игровой чек-лист «неотличимости»; `npc_actor` не включать в
+      рабочую сборку до неё
 - [ ] Известные ограничения: лицо/волосы/борода, точные анимации/катсцены,
       ambient-мир гостя не подавляется (возможны «двойники»)
 

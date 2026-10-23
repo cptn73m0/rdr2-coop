@@ -17,15 +17,17 @@
 
 Проверено в игре двумя игроками на билде **1.0.1491.50**; последний игровой
 стабильный тег — **stable-v14** (`OutfitState` 784 B, wearable states одежды).
-Текущая ветка — протокол **v15** с actor-репликацией NPC: этапы **E1–E3b
-реализованы и проверены на одном ПК** (игровой гость видит NPC хоста,
-внешность, всадников, сценарии, смерть/возрождение, оружие/бой). Флаг
-`npc_actor` по умолчанию **0** (функция экспериментальная); для теста
-включать на обоих ПК. **E2c-a** (host outfit brute-force resolver) работает
-механически, но random ambient NPC без именованного outfit пока не
-покрываются (resolved=0/failed=11 в полевом прогоне) → **E2c-b asset/tint под
-протокол v16 (0x1E) в разработке**. Клиенты v14 и v15/v16 несовместимы
-(сервер отклоняет JOIN с `VersionMismatch`).
+**Текущий протокол — v16** (actor-репликация NPC E1–E3b + E2c-b); v15/v16
+несовместимы. Этапы E1–E3b и **E2c-b (ActorAppearance 0x1E)** реализованы и
+проверены на одном ПК: E1–E3b — fake host/guest и игровые прогоны, E2c-b —
+по данным реального хоста (`asset capture count=8-10 valid=8-10`) и fake guest
+v16 (`appearance_msgs=504 appearance_actors=8 entry_max=10 errors=0`).
+Визуальная двух-ПК приёмка E2c-b ещё **pending** (пользователь пока не
+запускает второй ПК). Деплой v16: ASI `63388AD3`, server `4EDAE4B6`; откат
+v15-пары — `dist\npc-e2c-v15\`. Флаг `npc_actor` по умолчанию **0**; для теста
+включать на обоих ПК. Клиенты v14/v15/v16 несовместимы (сервер отклоняет JOIN
+с `VersionMismatch`). Теги этапов NPC: `npc-e0`, `npc-e1`, `npc-e2`,
+`npc-e2b`, `npc-e3`, `npc-e3b`, `npc-e2c-b`.
 
 ### Что работает
 
@@ -65,15 +67,21 @@
     shoot/reload; state=shoot=1450, reload=385, weapon fail=0.
   - **E2c-a:** хост-перебор metaped-outfits (890 моделей / 4568 кандидатов,
     бюджет 24 натива/тик, heartbeat-пересылка, guest reapply) — механически
-    работает; E2c-b (asset/tint) ожидает v16.
-- Headless-тесты сервера/протокола (20 базовых + 7 actor-тестов v15;
-  actor-тесты активируются при `PROTO≥15`), C++ reconnect/config/parser/
-  mission-catalog/budget/barrier/fuzz, CI-workflow (артефакты, кеш) и
-  локальный `scripts\ci.ps1`.
+    работает; для random ambient NPC resolved=0/failed=11.
+  - **E2c-b (v16):** точная внешность asset/tint — хост захватывает
+    `_GET_NUM_COMPONENTS_IN_PED` (0-based) + `GET_META_PED_ASSET_GUIDS/TINT`,
+    шлёт `ActorAppearance` (0x1E) при спавне/изменении/join (budget 1
+    актор/тик, период 2 с); гость применяет reset + `_SET_META_PED_TAG` +
+    commit + `UPDATE_PED_VARIATION` с readback/fallback; asset приоритетнее
+    metaOutfit. Валидация: host `capture count=8-10 valid=8-10`, fake guest
+    `appearance_msgs=504 appearance_actors=8 entry_max=10 errors=0`.
+- Headless-тесты сервера/протокола (**20 базовых + 9 actor-тестов v16**;
+  integration **29/29**), C++ 7/7, CI-workflow (артефакты, кеш) и локальный
+  `scripts\ci.ps1`.
 
-**INI-флаги NPC:** `npc_actor = 1` (включает E1–E3b), `npc_cap = 8`
-(1..12), `npc_radius = 60` (20..100), `npc_appearance = 1` (meta-outfit E2a),
-`npc_debug = 1` — только диагностические probe-логи.
+**INI-флаги NPC:** `npc_actor = 1` (включает E1–E3b + E2c-b), `npc_cap = 8`
+(1..12), `npc_radius = 60` (20..100), `npc_appearance = 1` (meta-outfit E2a
+и asset/tint E2c-b), `npc_debug = 1` — только диагностические probe-логи.
 
 ### Отключено / не работает (экспериментальные флаги = 0)
 
@@ -90,24 +98,24 @@
   потенциально опасен для сейва).
 - `world_trains` / `train_debug` — R&D поездов (визуальный прокси состава без
   рельсов/сцепки; работает неполно).
-- NPC-репликация (E1–E3b) — экспериментальная и **не включена по умолчанию**:
-  `npc_actor=0`; mission-NPC, животные/лошадиные трупы, транспорт не входят в
-  текущие этапы, E2c-b (asset/tint) ожидает протокол v16 (0x1E). Прошлая
-  ветка v14 (NpcSpawn/NpcFrame) в рабочую сборку не входит.
+- NPC-репликация (E1–E3b + E2c-b) — экспериментальная и **не включена по
+  умолчанию**: `npc_actor=0`; mission-NPC, животные/лошадиные трупы, транспорт
+  не входят в текущие этапы; визуальная двух-ПК приёмка E2c-b pending.
+  Прошлая ветка v14 (NpcSpawn/NpcFrame) в рабочую сборку не входит.
 
 ## Известные ограничения
 
 - Сюжетные миссии не проходятся совместно в одном инстансе; общего прогресса
   и барьера старта в стабильной сборке нет.
-- NPC-репликация — **экспериментальная (E1–E3b, human-only)**: cap 12 в
-  радиусе 60 м, mission-NPC исключены; животные, лошадиные трупы и транспорт
+- NPC-репликация — **экспериментальная (E1–E3b + E2c-b, human-only)**: cap 12
+  в радиусе 60 м, mission-NPC исключены; животные, лошадиные трупы и транспорт
   не реплицируются; ambient-популяция гостя не подавляется (возможны
-  «двойники» похожих NPC); E2c-b (asset/tint) ещё нет — random ambient NPC без
-  outfit hash пока не получают правильную внешность; лицо/волосы, точные
+  «двойники» похожих NPC); E2c-b реализован и провалидирован по данным, но
+  **визуальная двух-ПК приёмка ещё pending**; лицо/волосы, точные
   анимации/сценарии и катсцены не синхронизируются.
-- **ARINA (второй ПК) сейчас офлайн**, на нём более старая сборка: для
-  двух-ПК теста нужен дозалив актуального `.asi`/INI. Текущие результаты NPC —
-  однопК-проверки с fake host/guest.
+- **ARINA (второй ПК):** v16-пара задеплоена (ASI `63588AD3`, server
+  `4EDAE4B6`, INI ок), но двух-ПК прогон пока не проводился — пользователь
+  не запускает второй ПК. Текущие результаты — однопК fake host/guest.
 - Поезда не реплицируются.
 - Базовая внешность персонажа (лицо/волосы/борода, дефолтные слои одежды) не
   переносится; синхронизируются только shop-предметы.
@@ -148,7 +156,7 @@ cmake --build build-server --config Release
 # headless-тесты сервера/протокола (без игры)
 python tests\integration_server.py --exe build-server-ci\Release\rdr2_coop_server.exe
 
-# полный CI: клиент + сервер + 20 Python + 7 C++ + restore-тест
+# полный CI: клиент + сервер + 29 integration + 7 C++ + restore-тест
 powershell -ExecutionPolicy Bypass -File scripts\ci.ps1
 ```
 
@@ -174,8 +182,9 @@ ped_model   = 0xCF7E73BE      ; запасная модель, пока не п�
 
 ### Флаги `rdr2-coop.ini`
 
-Стабильная конфигурация — **все флаги ниже = 0** (кроме `save_backup` и
-`mission_reward_log`). Флаги оставлены для будущей отладки.
+Стабильная конфигурация — **экспериментальные флаги ниже = 0** (кроме
+`save_backup`, `mission_reward_log` и дефолтного `npc_appearance=1`).
+NPC-флаги включаются только для однопК/двух-ПК тестов NPC.
 
 | Флаг | По умолчанию | Состояние |
 |---|---|---|
@@ -188,6 +197,19 @@ ped_model   = 0xCF7E73BE      ; запасная модель, пока не п�
 | `mission_reward_log` | 1 | dry-run лог плана наград (нативы не вызываются) |
 | `world_trains` | 0 | R&D, работает неполно |
 | `train_debug` | 0 | диагностика R&D |
+| `npc_actor` | 0 | E1–E3b + E2c-b NPC-репликация (экспериментально, включать только для теста) |
+| `npc_cap` | 8 | 1..12, максимум NPC-прокси |
+| `npc_radius` | 60 | 20..100 м, радиус discovery (keep +10 м) |
+| `npc_appearance` | 1 | meta-outfit E2a + asset/tint E2c-b (asset приоритетнее) |
+| `npc_debug` | 0 | probe-логи `probe:` (только хост) |
+
+## Откат на v15 (E2c-b)
+
+v15-пара сохранена в `dist\npc-e2c-v15\`: скопировать оттуда `rdr2_coop.asi`
+и `rdr2_coop_server.exe` на **оба** ПК/сервер. v15↔v16 несовместимы
+(`JOIN` → `VersionMismatch`), поэтому откатывать нужно все компоненты сразу.
+Текущий v16 деплой: ASI `63388AD3`, server `4EDAE4B6` (ARINA: `63588AD3` /
+`4EDAE4B6`).
 
 ## Запуск сервера
 
@@ -206,7 +228,7 @@ rdr2_coop_server.exe 7777
 
 ## Протокол
 
-Все сообщения: `u32 length | u8 type | payload`. Актуальная версия — **v15** с actor-репликацией NPC (E1–E3b). Клиенты v14 и v15 несовместимы: сервер отклоняет JOIN с `VersionMismatch`. **v16 (0x1E actor asset/tint)** — в разработке, в текущем коде ещё нет.
+Все сообщения: `u32 length | u8 type | payload`. **Актуальная версия — v16** (actor-репликация NPC E1–E3b + E2c-b ActorAppearance 0x1E). Клиенты v14, v15 и v16 несовместимы: сервер отклоняет JOIN с `VersionMismatch`. v15-пара для отката — `dist\npc-e2c-v15\`.
 
 | type | сообщение      | направление            | payload |
 |------|----------------|------------------------|---------|
@@ -233,13 +255,13 @@ rdr2_coop_server.exe 7777
 | 0x15 | MissionBarrier | host ↔ guest           | P3, флаг выключен |
 | 0x16 | HostChanged    | сервер → клиент        | смена роли (host migration) |
 | 0x17 | TrainSnapshot  | хост → сервер → гость  | R&D поездов, флаг выключен |
-| 0x18 | ActorSpawnBatch | хост → сервер → гость | v15 E1–E3b: до 12×`ActorSpawn` (64 B), max 776 B; host-only |
-| 0x19 | ActorFrames   | хост → сервер → гость  | v15: до 12×`ActorFrame` (32 B), max 392 B; движение/флаги боя |
-| 0x1A | ActorDespawn  | хост → сервер → гость  | v15: epoch/actorId/reason, 12 B; host-only |
-| 0x1B | ActorEvent    | хост → сервер → гость  | v15: событие актора, 32 B; host-only (в текущем клиенте не применяется) |
-| 0x1C | ActorOutfit   | хост → сервер → гость  | v15: epoch+actorId+`OutfitState` 784 B = 792 B; host-only (зарезервировано) |
-| 0x1D | ActorResync   | гость → сервер → хост  | v15: resync-запрос, 12 B; только от гостя и только хосту |
-| 0x1E | ActorAssetTint | хост → сервер → гость | **v16, в разработке**: asset/tint для E2c-b; в v15 отсутствует |
+| 0x18 | ActorSpawnBatch | хост → сервер → гость | v15/v16 E1–E3b: до 12×`ActorSpawn` (64 B), max 776 B; host-only |
+| 0x19 | ActorFrames   | хост → сервер → гость  | v15/v16: до 12×`ActorFrame` (32 B), max 392 B; движение/флаги боя |
+| 0x1A | ActorDespawn  | хост → сервер → гость  | v15/v16: epoch/actorId/reason, 12 B; host-only |
+| 0x1B | ActorEvent    | хост → сервер → гость  | v15/v16: событие актора, 32 B; host-only (в текущем клиенте не применяется) |
+| 0x1C | ActorOutfit   | хост → сервер → гость  | v15/v16: epoch+actorId+`OutfitState` 784 B = 792 B; host-only (зарезервировано) |
+| 0x1D | ActorResync   | гость → сервер → хост  | v15/v16: resync-запрос, 12 B; только от гостя и только хосту |
+| 0x1E | ActorAppearance | хост → сервер → гость | v16 E2c-b: header 12 B + count×28 B (count 1..16, max 460 B); host-only relay; точный размер `12+count*28` |
 
 Полная спецификация: [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
@@ -252,20 +274,28 @@ rdr2_coop_server.exe 7777
 слоёв одежды). Сервер проверяет точный размер и ретранслирует byte-identical;
 сообщения 0x09 Outfit и 0x0E HorseOutfit используют одну и ту же структуру.
 
-**v15 (NPC E1–E3b):** actor-сообщения 0x18–0x1D — реализованный транспорт
-(host-only relay, exact size, count ≤12, epoch/actorId != 0, finite coords) и
-клиентская репликация human-NPC. Используются `ActorSpawnBatch`/
-`ActorFrames`/`ActorDespawn` (E1 + heartbeat), `ActorResync` 0x1D (E1);
-`ActorEvent`/`ActorOutfit` зарезервированы и в текущем клиенте не применяются.
-E2a/E2b/E3a/E3b передаются через поля и флаги тех же сообщений:
-`metaOutfit`, `flags` (mounted/dead/drawn/combat/scenario/reloading/aiming),
-`reserved` (mount model), `scenarioHash`, `weaponHash`, `targetActorId`.
+**v15 (NPC E1–E3b):** actor-сообщения 0x18–0x1D — host-only relay, exact size,
+count ≤12, epoch/actorId != 0, finite coords. Используются
+`ActorSpawnBatch`/`ActorFrames`/`ActorDespawn` (E1 + heartbeat),
+`ActorResync` 0x1D (E1); `ActorEvent`/`ActorOutfit` зарезервированы и в
+текущем клиенте не применяются. E2a/E2b/E3a/E3b передаются через поля и флаги
+тех же сообщений: `metaOutfit`, `flags` (mounted/dead/drawn/combat/scenario/
+reloading/aiming), `reserved` (mount model), `scenarioHash`, `weaponHash`,
+`targetActorId`.
+
+**v16 (E2c-b):** добавлено **`ActorAppearance` (0x1E)** — host-only relay,
+header 12 B `{epoch u32, actorId u32, count u8, pad[3]}`, entry 28 B
+`{drawable, albedo, normal, material, palette u32; tint0/1/2 i16; reserved
+u16}`, count 1..16, max payload 460 B, точный размер `12 + count*28`;
+reserved каждой записи = 0. Хост шлёт snapshot при спавне/изменении/join
+(budget 1 актор/тик, период 2 с), гость применяет через reset +
+`_SET_META_PED_TAG` + commit + `UPDATE_PED_VARIATION` (readback/fallback);
+asset приоритетнее metaOutfit. v15↔v16 несовместимы.
 
 **INI:** `npc_actor = 1` (включает репликацию; по умолчанию 0),
 `npc_cap = 8` (1..12), `npc_radius = 60` (20..100 м),
-`npc_appearance = 1` (meta-outfit E2a), `npc_debug = 1` (probe-логи).
-**v16 (в разработке):** 0x1E actor asset/tint для E2c-b — layout ещё не
-зафиксирован; при bump версии v15/v16 клиенты будут несовместимы.
+`npc_appearance = 1` (meta-outfit E2a + asset/tint E2c-b), `npc_debug = 1`
+(probe-логи).
 
 Детали — [docs/PROTOCOL.md](docs/PROTOCOL.md), раздел «ACTOR-сообщения».
 
@@ -279,11 +309,12 @@ E2a/E2b/E3a/E3b передаются через поля и флаги тех ж
   и `rdr3-nativedb-data`).
 - `src/coop.cpp` — игровая логика: спавн/рендер педа, движение, одежда, оружие,
   лошадь, смерть/возрождение, время/погода, кадры 60 Гц.
-- `src/actor_sync.cpp/h` — NPC-репликация E1–E3b: discovery/roster, guest
-  proxies, сценарии/смерть, всадники, оружие/бой, E2c-a resolver.
+- `src/actor_sync.cpp/h` — NPC-репликация E1–E3b + E2c-a/E2c-b: discovery/
+  roster, guest proxies, сценарии/смерть, всадники, оружие/бой, appearance
+  capture/apply.
 - `src/gen_metaped_outfits.h` — сгенерированная таблица metaped-outfit
   кандидатов (890 моделей / 4568 хэшей) для E2c.
-- `tools/fake_actor_client.py` — fake host/guest v15 для однопК-тестов NPC
+- `tools/fake_actor_client.py` — fake host/guest v16 для однопК-тестов NPC
   (см. `tools/README.md`); `src/config.cpp`, `src/persist.cpp`, `src/log.cpp` —
   конфиг, персистентность, логгер.
 - `net/protocol.h` — типы сообщений и структуры пакетов.

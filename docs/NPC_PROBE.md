@@ -3,16 +3,19 @@
 **Статус (23.10.2026):** E-1 закрыт по данным probe-прогона 21.10.2026
 (лог 157 МБ, 2 612 896 строк, 837 `probe:`-строк: 49 записей NPC + 788
 scan-окон). По результатам реализованы **E1–E3b** actor-репликации NPC
-(human-only, meta-outfit, всадники, сценарии/смерть, оружие/бой) и
-**E2c-a** host outfit brute-force resolver; E1–E3b проверены на одном ПК
-(fake host/guest, см. `docs/NPC_E1_TESTING.md`). E2c-a использует данные
-probe (22% NPC имеют `metaOutfit`), но для random ambient NPC даёт
-resolved=0/failed=11 → **E2c-b asset/tint ждёт протокол v16 (0x1E)**.
-Этот документ — исторический E-1-срез; фактическая реализация описана в
-`docs/PROTOCOL.md` и README.
+(human-only, meta-outfit, всадники, сценарии/смерть, оружие/бой),
+**E2c-a** host outfit brute-force resolver и **E2c-b** asset/tint
+(`ActorAppearance` 0x1E, протокол v16). E1–E3b проверены на одном ПК
+(fake host/guest), E2c-b — на реальном хосте (`asset capture count=8-10
+valid=8-10`) и fake guest (`appearance_msgs=504 appearance_actors=8
+entry_max=10 errors=0`); визуальная двух-ПК приёмка E2c-b pending (ARINA
+v16 задеплоена). E2c-a использует данные probe (22% NPC имеют `metaOutfit`),
+но для random ambient NPC даёт resolved=0/failed=11 — именно это закрывает
+E2c-b. Этот документ — исторический E-1-срез; фактическая реализация описана
+в `docs/PROTOCOL.md` и README.
 
 **Связанные файлы/задачи:**
-`docs/TESTING.md` (двух-ПК прогоны), `docs/PROTOCOL.md` (v14 → v15),
+`docs/TESTING.md` (двух-ПК прогоны), `docs/PROTOCOL.md` (v14 → v15 → v16),
 `research/rdr2-existing-coop-mods.md`, `third_party/rdr3-discoveries/`
 (метапеды/сценарии/relationship), `third_party/rdr2-hashdb/Peds.json`
 (имена моделей), `src/actor_sync.cpp` (probe), `tests/npc_probe_analyze.py`
@@ -38,7 +41,7 @@ H6 = PASS (0/25 несовпадений human vs имя модели).
 
 ## 1. Как включить probe
 
-1. Собрать/задеплоить актуальный `.asi` (с actor-репликацией v15) на **хост**
+1. Собрать/задеплоить актуальный `.asi` (protocol v16, actor-репликация) на **хост**
    (на госте probe не нужен; гость может быть на той же сборке).
 2. В `rdr2-coop.ini` рядом с `.asi` на хосте:
 
