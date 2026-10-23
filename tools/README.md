@@ -288,11 +288,16 @@ fakeguest: scenario_frames=K
 
 ### E3b: бой/оружие
 
-E3b сдаёт `ActorSpawn.weaponHash` (по умолчанию
-`joaat("weapon_revolver_cattleman")` = **0x8B264946**) для всех акторов и
-боевые флаги в `ActorFrame.flags` (биты):
+E3b сдаёт `ActorSpawn.weaponHash` для акторов и боевые флаги в
+`ActorFrame.flags` (биты):
 `Drawn=4`, `Changing=8`, `Combat=16`, `Reloading=64`, `Aiming=128`
 (+ `mounted=1`, `dead=2`, `scenario=32`).
+
+Важно: **joaat имени оружия не подходит** для RDR2 — например,
+joaat(`weapon_revolver_cattleman`) = 0x8B264946 отклоняется
+`GIVE_WEAPON_TO_PED`. Default — реальный валидный хэш из probe:
+**0x67DC3FDE** (WEAPON_UNARMED = 0xA2719263). Другие валидные хэши:
+`0x5C54EFD4`, `0x6DFA071B`.
 
 Таймлайн (от первого спавна):
 - `--combat`: флаг Combat (16) постоянно (и в spawn, и в кадрах);
@@ -305,18 +310,27 @@ E3b сдаёт `ActorSpawn.weaponHash` (по умолчанию
   `targetActorId=1`; вне окна `targetActorId=0`;
 - `--reload-after SEC`: через SEC — Reloading (64) импульсами **1 с каждые
   8 с**; переходы логируются `fakehost: reload on/off`;
-- `--weapon HASH` — явный хэш оружия (0 = без оружия).
+- `--weapon HASH` — явный реальный хэш оружия (0 = без оружия);
+- `--weapon-list HASH,HASH,...` — разные оружия по кругу акторам (например
+  `0x67DC3FDE,0x5C54EFD4,0x6DFA071B`); лог `fakehost: weapons=...`.
 
 **Тест E3b (fake host → игровой гость):**
 ```powershell
+# default real weapon 0x67DC3FDE
 python tools\fake_actor_client.py --mode host --name TestHost `
-  --weapon 0x8B264946 --combat --drawn `
-  --aim-after 4 --shoot-after 6 --reload-after 5 `
+  --combat --drawn --aim-after 4 --shoot-after 6 --reload-after 5 `
+  --despawn-after 0 --duration 120
+
+# разные оружия у акторов (round-robin):
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --weapon-list 0x67DC3FDE,0x5C54EFD4,0x6DFA071B `
+  --combat --drawn --aim-after 4 --shoot-after 6 --reload-after 5 `
   --despawn-after 0 --duration 120
 ```
 Ожидаемые строки host:
 ```
-fakehost: combat flags drawn=1 aim_after=4.0 shoot_after=6.0 reload_after=5.0 combat=1 weapon=0x8B264946
+fakehost: weapons=0x67DC3FDE, 0x5C54EFD4, 0x6DFA071B
+fakehost: combat flags drawn=1 aim_after=4.0 shoot_after=6.0 reload_after=5.0 combat=1 weapon=0x67DC3FDE
 fakehost: weapon drawn
 fakehost: aim
 fakehost: shoot
@@ -324,9 +338,8 @@ fakehost: reload on
 fakehost: reload off
 fakehost: spawn epoch=1 n=5
 ```
-В игре-госте: все NPC с револьвером; через 3 с достают его, позже целятся
-(стоят неподвижно), стреляют (Drawn|Aiming + targetActorId=1),
-перезаряжаются.
+В игре-госте: NPC с валидным оружием; через 3 с достают, целятся
+(неподвижно), стреляют (Drawn|Aiming + targetActorId=1), перезаряжаются.
 
 **Проверка полей в сети (игровой хост → fake guest):**
 ```powershell
@@ -382,7 +395,8 @@ fakeguest: target_frames=N
 | `--scenario-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | E3a: откуда брать `dynScenario=0x...` fallback (пустая строка — встроенный fallback) |
 | `--scenario-hash` | — | E3a: явный scenarioHash для всех сценарных акторов |
 | `--scenario-spacing` | 12.0 | E3a.4: радиус широкого кольца сценарных акторов (м), чтобы не накладывались на одну scenario point |
-| `--weapon` | `0x8B264946` | E3b: хэш оружия (`joaat weapon_revolver_cattleman`); 0 = без оружия |
+| `--weapon` | `0x67DC3FDE` | E3b: реальный RDR2 weapon hash (joaat имени НЕ подходит); 0 = без оружия |
+| `--weapon-list` | — | E3b: реальные хэши оружия через запятую, назначаются акторам round-robin |
 | `--drawn` | off | E3b: через 3 с после спавна флаг Drawn (4) |
 | `--aim-after` | 0 (off) | E3b: через SEC — Aiming+Drawn на 8 с, актор стоит |
 | `--shoot-after` | 0 (off) | E3b: через SEC — Drawn\|Aiming на 3 с (shoot) |

@@ -361,6 +361,16 @@ bool IsWeaponReady(unsigned int ped)
     return Call() != 0;
 }
 
+// E3b.2: «вооружён» по движку — мягкий критерий armed (IS_PED_ARMED(ped,1)).
+bool IsPedArmedEntity(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_ARMED);
+    Push(ped);
+    Push(static_cast<unsigned long long>(1));
+    return Call() != 0;
+}
+
 bool IsWeaponHolstered(unsigned int ped)
 {
     using namespace natives_api;
@@ -415,7 +425,7 @@ bool IsWeaponHashUsable(uint32_t hash)
     return hash != 0 && hash != static_cast<uint32_t>(natives::WEAPON_UNARMED);
 }
 
-void GiveWeaponToPedEntity(unsigned int ped, uint32_t weaponHash)
+uint32_t GiveWeaponToPedEntity(unsigned int ped, uint32_t weaponHash)
 {
     using namespace natives_api;
     Init(natives::GIVE_WEAPON_TO_PED);
@@ -432,7 +442,7 @@ void GiveWeaponToPedEntity(unsigned int ped, uint32_t weaponHash)
     Push(static_cast<unsigned long long>(1));   // bIgnoreUnlocks
     Push(0.5f);                                 // permanentDegradation
     Push(static_cast<unsigned long long>(0));   // p12
-    Call();
+    return static_cast<uint32_t>(Call());       // E3b.2: ret для диагностики
 }
 
 void RemoveWeaponFromPedEntity(unsigned int ped, uint32_t weaponHash)
@@ -1132,14 +1142,27 @@ void LogWeaponEvent(uint32_t actorId, uint32_t hash, const char* state)
                   actorId, hash, state);
 }
 
-// E3b.1: диагностика оружейного состояния движка (npc_debug=1, 1 строка/5 с).
+// E3b.2: диагностика give (возврат натива) и fail (armed не появился).
+void LogWeaponGive(uint32_t actorId, uint32_t hash, uint32_t ret, int ammo)
+{
+    sh_log::Write("actor: weapon give id=%u hash=0x%X ret=0x%X ammo=%d\n",
+                  actorId, hash, ret, ammo);
+}
+
+void LogWeaponFail(uint32_t actorId, uint32_t hash, uint32_t giveRet)
+{
+    sh_log::Write("actor: weapon fail id=%u hash=0x%X give_ret=0x%X armed=0\n",
+                  actorId, hash, giveRet);
+}
+
+// E3b.1/E3b.2: диагностика оружейного состояния движка (npc_debug=1, 5 с).
 void LogWeaponDebug(uint32_t actorId, bool ready, bool armed, uint32_t cur,
-                    uint32_t hash, int ammo, bool drawn)
+                    uint32_t held, uint32_t hash, int ammo, bool drawn)
 {
     sh_log::Write(
-        "actor: weapon dbg id=%u ready=%d armed=%d cur=0x%X hash=0x%X "
-        "ammo=%d drawn=%d\n",
-        actorId, ready ? 1 : 0, armed ? 1 : 0, cur, hash, ammo,
+        "actor: weapon dbg id=%u ready=%d armed=%d cur=0x%X held=0x%X "
+        "hash=0x%X ammo=%d drawn=%d\n",
+        actorId, ready ? 1 : 0, armed ? 1 : 0, cur, held, hash, ammo,
         drawn ? 1 : 0);
 }
 
@@ -1847,6 +1870,14 @@ struct Proxy
     unsigned int equipWaitStartTick = 0;
     bool equipWaitActive = false;
     unsigned int lastWeaponDbgTick = 0;
+    // E3b.2: возврат GIVE_WEAPON_TO_PED, retry и диагностика give/armed.
+    uint32_t weaponGiveRet = 0;
+    int weaponGiveAttempts = 0;
+    unsigned int weaponGiveTick = 0;
+    bool weaponGiveFailLogged = false;
+    bool weaponDrawnUnverified = false;
+    unsigned int weaponEquipDemandTick = 0;
+    bool weaponFailLogged = false;
 };
 
 std::map<uint32_t, Proxy> g_proxies;
@@ -2754,6 +2785,11 @@ void ApplyProxyRevive(Proxy& p)
     p.aimCaptured = false;
     p.prevAimFlag = false;
     p.equipWaitActive = false;
+    p.weaponGiveRet = 0;
+    p.weaponGiveAttempts = 0;
+    p.weaponGiveFailLogged = false;
+    p.weaponFailLogged = false;
+    p.weaponDrawnUnverified = false;
     LogRevive(p.actorId);
 }
 
@@ -3031,6 +3067,8 @@ void ProcessActorWeapons(unsigned int tick)
             IsWeaponHashUsable(p.weaponHash) ? p.weaponHash : 0;
 
         // 1) Выдать/сменить/убрать оружие по хэшу из ActorSpawn/heartbeat.
+        // E3b.2: GIVE_WEAPON_TO_PED с невалидным хэшем молча возвращает 0 —
+        // логируем ret, при ret==0 повторяем ровно 1 раз через 30 тиков.
         if (wantWeapon != p.weaponGiven)
         {
             if (p.weaponGiven)
@@ -3041,13 +3079,33 @@ void ProcessActorWeapons(unsigned int tick)
                 p.aimCaptured = false;
                 p.weaponAimTaskActive = false;
                 p.equipWaitActive = false;
+                p.weaponGiveFailLogged = false;
+                p.weaponFailLogged = false;
             }
             if (wantWeapon)
             {
-                GiveWeaponToPedEntity(p.handle, wantWeapon);
+                p.weaponGiveRet = GiveWeaponToPedEntity(p.handle, wantWeapon);
+                p.weaponGiveAttempts = 1;
+                p.weaponGiveTick = tick;
                 SetPedInfiniteAmmoEntity(p.handle, wantWeapon);
                 SetPedInfiniteClipEntity(p.handle, true);
                 p.weaponGiven = wantWeapon;
+                LogWeaponGive(p.actorId, wantWeapon, p.weaponGiveRet, 999);
+            }
+        }
+        else if (wantWeapon && p.weaponGiveAttempts == 1 &&
+                 p.weaponGiveRet == 0 && !p.weaponGiveFailLogged &&
+                 (tick - p.weaponGiveTick) >= 30)
+        {
+            // Ретрай 1 раз: возможно модель/оружие ещё не были готовы.
+            p.weaponGiveRet = GiveWeaponToPedEntity(p.handle, wantWeapon);
+            p.weaponGiveAttempts = 2;
+            p.weaponGiveTick = tick;
+            LogWeaponGive(p.actorId, wantWeapon, p.weaponGiveRet, 999);
+            if (p.weaponGiveRet == 0)
+            {
+                p.weaponGiveFailLogged = true;
+                LogWeaponFail(p.actorId, wantWeapon, p.weaponGiveRet);
             }
         }
         if (!p.weaponGiven)
@@ -3065,9 +3123,12 @@ void ProcessActorWeapons(unsigned int tick)
         const bool wantAim = p.weaponAimFlag || p.weaponShootPulse;
         const bool wantReload = p.weaponReloadFlag;
 
-        // 2) DRAW: Drawn (или боевая задача) -> SET_CURRENT_PED_WEAPON(
-        // equipNow=true) и проверка ФАКТИЧЕСКОГО holster-состояния движка.
-        if ((p.weaponDrawnFlag || wantAim || wantReload) && !p.weaponInHands)
+        // 2) DRAW не гейтится готовностью: при Drawn/aim/shoot/reload всегда
+        // SET_CURRENT_PED_WEAPON(equipNow=true); `state=drawn` при armed/ready,
+        // иначе через 2 с `drawn(unverified)` — оружие должно появиться визуально.
+        const bool wantDraw =
+            p.weaponDrawnFlag || wantAim || wantShoot || wantReload;
+        if (wantDraw && !p.weaponInHands)
         {
             SetCurrentPedWeaponEntity(p.handle, p.weaponGiven, true);
             if (!p.equipWaitActive)
@@ -3075,35 +3136,60 @@ void ProcessActorWeapons(unsigned int tick)
                 p.equipWaitActive = true;
                 p.equipWaitStartTick = tick;
             }
-            if (GetCurrentWeapon(p.handle) == p.weaponGiven &&
-                !IsWeaponHolstered(p.handle))
+            if (!p.weaponDrawnUnverified)
+            {
+                p.weaponDrawnUnverified = true;
+                p.weaponEquipDemandTick = tick;
+            }
+            const uint32_t curNow = GetCurrentWeapon(p.handle);
+            const uint32_t heldNow = GetHeldWeapon(p.handle);
+            const bool armedNow =
+                IsPedArmedEntity(p.handle) || curNow == p.weaponGiven ||
+                (heldNow != 0 &&
+                 heldNow != static_cast<uint32_t>(natives::WEAPON_UNARMED));
+            if (armedNow)
             {
                 p.weaponInHands = true;
                 p.equipWaitActive = false;
+                p.weaponDrawnUnverified = false;
+                p.weaponFailLogged = false;
                 LogWeaponEvent(p.actorId, p.weaponGiven, "drawn");
             }
+            else if (tick - p.weaponEquipDemandTick > 120)
+            {
+                p.weaponInHands = true;
+                p.weaponDrawnUnverified = false;
+                LogWeaponEvent(p.actorId, p.weaponGiven, "drawn(unverified)");
+            }
         }
-        else if (!p.weaponDrawnFlag && !wantAim && !wantShoot && !wantReload &&
-                 p.weaponInHands)
+        else if (!wantDraw && p.weaponInHands)
         {
             HidePedWeaponsEntity(p.handle);
             p.weaponInHands = false;
             p.aimCaptured = false;
             p.weaponAimTaskActive = false;
             p.equipWaitActive = false;
+            p.weaponDrawnUnverified = false;
             LogWeaponEvent(p.actorId, p.weaponGiven, "holstered");
         }
 
-        // 3) Готовность: armed = current == hash и оружие НЕ в кобуре;
-        // ready = armed && IS_PED_WEAPON_READY_TO_SHOOT.
+        // 3) E3b.2: мягкий armed — IS_PED_ARMED(ped,1) ИЛИ cur==hash ИЛИ
+        // held != 0/unarmed; НЕ требуем совпадения cur==hash.
         const uint32_t cur = GetCurrentWeapon(p.handle);
-        const bool armed =
-            cur == p.weaponGiven && !IsWeaponHolstered(p.handle);
+        const uint32_t held = GetHeldWeapon(p.handle);
+        const bool heldValid =
+            held != 0 && held != static_cast<uint32_t>(natives::WEAPON_UNARMED);
+        const bool armed = IsPedArmedEntity(p.handle) ||
+                           cur == p.weaponGiven || heldValid;
+        // ready для боя: armed и (готов стрелять ИЛИ в руках валидное оружие).
+        const bool ready = armed && (IsWeaponReady(p.handle) || heldValid);
         if (armed)
+        {
             p.weaponInHands = true;
-        const bool ready = armed && IsWeaponReady(p.handle);
+            p.weaponFailLogged = false;
+        }
 
-        // Ждём готовности до 2 с (120 тиков): добираем экипировку, если не armed.
+        // Ждём armed до 2 с; если так и не появился — один лог fail.
         if ((wantAim || wantShoot || wantReload) && !armed &&
             !p.equipWaitActive)
         {
@@ -3113,6 +3199,12 @@ void ProcessActorWeapons(unsigned int tick)
         }
         const bool equipExpired =
             p.equipWaitActive && (tick - p.equipWaitStartTick) > 120;
+        if ((wantAim || wantShoot || wantReload) && !armed && equipExpired &&
+            !p.weaponFailLogged)
+        {
+            p.weaponFailLogged = true;
+            LogWeaponFail(p.actorId, p.weaponGiven, p.weaponGiveRet);
+        }
 
         const bool shootDue = wantShoot && ready && taskCalls < 2 &&
             (tick - p.lastShootTick) >= kWeaponShootCooldownTicks;
@@ -3120,7 +3212,7 @@ void ProcessActorWeapons(unsigned int tick)
         // 4) AIM: точка захватывается ОДИН раз при переходе Aiming 0->1;
         // reissue только при смене оружия / heading>25° / 5 с. Лог — старт.
         const bool aimEdge = wantAim && !p.prevAimFlag;
-        if (aimEdge && ready && taskCalls < 2)
+        if (aimEdge && armed && taskCalls < 2)
         {
             const Vec3 pos = GetCoords(p.handle);
             const float rad = p.heading * kRadPerDeg;
@@ -3141,7 +3233,7 @@ void ProcessActorWeapons(unsigned int tick)
                 LogWeaponEvent(p.actorId, p.weaponGiven, "aim");
             }
         }
-        else if (wantAim && p.aimCaptured && ready && !shootDue &&
+        else if (wantAim && p.aimCaptured && armed && !shootDue &&
                  taskCalls < 2)
         {
             float dHeading = std::fabs(p.heading - p.aimCaptureHeading);
@@ -3185,8 +3277,8 @@ void ProcessActorWeapons(unsigned int tick)
             p.weaponAimTaskActive = false;
         }
 
-        // 5) SHOOT: только ready && armed, <=1/с, firingPattern=0.
-        if (wantShoot && ready && taskCalls < 2 &&
+        // 5) SHOOT: только armed (E3b.2 — без жёсткого cur==hash), <=1/с.
+        if (wantShoot && armed && taskCalls < 2 &&
             (tick - p.lastShootTick) >= kWeaponShootCooldownTicks)
         {
             const Vec3 pos = GetCoords(p.handle);
@@ -3204,7 +3296,7 @@ void ProcessActorWeapons(unsigned int tick)
         // 6) RELOAD: сначала отключить infinite clip (иначе магазин мгновенно
         // полный и TASK_RELOAD_WEAPON не играет), затем ammo=0, затем reload;
         // вернуть infinite clip через 2 с или при снятии флага.
-        if (wantReload && armed && (ready || equipExpired) && taskCalls < 2 &&
+        if (wantReload && armed && taskCalls < 2 &&
             !p.reloadInProgress)
         {
             SetPedInfiniteClipEntity(p.handle, false);
@@ -3230,8 +3322,8 @@ void ProcessActorWeapons(unsigned int tick)
         {
             p.lastWeaponDbgTick = tick;
             const int ammo = GetAmmoInClipEntity(p.handle, p.weaponGiven);
-            LogWeaponDebug(p.actorId, ready, armed, cur, p.weaponGiven, ammo,
-                           p.weaponInHands);
+            LogWeaponDebug(p.actorId, ready, armed, cur, held, p.weaponGiven,
+                           ammo, p.weaponInHands);
         }
 
         p.prevAimFlag = wantAim;
@@ -3290,6 +3382,11 @@ void QueueSpawnBatch(uint32_t epoch,
                 p.weaponHolsterPending = false;
                 p.weaponAimTaskActive = false;
                 p.reloadInProgress = false;
+                p.weaponGiveRet = 0;
+                p.weaponGiveAttempts = 0;
+                p.weaponGiveFailLogged = false;
+                p.weaponFailLogged = false;
+                p.weaponDrawnUnverified = false;
             }
             continue;
         }

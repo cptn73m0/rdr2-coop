@@ -84,7 +84,11 @@ K_ACTOR_FLAG_SCENARIO = 1 << 5
 K_ACTOR_FLAG_RELOADING = 1 << 6
 K_ACTOR_FLAG_AIMING = 1 << 7
 K_MOVE_STYLE_RIDE_HORSE = 3
-DEFAULT_WEAPON_NAME = "weapon_revolver_cattleman"
+# E3b: RDR2 weapon hashes are NOT joaat of the weapon name. These are real
+# hashes seen in game/probe logs (WEAPON_UNARMED=0xA2719263); joaat of
+# "weapon_revolver_cattleman" is rejected by GIVE_WEAPON_TO_PED.
+DEFAULT_WEAPON_HASH = 0x67DC3FDE
+DEFAULT_WEAPON_LIST = (0x67DC3FDE, 0x5C54EFD4, 0x6DFA071B)
 # E3a fallback scenario hashes (dynScenario values seen in probe logs).
 FALLBACK_SCENARIO_HASHES = [
     0x62A4554D, 0xF6CD006D, 0x4BF802FE, 0x85AE7E5D, 0x189292F9,
@@ -709,10 +713,14 @@ class FakeHost:
             if getattr(self.args, "scenario_names_list", None):
                 scenario_name = self.args.scenario_names_list[
                     idx % len(self.args.scenario_names_list)]
+        weapon_hash = 0
+        if getattr(self.args, "weapon_hashes", None):
+            weapon_hash = self.args.weapon_hashes[
+                (actor_id - 1) % len(self.args.weapon_hashes)]
         return Actor(actor_id, model, meta, (cx, cy, center[2]), angle,
                      spawn_time, motion, angle, gait, mounted, mount_model,
                      scenario, scenario_hash, scenario_name,
-                     weapon_hash=self.args.weapon_hash)
+                     weapon_hash=weapon_hash)
 
     def _make_actors(self, center):
         now = time.monotonic()
@@ -928,6 +936,9 @@ class FakeHost:
                     self.log.write(f"fakehost: WARN {a.scenario_warning}")
             else:
                 self.log.write("fakehost: scenario=0")
+            self.log.write(
+                "fakehost: weapons=" + ", ".join(
+                    f"0x{h:08X}" for h in getattr(a, "weapon_hashes", [])))
             self.log.write(
                 f"fakehost: combat flags drawn={int(a.drawn)} "
                 f"aim_after={a.aim_after:.1f} shoot_after={a.shoot_after:.1f} "
@@ -1491,9 +1502,15 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--revive-after", type=float, default=10.0,
                       help="E3a: seconds after death to revive that actor "
                            "(0 = stay dead)")
-    host.add_argument("--weapon", default=hex(joaat(DEFAULT_WEAPON_NAME)),
-                      help="E3b: weapon hash written to ActorSpawn.weaponHash "
-                           "for all actors (default: joaat weapon_revolver_cattleman)")
+    host.add_argument("--weapon", default=hex(DEFAULT_WEAPON_HASH),
+                      help="E3b: real RDR2 weapon hash for ActorSpawn.weaponHash "
+                           f"(default 0x{DEFAULT_WEAPON_HASH:08X}; joaat of the "
+                           "weapon name is NOT valid)")
+    host.add_argument("--weapon-list",
+                      default=None,
+                      help="E3b: comma-separated real weapon hashes assigned to "
+                           "actors round-robin (e.g. "
+                           "0x67DC3FDE,0x5C54EFD4,0x6DFA071B)")
     host.add_argument("--drawn", action="store_true",
                       help="E3b: keep holstered first 3 s, then set Drawn flag")
     host.add_argument("--aim-after", type=float, default=0.0,
@@ -1632,6 +1649,21 @@ def resolve_args(args):
         except ValueError:
             raise SystemExit(f"--weapon must be a hash (hex or decimal): "
                              f"{args.weapon!r}")
+        if args.weapon_list:
+            weapon_hashes = []
+            for part in str(args.weapon_list).replace(";", ",").split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                try:
+                    weapon_hashes.append(int(part, 0) & 0xFFFFFFFF)
+                except ValueError:
+                    raise SystemExit(f"--weapon-list: bad hash {part!r}")
+            if not weapon_hashes:
+                raise SystemExit("--weapon-list is empty")
+            args.weapon_hashes = weapon_hashes
+        else:
+            args.weapon_hashes = [args.weapon_hash]
         if args.aim_after < 0 or args.shoot_after < 0 or args.reload_after < 0:
             raise SystemExit("--aim-after/--shoot-after/--reload-after "
                              "must be >= 0")

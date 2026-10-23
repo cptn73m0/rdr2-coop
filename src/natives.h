@@ -86,6 +86,8 @@ constexpr unsigned long long IS_PED_JUMPING                = 0xCEDABC5900A0BF97u
 constexpr unsigned long long IS_PED_FALLING                = 0xFB92A102F1C4DFA3ull;
 constexpr unsigned long long IS_PED_SPRINTING              = 0x57E457CD2C0FC168ull;
 constexpr unsigned long long IS_PED_WEAPON_READY_TO_SHOOT  = 0xB80CA294F2F26749ull;
+// E3b.2: «вооружён» (IS_PED_ARMED(ped, flags)) — мягкий критерий armed.
+constexpr unsigned long long IS_PED_ARMED                  = 0xCB690F680A3EA971ull;
 // Игрок реально целится (свободный прицел, не «оружие наготове»).
 constexpr unsigned long long IS_PLAYER_FREE_AIMING          = 0x936F967D4BE1CE9Dull;
 constexpr unsigned long long GET_ENTITY_HEALTH             = 0x82368787EA73C0F7ull;
