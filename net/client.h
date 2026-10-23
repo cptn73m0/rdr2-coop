@@ -86,6 +86,10 @@ public:
     using OnActorOutfit = std::function<void(
         uint32_t epoch, uint32_t actorId, const net::OutfitState& outfit)>;
     using OnActorResyncRequest = std::function<void(const net::ActorResyncPayload&)>;
+    // E2c-b (v16): точная внешность NPC (asset/tint) от хоста.
+    using OnActorAppearance = std::function<void(
+        uint32_t epoch, uint32_t actorId,
+        const std::vector<net::ActorAppearanceEntry>& entries)>;
 
     Client();
     ~Client();
@@ -128,6 +132,11 @@ public:
     void SendActorDespawn(const net::ActorDespawnPayload& msg);
     void SendActorEvent(const net::ActorEventPayload& ev);
     void SendActorOutfit(uint32_t epoch, uint32_t actorId, const net::OutfitState& outfit);
+    // E2c-b (v16): отправить внешность актёра (хост). Пустой список не шлётся
+    // (count=0 невалиден на проводе); count = число валидных компонентов,
+    // максимум kActorAppearanceMaxComponents=16; reserved обнуляется.
+    void SendActorAppearance(uint32_t epoch, uint32_t actorId,
+                             const std::vector<net::ActorAppearanceEntry>& entries);
     // E1 (v15): resync-запрос гостя хосту (0x1D). Сервер валидирует и релеит
     // ТОЛЬКО хосту. Возвращает false, если ещё нет JOIN_OK / сокет закрыт /
     // кадр не удалось поставить в очередь.
@@ -163,6 +172,7 @@ public:
     void SetActorDespawn(OnActorDespawn cb);
     void SetActorEvent(OnActorEvent cb);
     void SetActorOutfit(OnActorOutfit cb);
+    void SetActorAppearance(OnActorAppearance cb);
     void SetActorResyncRequest(OnActorResyncRequest cb);
 
     ClientState State() const;
@@ -218,6 +228,7 @@ private:
     OnActorDespawn onActorDespawn_;
     OnActorEvent onActorEvent_;
     OnActorOutfit onActorOutfit_;
+    OnActorAppearance onActorAppearance_;
     OnActorResyncRequest onActorResyncRequest_;
     std::atomic<bool> joined_{false};
     std::atomic<bool> isHost_{false};

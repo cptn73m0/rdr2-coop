@@ -215,12 +215,14 @@ for _limit_name, (_actual, _expected) in _PINNED_LIMITS.items():
 KNOWN_FAIL_TESTS = set()
 
 # --------------------------------------------------------------------------
-# Protocol v15 (E0): actor replication messages 0x18..0x1D.
-# The v15 wire format is signed off in the net-review E0 task; these tests are
+# Protocol v15 (E0) + v16 (E2c-b): actor replication messages 0x18..0x1E.
+# The v15 wire format is signed off in the net-review E0 task; the v16
+# ActorAppearance extension is signed off in the E2c-b task. These tests are
 # skipped while net/protocol.h is still v14 (E0 not merged) and become strict
 # automatically once the header carries the Actor* messages. Expected values
-# below are pinned to the E0 spec: spawn 64 B, frame 32 B, max 12 actors,
-# batch sizes 776/392 B, despawn/resync 12 B, event 32 B, outfit 792 B.
+# below are pinned to the E0/E2c-b spec: spawn 64 B, frame 32 B, max 12 actors,
+# batch sizes 776/392 B, despawn/resync 12 B, event 32 B, outfit 792 B,
+# appearance header 12 B + entry 28 B (max 12 + 16*28 = 460 B, 16 компонентов).
 # --------------------------------------------------------------------------
 _ACTOR_MSG_PINS = {
     "ActorSpawnBatch": 0x18,
@@ -300,6 +302,49 @@ if PROTO >= 15:
     require(ACTOR_RESYNC_SIZE == 12, "ActorResync expected 12 B")
     ACTOR_AVAILABLE = True
 
+# --------------------------------------------------------------------------
+# Protocol v16 (E2c-b): ActorAppearance (0x1E) — точная внешность NPC.
+# header 12 B (epoch u32, actorId u32, count u8, pad[3]) + count × 28 B
+# (drawable/albedo/normal/material/palette u32, tint0/1/2 i16, reserved u16);
+# count 1..kActorAppearanceMaxComponents (16), максимум 12 + 16*28 = 460 B.
+# Только host -> guest.
+# --------------------------------------------------------------------------
+APPEARANCE_AVAILABLE = False
+TYPE_ACTOR_APPEARANCE = None
+ACTOR_APPEARANCE_ENTRY_SIZE = 0
+ACTOR_APPEARANCE_HEADER_SIZE = 0
+ACTOR_APPEARANCE_MAX = 0
+MAX_ACTOR_APPEARANCE = 0
+if PROTO >= 16:
+    _missing_appearance = [name for name in ("ActorAppearance",) if name not in MSG]
+    for _name in ("ActorAppearanceEntry", "ActorAppearanceHeader"):
+        if _struct_size_optional(_name) is None:
+            _missing_appearance.append(_name)
+    _max_components_appearance = _proto_const_optional(
+        "kActorAppearanceMaxComponents")
+    if _missing_appearance or _max_components_appearance is None:
+        raise RuntimeError(
+            "protocol v16 is present but ActorAppearance spec is incomplete: "
+            f"missing={_missing_appearance}, "
+            f"kActorAppearanceMaxComponents={_max_components_appearance}")
+    require(MSG["ActorAppearance"] == 0x1E,
+            f"Msg::ActorAppearance expected 0x1E, got {MSG['ActorAppearance']}")
+    require(_struct_size("ActorAppearanceEntry") == 28,
+            "ActorAppearanceEntry expected 28 B (v16 spec)")
+    require(_struct_size("ActorAppearanceHeader") == 12,
+            "ActorAppearanceHeader expected 12 B (v16 spec)")
+    MAX_ACTOR_APPEARANCE = _max_components_appearance
+    require(MAX_ACTOR_APPEARANCE == 16,
+            f"kActorAppearanceMaxComponents expected 16, got "
+            f"{MAX_ACTOR_APPEARANCE}")
+    ACTOR_APPEARANCE_MAX = 12 + MAX_ACTOR_APPEARANCE * 28
+    require(ACTOR_APPEARANCE_MAX == 460,
+            f"ActorAppearance max expected 460 B, got {ACTOR_APPEARANCE_MAX}")
+    TYPE_ACTOR_APPEARANCE = MSG["ActorAppearance"]
+    ACTOR_APPEARANCE_ENTRY_SIZE = 28
+    ACTOR_APPEARANCE_HEADER_SIZE = 12
+    APPEARANCE_AVAILABLE = True
+
 # Names of the conditional v15 actor tests (skipped while E0 is not merged).
 ACTOR_TESTS = {
     "test_actor_spawn_host_only",
@@ -308,6 +353,12 @@ ACTOR_TESTS = {
     "test_actor_resync_direction",
     "test_actor_validation_drops",
     "test_actor_duplicate_actor_ids",
+}
+
+# Names of the conditional v16 ActorAppearance tests (skipped while v16 missing).
+APPEARANCE_TESTS = {
+    "test_actor_appearance_host_only",
+    "test_actor_appearance_validation",
 }
 
 # 50-100 rounds of the JOIN race per task; overridable for slow CI.
@@ -440,6 +491,30 @@ def actor_resync(epoch=1, last_seq=0, reason=0):
     payload = struct.pack("<IIB3x", epoch, last_seq, reason)
     require(len(payload) == ACTOR_RESYNC_SIZE, "ActorResync builder mismatch")
     return payload
+
+
+def actor_appearance_entry(drawable=0xCF7E73BE, albedo=1, normal=2,
+                           material=3, palette=4,
+                           tint0=0, tint1=0, tint2=0, reserved=0):
+    require(APPEARANCE_AVAILABLE,
+            "v16 ActorAppearance is not in net/protocol.h yet")
+    rec = struct.pack("<IIIIIhhhH", drawable, albedo, normal, material,
+                      palette, tint0, tint1, tint2, reserved)
+    require(len(rec) == ACTOR_APPEARANCE_ENTRY_SIZE,
+            f"ActorAppearanceEntry builder mismatch: "
+            f"{len(rec)} != {ACTOR_APPEARANCE_ENTRY_SIZE}")
+    return rec
+
+
+def actor_appearance(epoch=1, actor_id=1, entries=None):
+    require(APPEARANCE_AVAILABLE,
+            "v16 ActorAppearance is not in net/protocol.h yet")
+    entries = list(entries if entries is not None
+                   else [actor_appearance_entry()])
+    header = struct.pack("<IIB3x", epoch, actor_id, len(entries))
+    require(len(header) == ACTOR_APPEARANCE_HEADER_SIZE,
+            "ActorAppearance header must be 12 B")
+    return header + b"".join(entries)
 
 
 def frame_bytes(type_, payload):
@@ -1132,10 +1207,10 @@ def test_worldstate_host_only(exe, tmp):
 
 
 # --------------------------------------------------------------------------
-# Protocol v15 (E0): actor replication messages 0x18..0x1D.
+# Protocol v15 (E0) / v16 (E2c-b): actor replication messages 0x18..0x1E.
 # Tests are conditional on net/protocol.h carrying the Actor* messages; while
-# E0 is not merged they are reported as [skip]. After merge they are strict and
-# match the E0 spec in docs/PROTOCOL.md.
+# E0/E2c-b are not merged they are reported as [skip]. After merge they are
+# strict and match the spec in docs/PROTOCOL.md.
 # --------------------------------------------------------------------------
 
 def _actor_pair(srv):
@@ -1411,6 +1486,87 @@ def test_actor_duplicate_actor_ids(exe, tmp):
                      actor_frame(actor_id=7, seq=1)])
         _actor_expect_drop(host, guest, TYPE_ACTOR_FRAMES, dup_frames,
                            "ActorFrames(duplicate actorId)")
+        host.close()
+        guest.close()
+
+
+def test_actor_appearance_host_only(exe, tmp):
+    log("[test] v16 actor appearance: host-only relay + max size")
+    require(APPEARANCE_AVAILABLE, "v16 ActorAppearance messages missing")
+    with Server(exe, tmp / "actor_appearance") as srv:
+        host, guest = _actor_pair(srv)
+
+        one = actor_appearance(epoch=1, actor_id=7,
+                               entries=[actor_appearance_entry()])
+        require(len(one) == ACTOR_APPEARANCE_HEADER_SIZE +
+                           ACTOR_APPEARANCE_ENTRY_SIZE,
+                f"appearance size {len(one)} != header+entry")
+        _actor_expect_relay(host, guest, TYPE_ACTOR_APPEARANCE, one,
+                            "ActorAppearance(1)")
+
+        max_entries = [actor_appearance_entry(drawable=0x1000 + i,
+                                              tint0=i, tint1=i, tint2=i)
+                       for i in range(MAX_ACTOR_APPEARANCE)]
+        max_batch = actor_appearance(epoch=2, actor_id=8, entries=max_entries)
+        require(len(max_batch) == ACTOR_APPEARANCE_MAX,
+                f"max appearance {len(max_batch)} != {ACTOR_APPEARANCE_MAX}")
+        _actor_expect_relay(host, guest, TYPE_ACTOR_APPEARANCE, max_batch,
+                            "ActorAppearance(max)")
+
+        guest.sendall(frame_bytes(TYPE_ACTOR_APPEARANCE, one))
+        require(recv_type(host, TYPE_ACTOR_APPEARANCE, 0.5) is None,
+                "guest ActorAppearance must be blocked (host-only)")
+        host.close()
+        guest.close()
+
+
+def test_actor_appearance_validation(exe, tmp):
+    log("[test] v16 actor appearance: exact size/count/epoch/actorId/reserved")
+    require(APPEARANCE_AVAILABLE, "v16 ActorAppearance messages missing")
+    with Server(exe, tmp / "actor_appearance_validate") as srv:
+        host, guest = _actor_pair(srv)
+
+        one = actor_appearance(epoch=1, actor_id=7)
+        require(len(one) == ACTOR_APPEARANCE_HEADER_SIZE +
+                           ACTOR_APPEARANCE_ENTRY_SIZE,
+                f"appearance size {len(one)} != header+entry")
+        # Точный размер: 12 + count * 28.
+        _actor_expect_drop(host, guest, TYPE_ACTOR_APPEARANCE, one[:-1],
+                           "short ActorAppearance")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_APPEARANCE, one + b"\x00",
+                           "oversized ActorAppearance")
+        # count=0 невалиден (пустой список не шлётся), count>16 (17) — тоже.
+        header_only = struct.pack("<IIB3x", 1, 7, 0)
+        require(len(header_only) == ACTOR_APPEARANCE_HEADER_SIZE,
+                "header-only appearance size mismatch")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_APPEARANCE, header_only,
+                           "ActorAppearance(count=0)")
+        too_many = actor_appearance(
+            epoch=1, actor_id=7,
+            entries=[actor_appearance_entry(drawable=0x100 + i)
+                     for i in range(MAX_ACTOR_APPEARANCE + 1)])
+        require(len(too_many) == ACTOR_APPEARANCE_HEADER_SIZE +
+                                (MAX_ACTOR_APPEARANCE + 1) *
+                                ACTOR_APPEARANCE_ENTRY_SIZE,
+                "count>max appearance size mismatch")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_APPEARANCE, too_many,
+                           "ActorAppearance(count>max)")
+        # epoch=0 / actorId=0 / reserved!=0 невалидны.
+        _actor_expect_drop(host, guest, TYPE_ACTOR_APPEARANCE,
+                           actor_appearance(epoch=0, actor_id=7),
+                           "ActorAppearance(epoch=0)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_APPEARANCE,
+                           actor_appearance(epoch=1, actor_id=0),
+                           "ActorAppearance(actorId=0)")
+        _actor_expect_drop(host, guest, TYPE_ACTOR_APPEARANCE,
+                           actor_appearance(
+                               epoch=1, actor_id=7,
+                               entries=[actor_appearance_entry(reserved=1)]),
+                           "ActorAppearance(reserved!=0)")
+        # Unknown message type must not be relayed and must not crash.
+        host.sendall(frame_bytes(0x7E, b"\x00" * 32))
+        require(recv_type(guest, 0x7E, 0.5) is None,
+                "unknown type must not be relayed")
         host.close()
         guest.close()
 
@@ -2141,13 +2297,15 @@ def main():
         test_payload_sizes_and_host_only_messages,
         test_relay_misc_messages,
         test_worldstate_host_only,
-        # Protocol v15 E0 actor tests (skipped until net/protocol.h v15 lands).
+        # Protocol v15 (E0) actor tests + v16 (E2c-b) ActorAppearance tests.
         test_actor_spawn_host_only,
         test_actor_frames_host_only,
         test_actor_despawn_event_outfit,
         test_actor_resync_direction,
         test_actor_validation_drops,
         test_actor_duplicate_actor_ids,
+        test_actor_appearance_host_only,
+        test_actor_appearance_validation,
         test_actor_gating_no_actor_log,
         test_oversized_and_truncated,
         test_host_migration,
@@ -2169,6 +2327,11 @@ def main():
                 log(f"[skip] {test.__name__}: protocol v15 Actor* messages are "
                     "not in net/protocol.h yet (E0 merge pending)")
                 continue
+            if test.__name__ in APPEARANCE_TESTS and not APPEARANCE_AVAILABLE:
+                skipped += 1
+                log(f"[skip] {test.__name__}: protocol v16 ActorAppearance is "
+                    "not in net/protocol.h yet (E2c-b merge pending)")
+                continue
             try:
                 test(exe, tmp)
                 if test.__name__ in KNOWN_FAIL_TESTS:
@@ -2185,10 +2348,14 @@ def main():
                     log(f"[FAIL] {test.__name__}: {exc}")
         log("")
         skipped_part = f", {skipped} skipped (E0 pending)" if skipped else ""
+        appearance_status = ("pending" if not APPEARANCE_AVAILABLE else
+                             f"on({MAX_ACTOR_APPEARANCE}comp/"
+                             f"{ACTOR_APPEARANCE_MAX}B)")
         log(f"{passed} passed, {failures} failed, {known_fails} known-fail"
             f"{skipped_part} "
             f"(protocol v{PROTO}, outfit={OUTFIT_SIZE}B, "
             f"actors={'on' if ACTOR_AVAILABLE else 'pending'}, "
+            f"appearance={appearance_status}, "
             f"cap={CAP_ACTIVE}/rate={CAP_RATE}/s, "
             f"name<={MAX_NAME_BYTES}B)")
         if failures:

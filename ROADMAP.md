@@ -3,13 +3,16 @@
 Кооператив для одиночного сюжета RDR2. Дорожная карта показывает этапы,
 порядок работ и текущий прогресс. Отмечаем галочками по мере выполнения.
 
-**Актуально на:** 21.10.2026
+**Актуально на:** 23.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** v15 (E0: каркас actor-сообщений для NPC-репликации;
-`kMaxActors=12`, 0x18–0x1D). Рабочая база/игровой стабильный тег — **stable-v14**
-(пед-призрак, лошадь, одежда shop+wearable, выстрелы, время/погода).
-Синхронизация wearable states реализована и проверяется в игре; **репликация
-NPC не включена** (`npc_actor=0`, реализация по этапам E1–E4).
+**Текущий протокол:** v15 (actor-репликация NPC E1–E3b, 0x18–0x1D);
+**v16 (0x1E actor asset/tint для E2c-b)** — в разработке.
+Рабочая база/игровой стабильный тег — **stable-v14** (пед-призрак, лошадь,
+одежда shop+wearable, выстрелы, время/погода). NPC-репликация реализована и
+проверена на **одном ПК** (fake host/guest): E1 human-only, E2a meta-outfit,
+E2b всадники, E3a сценарии/смерть, E3b оружие/бой; E2c-a resolver работает
+механически, E2c-b — v16. `npc_actor=0` по умолчанию; второй ПК ARINA офлайн
+(старая сборка), двух-ПК приёмка ещё впереди.
 
 ---
 
@@ -64,25 +67,43 @@ NPC не включена** (`npc_actor=0`, реализация по этапа
 
 ## Фаза 5 — P1: репликация мира/NPC
 
-### NPC-репликация v15 — статус «E0 каркас, реализация по этапам»
-- [x] E0: протокол v15 `actor`-сообщения 0x18–0x1D (spawn/frames/despawn/
-      event/outfit/resync), `kMaxActors=12`, static_assert размеров
+### NPC-репликация — E1–E3b реализованы, E2c-b в работе (v16)
+- [x] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (22% NPC имеют
+      metaOutfit hash; сценарии/модели/лошади/оружие)
+- [x] E0: протокол v15 `actor`-сообщения 0x18–0x1D, `kMaxActors=12`,
+      static_assert размеров
 - [x] E0: серверный host-only relay + валидация (exact size, count≤12,
-      epoch/actorId!=0, finite coords), resync guest→host only
+      epoch/actorId!=0, finite coords, duplicate actorId), resync guest→host
 - [x] E0: integration-тесты v15 (host-only, размеры/лимиты, epoch/actorId,
-      NaN/Inf, resync-направление, gating `actor:`=0); активируются при PROTO≥15
-- [x] E0: серверная проверка duplicate actorId + зелёный полный actor-suite
-      (27/27 integration на build-server-ci)
-- [ ] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (в работе)
-- [ ] E1: discovery/router (radius 60 м, cap 12, стабильные actorId), lifecycle
-      spawn/despawn/resync/timeout, интерполяция/lead, `npc_actor=1`
-- [ ] E2: анимации/сценарии/mounted/бой/смерть NPC
-- [ ] E3: outfit/meta-outfit/wearable «неотличимость» внешности NPC
-- [ ] E4: resync/reconnect/host migration, бюджет Tick p95, FPS-метрики,
-      игровой чек-лист «неотличимости»
-- [ ] Игровая приёмка: не включать `npc_actor` до E1-гейта (headless-тесты +
-      метрики p95/tick/FPS), известные ограничения — лицо/волосы, точные
-      анимации, катсцены
+      NaN/Inf, resync-направление, gating `actor:`=0); 27/27 на build-server-ci
+- [x] E1: human-only discovery 10 Гц вокруг обоих игроков, cap 12, roster
+      actorId/epoch, spawn heartbeat 2.5 с, frames 10 Гц, despawn
+      gone/dead/evicted, resync 0x1D; guest-прокси spawn≤2/тик + model load,
+      trail-навигация/in-place task update, gait с хоста — **подтверждено в игре**
+- [x] E2a: meta-outfit внешность NPC (probe hash; 5/5 applied, failed=0),
+      heartbeat-пересылка и guest reapply (`npc_appearance=1`)
+- [x] E2b: всадники rider+horse (`ActorSpawn.reserved` = mount model), seat
+      watchdog, dismount/despawn cleanup; подтверждено mount spawn ×9, failed=0;
+      плавное движение gait_restart=0, err_p95≈0
+- [x] E3a: сценарии (optimistic confirm, анти-наложение skip 8 м + warp revert
+      3 м — визуально «двое курят на разных местах»), death/revive
+      (SET_ENTITY_HEALTH 0 / RESURRECT_PED, труп остаётся)
+- [x] E3b: оружие (валидные hash через GIVE_WEAPON_TO_PED), боевая стойка,
+      aim, серии выстрелов (TASK_SHOOT_AT_COORD + переприцеливание),
+      reload с отключением infinite clip; state=shoot=1450, reload=385,
+      weapon fail=0
+- [x] E2c-a: host outfit brute-force resolver (`metaped_outfits.lua` →
+      `gen_metaped_outfits.h`, 890 моделей / 4568 кандидатов,
+      `_IS_META_PED_OUTFIT_EQUIPPED`, бюджет 24 натива/тик, heartbeat) —
+      механически работает; для random ambient NPC resolved=0/failed=11
+- [ ] **E2c-b:** asset/tint capture+apply, протокол **v16 0x1E** — в работе
+- [ ] E3c backlog: животные/лошадиные трупы, транспорт/NPC-водители,
+      mission-акторы (вне текущего human-only E1–E3b)
+- [ ] E4 backlog: двух-ПК приёмка (ARINA: дозалив актуальной сборки),
+      host migration/resync под нагрузкой, Tick p95/FPS-бюджеты и игровой
+      чек-лист «неотличимости»; `npc_actor` не включать в рабочую сборку до неё
+- [ ] Известные ограничения: лицо/волосы/борода, точные анимации/катсцены,
+      ambient-мир гостя не подавляется (возможны «двойники»)
 
 - [x] `WorldSnapshot` (0x10), хост-авторитет
 - [x] Сканер NPC 60 м, до 64 сущностей (32 Ped + 16 Vehicle + 16 Object),

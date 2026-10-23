@@ -13,7 +13,8 @@ namespace net {
 // v14: OutfitState + wearable states (открытая/закрытая куртка, рукава и т.п.).
 // v15 (E0): actor-репликация NPC — ActorSpawnBatch/ActorFrames/ActorDespawn/
 //           ActorEvent/ActorOutfit (хост) и ActorResync (гость -> хост).
-constexpr uint16_t kProtocolVersion = 15;
+// v16 (E2c-b): ActorAppearance — точная внешность NPC (asset/tint), хост -> гость.
+constexpr uint16_t kProtocolVersion = 16;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -59,6 +60,8 @@ enum class Msg : uint8_t {
     ActorEvent      = 0x1B, // хост -> сервер -> гость: событие актёра
     ActorOutfit     = 0x1C, // хост -> сервер -> гость: outfit актёра
     ActorResync     = 0x1D, // гость -> сервер -> хосту: запрос resync
+    // E2c-b (v16): точная внешность NPC — только хост -> сервер -> гость.
+    ActorAppearance = 0x1E, // хост -> сервер -> гость: asset/tint внешности
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -485,6 +488,45 @@ struct ActorResyncPayload {
 };
 static_assert(sizeof(ActorResyncPayload) == 12,
               "ActorResyncPayload must be 12 bytes");
+
+// ---------------- E2c-b (v16): точная внешность NPC ----------------
+// Хост присылает полный набор (snapshot) валидных компонентов внешности
+// одного актёра: до kActorAppearanceMaxComponents=16 записей (у человека
+// обычно 8-16 слоёв; меньшее ограничение обрезало бы одежду).
+// Запись описывает компонент внешности: drawable/albedo/normal/material/
+// palette (хэши метаданных; 0 допустим для необязательных guid/слотов)
+// и три tint-индекса. reserved = 0 (зарезервирован под будущее;
+// сервер/клиент отбрасывают ненулевой reserved).
+constexpr std::size_t kActorAppearanceMaxComponents = 16;
+
+struct ActorAppearanceEntry {
+    uint32_t drawable = 0;
+    uint32_t albedo = 0;
+    uint32_t normal = 0;
+    uint32_t material = 0;
+    uint32_t palette = 0;
+    int16_t  tint0 = 0;
+    int16_t  tint1 = 0;
+    int16_t  tint2 = 0;
+    uint16_t reserved = 0;
+};
+static_assert(sizeof(ActorAppearanceEntry) == 28,
+              "ActorAppearanceEntry must be 28 bytes");
+
+struct ActorAppearanceHeader {
+    uint32_t epoch = 0;
+    uint32_t actorId = 0;
+    uint8_t  count = 0; // 1..kActorAppearanceMaxComponents (0 не шлём)
+    uint8_t  pad[3] = {0, 0, 0};
+};
+static_assert(sizeof(ActorAppearanceHeader) == 12,
+              "ActorAppearanceHeader must be 12 bytes");
+// payload = header + count * ActorAppearanceEntry; максимум 12 + 16*28 = 460.
+constexpr std::size_t kActorAppearanceMaxSize =
+    sizeof(ActorAppearanceHeader) +
+    kActorAppearanceMaxComponents * sizeof(ActorAppearanceEntry);
+static_assert(kActorAppearanceMaxSize == 460,
+              "ActorAppearance max payload must be 460 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

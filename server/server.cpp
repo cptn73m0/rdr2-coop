@@ -394,6 +394,35 @@ bool IsValidActorOutfit(const std::vector<uint8_t>& pay)
     return msg.epoch != 0 && msg.actorId != 0;
 }
 
+// E2c-b (v16): точная внешность NPC. Точный размер header+count*entry,
+// count 1..kActorAppearanceMaxComponents (16), epoch/actorId != 0,
+// reserved каждой записи = 0.
+bool IsValidActorAppearance(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() < sizeof(net::ActorAppearanceHeader))
+        return false;
+    net::ActorAppearanceHeader h{};
+    std::memcpy(&h, pay.data(), sizeof(h));
+    if (h.epoch == 0 || h.actorId == 0)
+        return false;
+    if (h.count < 1 || h.count > net::kActorAppearanceMaxComponents)
+        return false;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.count) * sizeof(net::ActorAppearanceEntry);
+    if (pay.size() != need)
+        return false;
+    const uint8_t* data = pay.data() + sizeof(h);
+    for (uint8_t i = 0; i < h.count; ++i)
+    {
+        net::ActorAppearanceEntry e{};
+        std::memcpy(&e, data + static_cast<std::size_t>(i) * sizeof(e),
+                    sizeof(e));
+        if (e.reserved != 0)
+            return false;
+    }
+    return true;
+}
+
 bool IsValidActorResync(const std::vector<uint8_t>& pay)
 {
     if (pay.size() != sizeof(net::ActorResyncPayload))
@@ -1259,6 +1288,14 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
             {
                 RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorOutfit,
                               IsValidActorOutfit, "ActorOutfit");
+                break;
+            }
+            case net::Msg::ActorAppearance:
+            {
+                // E2c-b (v16): точная внешность NPC — только хост -> гостям.
+                RelayHostOnly(sock, name, pay,
+                              (uint8_t)net::Msg::ActorAppearance,
+                              IsValidActorAppearance, "ActorAppearance");
                 break;
             }
             case net::Msg::ActorResync:

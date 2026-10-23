@@ -5330,6 +5330,8 @@ void InitNetworkClient()
     g_netClient.SetActorEvent(actor_sync::OnActorEvent);
     g_netClient.SetActorOutfit(actor_sync::OnActorOutfit);
     g_netClient.SetActorResyncRequest(actor_sync::OnActorResyncRequest);
+    // E2c-b (v16): точная внешность NPC (asset/tint) от хоста — в inbox.
+    g_netClient.SetActorAppearance(actor_sync::OnActorAppearance);
 
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
     coopcfg::Config& cfg = coopcfg::Load();
@@ -5366,6 +5368,13 @@ void SendActorSpawnBatch(uint32_t epoch,
                          const std::vector<net::ActorSpawn>& actors)
 {
     g_netClient.SendActorSpawnBatch(epoch, actors);
+}
+
+// E2c-b (v16): точная внешность NPC (asset/tint) — хост релеит гостям.
+void SendActorAppearance(uint32_t epoch, uint32_t actorId,
+                         const std::vector<net::ActorAppearanceEntry>& entries)
+{
+    g_netClient.SendActorAppearance(epoch, actorId, entries);
 }
 
 void SendActorFrames(uint32_t epoch, uint16_t seq,

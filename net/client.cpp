@@ -266,6 +266,38 @@ bool ParseActorResync(const std::vector<uint8_t>& p, net::ActorResyncPayload& ou
     return out.epoch != 0;
 }
 
+// E2c-b (v16): точная внешность NPC. Точный размер, count
+// 1..kActorAppearanceMaxComponents (16), epoch/actorId != 0, reserved == 0.
+bool ParseActorAppearance(const std::vector<uint8_t>& p, uint32_t& outEpoch,
+                          uint32_t& outActorId,
+                          std::vector<net::ActorAppearanceEntry>& out)
+{
+    if (p.size() < sizeof(net::ActorAppearanceHeader)) return false;
+    net::ActorAppearanceHeader h{};
+    std::memcpy(&h, p.data(), sizeof(h));
+    if (h.epoch == 0 || h.actorId == 0) return false;
+    if (h.count < 1 ||
+        h.count > static_cast<uint8_t>(net::kActorAppearanceMaxComponents))
+        return false;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.count) * sizeof(net::ActorAppearanceEntry);
+    if (p.size() != need) return false;
+    const uint8_t* data = p.data() + sizeof(h);
+    out.clear();
+    out.reserve(h.count);
+    for (uint8_t i = 0; i < h.count; ++i)
+    {
+        net::ActorAppearanceEntry e{};
+        std::memcpy(&e, data + static_cast<std::size_t>(i) * sizeof(e),
+                    sizeof(e));
+        if (e.reserved != 0) return false;
+        out.push_back(e);
+    }
+    outEpoch = h.epoch;
+    outActorId = h.actorId;
+    return true;
+}
+
 } // namespace
 
 Client::Client() = default;
@@ -330,6 +362,7 @@ void Client::SetActorFrames(OnActorFrames cb) { onActorFrames_ = std::move(cb); 
 void Client::SetActorDespawn(OnActorDespawn cb) { onActorDespawn_ = std::move(cb); }
 void Client::SetActorEvent(OnActorEvent cb) { onActorEvent_ = std::move(cb); }
 void Client::SetActorOutfit(OnActorOutfit cb) { onActorOutfit_ = std::move(cb); }
+void Client::SetActorAppearance(OnActorAppearance cb) { onActorAppearance_ = std::move(cb); }
 void Client::SetActorResyncRequest(OnActorResyncRequest cb) { onActorResyncRequest_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
@@ -550,6 +583,40 @@ bool Client::SendActorResync(uint32_t epoch, uint32_t lastSeq, uint8_t reason)
     return SendRaw(MakeFrame((uint8_t)net::Msg::ActorResync,
                              reinterpret_cast<const uint8_t*>(&msg),
                              static_cast<uint32_t>(sizeof(msg))));
+}
+
+void Client::SendActorAppearance(
+    uint32_t epoch, uint32_t actorId,
+    const std::vector<net::ActorAppearanceEntry>& entries)
+{
+    // E2c-b (v16): 0x1E — хост -> сервер -> гостям. Пустой список/нулевые
+    // epoch/actorId невалидны на проводе — не отправляем; reserved обнуляем.
+    // count = число валидных компонентов (снимок), максимум 16 (460 B payload).
+    if (epoch == 0 || actorId == 0 || entries.empty()) return;
+    uint8_t count = static_cast<uint8_t>(entries.size());
+    const uint8_t maxCount =
+        static_cast<uint8_t>(net::kActorAppearanceMaxComponents);
+    if (count > maxCount)
+        count = maxCount;
+    std::vector<uint8_t> pay(sizeof(net::ActorAppearanceHeader) +
+        static_cast<std::size_t>(count) * sizeof(net::ActorAppearanceEntry));
+    net::ActorAppearanceHeader h{};
+    h.epoch = epoch;
+    h.actorId = actorId;
+    h.count = count;
+    std::memcpy(pay.data(), &h, sizeof(h));
+    for (uint8_t i = 0; i < count; ++i)
+    {
+        net::ActorAppearanceEntry e = entries[i];
+        e.reserved = 0;
+        std::memcpy(pay.data() + sizeof(h) +
+                        static_cast<std::size_t>(i) * sizeof(e),
+                    &e, sizeof(e));
+    }
+    if (pay.size() > net::kActorAppearanceMaxSize)
+        return; // защита от рассинхрона констант
+    SendRaw(MakeFrame((uint8_t)net::Msg::ActorAppearance,
+                      pay.data(), static_cast<uint32_t>(pay.size())));
 }
 
 void Client::SendShot(const net::ShotPayload& sp)
@@ -928,6 +995,15 @@ bool Client::RunOnce()
                 net::OutfitState outfit{};
                 if (ParseActorOutfit(p, epoch, actorId, outfit) && onActorOutfit_)
                     onActorOutfit_(epoch, actorId, outfit);
+                break;
+            }
+            case net::Msg::ActorAppearance:
+            {
+                uint32_t epoch = 0, actorId = 0;
+                std::vector<net::ActorAppearanceEntry> entries;
+                if (ParseActorAppearance(p, epoch, actorId, entries) &&
+                    onActorAppearance_)
+                    onActorAppearance_(epoch, actorId, entries);
                 break;
             }
             case net::Msg::ActorResync:

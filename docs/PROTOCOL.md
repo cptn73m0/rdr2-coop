@@ -5,11 +5,14 @@
 - `net::kProtocolVersion = 15` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение
   (`JoinRejected.VersionMismatch`); клиенты v14 и v15 несовместимы.
-- v15 (E0/E1): actor-сообщения NPC-репликации — `ActorSpawnBatch` (0x18),
+- v15 (E1–E3b): actor-репликация NPC — `ActorSpawnBatch` (0x18),
   `ActorFrames` (0x19), `ActorDespawn` (0x1A), `ActorEvent` (0x1B),
-  `ActorOutfit` (0x1C), `ActorResync` (0x1D). E0 — каркас/relay/валидация;
-  E1 — клиентская репликация human-NPC (реализована, в игре ещё не проверена);
-  `npc_actor=0` по умолчанию.
+  `ActorOutfit` (0x1C), `ActorResync` (0x1D). Реализованы E1 (human-only),
+  E2a (meta-outfit), E2b (всадники), E3a (сценарии/смерть), E3b (оружие/бой)
+  и E2c-a (host brute-force outfit resolver); проверено на одном ПК (fake
+  host/guest), `npc_actor=0` по умолчанию.
+- v16 (в разработке): **0x1E actor asset/tint** для E2c-b; layout не
+  зафиксирован, в текущем `protocol.h`/клиенте отсутствует.
 - v14: `OutfitState` расширен до **784 байт** — добавлен `wearable[96]` (u32)
   для wearable states одежды (открытая/закрытая куртка, рукава и т.п.).
 - v13: TrainSnapshot (0x17) — R&D: engine/direction/speed + вагоны по порядку.
@@ -240,15 +243,17 @@ payload: TrainSnapshotHeader (16 B)
 перетирает привязанные вагоны; при удалении локомотива вагоны отцепляются.
 Это экспериментально и требует игровой проверки.
 
-## E0/E1 (v15): ACTOR-СООБЩЕНИЯ (NPC-репликация)
+## ACTOR-СООБЩЕНИЯ (v15, E1–E3b + E2c-a)
 
-E0 — каркас: протокол, серверный relay/валидация и headless-тесты.
-E1 (реализовано, в игре ещё не проверено) — клиентская репликация human-NPC:
-хост-дискавери, spawn/frames/despawn, прокси и интерполяция. Флаг `npc_actor`
-по умолчанию **0**; при выключенном флаге не должно быть ни одного
-`actor:`-лога. Все структуры little-endian, фиксированы `static_assert` в
-`net/protocol.h`. `kMaxActors = 12`; в E1 `npc_cap` 1..12 (default 8),
-`npc_radius` 20..100 м (default 60), despawn-гистерезис +10 м.
+v15 содержит реализованную actor-репликацию **человеческих NPC**:
+E1 — discovery/lifecycle/движение; E2a — meta-outfit внешность; E2b —
+всадники; E3a — сценарии, смерть/возрождение; E3b — оружие/бой;
+E2c-a — host brute-force outfit resolver. Всё проверено на одном ПК
+(fake host/guest) и включается флагом `npc_actor=1` (default 0; при
+выключенном флаге не должно быть `actor:`-логов). Все структуры
+little-endian, фиксированы `static_assert` в `net/protocol.h`.
+`kMaxActors = 12`; `npc_cap` 1..12 (default 8), `npc_radius` 20..100 м
+(default 60), despawn-гистерезис +10 м.
 
 Правила сервера:
 - **0x18–0x1C принимаются только от хоста** (как WorldSnapshot): от гостя —
@@ -280,6 +285,14 @@ ActorSpawn (64 B):
 ```
 - E1: хост шлёт батч на новые спавны и heartbeat (~2.5 с,
   `kSpawnHeartbeatTicks=150`), чтобы гость/join/resync получили roster.
+- E2a: `metaOutfit` — реальный outfit hash для NPC (probe: есть у ~22% ambient;
+  heartbeat 0→hash пересылается и гостем переприменяется).
+- E2b: `flags bit0 mounted`, `reserved` (u32) = mount model hash;
+  `mountActorId` — actorId лошади (0 = нет).
+- E3a: `flags bit5 scenario`, `scenarioHash` — сценарий (валидные имена
+  `WORLD_HUMAN_*` и т.п.); `flags bit1 dead` + `health=0` — труп/возрождение.
+- E3b: `flags` — Drawn(4)/Changing(8)/Combat(16)/Reloading(64)/Aiming(128);
+  `weaponHash` — валидный RDR2 weapon hash (например 0x169F59F7 Cattleman).
 ### 0x19 ACTOR_FRAMES (хост → сервер → гость)
 ```
 payload: ActorFramesHeader (8 B) + count * ActorFrame (32 B)
@@ -290,6 +303,9 @@ ActorFrame (32 B):
   x,y,z,heading:f32
   targetActorId:u32  seq:u16  pad:u16
 ```
+- E1: движение/прокси 10 Гц; `speed` — u8 на шкале 0..8 м/с,
+  `pad` — gait (`GET_PED_DESIRED_MOVE_BLEND_RATIO*1000`, walk=1000/run=2000).
+- E3b: боевые флаги в `flags`; `targetActorId=1` в shoot-окне (вне 0).
 ### 0x1A ACTOR_DESPAWN (хост → сервер → гость, 12 B)
 ```
 epoch:u32  actorId:u32  reason:u8  pad[3]
@@ -305,8 +321,10 @@ a:u32  b:u32  x:u32  y:u32  z:u32   // формат полей задаёт иг
 ```
 epoch:u32  actorId:u32  + OutfitState (784 B; см. 0x09)
 ```
-- E1: 0x1B ActorEvent и 0x1C ActorOutfit **принимаются**, но пока не
-  применяются (только счётчики в inbox); визуальный эффект — вне E1.
+- 0x1B/0x1C в v15 **зарезервированы**: принимаются и считаются в inbox, но
+  игровым слоем не применяются. E2a использует `metaOutfit` в 0x18
+  (heartbeat), а не 0x1C. Для E2c-b asset/tint запланирован отдельный
+  v16 0x1E — 784 B `OutfitState` для asset GUID не подходит.
 ### 0x1D ACTOR_RESYNC (гость → сервер → хосту, 12 B)
 ```
 epoch:u32  lastSeq:u32  reason:u8  pad[3]
@@ -318,22 +336,48 @@ epoch:u32  lastSeq:u32  reason:u8  pad[3]
   хост обрабатывает запрос через `OnActorResyncRequest` и на следующем
   discovery-тике шлёт полный spawn-batch (0x18) вместо ожидания heartbeat.
 
-### E1 (actor_sync, v15) — текущая реализация
-- Использует **0x18** (`ActorSpawnBatch`: спавн + heartbeat), **0x19**
-  (`ActorFrames` 10 Гц), **0x1A** (`ActorDespawn`: reasons 1/2/3).
-- Хост: discovery 10 Гц (каждые 6 тиков) по human NPC рядом с обоими игроками,
-  стабильные `actorId` в рамках epoch, cap `npc_cap`, радиус `npc_radius`
-  (keep +10 м), mission NPC исключены, мёртвые не спавнятся; кадры отправляются
-  всему roster 10 Гц.
+### E1–E3b (actor_sync, v15) — реализовано и проверено на одном ПК
+- База: **0x18** (`ActorSpawnBatch`: спавн + heartbeat 2.5 с), **0x19**
+  (`ActorFrames` 10 Гц), **0x1A** (`ActorDespawn`: reasons 1/2/3);
+  discovery 10 Гц по human NPC рядом с обоими игроками, cap `npc_cap`,
+  радиус `npc_radius` (keep +10 м), стабильные `actorId` в epoch,
+  mission NPC исключены, мёртвые не спавнятся.
 - Гость: inbox под mutex, прокси-педы (CREATE_PED, mission, no-collision),
-  request model ≤2/тик, create/delete ≤2/тик, интерполяция по навмешу
-  (snap при >12 м/|dz|>8), resync после 2 с без кадров (0x1D, ≤1 запроса/с),
-  удаление прокси после 10 с; смена epoch/leave/reconnect/host migration →
-  сброс и новые прокси; на resync хост повторно шлёт roster (0x18).
-- При `npc_actor=0`: `actor_sync::Tick` и callbacks ничего не делают и не
-  пишут `actor:`/`probe:` (gating), сервер при этом не получает actor-сообщений.
-- Статус: реализовано, **в игре не проверено**; чек-лист/метрики —
-  `docs/NPC_E1_TESTING.md`.
+  request model ≤2/тик, create/delete ≤2/тик, trail-навигация + in-place task
+  update, gait с хоста (`pad`), resync 0x1D после 2 с без кадров, удаление
+  через 10 с; epoch/leave/reconnect/host migration → reset+resync.
+- **E2a:** `metaOutfit` в heartbeat: 22% ambient имеют hash; в тесте 5/5
+  применено, failed=0; `npc_appearance=1`.
+- **E2b:** rider+horse, `reserved` = mount model, seat watchdog,
+  dismount/despawn cleanup; подтверждено mount spawn ×9, failed=0;
+  gait_restart=0, err_p95≈0.
+- **E3a:** scenarioHash + optimistic confirm; анти-наложение (skip 8 м,
+  warp revert 3 м) — визуально «двое курят на разных местах»;
+  death/revive (health=0/RESURRECT_PED, труп остаётся).
+- **E3b:** валидный `weaponHash` (GIVE_WEAPON_TO_PED), flags
+  Drawn/Aiming/Reloading/Combat, aim/shoot/reload; state=shoot=1450,
+  reload=385, weapon fail=0.
+- **E2c-a:** host brute-force resolver (`gen_metaped_outfits.h`: 890 моделей /
+  4568 кандидатов, `_IS_META_PED_OUTFIT_EQUIPPED`, бюджет 24 натива/тик,
+  heartbeat-пересылка, guest reapply) — механически работает; для random
+  ambient NPC resolved=0/failed=11 (нет именованного outfit).
+- При `npc_actor=0`: `actor_sync::Tick`/callbacks ничего не делают и не пишут
+  `actor:`/`probe:`; сервер не получает actor-сообщений.
+- Статус: реализовано и проверено fake-клиентами на одном ПК; второй ПК
+  (ARINA) офлайн/старая сборка, двух-ПК приёмка ещё впереди. Флаги:
+  `npc_actor`, `npc_cap`, `npc_radius`, `npc_appearance`, `npc_debug`.
+- Ограничения: human-only, mission NPC исключены; животные/лошадиные трупы/
+  транспорт не реплицируются; ambient-мир гостя не подавляется; лицо/волосы,
+  точные анимации/катсцены не синхронизируются.
+
+### v16 (в разработке): 0x1E ACTOR_ASSET_TINT (E2c-b)
+- Назначение: asset/tint (внешность ambient NPC, для которых нет meta-outfit
+  hash) — E2c-b. Формат/layout ещё не зафиксирован; в текущем
+  `net/protocol.h` и клиенте сообщения нет.
+- При bump `kProtocolVersion=16` клиенты v15 и v16 будут несовместимы;
+  серверные host-only/exact-size правила должны быть сохранены.
+- Гейт: E2c-b не считать готовым до появления сообщения, серверной валидации,
+  fake-host/guest тестов и однопК-прогона на реальном хосте.
 
 ### Reconnect (клиент)
 
@@ -350,7 +394,8 @@ epoch:u32  lastSeq:u32  reason:u8  pad[3]
 - Этот раздел описывает актуальные для стабильной сборки изменения (Spike 1/P1/P2/P3);
   базовые разделы ниже сохранены как историческая спецификация Spike 1, но
   ключевые форматы (JOIN/JOIN_OK, FRAME 88 B, OUTFIT 784 B) обновлены под
-  v14/v15 (v15: actor-сообщения E0/E1, см. раздел выше).
+  v14/v15 (v15: actor-сообщения E1–E3b, см. раздел выше; v16 0x1E — в
+  разработке).
 
 Сетевой стек поверх **сервера-релея**. Один сервер, несколько клиентов
 (ASI-плагинов). Клиент периодически шлёт свой `GhostFrame`, сервер

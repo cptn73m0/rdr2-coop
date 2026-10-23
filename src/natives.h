@@ -159,6 +159,16 @@ constexpr unsigned long long _GET_SHOP_ITEM_COMPONENT_CATEGORY   = 0x5FF9A878C3D
 constexpr unsigned long long REMOVE_SHOP_ITEM_FROM_PED_BY_CATEGORY = 0xDF631E4BCE1B1FC4ull;
 constexpr unsigned long long _GET_META_PED_TYPE                  = 0xEC9A1261BF0CE510ull;
 constexpr unsigned long long _SET_ACTIVE_META_PED_COMPONENTS_UPDATED = 0xAAB86462966168CEull;
+// E2c-b (v16): точная внешность NPC — asset/tint компоненты (0-based index).
+constexpr unsigned long long GET_META_PED_ASSET_GUIDS       = 0xA9C28516A6DC9D56ull;
+constexpr unsigned long long GET_META_PED_ASSET_TINT        = 0xE7998FEC53A33BBEull;
+constexpr unsigned long long _SET_META_PED_TAG              = 0xBC6DF00D7A4A6819ull;
+constexpr unsigned long long IS_PED_READY_TO_RENDER         = 0xA0BC8FAED8CFEB3Cull;
+// E2c-b: bundle-ассеты — зарезервировано под будущее (в v1 не используем).
+constexpr unsigned long long _REQUEST_META_PED_ASSET_BUNDLE = 0x91FE941F9FCFB702ull;
+constexpr unsigned long long _HAS_META_PED_ASSET_LOADED     = 0xB0B2C6D170B0E8E5ull;
+constexpr unsigned long long _IS_META_PED_ASSET_VALID       = 0x93FFD92F05EC32FDull;
+constexpr unsigned long long _RELEASE_META_PED_ASSET_REQUEST = 0x13E7320C762F0477ull;
 constexpr unsigned long long _UPDATE_SHOP_ITEM_WEARABLE_STATE     = 0x66B957AAC2EAAEABull;
 constexpr unsigned long long _GET_SHOP_ITEM_NUM_WEARABLE_STATES   = 0xFFCC2DB2D9953401ull;
 constexpr unsigned long long _GET_SHOP_ITEM_WEARABLE_STATE_BY_INDEX = 0x6243635AF2F1B826ull;

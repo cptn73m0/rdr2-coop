@@ -84,28 +84,40 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_actor_duplicate_actor_ids` | duplicate actorId в spawn/frames-батче → сервер дропает батч целиком (O(count²), лог не пишется) |
 | `test_actor_gating_no_actor_log` | обычная сессия без actor-сообщений → в `server_console.log` **0 строк `actor:`** (серверный gating) |
 
-### E1 (actor_sync, клиент) — in-game проверка
+### NPC actor-репликация (E1–E3b) — что проверено
 
-E1 добавляет клиентскую репликацию human-NPC: discovery/roster, proxies,
-жизненный цикл spawn→frames→despawn, интерполяция. Wire/relay/валидация
-по-прежнему покрыты actor-тестами E0 выше (27/27 автоматических сценариев);
-сама клиентская логика требует игры и проверяется по чек-листу
-[`docs/NPC_E1_TESTING.md`](../docs/NPC_E1_TESTING.md).
+Wire/relay/валидация actor-сообщений покрыты actor-тестами выше
+(27/27 автоматических сценариев на `build-server-ci`). Клиентская логика
+NPC проверена на **одном ПК** с fake host/guest
+(`tools/fake_actor_client.py`, см. `tools/README.md`), двух-ПК приёмка ещё
+впереди (ARINA офлайн/старая сборка).
 
-- E1 использует **0x18** `ActorSpawnBatch` (спавн + heartbeat), **0x19**
-  `ActorFrames` (10 Гц), **0x1A** `ActorDespawn` (reason 1 gone / 2 dead /
-  3 evicted); 0x1B/0x1C принимаются, но в E1 не применяются; 0x1D resync
-  реализован (Client::SendActorResync, троттлинг ≤1/с, лог
-  `actor: resync request`; хост отвечает повторным roster через 0x18).
-- Флаги: `npc_actor=1` (default 0), `npc_cap` (1..12, default 8),
-  `npc_radius` (20..100, default 60), `npc_debug=1` для `probe:`-логов.
-- `test_actor_gating_no_actor_log` — **серверный** тест (mock-клиенты никогда не
-  шлют actor-сообщения), поэтому E1 его не ломает. Клиентский gating
-  (`npc_actor=0` → 0 строк `actor:`/`probe:` в `rdr2-coop.log`) проверяется
-  вручную в S0/S9 чек-листа E1.
-- Метрики/пороги E1 (`actor: spawn/despawn/snapshot/proxies/appliedFrames/timeouts`,
-  spawn p95 ≤300 мс, despawn ≤1 с, timeout ≤0.5%, teleports 0 в steady) —
-  см. `docs/NPC_E1_TESTING.md` §2.
+- **E1 (human-only):** discovery/roster, spawn heartbeat/frames/despawn,
+  guest-прокси, resync, gating `npc_actor=0` → 0 `actor:`/`probe:` строк.
+- **E2a (meta-outfit):** host присылает `metaOutfit`; в тесте 5/5 применено,
+  `failed=0` (probe: ~22% ambient имеют outfit hash).
+- **E2b (всадники):** rider+horse, mount spawn ×9, `failed=0`, очистка при
+  dismount/despawn; движение плавное (gait_restart=0, err_p95≈0).
+- **E3a:** сценарии/анти-наложение (skip 8 м + warp revert 3 м) — визуально
+  подтверждено «двое курят на разных местах»; смерть/возрождение, труп.
+- **E3b:** валидные weapon hashes, draw/aim/shoot/reload;
+  `state=shoot=1450`, `reload=385`, `weapon fail=0`.
+- **E2c-a:** host outfit brute-force resolver (890 моделей / 4568 кандидатов)
+  механически работает, но random ambient NPC без именованного outfit:
+  `resolved=0/failed=11` в полевом тесте. Fake guest отслеживает
+  `outfits nonzero=N outfit_updates=K resolved_late=Q` и `--outfit-wait`.
+  E2c-b asset/tint — протокол v16 0x1E, тесты появятся после сообщения.
+- Используемые сообщения: **0x18** `ActorSpawnBatch` (спавн + heartbeat),
+  **0x19** `ActorFrames` (10 Гц), **0x1A** `ActorDespawn` (gone/dead/evicted),
+  **0x1D** `ActorResync` (guest→host; Client::SendActorResync, троттлинг ≤1/с);
+  0x1B/0x1C зарезервированы/не применяются. **0x1E** — только в v16.
+- Флаги INI: `npc_actor=1` (default 0), `npc_cap` 1..12 (default 8),
+  `npc_radius` 20..100 (default 60), `npc_appearance=1` (E2a),
+  `npc_debug=1` — probe-логи.
+- `test_actor_gating_no_actor_log` — **серверный** тест (mock-клиенты не шлют
+  actor-сообщения), поэтому клиентский gating проверяется вручную
+  (`npc_actor=0` → 0 строк `actor:`/`probe:` в `rdr2-coop.log`);
+  чек-лист/метрики — `docs/NPC_E1_TESTING.md`, E3b-команды — `tools/README.md`.
 
 ## C++ headless-тесты (сеть)
 

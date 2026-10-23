@@ -572,6 +572,113 @@ int GetAmmoInClipEntity(unsigned int ped, uint32_t weaponHash)
     return ammo;
 }
 
+// ---------------- E2c-b (v16): meta-ped assets/tint (точная внешность NPC) ----------------
+// Индексы компонентов 0-based; count — из _GET_NUM_COMPONENTS_IN_PED.
+// v1 использует обычные теги (bundle-ассеты зарезервированы под будущее).
+constexpr std::size_t kMaxAppearanceComponents =
+    net::kActorAppearanceMaxComponents; // v16: 16 (не хардкодим 12)
+constexpr unsigned int kAppearanceCapturePeriodTicks = 120; // ~2 c на актора
+
+int GetPedComponentCountEntity(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::GET_NUM_COMPONENTS_IN_PED);
+    Push(ped);
+    return static_cast<int>(Call());
+}
+
+bool GetMetaPedAssetGuidsEntity(unsigned int ped, int index, uint32_t& drawable,
+                                uint32_t& albedo, uint32_t& normal,
+                                uint32_t& material)
+{
+    using namespace natives_api;
+    unsigned long long d = 0, a = 0, n = 0, m = 0;
+    Init(natives::GET_META_PED_ASSET_GUIDS);
+    Push(ped);
+    Push(index);
+    Push(reinterpret_cast<unsigned long long>(&d));
+    Push(reinterpret_cast<unsigned long long>(&a));
+    Push(reinterpret_cast<unsigned long long>(&n));
+    Push(reinterpret_cast<unsigned long long>(&m));
+    const bool ok = Call() != 0;
+    drawable = static_cast<uint32_t>(d);
+    albedo = static_cast<uint32_t>(a);
+    normal = static_cast<uint32_t>(n);
+    material = static_cast<uint32_t>(m);
+    return ok;
+}
+
+bool GetMetaPedAssetTintEntity(unsigned int ped, int index, uint32_t& palette,
+                               int& tint0, int& tint1, int& tint2)
+{
+    using namespace natives_api;
+    unsigned long long pal = 0;
+    long long t0 = 0, t1 = 0, t2 = 0;
+    Init(natives::GET_META_PED_ASSET_TINT);
+    Push(ped);
+    Push(index);
+    Push(reinterpret_cast<unsigned long long>(&pal));
+    Push(reinterpret_cast<unsigned long long>(&t0));
+    Push(reinterpret_cast<unsigned long long>(&t1));
+    Push(reinterpret_cast<unsigned long long>(&t2));
+    const bool ok = Call() != 0;
+    palette = static_cast<uint32_t>(pal);
+    tint0 = static_cast<int>(t0);
+    tint1 = static_cast<int>(t1);
+    tint2 = static_cast<int>(t2);
+    return ok;
+}
+
+void ResetPedComponentsEntity(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::RESET_PED_COMPONENTS);
+    Push(ped);
+    Call();
+}
+
+void SetMetaPedTagEntity(unsigned int ped,
+                         const net::ActorAppearanceEntry& e)
+{
+    using namespace natives_api;
+    Init(natives::_SET_META_PED_TAG);
+    Push(ped);
+    Push(static_cast<unsigned long long>(e.drawable));
+    Push(static_cast<unsigned long long>(e.albedo));
+    Push(static_cast<unsigned long long>(e.normal));
+    Push(static_cast<unsigned long long>(e.material));
+    Push(static_cast<unsigned long long>(e.palette));
+    Push(static_cast<int>(e.tint0));
+    Push(static_cast<int>(e.tint1));
+    Push(static_cast<int>(e.tint2));
+    Call();
+}
+
+void CommitMetaPedComponentsEntity(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::_SET_ACTIVE_META_PED_COMPONENTS_UPDATED);
+    Push(ped);
+    Push(false); // isMP=false
+    Call();
+    Init(natives::UPDATE_PED_VARIATION);
+    Push(ped);
+    Push(false); // p1
+    Push(true);  // p2
+    Push(true);  // p3
+    Push(true);  // p4
+    Push(false); // p5
+    Call();
+}
+
+bool IsPedReadyToRenderEntity(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_READY_TO_RENDER);
+    Push(ped);
+    return Call() != 0;
+}
+
 // ---------------- E2a: meta-ped-outfit запросы (per-actor, не singleton) ----------------
 // Как в coop.cpp для player-ghost: REQUEST -> HAS_LOADED -> APPLY -> RELEASE.
 int RequestMetaPedOutfit(unsigned int model, uint32_t outfit)
@@ -1103,6 +1210,32 @@ void LogOutfitFailed(uint32_t actorId, uint32_t model, unsigned int cands)
                   actorId, model, cands);
 }
 
+// E2c-b: диагностика capture/apply asset/tint (v16).
+void LogAssetCapture(uint32_t actorId, unsigned int count, unsigned int valid,
+                     uint32_t firstDrawable, uint32_t firstAlbedo)
+{
+    sh_log::Write(
+        "actor: asset capture id=%u count=%u valid=%u first=0x%X,0x%X\n",
+        actorId, count, valid, firstDrawable, firstAlbedo);
+}
+
+void LogAssetCaptureFailed(uint32_t actorId, unsigned int count)
+{
+    sh_log::Write("actor: asset capture id=%u count=%u valid=0 state=failed\n",
+                  actorId, count);
+}
+
+void LogAssetSent(uint32_t actorId, unsigned int count)
+{
+    sh_log::Write("actor: asset send id=%u n=%u\n", actorId, count);
+}
+
+void LogAssetApplied(uint32_t actorId, unsigned int count, const char* state)
+{
+    sh_log::Write("actor: appearance assets id=%u n=%u state=%s\n",
+                  actorId, count, state);
+}
+
 // E2b: логи всадника/лошади (гейт enabled снаружи — module пути).
 void LogMountSpawn(uint32_t actorId, uint32_t model)
 {
@@ -1228,6 +1361,13 @@ void LogPerfIfDue(unsigned int tick)
 // Объявлен ДО host/guest-логики: HostTick проверяет resync-запрос, гостевые
 // функции забирают батчи. Только копии под mutex, без нативов в callback.
 std::mutex g_inboxMutex;
+// E2c-b (v16): входящий asset/tint (0x1E) — хост -> сервер -> гости.
+struct AppearanceMsg
+{
+    uint32_t epoch = 0;
+    uint32_t actorId = 0;
+    std::vector<net::ActorAppearanceEntry> entries;
+};
 struct Inbox
 {
     bool haveSpawn = false;
@@ -1238,6 +1378,7 @@ struct Inbox
     uint16_t framesSeq = 0;
     std::vector<net::ActorFrame> frames;
     std::deque<net::ActorDespawnPayload> despawns;
+    std::vector<AppearanceMsg> appearances; // E2c-b (v16)
     uint32_t events = 0;
     uint32_t outfits = 0;
     bool resyncRequested = false;
@@ -1252,6 +1393,7 @@ void ClearInboxLocked()
     g_inbox.haveFrames = false;
     g_inbox.frames.clear();
     g_inbox.despawns.clear();
+    g_inbox.appearances.clear();
     g_inbox.events = 0;
     g_inbox.outfits = 0;
     g_inbox.resyncRequested = false;
@@ -1414,6 +1556,13 @@ struct RosterEntry
     uint32_t metaOutfit = 0;   // найденный/нативный outfit hash (в спавн)
     uint16_t outfitCursor = 0; // сколько кандидатов уже проверено
     uint8_t outfitState = 0;   // 0 none, 1 scanning, 2 resolved, 3 failed
+    // E2c-b (v16): захваченные asset/tint для отправки гостям.
+    std::vector<net::ActorAppearanceEntry> appearance;
+    uint32_t appearanceFingerprint = 0;
+    uint32_t appearanceSentFingerprint = 0;
+    bool appearanceSent = false;
+    bool appearanceCaptureFailedLogged = false;
+    unsigned int lastAppearanceCaptureTick = 0;
 };
 
 std::map<unsigned int, RosterEntry> g_roster;
@@ -1734,6 +1883,9 @@ void HostDiscovery(const TickContext& ctx)
                 out.push_back(BuildSpawn(kv.first, kv.second.actorId,
                                          kv.second.metaOutfit));
             }
+            // E2c-b: heartbeat/join/resync — переслать asset/tint всем.
+            for (auto& kv : g_roster)
+                kv.second.appearanceSent = false;
         }
         else
         {
@@ -1848,6 +2000,127 @@ void ProcessHostOutfitResolution(unsigned int tick)
     s_rotate = (s_rotate + 1) % static_cast<unsigned int>(scanning);
 }
 
+// E2c-b (v16): захват asset/tint внешности на хосте. 1 актор/тик, период
+// ~2 c на актора; fingerprint не изменился — не шлём. Главный риск (shop-
+// coverage): GET_META_PED_ASSET_GUIDS может вернуть false для видимых
+// компонентов — тогда лог `asset capture ... valid=0 state=failed` и fallback
+// на E2a metaOutfit.
+void ProcessHostAppearanceCapture(unsigned int tick)
+{
+    if (!coopcfg::Get().npcAppearance)
+        return;
+    if (g_roster.empty())
+        return;
+
+    static unsigned int s_captureRotate = 0;
+    std::vector<unsigned int> order;
+    order.reserve(g_roster.size());
+    for (const auto& kv : g_roster)
+        order.push_back(kv.first);
+    if (order.empty())
+        return;
+    const unsigned int start =
+        s_captureRotate % static_cast<unsigned int>(order.size());
+    s_captureRotate = (s_captureRotate + 1) % static_cast<unsigned int>(order.size());
+
+    for (std::size_t i = 0; i < order.size(); ++i)
+    {
+        const unsigned int handle =
+            order[(start + static_cast<unsigned int>(i)) % order.size()];
+        auto it = g_roster.find(handle);
+        if (it == g_roster.end())
+            continue;
+        RosterEntry& e = it->second;
+        const bool due =
+            e.lastAppearanceCaptureTick == 0 ||
+            (tick - e.lastAppearanceCaptureTick) >=
+                kAppearanceCapturePeriodTicks;
+        if (!due)
+            continue;
+        e.lastAppearanceCaptureTick = tick;
+        if (!DoesExist(handle) || IsDeadPed(handle))
+            continue;
+
+        const int rawCount = GetPedComponentCountEntity(handle);
+        const int count = rawCount > 0 ? rawCount : 0;
+        std::vector<net::ActorAppearanceEntry> entries;
+        entries.reserve(kMaxAppearanceComponents);
+        for (int idx = 0;
+             idx < count && entries.size() < kMaxAppearanceComponents; ++idx)
+        {
+            uint32_t drawable = 0, albedo = 0, normal = 0, material = 0;
+            if (!GetMetaPedAssetGuidsEntity(handle, idx, drawable, albedo,
+                                            normal, material))
+                continue;
+            if (drawable == 0)
+                continue;
+            net::ActorAppearanceEntry entry;
+            entry.drawable = drawable;
+            entry.albedo = albedo;
+            entry.normal = normal;
+            entry.material = material;
+            uint32_t palette = 0;
+            int t0 = 255, t1 = 255, t2 = 255;
+            if (GetMetaPedAssetTintEntity(handle, idx, palette, t0, t1, t2))
+            {
+                entry.palette = palette;
+                entry.tint0 = static_cast<int16_t>(t0);
+                entry.tint1 = static_cast<int16_t>(t1);
+                entry.tint2 = static_cast<int16_t>(t2);
+            }
+            else
+            {
+                // TINT недоступен — нейтральные значения (по консалту worldsync).
+                entry.palette = 0;
+                entry.tint0 = 255;
+                entry.tint1 = 255;
+                entry.tint2 = 255;
+            }
+            entries.push_back(entry);
+        }
+
+        if (entries.empty())
+        {
+            if (!e.appearanceCaptureFailedLogged)
+            {
+                e.appearanceCaptureFailedLogged = true;
+                LogAssetCaptureFailed(e.actorId, static_cast<unsigned int>(count));
+            }
+            continue; // остаёмся на E2a metaOutfit / random variation
+        }
+        e.appearanceCaptureFailedLogged = false;
+
+        // fingerprint: FNV-1a по массиву записей (смена внешности -> ресенд).
+        uint32_t fp = 2166136261u;
+        const uint8_t* bytes =
+            reinterpret_cast<const uint8_t*>(entries.data());
+        const std::size_t nbytes = entries.size() * sizeof(entries[0]);
+        for (std::size_t b = 0; b < nbytes; ++b)
+        {
+            fp ^= bytes[b];
+            fp *= 16777619u;
+        }
+        e.appearance = entries;
+        e.appearanceFingerprint = fp;
+
+        if (!e.appearanceSent || fp != e.appearanceSentFingerprint)
+        {
+            coop::SendActorAppearance(g_hostEpoch, e.actorId, e.appearance);
+            e.appearanceSent = true;
+            e.appearanceSentFingerprint = fp;
+            if (coopcfg::Get().npcDebug)
+                LogAssetSent(e.actorId,
+                             static_cast<unsigned int>(e.appearance.size()));
+        }
+        if (coopcfg::Get().npcDebug)
+        {
+            LogAssetCapture(e.actorId, static_cast<unsigned int>(count),
+                            static_cast<unsigned int>(e.appearance.size()),
+                            e.appearance[0].drawable, e.appearance[0].albedo);
+        }
+        break; // бюджет: 1 актор/тик
+    }
+}
 
 void HostTick(const TickContext& ctx)
 {
@@ -1871,6 +2144,9 @@ void HostTick(const TickContext& ctx)
 
     // E2c: поздний резолв outfit для 78% NPC без нативного metaOutfit.
     ProcessHostOutfitResolution(ctx.tickCount);
+
+    // E2c-b (v16): захват asset/tint и отправка гостям (1 актор/тик).
+    ProcessHostAppearanceCapture(ctx.tickCount);
 
     // despawn — не чаще 1 сообщения за тик
     if (!g_despawnQueue.empty())
@@ -1906,6 +2182,12 @@ struct Proxy
     unsigned int outfitRequestTick = 0; // тик запроса (таймаут 3 с)
     uint8_t appearanceState = 0;        // 0 none, 1 requested, 2 applied, 3 failed
     bool appearanceReapply = false;     // E2c: metaOutfit обновился на heartbeat
+    // E2c-b (v16): точная внешность (asset/tint) — приоритетнее metaOutfit.
+    std::vector<net::ActorAppearanceEntry> appearanceAssets;
+    bool appearanceAssetsApplyNeeded = false;
+    bool appearanceAssetsIssued = false;
+    unsigned int appearanceAssetsWaitTick = 0;
+    unsigned int appearanceAssetsIssuedTick = 0;
     // E2a.2: trail движения (последние ~1 с позиций) и сглаженные
     // скорость/направление для lookahead-ведения цели.
     struct TrailPoint
@@ -2033,6 +2315,10 @@ std::deque<net::ActorDespawnPayload> g_guestDespawnQueue;
 int g_modelRequestsThisTick = 0;
 int g_appearanceRequestsThisTick = 0; // E2a: бюджет REQUEST_META_PED_OUTFIT
 int g_mountsCreatedThisTick = 0;      // E2b: <=1 лошадь/тик
+// E2c-b (v16): asset/tint, пришедший ДО создания прокси (pending-применение
+// сразу после CREATE_PED). Только игровой поток.
+std::unordered_map<uint32_t, std::vector<net::ActorAppearanceEntry>>
+    g_pendingAppearanceAssets;
 unsigned int g_appliedFrames = 0;
 unsigned int g_timeouts = 0;
 unsigned int g_lastNoCollisionTick = 0;
@@ -2225,6 +2511,19 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     p.lastMoveState = -1;
     p.dead = (s.flags & net::kActorFlagDead) != 0;
     p.appearanceState = 0; // E2a: запрос наряда сделает GuestTick (бюджет)
+    // E2c-b (v16): asset/tint мог прийти ДО создания прокси — применить сразу
+    // после CREATE_PED; assets приоритетнее metaOutfit (E2a не запускаем).
+    {
+        auto pa = g_pendingAppearanceAssets.find(s.actorId);
+        if (pa != g_pendingAppearanceAssets.end())
+        {
+            p.appearanceAssets = pa->second;
+            p.appearanceAssetsApplyNeeded = true;
+            p.appearanceAssetsWaitTick = ctx.tickCount;
+            p.appearanceState = 3; // E2a не трогаем: asset-данные главнее
+            g_pendingAppearanceAssets.erase(pa);
+        }
+    }
     // E2a.2: стартовый trail/направление для lookahead (heading = взгляд педа).
     p.trail[0].x = s.x;
     p.trail[0].y = s.y;
@@ -2326,6 +2625,8 @@ void ProcessActorAppearance(unsigned int tick)
         Proxy& p = kv.second;
         if (p.dead)
             continue; // труп не переодеваем — скоро despawn
+        if (!p.appearanceAssets.empty())
+            continue; // E2c-b: asset/tint приоритетнее metaOutfit (E2a не нужен)
         if (!p.metaOutfit || !p.handle || !DoesExist(p.handle))
             continue;
         if (p.appearanceState == 2 || p.appearanceState == 3)
@@ -2387,6 +2688,86 @@ void ProcessActorAppearance(unsigned int tick)
         if (ok)
             p.appearanceReapply = false;
         LogAppearance(p.actorId, p.model, p.metaOutfit, state);
+    }
+}
+
+// E2c-b (v16): применение asset/tint на госте. ≤1 актор/тик, staged:
+// wait ready -> reset+tags+commit -> readback -> applied / failed(fallback).
+// При невидимом/пустом результате обязателен RandomizeComponents+SetVisible,
+// чтобы NPC не остался невидимым.
+void ProcessGuestAppearanceAssets(unsigned int tick)
+{
+    if (!coopcfg::Get().npcAppearance)
+        return;
+
+    for (auto& kv : g_proxies)
+    {
+        Proxy& p = kv.second;
+        if (!p.appearanceAssetsApplyNeeded)
+            continue;
+        if (!p.handle || !DoesExist(p.handle) || p.dead ||
+            p.appearanceAssets.empty())
+        {
+            p.appearanceAssetsApplyNeeded = false;
+            if (p.dead)
+                p.appearanceAssets.clear();
+            continue;
+        }
+
+        if (!p.appearanceAssetsIssued)
+        {
+            if (!IsPedReadyToRenderEntity(p.handle))
+            {
+                if (p.appearanceAssetsWaitTick == 0)
+                    p.appearanceAssetsWaitTick = tick;
+                else if (tick - p.appearanceAssetsWaitTick > 180)
+                {
+                    // Не отрендерился за ~3 с — fallback, не оставляем пустым.
+                    RandomizeComponents(p.handle);
+                    SetVisible(p.handle);
+                    LogAssetApplied(
+                        p.actorId,
+                        static_cast<unsigned int>(p.appearanceAssets.size()),
+                        "failed");
+                    p.appearanceAssetsApplyNeeded = false;
+                    p.appearanceAssets.clear();
+                }
+                break; // бюджет: ≤1 актор/тик
+            }
+            ResetPedComponentsEntity(p.handle);
+            for (const net::ActorAppearanceEntry& e : p.appearanceAssets)
+                SetMetaPedTagEntity(p.handle, e);
+            CommitMetaPedComponentsEntity(p.handle);
+            p.appearanceAssetsIssued = true;
+            p.appearanceAssetsIssuedTick = tick;
+            break; // readback на следующих тиках
+        }
+
+        if (tick - p.appearanceAssetsIssuedTick < 6)
+            break; // дать движку применить компоненты
+
+        // Readback: count>0 и первый валидный drawable.
+        const int count = GetPedComponentCountEntity(p.handle);
+        uint32_t d = 0, a = 0, n = 0, m = 0;
+        const bool firstOk =
+            count > 0 &&
+            GetMetaPedAssetGuidsEntity(p.handle, 0, d, a, n, m) && d != 0;
+        if (firstOk)
+        {
+            SetVisible(p.handle);
+        }
+        else
+        {
+            // Невидимый NPC недопустим: fallback random variation.
+            RandomizeComponents(p.handle);
+            SetVisible(p.handle);
+        }
+        LogAssetApplied(p.actorId,
+                        static_cast<unsigned int>(p.appearanceAssets.size()),
+                        firstOk ? "applied" : "failed");
+        p.appearanceAssetsApplyNeeded = false;
+        p.appearanceAssetsIssued = false;
+        break; // бюджет: ≤1 актор/тик
     }
 }
 
@@ -3701,6 +4082,7 @@ void HandleGuestEpochChange(uint32_t newEpoch)
     DeleteAllProxies();
     g_pendingSpawns.clear();
     g_pendingSpawnIds.clear();
+    g_pendingAppearanceAssets.clear(); // E2c-b (v16)
     g_latestFrames.clear();
     g_haveFrames = false;
     g_guestDespawnQueue.clear();
@@ -3712,6 +4094,7 @@ void GuestResetState()
     g_guestEpoch = 0;
     g_pendingSpawns.clear();
     g_pendingSpawnIds.clear();
+    g_pendingAppearanceAssets.clear(); // E2c-b (v16)
     g_latestFrames.clear();
     g_haveFrames = false;
     g_guestDespawnQueue.clear();
@@ -3738,6 +4121,7 @@ void GuestTick(const TickContext& ctx)
     bool haveFrames = false;
     uint32_t framesEpoch = 0;
     std::deque<net::ActorDespawnPayload> despawns;
+    std::vector<AppearanceMsg> appearanceMsgs; // E2c-b (v16)
     {
         std::lock_guard<std::mutex> lk(g_inboxMutex);
         if (g_inbox.haveSpawn)
@@ -3755,6 +4139,7 @@ void GuestTick(const TickContext& ctx)
             haveFrames = true;
         }
         despawns.swap(g_inbox.despawns);
+        appearanceMsgs.swap(g_inbox.appearances);
         g_inbox.events = 0;
         g_inbox.outfits = 0;
     }
@@ -3898,9 +4283,46 @@ void GuestTick(const TickContext& ctx)
     }
     g_perfSpawn.AddUs(QpcDeltaUs(perfSpawnStart));
 
+    // 3b-pre) E2c-b (v16): asset/tint из inbox -> прокси/pending. Asset-данные
+    // приоритетнее metaOutfit: при их наличии E2a больше не применяем.
+    if (coopcfg::Get().npcAppearance)
+    {
+        for (AppearanceMsg& m : appearanceMsgs)
+        {
+            if (m.actorId == 0 || m.entries.empty())
+                continue;
+            if (m.epoch != 0 && g_guestEpoch != 0 && m.epoch != g_guestEpoch)
+                continue; // чужая эпоха
+            if (m.entries.size() > kMaxAppearanceComponents)
+                m.entries.resize(kMaxAppearanceComponents);
+            auto it = g_proxies.find(m.actorId);
+            if (it == g_proxies.end())
+            {
+                // Спавн мог прийти позже: применим сразу после CREATE_PED.
+                g_pendingAppearanceAssets[m.actorId] = m.entries;
+                continue;
+            }
+            Proxy& p = it->second;
+            if (p.outfitRequest)
+            {
+                ReleaseMetaPedOutfitRequest(p.outfitRequest);
+                p.outfitRequest = 0;
+            }
+            p.appearanceAssets = m.entries;
+            p.appearanceAssetsApplyNeeded = true;
+            p.appearanceAssetsIssued = false;
+            p.appearanceAssetsWaitTick = tick;
+            p.appearanceState = 3; // E2a не трогаем: assets главнее
+        }
+    }
+    appearanceMsgs.clear();
+
     // 3b) E2a: внешность — meta-outfit request/apply для новых и ожидающих
     // прокси (бюджет 2 REQUEST/тик, таймаут 3 с, не блокирует прокси).
     ProcessActorAppearance(tick);
+
+    // 3b2) E2c-b (v16): применение asset/tint (≤1 актор/тик).
+    ProcessGuestAppearanceAssets(tick);
 
     // 3c) E3a: сценарии-позы (sit/work) + fallback stand при неудаче.
     ProcessActorScenarios(tick);
@@ -4225,6 +4647,20 @@ void OnActorOutfit(uint32_t epoch, uint32_t actorId,
     std::lock_guard<std::mutex> lk(g_inboxMutex);
     ++g_inbox.outfits; // E1: outfit актора не применяем
     (void)epoch; (void)actorId; (void)outfit;
+}
+
+// E2c-b (v16): asset/tint внешности NPC — только копия в inbox (сетевой поток).
+void OnActorAppearance(uint32_t epoch, uint32_t actorId,
+                       const std::vector<net::ActorAppearanceEntry>& entries)
+{
+    if (!coopcfg::Get().npcActor) return;
+    std::lock_guard<std::mutex> lk(g_inboxMutex);
+    if (g_inbox.appearances.size() >= 64) return; // защита от спама
+    AppearanceMsg msg;
+    msg.epoch = epoch;
+    msg.actorId = actorId;
+    msg.entries = entries;
+    g_inbox.appearances.push_back(std::move(msg));
 }
 
 void OnActorResyncRequest(const net::ActorResyncPayload& req)

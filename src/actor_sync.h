@@ -59,6 +59,9 @@ void OnActorDespawn(const net::ActorDespawnPayload& msg);
 void OnActorEvent(const net::ActorEventPayload& ev);
 void OnActorOutfit(uint32_t epoch, uint32_t actorId,
                    const net::OutfitState& outfit);
+// E2c-b (v16): точная внешность NPC (asset/tint) от хоста.
+void OnActorAppearance(uint32_t epoch, uint32_t actorId,
+                       const std::vector<net::ActorAppearanceEntry>& entries);
 // Хост получает запрос resync от гостя: следующий тик перешлёт всех акторов.
 void OnActorResyncRequest(const net::ActorResyncPayload& req);
 

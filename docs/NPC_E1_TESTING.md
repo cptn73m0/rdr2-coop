@@ -1,29 +1,38 @@
-# E1 (NPC actor replication) — in-game test plan and acceptance metrics
+# NPC actor replication (E1–E3b) — in-game test plan and acceptance metrics
 
-**Статус:** E1 реализован в клиенте (`src/actor_sync.*`, флаг `npc_actor=0` по
-умолчанию), **в игре ещё не проверен**. E1 — human-only NPC: хост находит до
-`npc_cap` (default 8, max 12) ближайших human NPC в радиусе `npc_radius`
-(default 60 м, 20..100), шлёт `ActorSpawnBatch` (0x18) + `ActorFrames` (0x19)
-10 Гц + `ActorDespawn` (0x1A) при уходе/смерти/вытеснении; гость держит
-прокси-педов и интерполирует. Mission NPC, животные, транспорт и трупы в E1
-**не реплицируются**; `ActorEvent` (0x1B) / `ActorOutfit` (0x1C) принимаются,
-но не применяются; resync-запрос (0x1D) реализован (≤1/с, см. §2/S8).
+**Статус (23.10.2026):** E1–E3b реализованы в клиенте (`src/actor_sync.*`,
+флаг `npc_actor=0` по умолчанию) и **проверены на одном ПК** fake host/guest
+(`tools/fake_actor_client.py`): E1 human-only, E2a meta-outfit (5/5 applied,
+failed=0), E2b всадники (mount spawn ×9, failed=0), E3a сценарии/смерть,
+E3b оружие/бой (shoot=1450, reload=385, weapon fail=0). E2c-a resolver
+механически работает (resolved=0/failed=11 для random ambient NPC);
+**E2c-b asset/tint — протокол v16 0x1E в разработке**. Двух-ПК приёмка ещё
+впереди: второй ПК ARINA офлайн/старая сборка.
 
-Документ — чек-лист приёмки E1 на двух ПК и методика метрик «неотличимости».
-Автоматизированная часть E1 — wire/relay/validation: `tests/integration_server.py`
-(27 сценариев, actor-тесты) + 7 C++ тестов; клиентская логика проверяется только
-в игре.
+E1 — human-only NPC: хост находит до `npc_cap` (default 8, max 12) ближайших
+human NPC в радиусе `npc_radius` (default 60 м) и шлёт spawn/frames/despawn
+(0x18/0x19/0x1A) + heartbeat; гость держит прокси-педов. E2/E3 добавляют
+`metaOutfit`, всадников, сценарии/смерть и оружие через поля/флаги тех же
+сообщений. Mission NPC, животные, транспорт и трупы (кроме human NPC) не
+реплицируются; 0x1B/0x1C зарезервированы; resync 0x1D реализован (≤1/с).
+E2c-b (asset/tint) ждёт v16 0x1E.
+
+Автоматизированная часть — wire/relay/validation: `tests/integration_server.py`
+(27 сценариев, actor-тесты) + 7 C++ тестов; клиентская логика проверяется
+в игре/fake-клиентами.
 
 ## 0. Флаги и предусловия
 
 - Оба ПК: одна и та же сборка (protocol v15: `net/protocol.h`,
-  `kProtocolVersion=15`), один `rdr2_coop_server.exe` v15.
+  `kProtocolVersion=15`), один `rdr2_coop_server.exe` v15. **ARINA сейчас
+  офлайн/старая сборка — перед двух-ПК тестом дозалить `.asi`/INI.**
 - INI на обоих ПК (кроме указанных):
-  - `npc_actor = 1` — включить E1;
+  - `npc_actor = 1` — включить NPC-репликацию;
   - `npc_cap = 12` — для проверки 8–12 NPC в городе (default 8; допустимо 1..12);
   - `npc_radius = 60` — default; despawn-гистерезис +10 м (70 м);
-  - `npc_debug = 1` — probe-лог `probe: scan humans=...` (20 ближайших human,
-    раз в ~2 с, только хост); после прогона выключить;
+  - `npc_appearance = 1` — meta-outfit внешность (E2a, default 1);
+  - `npc_debug = 1` — probe-лог `probe: scan humans=...` (только хост);
+    после прогона выключить;
   - остальные экспериментальные флаги — **0** (`world_sync=0`, `action_sync=0`,
     `vehicle_sync=0`, `mission_sync=0`, `world_trains=0`, `train_debug=0`,
     `mission_credit=0`).
@@ -33,8 +42,10 @@
   `scripts\rdr2-coop.log` на каждом ПК и `server_console.log` (рабочая папка
   сервера) копируются в папку прогона.
 
-**Каждый сценарий выполняется дважды:** baseline `npc_actor=0` (эталон FPS/поведения
-и «ноль actor:») и `npc_actor=1`. Результат — таблица pass/fail на сценарий.
+**Порядок проверки:** сначала baseline `npc_actor=0` (эталон FPS/поведения и
+«ноль actor:»), затем `npc_actor=1`; на одном ПК допустим fake host/guest
+(`tools/fake_actor_client.py`), полная двух-ПК приёмка — после деплоя на
+ARINA. Результат — таблица pass/fail на сценарий.
 
 ## 1. Сбор артефактов
 
@@ -106,11 +117,15 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 | **S7** | Leave/миграция хоста | Хост выходит; гость становится HOST; затем второй игрок заходит к нему | guest `actor: reset`, старые прокси удалены; у нового хоста своя epoch/roster; при втором игроке — новый spawn batch, без старых NPC | логи обоих, сервер | [ ] |
 | **S8** | Resync (0x1D реализован) | Пауза/задержка сети у гостя (lag switch/сетевой шейпер) 2–5 с; после восстановления | guest `actor: resync needed id=…` + `actor: resync request epoch=…` (≤1/с); хост шлёт повторный roster (`actor: spawn … n=`), прокси восстановлены ≤2 с; `timeouts` ≤0.5%, нет залипших/дублей | логи, видео | [ ] |
 | **S9** | S0 повтор (gating) после E1-прогона | Вернуть `npc_actor=0` на обоих, рестарт игры; город 1–2 мин | **0** строк `actor:`/`probe:` в обоих логах и сервере; FPS возвращается к baseline | логи, `scan: fps` | [ ] |
+| **S10** | E2a meta-outfit внешность | `npc_appearance=1`; подойти к NPC с outfit hash; сравнить host/guest | Гость видит ту же meta-одежду; «5/5 applied, failed=0»; без мерцания/пересоздания | скрины host/guest, лог | [ ] |
+| **S11** | E2b всадники | `npc_cap=12`; найти всадников; спровоцировать dismount/despawn | rider+mount — одна пара; mount spawn ×9, failed=0; при dismount/despawn лошадь и всадник убираются без залипаний | скрины/видео, лог | [ ] |
+| **S12** | E3a сценарии + смерть/возрождение | 2 сценарных NPC (`--scenario-names` smoking/standing), двое курят; убить NPC | Сценарии подтверждены («двое курят на разных местах»); анти-наложение: skip 8 м / warp revert 3 м; труп остаётся; revive работает | скрины/видео, лог | [ ] |
+| **S13** | E3b оружие/бой | NPC с валидным weapon hash; draw → aim → shoot → reload | Оружие достаётся, прицел без дёргания, серии выстрелов + переприцеливание, reload; weapon fail=0; state=shoot=1450/reload=385 (по логу) | видео, host/guest лог | [ ] |
+| **S14** | E2c-a outfit resolver (опционально) | Host с resolver; fake guest (`--mode guest --outfit-wait 60`) | `fakeguest: outfits nonzero=… outfit_updates=… resolved_late=…`; для random ambient ожидаемо resolved=0/failed=11 — E2c-b после v16 | fake guest лог | [ ] |
 
-Дополнительно к чек-листу (если время): конные NPC (в E1 — только human; лошадь
-NPC не реплицируется как отдельный актор), ночь/дождь (LOD/видимость), вход/выход
-из транспорта NPC (в E1 не реплицируется), лагерь/сценарии (animState
-передаётся, точные клипы не гарантируются).
+Дополнительно: сценарные позы курящих/стоящих на разных точках (E3a),
+ночь/дождь (LOD/видимость), E2c-b asset/tint — после протокола v16 0x1E.
+Транспорт/животные/лошадиные трупы по-прежнему вне NPC-репликации.
 
 ## 4. Откат и аварийные действия
 
@@ -138,16 +153,22 @@ NPC не реплицируется как отдельный актор), но�
   хост по `OnActorResyncRequest` повторно шлёт roster (0x18). При проверке S8
   убедиться, что запрос уходит и roster восстанавливается; при отсутствии
   ответа/восстановления — это E1-дефект, а не ограничение.
-- **0x1B ActorEvent / 0x1C ActorOutfit** в E1 принимаются, но не применяются
-  (счётчики в inbox) — их визуальный эффект в E1 не проверяем.
-- **Только human NPC**: животные, транспорт, поезда не реплицируются; mission
-  NPC исключены (MVP), мёртвые NPC не спавнятся (только despawn).
-- **Ambient гостя не подавляется** в E1 (это отдельный world_sync-пайплайн):
-  гость видит и своих ambient NPC, и прокси хоста; «нет дублей» = нет двух
-  прокси одного actorId, а не идентичная картинка толпы A/B.
-- **Труп/лут/анимации смерти** не реплицируются в E1: после смерти NPC гость
-  просто удаляет proxy; это ожидаемо, не считать регрессией.
-- **Tick budget** не инструментирован в E1 (нет `perf:` лога): точная p95-оценка
+- **0x1B ActorEvent / 0x1C ActorOutfit** зарезервированы: принимаются, но не
+  применяются; E2a использует `metaOutfit` в heartbeat-spawn (0x18), E2c-b
+  asset/tint — отдельный v16 0x1E.
+- **Только human NPC**: животные, транспорт и лошадиные трупы не
+  реплицируются; mission NPC исключены; мёртвые human NPC — E3a (dead flag +
+  health=0), труп/возрождение подтверждены.
+- **Ambient гостя не подавляется** (отдельный world_sync-пайплайн): гость
+  видит своих ambient NPC и прокси хоста; «нет дублей» = нет двух прокси
+  одного actorId, а не идентичная картинка A/B.
+- **E2c-a resolver**: механически работает (890 моделей/4568 кандидатов,
+  бюджет 24 натива/тик), но random ambient NPC без именованного outfit —
+  `resolved=0/failed=11`; **E2c-b asset/tint ждёт v16 0x1E**, тогда проверять
+  `fakeguest: outfit_updates/resolved_late` и визуал.
+- **Двух-ПК приёмка не пройдена**: ARINA офлайн/старая сборка (нужен дозалив
+  `.asi`/INI); текущие E1–E3b — однопК-проверки fake host/guest.
+- **Tick budget** не инструментирован (нет `perf:` лога): точная p95-оценка
   только внешним профайлером/OBS; FPS-метрики из `scan: fps=` — основной
   автоматический прокси.
 - Discovery/кап зависят от позиции **обоих** игроков и от `npc_cap/radius`;
