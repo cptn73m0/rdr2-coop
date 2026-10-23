@@ -213,9 +213,13 @@ fakeguest: mounted reserved_ok=N reserved_zero=0
 
 E3a сдаёт в `ActorSpawn`:
 - `flags |= scenario (bit5)` для первых `--scenario N` акторов;
-- `ActorSpawn.scenarioHash` = один из уникальных `dynScenario=0x...` из
-  probe-лога (по умолчанию тот же `rdr2-coop.log`), fallback — 5 известных
-  хэшей; `--scenario-hash` задаёт явный хэш;
+- `ActorSpawn.scenarioHash` = `joaat(lowercase name)` для имён из
+  `--scenario-names` (default:
+  `PROP_HUMAN_SEAT_CHAIR,WORLD_HUMAN_CAMP_FIRE_SIT,PROP_HUMAN_SEAT_BENCH`),
+  назначаются сценарным акторам по кругу. Это **валидные сценарные имена** для
+  `TASK_START_SCENARIO_IN_PLACE_HASH` (dyn-хэши из probe для неё не подходят).
+  `--scenario-names none` — fallback на уникальные `dynScenario=0x...` из
+  `--scenario-from-log`; `--scenario-hash 0x...` — явный хэш.
 - у сценарных акторов `moveStyle=0`, в кадрах — scenario-флаг,
   `animState=0, speed=0, pad=0`, позиция фиксирована (стоят/сидят);
   остальные акторы двигаются по `--pattern`.
@@ -227,9 +231,10 @@ E3a сдаёт в `ActorSpawn`:
 
 **Тест E3a (fake host → игровой гость):**
 ```powershell
-# 2 сценарных (сидят) + 3 ходят по кругу
+# 2 сценарных (сидят) + 3 ходят по кругу; явно задаём валидные имена
 python tools\fake_actor_client.py --mode host --name TestHost `
-  --scenario 2 --pattern circle --despawn-after 0 --duration 300
+  --scenario 2 --scenario-names "PROP_HUMAN_SEAT_CHAIR,WORLD_HUMAN_CAMP_FIRE_SIT" `
+  --pattern circle --despawn-after 0 --duration 300
 
 # сценарии + смерть последнего через 20 с и возрождение через 10 с
 python tools\fake_actor_client.py --mode host --name TestHost `
@@ -238,7 +243,8 @@ python tools\fake_actor_client.py --mode host --name TestHost `
 ```
 Ожидаемые строки host:
 ```
-fakehost: scenario=2/5 hashes=0x..., 0x...
+fakehost: scenario=2/5
+fakehost: scenario hashes=0x993DE59F (PROP_HUMAN_SEAT_CHAIR), 0xB6091C7C (WORLD_HUMAN_CAMP_FIRE_SIT)
 fakehost: spawn epoch=1 n=5
 fakehost: death id=5
 fakehost: revive id=5
@@ -253,8 +259,10 @@ python tools\fake_actor_client.py --mode guest --name TestGuest --duration 120
 Ожидаемые строки E3a:
 ```
 fakeguest: scenarios=N dead_frames=M
+fakeguest: scenario_frames=K
 ```
 `scenarios=N` — число уникальных actorId с `scenarioHash!=0`;
+`scenario_frames=K` — кадры от сценарных актёров (флаг scenario);
 `dead_frames=M` — сколько кадров пришло с dead-флагом (в начале 0, после
 смерти растёт; после revive перестаёт).
 
@@ -294,7 +302,8 @@ fakeguest: scenarios=N dead_frames=M
 | `--mounted` | 0 | E2b: сколько из `--num` акторов верхом (первые N; 0..num); flags bit0 + `ActorSpawn.reserved=mount model` |
 | `--mount-model` | — | E2b: явный хэш лошади для всех всадников (иначе `A_C_HORSE_*` из Peds.json) |
 | `--scenario` | 0 | E3a: сколько из `--num` акторов в сценарии (первые N; idle + flags bit5 + scenarioHash) |
-| `--scenario-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | E3a: откуда брать `dynScenario=0x...` (пустая строка — fallback) |
+| `--scenario-names` | `PROP_HUMAN_SEAT_CHAIR,WORLD_HUMAN_CAMP_FIRE_SIT,PROP_HUMAN_SEAT_BENCH` | E3a: валидные имена сценариев; хэш = joaat(lowercase); `none` — fallback в probe-лог |
+| `--scenario-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | E3a: откуда брать `dynScenario=0x...` fallback (пустая строка — встроенный fallback) |
 | `--scenario-hash` | — | E3a: явный scenarioHash для всех сценарных акторов |
 | `--dead-after` | 0 | E3a: через сколько секунд после первого спавна убить последний actorId (0 = off) |
 | `--revive-after` | 10 | E3a: через сколько после смерти возродить (0 = остаётся мёртвым) |

@@ -84,7 +84,7 @@ constexpr unsigned int kMountReasonDead = 3;
 constexpr unsigned int kMountReasonSeatFailed = 4;
 
 // E3a: сценарий (поза) и смерть/труп.
-constexpr unsigned int kScenarioVerifyTicks = 90; // 1.5 с на вход в сценарий
+constexpr unsigned int kScenarioVerifyTicks = 120; // 2 с на вход в сценарий
 constexpr int kHumanMaxHealth = 200;              // fallback, если натив вернул 0
 
 // P3-фиксы по ревью E1 (task-45).
@@ -297,6 +297,23 @@ uint32_t GetDynamicScenario(unsigned int ped)
     Init(natives::_GET_ACTIVE_DYNAMIC_SCENARIO);
     Push(ped);
     return static_cast<uint32_t>(Call());
+}
+
+// E3a.1: dyn2 — «kneeling, sitting, squating, sleeping» scenario hashes.
+uint32_t GetDynamicScenario2(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::_GET_ACTIVE_DYNAMIC_SCENARIO_2);
+    Push(ped);
+    return static_cast<uint32_t>(Call());
+}
+
+// E3a.1: hash сценария для репликации: dyn2 (валидный для поз), иначе dyn1.
+uint32_t GetHostScenarioHash(unsigned int ped)
+{
+    const uint32_t h2 = GetDynamicScenario2(ped);
+    if (h2) return h2;
+    return GetDynamicScenario(ped);
 }
 
 bool IsReloading(unsigned int ped)
@@ -536,6 +553,27 @@ void StartScenarioInPlace(unsigned int ped, uint32_t scenarioHash)
     Push(static_cast<unsigned long long>(0));          // conditionalHash
     Push(0.f);                                         // heading (как есть)
     Push(false);                                       // p6
+    Call();
+}
+
+// E3a.1: fallback-поза в текущей точке (если in-place hash не подошёл).
+// TASK_START_SCENARIO_AT_POSITION(ped,hash,x,y,z,heading,duration,sitting,
+// teleport,p9str,p10f,p11bool) — 12 арг по NativeDecl.
+void StartScenarioAtPosition(unsigned int ped, uint32_t scenarioHash,
+                             float x, float y, float z, float heading)
+{
+    static char emptyString[] = "";
+    using namespace natives_api;
+    Init(natives::TASK_START_SCENARIO_AT_POSITION);
+    Push(ped);
+    Push(static_cast<unsigned long long>(scenarioHash));
+    Push(x); Push(y); Push(z); Push(heading);
+    Push(static_cast<unsigned long long>(0xFFFFFFFF)); // duration -1
+    Push(false); // isSittingScenario
+    Push(false); // teleportToScenario
+    Push(reinterpret_cast<unsigned long long>(emptyString)); // p9: ""
+    Push(-1.0f); // p10
+    Push(false); // p11
     Call();
 }
 
@@ -827,6 +865,13 @@ void LogScenarioApply(uint32_t actorId, uint32_t hash, bool ok)
                   actorId, hash, ok ? "ok" : "failed");
 }
 
+// E3a.1: диагностика, какой вариант упал (inplace/atpos).
+void LogScenarioFailed(uint32_t actorId, uint32_t hash, const char* stage)
+{
+    sh_log::Write("actor: scenario failed id=%u hash=0x%X stage=%s\n",
+                  actorId, hash, stage);
+}
+
 void LogDeath(uint32_t actorId)
 {
     sh_log::Write("actor: death id=%u\n", actorId);
@@ -1090,7 +1135,8 @@ net::ActorSpawn BuildSpawn(unsigned int handle, uint32_t actorId)
     // health=0, труп остаётся на месте.
     const bool dead = IsDeadPed(handle);
     const bool scenario = !dead && IsScenarioActive(handle);
-    s.scenarioHash = scenario ? GetDynamicScenario(handle) : 0;
+    // E3a.1: dyn2 даёт валидные scenario-hash поз (sit/work); dyn1 — fallback.
+    s.scenarioHash = scenario ? GetHostScenarioHash(handle) : 0;
     if (dead)
         s.flags &= static_cast<uint8_t>(~net::kActorFlagScenario);
     const Vec3 p = GetCoords(handle);
@@ -2366,7 +2412,8 @@ void ProcessActorScenarios(unsigned int tick)
         const bool want = p.scenarioFlag && !p.mounted;
         if (!want)
         {
-            if (p.scenarioState == 1 || p.scenarioState == 2)
+            if (p.scenarioState == 1 || p.scenarioState == 2 ||
+                p.scenarioState == 3)
             {
                 // Хост вышел из сценария — снимаем задачу, вернём движение.
                 StandStill(p.handle);
@@ -2392,18 +2439,21 @@ void ProcessActorScenarios(unsigned int tick)
             else if (p.scenarioState == 1 &&
                      tick - p.scenarioTick > kScenarioVerifyTicks)
             {
-                p.scenarioState = 3;
+                StandStill(p.handle);
+                LogScenarioFailed(p.actorId, 0, "inplace");
                 LogScenarioApply(p.actorId, 0, false);
+                p.scenarioState = 4;
             }
             continue;
         }
 
+        // Первый запуск / смена хэша (state 4 = failed, при новом hash — retry).
         const bool needApply =
             p.scenarioState == 0 ||
             (p.scenarioState != 2 && p.scenarioApplied != p.scenarioHash);
         if (needApply)
         {
-            // Снять текущее движение и посадить в сцену.
+            // Снять текущее движение/позу и попробовать in-place сценарий.
             StandStill(p.handle);
             SetMoveBlend(p.handle, 0.0f);
             p.taskActive = false;
@@ -2418,6 +2468,7 @@ void ProcessActorScenarios(unsigned int tick)
         if (p.scenarioState == 1)
         {
             const bool active = IsScenarioActive(p.handle) ||
+                                GetDynamicScenario2(p.handle) != 0 ||
                                 GetDynamicScenario(p.handle) != 0;
             if (active)
             {
@@ -2426,13 +2477,41 @@ void ProcessActorScenarios(unsigned int tick)
             }
             else if (tick - p.scenarioTick > kScenarioVerifyTicks)
             {
-                // Не встал в сцену — fallback stand + лог failed.
+                // E3a.1: in-place не подошёл — снять задачу и попробовать
+                // TASK_START_SCENARIO_AT_POSITION в текущей точке.
+                LogScenarioFailed(p.actorId, p.scenarioHash, "inplace");
+                StandStill(p.handle);
+                const Vec3 pos = GetCoords(p.handle);
+                StartScenarioAtPosition(p.handle, p.scenarioHash,
+                                        pos.x, pos.y, pos.z,
+                                        GetHeading(p.handle));
                 p.scenarioState = 3;
+                p.scenarioTick = tick;
+            }
+            continue;
+        }
+
+        if (p.scenarioState == 3)
+        {
+            const bool active = IsScenarioActive(p.handle) ||
+                                GetDynamicScenario2(p.handle) != 0 ||
+                                GetDynamicScenario(p.handle) != 0;
+            if (active)
+            {
+                p.scenarioState = 2;
+                LogScenarioApply(p.actorId, p.scenarioHash, true);
+            }
+            else if (tick - p.scenarioTick > kScenarioVerifyTicks)
+            {
+                // Оба варианта не удались: fallback stand (+ state=failed).
+                LogScenarioFailed(p.actorId, p.scenarioHash, "atpos");
                 StandStill(p.handle);
                 LogScenarioApply(p.actorId, p.scenarioHash, false);
+                p.scenarioState = 4;
             }
+            continue;
         }
-        // state==2: поза держится, движение не выдаём.
+        // state 2 (active) / 4 (failed): поза держится/стоим, движение не выдаём.
     }
 }
 

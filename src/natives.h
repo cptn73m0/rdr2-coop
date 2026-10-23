@@ -252,6 +252,9 @@ constexpr unsigned long long IS_PED_HOGTIED                    = 0x3AA24CCC0D451
 constexpr unsigned long long GET_LOOTING_PICKUP_TARGET_ENTITY  = 0x14169FA823679E41ull;
 constexpr unsigned long long _GET_TASK_FISHING                 = 0xF3735ACD11ACD500ull;
 constexpr unsigned long long TASK_START_SCENARIO_IN_PLACE_HASH = 0x524B54361229154Full;
+// E3a.1: fallback-поза в текущей точке (12 арг: ped,hash,x,y,z,heading,duration,
+// sitting,teleport,p9str,p10f,p11bool). Верификация — IS_PED_USING_ANY_SCENARIO.
+constexpr unsigned long long TASK_START_SCENARIO_AT_POSITION   = 0x4D1F61FC34AF3CD1ull;
 
 // P2: укрытие и действия с целью (переноска/лутание).
 constexpr unsigned long long TASK_ENTER_COVER                 = 0x4972A022AE6DAFA1ull;

@@ -83,6 +83,22 @@ K_MOVE_STYLE_RIDE_HORSE = 3
 FALLBACK_SCENARIO_HASHES = [
     0x62A4554D, 0xF6CD006D, 0x4BF802FE, 0x85AE7E5D, 0x189292F9,
 ]
+# Valid RDR2 scenario names for TASK_START_SCENARIO_IN_PLACE_HASH (E3a).
+# Hashes are joaat(lowercase_name); these are known sitting scenarios.
+DEFAULT_SCENARIO_NAMES = (
+    "PROP_HUMAN_SEAT_CHAIR",
+    "WORLD_HUMAN_CAMP_FIRE_SIT",
+    "PROP_HUMAN_SEAT_BENCH",
+)
+
+
+def joaat(name: str) -> int:
+    """RDR2/Jenkins one-at-a-time hash (lowercase), used for scenario hashes."""
+    h = 0
+    for c in str(name).lower().encode("utf-8"):
+        h = (h + c) & 0xFFFFFFFF
+        h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) & 0xFFFFFFFF
+    return h & 0xFFFFFFFF
 # Prefer ordinary town/ranch humans for a believable test crowd; avoid corpse/
 # undead variants that are technically human peds but look broken as NPCs.
 MODEL_GOOD_WORDS = ("TOWNFOLK", "RANCHER", "FARMER", "LABOURER", "LIVERY",
@@ -573,7 +589,8 @@ class Actor:
                  phase: float, spawn_time: float, motion: str = "circle",
                  direction: float = 0.0, gait: float = 1.0,
                  mounted: bool = False, mount_model: int = 0,
-                 scenario: bool = False, scenario_hash: int = 0):
+                 scenario: bool = False, scenario_hash: int = 0,
+                 scenario_name: str = ""):
         self.actor_id = actor_id
         self.model = model
         self.meta_outfit = meta_outfit
@@ -587,6 +604,7 @@ class Actor:
         self.mount_model = mount_model  # E2b: ActorSpawn.reserved
         self.scenario = scenario  # E3a: in scenario (sits/works in place)
         self.scenario_hash = scenario_hash  # E3a: ActorSpawn.scenarioHash
+        self.scenario_name = scenario_name  # E3a: human-readable name
         self.dead = False  # E3a: dead flag/health=0 until revive
         self.dead_pos = None  # fixed corpse position
         self.dead_heading = 0.0
@@ -655,12 +673,16 @@ class FakeHost:
                 (actor_id - 1) % len(self.args.mount_models)]
         scenario = actor_id <= self.args.scenario
         scenario_hash = 0
+        scenario_name = ""
         if scenario and self.args.scenario_hashes:
-            scenario_hash = self.args.scenario_hashes[
-                (actor_id - 1) % len(self.args.scenario_hashes)]
+            idx = (actor_id - 1) % len(self.args.scenario_hashes)
+            scenario_hash = self.args.scenario_hashes[idx]
+            if getattr(self.args, "scenario_names_list", None):
+                scenario_name = self.args.scenario_names_list[
+                    idx % len(self.args.scenario_names_list)]
         return Actor(actor_id, model, meta, (cx, cy, center[2]), angle,
                      spawn_time, motion, angle, gait, mounted, mount_model,
-                     scenario, scenario_hash)
+                     scenario, scenario_hash, scenario_name)
 
     def _make_actors(self, center):
         now = time.monotonic()
@@ -812,9 +834,13 @@ class FakeHost:
                 self.log.write("fakehost: mounted=0")
             if a.scenario:
                 assigned = a.scenario_hashes[:a.scenario]
-                self.log.write(
-                    f"fakehost: scenario={a.scenario}/{a.num} hashes=" +
-                    ", ".join(f"0x{h:08X}" for h in assigned))
+                names = getattr(a, "scenario_names_list", []) or []
+                pairs = []
+                for i, h in enumerate(assigned):
+                    name = names[i % len(names)] if names else ""
+                    pairs.append(f"0x{h:08X}" + (f" ({name})" if name else ""))
+                self.log.write(f"fakehost: scenario={a.scenario}/{a.num}")
+                self.log.write("fakehost: scenario hashes=" + ", ".join(pairs))
                 if a.scenario_warning:
                     self.log.write(f"fakehost: WARN {a.scenario_warning}")
             else:
@@ -1007,6 +1033,7 @@ class FakeGuest:
         # E3a: scenario actors (flags bit5 + scenarioHash) and dead frames.
         self.scenario_ids = set()
         self.scenario_zero = set()
+        self.scenario_frames = 0
         self.dead_frames = 0
         self.dead_ids = set()
         # E2a.2: speed/gait statistics from ActorFrame (speed u8 on 0..8 m/s
@@ -1136,6 +1163,8 @@ class FakeGuest:
             if rec["flags"] & K_ACTOR_FLAG_DEAD:
                 self.dead_frames += 1
                 self.dead_ids.add(rec["actorId"])
+            if rec["flags"] & K_ACTOR_FLAG_SCENARIO:
+                self.scenario_frames += 1
         unknown = [r["actorId"] for r in records
                    if r["actorId"] not in self.known_ids]
         if unknown and self.frames_msgs <= 5:
@@ -1214,6 +1243,8 @@ class FakeGuest:
             self.log.write(
                 f"fakeguest: scenarios={len(self.scenario_ids)} "
                 f"dead_frames={self.dead_frames}")
+            self.log.write(
+                f"fakeguest: scenario_frames={self.scenario_frames}")
             speed_avg = (self.speed_sum / self.speed_count
                          if self.speed_count else 0.0)
             gait_avg = (self.gait_sum / self.gait_count
@@ -1293,6 +1324,10 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--scenario", type=int, default=0,
                       help="E3a: how many of --num actors are in a scenario "
                            "(first N; idle, scenario flag + scenarioHash)")
+    host.add_argument("--scenario-names", default=",".join(DEFAULT_SCENARIO_NAMES),
+                      help="E3a: comma-separated valid RDR2 scenario names; "
+                           "scenarioHash = joaat(lowercase name); "
+                           "'none' = use probe-log hashes instead")
     host.add_argument("--scenario-from-log", default=str(DEFAULT_PROBE_LOG),
                       help="E3a: parse unique dynScenario=0x... hashes from "
                            "this probe log (empty string disables)")
@@ -1392,13 +1427,22 @@ def resolve_args(args):
             raise SystemExit(f"--scenario must be 0..{args.num}")
         args.scenario_hashes = []
         args.scenario_warning = None
+        args.scenario_names_list = []
         if args.scenario:
+            names_text = str(getattr(args, "scenario_names", "") or "").strip()
+            names = [n.strip() for n in names_text.split(",") if n.strip()] \
+                if names_text.lower() not in ("none", "off", "") else []
             if args.scenario_hash:
                 try:
                     args.scenario_hashes = [parse_single_hash(args.scenario_hash)]
                 except (ValueError, TypeError) as exc:
                     raise SystemExit(f"--scenario-hash: {exc}")
+            elif names:
+                # E3a: known scenario names -> joaat hashes, assigned by actor.
+                args.scenario_names_list = names
+                args.scenario_hashes = [joaat(n) for n in names]
             else:
+                # 'none' (or no names): fall back to dynScenario probe hashes.
                 source = getattr(args, "scenario_from_log", "") or ""
                 hashes, warning = load_scenario_hashes(Path(source),
                                                        args.scenario) \
