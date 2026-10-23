@@ -179,12 +179,29 @@ NPC-репликации.
 - **Двух-ПК приёмка не пройдена**: ARINA v16 задеплоена, но двух-ПК прогон
   ещё не начат; текущие E1–E3b/E2c-b — однопК-проверки fake host/guest +
   реальный хост для capture.
-- **Tick budget** не инструментирован (нет `perf:` лога): точная p95-оценка
-  только внешним профайлером/OBS; FPS-метрики из `scan: fps=` — основной
-  автоматический прокси.
+- **Tick budget**: для E4 добавлена инструментация (`perf: npc host/guest ...`
+  при `npc_debug=1`); анализ и пороги — `docs/PERF.md` +
+  `tools/perf_report.py`. На старом логе (до E4-билда) `perf:` нет — это не
+  дефект, а отсутствие инструментации.
 - Discovery/кап зависят от позиции **обоих** игроков и от `npc_cap/radius`;
   хост должен быть рядом с толпой, иначе 8–12 не наберётся.
 - Cap-кламп: `npc_cap` 1..12, `npc_radius` 20..100; некорректные значения
   игнорируются (остаются defaults 8/60).
 - `npc_actor=0` — обязательный gating: ни клиент, ни сервер не должны писать
   `actor:`/`probe:` строки; проверять на обоих ПК и сервере (S0/S9).
+
+## 6. E4 — производительность NPC-репликации
+
+E4 принимается по `perf: npc host/guest` строкам (`npc_debug=1`) и порогам:
+
+- Tick p95 ≤ **2.0 мс** (host/guest; с baseline — добавленный p95 ≤2.0 мс);
+- discover/capture/apply p95 ≤ **1.5 мс**; guest spawn/appearance/motion/
+  weapons/build p95 ≤1.5 мс;
+- `perf: npc warn` = **0**; timeouts ≤**0.5%**; appearance failed ≤**1%**;
+  delete failed = **0**.
+
+Команды и методика (baseline `npc_actor=0`, город 3–5 мин, fake guest,
+`--baseline` vs `--log`, `--json`, exit 0/1/2) — в `docs/PERF.md`.
+Ограничение 1 ПК: host и guest метрики снимаются отдельными прогонами;
+fake guest не даёт guest-`perf:` (это Python). Двух-ПК приёмка E2c-b/E4 —
+pending; ARINA v16 задеплоена.

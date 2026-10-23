@@ -433,6 +433,32 @@ pending. Для дымового теста без игры fake host `--appeara
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
 
+### E4: замеры производительности (`perf_report.py`)
+
+`tools/perf_report.py` парсит `perf: npc host ...` / `perf: npc guest ...`
+(формат v16 E4, `npc_debug=1`) и legacy `perf: actor ...` (старые логи).
+Считает p50/p95/max по tick/discover/capture/build/spawn/appearance/motion/
+weapons, counters (`actors/spawns/frames/despawns/bytes/s`,
+`proxies/spawns/applied/failed/timeouts`), warn/errors/timeouts, сравнивает
+`--baseline` vs `--log` и выдаёт PASS/FAIL по порогам E4.
+
+```powershell
+# один прогон
+python tools\perf_report.py --log "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log"
+
+# дельты к baseline (например пустая локация vs город)
+python tools\perf_report.py --log perf_city_npc1.log `
+  --baseline perf_baseline_empty.log
+
+# JSON
+python tools\perf_report.py --log perf_city_npc1.log --json > perf.json
+```
+Exit: 0 PASS, 1 FAIL, 2 нет `perf:` данных. Пороги: Tick p95 ≤2.0 мс
+(хост/гость; с baseline — добавленный p95), discover/capture/apply (и
+guest spawn/appearance/motion/weapons/build) p95 ≤1.5 мс, warn=0,
+timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
+Методика/приёмка — `docs/PERF.md`.
+
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 
 **Порядок: сервер → игра-хост → fake guest.**

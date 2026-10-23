@@ -196,12 +196,32 @@ struct PerfP95
     }
 };
 
-PerfP95 g_perfScan;
-PerfP95 g_perfSpawn;
-PerfP95 g_perfApply;
+// E4: p95-метрики фаз NPC-подсистемы (только npc_debug=1, окно 10 с).
+PerfP95 g_perfHostTick;
+PerfP95 g_perfHostDiscover;
+PerfP95 g_perfHostCapture;
+PerfP95 g_perfHostBuild;
+PerfP95 g_perfGuestTick;
+PerfP95 g_perfGuestSpawn;
+PerfP95 g_perfGuestAppearance;
+PerfP95 g_perfGuestMotion;
+PerfP95 g_perfGuestWeapons;
 // E2a: ошибка позиции (target vs ped), семплим в мм, логируем/1000 = метры.
 PerfP95 g_motionErr;
 unsigned int g_lastPerfLogTick = 0;
+// E4: счётчики окна (сбрасываются после строки perf: npc ...).
+unsigned long long g_perfHostSpawns = 0;
+unsigned long long g_perfHostFrames = 0;
+unsigned long long g_perfHostDespawns = 0;
+unsigned long long g_perfHostBytes = 0; // оценка отправленных actor-байт
+unsigned long long g_perfGuestSpawns = 0;
+unsigned long long g_perfGuestAppearanceApplied = 0;
+unsigned long long g_perfGuestAppearanceFailed = 0;
+unsigned long long g_perfGuestTimeouts = 0;
+unsigned long long g_perfGuestDespawns = 0;
+// E4: бюджет тика NPC-подсистемы (предупреждение в perf-строке).
+constexpr double kNpcPerfBudgetMs = 2.0;
+constexpr unsigned int kPerfWindowSeconds = kPerfLogEveryTicks / 60; // ~10 с
 
 // ======================= helper natives =======================
 bool DoesExist(unsigned int handle)
@@ -1192,6 +1212,11 @@ void LogProxyCap(unsigned int have, unsigned int cap)
 void LogAppearance(uint32_t actorId, uint32_t model, uint32_t outfit,
                    const char* state)
 {
+    if (std::strcmp(state, "failed") == 0)
+        ++g_perfGuestAppearanceFailed;
+    else if (std::strcmp(state, "applied") == 0 ||
+             std::strcmp(state, "reapplied") == 0)
+        ++g_perfGuestAppearanceApplied;
     sh_log::Write("actor: appearance id=%u model=0x%X outfit=0x%X state=%s\n",
                   actorId, model, outfit, state);
 }
@@ -1232,6 +1257,10 @@ void LogAssetSent(uint32_t actorId, unsigned int count)
 
 void LogAssetApplied(uint32_t actorId, unsigned int count, const char* state)
 {
+    if (std::strcmp(state, "failed") == 0)
+        ++g_perfGuestAppearanceFailed;
+    else
+        ++g_perfGuestAppearanceApplied;
     sh_log::Write("actor: appearance assets id=%u n=%u state=%s\n",
                   actorId, count, state);
 }
@@ -1341,20 +1370,6 @@ void LogDeath(uint32_t actorId)
 void LogRevive(uint32_t actorId)
 {
     sh_log::Write("actor: revive id=%u\n", actorId);
-}
-
-// ======================= perf: actor p95 (npc_debug=1) =======================
-void LogPerfIfDue(unsigned int tick)
-{
-    if (!coopcfg::Get().npcDebug) return;
-    if (tick - g_lastPerfLogTick < kPerfLogEveryTicks) return;
-    g_lastPerfLogTick = tick;
-    sh_log::Write(
-        "perf: actor scan=%.2f p95=%.2f max=%.2f | "
-        "spawn=%.2f p95=%.2f max=%.2f | apply=%.2f p95=%.2f max=%.2f\n",
-        g_perfScan.AvgMs(), g_perfScan.P95Ms(), g_perfScan.MaxMs(),
-        g_perfSpawn.AvgMs(), g_perfSpawn.P95Ms(), g_perfSpawn.MaxMs(),
-        g_perfApply.AvgMs(), g_perfApply.P95Ms(), g_perfApply.MaxMs());
 }
 
 // ======================= inbox сетевого потока =======================
@@ -1691,7 +1706,9 @@ void HostDiscovery(const TickContext& ctx)
     if (tick - g_lastDiscoveryTick < kDiscoveryPeriodTicks)
         return;
     g_lastDiscoveryTick = tick;
-    const unsigned long long perfScanStart = QpcNow();
+    const bool perfOn = coopcfg::Get().npcDebug;
+    const unsigned long long perfDiscoverStart = perfOn ? QpcNow() : 0;
+    unsigned long long perfBuildStart = 0;
 
     int cap = coopcfg::Get().npcCap;
     if (cap < 1) cap = 1;
@@ -1839,6 +1856,14 @@ void HostDiscovery(const TickContext& ctx)
     for (unsigned int h : dropHandles)
         g_roster.erase(h);
 
+    // E4: discover-часть закончена (пул+фильтры); дальше build-часть
+    // (BuildSpawn/BuildFrame + Send).
+    if (perfOn)
+    {
+        g_perfHostDiscover.AddUs(QpcDeltaUs(perfDiscoverStart));
+        perfBuildStart = QpcNow();
+    }
+
     // 4) новым — actorId; у существующих проверяем смену модели (тогда старый
     // актор despawn'ится, новый получает новый actorId — id не переиспользуем).
     std::vector<net::ActorSpawn> newSpawns;
@@ -1894,6 +1919,9 @@ void HostDiscovery(const TickContext& ctx)
         if (!out.empty())
         {
             coop::SendActorSpawnBatch(g_hostEpoch, out);
+            g_perfHostSpawns += static_cast<unsigned long long>(out.size());
+            g_perfHostBytes += static_cast<unsigned long long>(out.size()) *
+                               sizeof(net::ActorSpawn);
             LogSpawn(out[0].actorId, out[0].model,
                      static_cast<unsigned int>(out.size()));
             g_lastHeartbeatTick = tick;
@@ -1912,9 +1940,13 @@ void HostDiscovery(const TickContext& ctx)
     if (!frames.empty())
     {
         coop::SendActorFrames(g_hostEpoch, g_frameSeq++, frames);
+        g_perfHostFrames += static_cast<unsigned long long>(frames.size());
+        g_perfHostBytes += static_cast<unsigned long long>(frames.size()) *
+                           sizeof(net::ActorFrame);
     }
 
-    g_perfScan.AddUs(QpcDeltaUs(perfScanStart));
+    if (perfOn && perfBuildStart)
+        g_perfHostBuild.AddUs(QpcDeltaUs(perfBuildStart));
 }
 
 void HostResetState()
@@ -2146,7 +2178,16 @@ void HostTick(const TickContext& ctx)
     ProcessHostOutfitResolution(ctx.tickCount);
 
     // E2c-b (v16): захват asset/tint и отправка гостям (1 актор/тик).
-    ProcessHostAppearanceCapture(ctx.tickCount);
+    if (coopcfg::Get().npcDebug)
+    {
+        const unsigned long long t = QpcNow();
+        ProcessHostAppearanceCapture(ctx.tickCount);
+        g_perfHostCapture.AddUs(QpcDeltaUs(t));
+    }
+    else
+    {
+        ProcessHostAppearanceCapture(ctx.tickCount);
+    }
 
     // despawn — не чаще 1 сообщения за тик
     if (!g_despawnQueue.empty())
@@ -2154,6 +2195,8 @@ void HostTick(const TickContext& ctx)
         net::ActorDespawnPayload d = g_despawnQueue.front();
         g_despawnQueue.pop_front();
         coop::SendActorDespawn(d);
+        ++g_perfHostDespawns;
+        g_perfHostBytes += sizeof(net::ActorDespawnPayload);
         LogDespawn(d.actorId, d.reason);
     }
 }
@@ -2608,6 +2651,7 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
 
     g_handleByActor[handle] = p.actorId;
     g_proxies[p.actorId] = p;
+    ++g_perfGuestSpawns;
     LogSpawn(p.actorId, p.model, static_cast<unsigned int>(g_proxies.size()));
     return true;
 }
@@ -4111,6 +4155,7 @@ void GuestTick(const TickContext& ctx)
     g_modelRequestsThisTick = 0;
     g_appearanceRequestsThisTick = 0;
     g_mountsCreatedThisTick = 0;
+    const bool perfOn = coopcfg::Get().npcDebug;
 
     // 1) inbox: spawn/despawn/frames. Под мьютексом — ТОЛЬКО копирование;
     // нативы (в т.ч. удаление прокси при смене epoch) — после unlock.
@@ -4188,6 +4233,7 @@ void GuestTick(const TickContext& ctx)
         if (DeleteProxy(it->second))
         {
             g_proxies.erase(it);
+            ++g_perfGuestDespawns;
             ++deleted;
         }
         else if (g_guestDespawnQueue.size() < 32)
@@ -4221,7 +4267,7 @@ void GuestTick(const TickContext& ctx)
     // P3-фиксы (task-45): cap 12 в CreateProxy (pending не теряем) и таймаут
     // 5 с, если модель так и не загрузилась.
     int spawned = 0;
-    const unsigned long long perfSpawnStart = QpcNow();
+    const unsigned long long perfSpawnStart = perfOn ? QpcNow() : 0;
     for (auto it = g_pendingSpawns.begin();
          it != g_pendingSpawns.end() && spawned < kMaxSpawnsPerTick;)
     {
@@ -4229,6 +4275,7 @@ void GuestTick(const TickContext& ctx)
         if (tick - it->firstSeenTick > kPendingSpawnTimeoutTicks)
         {
             LogSpawnTimeout(s.actorId);
+            ++g_perfGuestTimeouts;
             // E2b fallback: всадник, чья модель лошади так и не загрузилась,
             // не должен пропасть — спавним rider пешим (как в E1).
             const bool wantMount =
@@ -4281,7 +4328,8 @@ void GuestTick(const TickContext& ctx)
             ++it; // cap ещё занят: pending ждёт слота/таймаута
         }
     }
-    g_perfSpawn.AddUs(QpcDeltaUs(perfSpawnStart));
+    if (perfOn)
+        g_perfGuestSpawn.AddUs(QpcDeltaUs(perfSpawnStart));
 
     // 3b-pre) E2c-b (v16): asset/tint из inbox -> прокси/pending. Asset-данные
     // приоритетнее metaOutfit: при их наличии E2a больше не применяем.
@@ -4319,16 +4367,19 @@ void GuestTick(const TickContext& ctx)
 
     // 3b) E2a: внешность — meta-outfit request/apply для новых и ожидающих
     // прокси (бюджет 2 REQUEST/тик, таймаут 3 с, не блокирует прокси).
+    const unsigned long long perfAppearanceStart = perfOn ? QpcNow() : 0;
     ProcessActorAppearance(tick);
 
     // 3b2) E2c-b (v16): применение asset/tint (≤1 актор/тик).
     ProcessGuestAppearanceAssets(tick);
+    if (perfOn)
+        g_perfGuestAppearance.AddUs(QpcDeltaUs(perfAppearanceStart));
 
     // 3c) E3a: сценарии-позы (sit/work) + fallback stand при неудаче.
     ProcessActorScenarios(tick);
 
-    // 4) кадры -> target позиция/флаги; 5) движение — замеряем p95 apply.
-    const unsigned long long perfApplyStart = QpcNow();
+    // 4) кадры -> target позиция/флаги; 5) движение — p95 motion (E4).
+    const unsigned long long perfMotionStart = perfOn ? QpcNow() : 0;
     if (g_haveFrames)
     {
         for (const net::ActorFrame& f : g_latestFrames)
@@ -4424,10 +4475,15 @@ void GuestTick(const TickContext& ctx)
     // 5) движение/поворот каждый тик
     for (auto& kv : g_proxies)
         MoveProxy(kv.second);
+    if (perfOn)
+        g_perfGuestMotion.AddUs(QpcDeltaUs(perfMotionStart));
 
     // E3b: боевые визуалы NPC (оружие/aim/shoot/reload) — после движения,
     // чтобы боевые задачи имели приоритет над walk-задачами.
+    const unsigned long long perfWeaponsStart = perfOn ? QpcNow() : 0;
     ProcessActorWeapons(tick);
+    if (perfOn)
+        g_perfGuestWeapons.AddUs(QpcDeltaUs(perfWeaponsStart));
 
     // E2b: удалить лошадь после слезания/смерти с задержкой (учёт не теряем:
     // TryDeleteMount при неудаче оставляет mountHandle на повтор/таймаут).
@@ -4470,7 +4526,7 @@ void GuestTick(const TickContext& ctx)
             }
         }
     }
-    g_perfApply.AddUs(QpcDeltaUs(perfApplyStart));
+    // E4: остаток (mount delete + no-collision) входит в guest tick, не в motion.
 
     // 6) lifecycle: 2 с без кадров -> resync; 10 с -> delete. При неудачном
     // DELETE_PED учёт не теряем: повтор через ~1 с (P2-фикс task-45).
@@ -4484,6 +4540,7 @@ void GuestTick(const TickContext& ctx)
             if (DeleteProxy(p))
             {
                 ++g_timeouts;
+                ++g_perfGuestDespawns;
                 it = g_proxies.erase(it);
             }
             else
@@ -4532,6 +4589,88 @@ void GuestTick(const TickContext& ctx)
 
 } // namespace
 
+// ======================= E4: perf NPC-подсистемы (npc_debug=1) =======================
+// 1-2 строки раз в ~10 с: p95 фаз + счётчики окна. Без аллокаций: фикс.
+// кольца PerfP95 (128 семплов) и счётчики; при npc_debug=0 не логируем и не
+// снимаем QPC в новых фазах (см. perfOn в Tick/HostTick/GuestTick).
+void ResetPerfWindow()
+{
+    g_perfHostTick.Clear();
+    g_perfHostDiscover.Clear();
+    g_perfHostCapture.Clear();
+    g_perfHostBuild.Clear();
+    g_perfGuestTick.Clear();
+    g_perfGuestSpawn.Clear();
+    g_perfGuestAppearance.Clear();
+    g_perfGuestMotion.Clear();
+    g_perfGuestWeapons.Clear();
+    g_perfHostSpawns = 0;
+    g_perfHostFrames = 0;
+    g_perfHostDespawns = 0;
+    g_perfHostBytes = 0;
+    g_perfGuestSpawns = 0;
+    g_perfGuestAppearanceApplied = 0;
+    g_perfGuestAppearanceFailed = 0;
+    g_perfGuestTimeouts = 0;
+    g_perfGuestDespawns = 0;
+}
+
+void LogNpcPerfIfDue(unsigned int tick, bool host)
+{
+    if (!coopcfg::Get().npcDebug)
+        return;
+    if (g_lastPerfLogTick != 0 &&
+        tick - g_lastPerfLogTick < kPerfLogEveryTicks)
+        return;
+    g_lastPerfLogTick = tick;
+
+    if (host)
+    {
+        sh_log::Write(
+            "perf: npc host tick=%.2f p95=%.2f max=%.2f | "
+            "discover=%.2f p95=%.2f | capture=%.2f p95=%.2f | "
+            "build=%.2f p95=%.2f\n",
+            g_perfHostTick.AvgMs(), g_perfHostTick.P95Ms(),
+            g_perfHostTick.MaxMs(),
+            g_perfHostDiscover.AvgMs(), g_perfHostDiscover.P95Ms(),
+            g_perfHostCapture.AvgMs(), g_perfHostCapture.P95Ms(),
+            g_perfHostBuild.AvgMs(), g_perfHostBuild.P95Ms());
+        sh_log::Write(
+            "perf: npc host actors=%u spawns=%llu frames=%llu despawns=%llu "
+            "bytes=%llu/s\n",
+            static_cast<unsigned int>(g_roster.size()), g_perfHostSpawns,
+            g_perfHostFrames, g_perfHostDespawns,
+            kPerfWindowSeconds ? g_perfHostBytes / kPerfWindowSeconds
+                               : g_perfHostBytes);
+        if (g_perfHostTick.P95Ms() > kNpcPerfBudgetMs)
+            sh_log::Write("perf: npc warn host tick=%.2f > %.1f ms\n",
+                          g_perfHostTick.P95Ms(), kNpcPerfBudgetMs);
+    }
+    else
+    {
+        sh_log::Write(
+            "perf: npc guest tick=%.2f p95=%.2f max=%.2f | "
+            "spawn=%.2f p95=%.2f | appearance=%.2f p95=%.2f | "
+            "motion=%.2f p95=%.2f | weapons=%.2f p95=%.2f\n",
+            g_perfGuestTick.AvgMs(), g_perfGuestTick.P95Ms(),
+            g_perfGuestTick.MaxMs(),
+            g_perfGuestSpawn.AvgMs(), g_perfGuestSpawn.P95Ms(),
+            g_perfGuestAppearance.AvgMs(), g_perfGuestAppearance.P95Ms(),
+            g_perfGuestMotion.AvgMs(), g_perfGuestMotion.P95Ms(),
+            g_perfGuestWeapons.AvgMs(), g_perfGuestWeapons.P95Ms());
+        sh_log::Write(
+            "perf: npc guest proxies=%u spawns=%llu applied=%llu failed=%llu "
+            "timeouts=%llu despawns=%llu\n",
+            static_cast<unsigned int>(g_proxies.size()), g_perfGuestSpawns,
+            g_perfGuestAppearanceApplied, g_perfGuestAppearanceFailed,
+            g_perfGuestTimeouts, g_perfGuestDespawns);
+        if (g_perfGuestTick.P95Ms() > kNpcPerfBudgetMs)
+            sh_log::Write("perf: npc warn guest tick=%.2f > %.1f ms\n",
+                          g_perfGuestTick.P95Ms(), kNpcPerfBudgetMs);
+    }
+    ResetPerfWindow();
+}
+
 // ======================= публичный API =======================
 void Tick(const TickContext& ctx)
 {
@@ -4546,6 +4685,8 @@ void Tick(const TickContext& ctx)
         return;
 
     g_logTick = ctx.tickCount;
+    const bool perfOn = coopcfg::Get().npcDebug;
+    const unsigned long long perfTickStart = perfOn ? QpcNow() : 0;
 
     if (ctx.amHost)
     {
@@ -4561,8 +4702,13 @@ void Tick(const TickContext& ctx)
         GuestTick(ctx);
     }
 
-    // perf: actor scan/spawn/apply p95 — только при npc_debug=1.
-    LogPerfIfDue(ctx.tickCount);
+    // E4: wall-time всего actor_sync::Tick и строки perf: npc ... (npc_debug=1).
+    if (perfOn)
+    {
+        const unsigned long long us = QpcDeltaUs(perfTickStart);
+        (ctx.amHost ? g_perfHostTick : g_perfGuestTick).AddUs(us);
+    }
+    LogNpcPerfIfDue(ctx.tickCount, ctx.amHost);
 }
 
 void Reset()
