@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Headless fake protocol-v15 player for single-PC NPC replication tests.
+"""Headless fake protocol-v16 player for single-PC NPC replication tests.
 
 Two modes (Python 3 standard library only):
 
@@ -13,7 +13,7 @@ Host mode sends ActorSpawnBatch/ActorFrames/ActorDespawn to the real game
 guest (E1 `npc_actor=1`): 5 human NPCs appear next to the in-game guest.
 Guest mode only receives/validates actor messages from the real game host.
 
-Protocol v15, framing: [len:u32 LE][type:u8][payload]. This tool does not
+Protocol v16, framing: [len:u32 LE][type:u8][payload]. This tool does not
 implement the client-side FPS/game logic; it only joins the relay server and
 speaks the wire protocol. See tools/README.md for the full instructions.
 """
@@ -31,9 +31,27 @@ import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Protocol constants (must match net/protocol.h, protocol v15).
+# Protocol constants: read kProtocolVersion / ActorAppearance id from
+# net/protocol.h so the tool never lags behind the server (v16 = 0x1E).
 # ---------------------------------------------------------------------------
-PROTOCOL_VERSION = 15
+def _protocol_defaults():
+    version = 16
+    appearance_msg = 0x1E
+    header = Path(__file__).resolve().parents[1] / "net" / "protocol.h"
+    try:
+        text = header.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return version, appearance_msg
+    match = re.search(r"kProtocolVersion\s*=\s*(\d+)", text)
+    if match:
+        version = int(match.group(1))
+    match = re.search(r"ActorAppearance\s*=\s*(0x[0-9A-Fa-f]+|\d+)", text)
+    if match:
+        appearance_msg = int(match.group(1), 0)
+    return version, appearance_msg
+
+
+PROTOCOL_VERSION, MSG_ACTOR_APPEARANCE = _protocol_defaults()
 MSG_JOIN = 0x01
 MSG_JOIN_OK = 0x02
 MSG_JOIN_REJECTED = 0x0F
@@ -55,6 +73,9 @@ ACTOR_FRAME_SIZE = 32
 ACTOR_SPAWN_BATCH_HEADER = 8
 ACTOR_FRAMES_HEADER = 8
 ACTOR_DESPAWN_SIZE = 12
+ACTOR_APPEARANCE_HEADER = 12
+ACTOR_APPEARANCE_ENTRY = 28
+ACTOR_APPEARANCE_MAX_COUNT = 16
 ACTOR_RESYNC_SIZE = 12
 FRAME_MIN_SIZE = 12  # x,y,z,heading; only the first 12 bytes are needed here
 
@@ -302,7 +323,7 @@ def join_session(sock: socket.socket, name: str, model: int, log: Log,
                 raise RuntimeError(
                     f"JOIN rejected: {reason} "
                     f"({JOIN_REJECT_NAMES.get(reason, 'unknown')})")
-    raise TimeoutError("no JoinOk in time; is the server running and v15?")
+    raise TimeoutError("no JoinOk in time; is the server running and v16?")
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +365,19 @@ def pack_actor_frame(actor_id: int, x: float, y: float, z: float,
 
 def pack_frames_batch(epoch: int, seq: int, records) -> bytes:
     return struct.pack("<IHH", epoch, seq & 0xFFFF, len(records)) + b"".join(records)
+
+
+def pack_actor_appearance(epoch: int, actor_id: int, entries) -> bytes:
+    """v16 ActorAppearance: header 12 B + count * 28 B entries."""
+    if not 1 <= len(entries) <= ACTOR_APPEARANCE_MAX_COUNT:
+        raise ValueError(f"ActorAppearance entry count {len(entries)} "
+                         f"not in 1..{ACTOR_APPEARANCE_MAX_COUNT}")
+    payload = struct.pack("<IIB3x", epoch, actor_id, len(entries))
+    for entry in entries:
+        drawable, albedo, normal, material, palette, tint0, tint1, tint2 = entry
+        payload += struct.pack("<IIIIIhhhH", drawable, albedo, normal,
+                               material, palette, tint0, tint1, tint2, 0)
+    return payload
 
 
 def pack_actor_despawn(epoch: int, actor_id: int, reason: int) -> bytes:
@@ -459,6 +493,43 @@ def validate_frames(payload: bytes):
                         "animState": anim_state, "targetActorId": target,
                         "speed": speed, "pad": pad, "seq": rec_seq})
     return epoch, seq, records
+
+
+def validate_actor_appearance(payload: bytes):
+    """v16 ActorAppearance: header 12 B + count * 28 B entries.
+
+    Returns (epoch, actorId, entries); entries are dicts with drawable/albedo/
+    normal/material/palette + tint0..2. Raises ValueError on any violation.
+    """
+    if len(payload) < ACTOR_APPEARANCE_HEADER:
+        raise ValueError("ActorAppearance shorter than 12-byte header")
+    epoch, actor_id, count = struct.unpack_from("<IIB", payload, 0)
+    if epoch == 0:
+        raise ValueError("ActorAppearance epoch=0")
+    if actor_id == 0:
+        raise ValueError("ActorAppearance actorId=0")
+    if not 1 <= count <= ACTOR_APPEARANCE_MAX_COUNT:
+        raise ValueError(f"ActorAppearance count={count} not in "
+                         f"1..{ACTOR_APPEARANCE_MAX_COUNT}")
+    expected = ACTOR_APPEARANCE_HEADER + count * ACTOR_APPEARANCE_ENTRY
+    if len(payload) != expected:
+        raise ValueError(f"ActorAppearance size={len(payload)} != {expected} "
+                         f"(count={count})")
+    entries = []
+    for i in range(count):
+        off = ACTOR_APPEARANCE_HEADER + i * ACTOR_APPEARANCE_ENTRY
+        (drawable, albedo, normal, material, palette,
+         tint0, tint1, tint2, reserved) = struct.unpack_from(
+            "<IIIIIhhhH", payload, off)
+        if reserved != 0:
+            raise ValueError(f"ActorAppearance entry #{i} reserved="
+                             f"0x{reserved:04X} != 0")
+        entries.append({
+            "drawable": drawable, "albedo": albedo, "normal": normal,
+            "material": material, "palette": palette,
+            "tint0": tint0, "tint1": tint1, "tint2": tint2,
+        })
+    return epoch, actor_id, entries
 
 
 def validate_despawn(payload: bytes):
@@ -659,6 +730,8 @@ class FakeHost:
         self.frames_sent = 0
         self.spawns_sent = 0
         self.despawns = 0
+        self.appearance_sent = set()
+        self.appearance_msgs_sent = 0
         self.guest_pos = None
         self.guest_frame_at = None
         self.last_lost_log = 0.0
@@ -1031,6 +1104,7 @@ class FakeHost:
                             send_frame(self.sock, MSG_ACTOR_FRAMES,
                                        self._frames_payload())
                             self.frames_sent += 1
+                            self.frame_seq = (self.frame_seq + 1) & 0xFFFF
                         except OSError as exc:
                             self.log.write(f"fakehost: send frames failed: {exc}")
                             return 1
@@ -1040,6 +1114,26 @@ class FakeHost:
                     if self.next_frame_at < now - 0.5:
                         self.next_frame_at = now + 0.1
                 self._update_timers(now)
+                # E2c-b: optional synthetic ActorAppearance (one per actor)
+                # for the future visual test; real game host sends it itself.
+                if getattr(a, "appearance", False) and self.actors:
+                    for act in self.actors:
+                        if act.actor_id in self.appearance_sent:
+                            continue
+                        synthetic = [(act.model, 0, 0, 0, 0,
+                                      255, 255, 255)] * 8
+                        try:
+                            send_frame(self.sock, MSG_ACTOR_APPEARANCE,
+                                       pack_actor_appearance(
+                                           self.epoch, act.actor_id, synthetic))
+                        except OSError as exc:
+                            self.log.write(f"fakehost: send appearance failed: {exc}")
+                            break
+                        self.appearance_sent.add(act.actor_id)
+                        self.appearance_msgs_sent += 1
+                        self.log.write(
+                            f"fakehost: appearance id={act.actor_id} "
+                            f"entries={len(synthetic)}")
                 self._maybe_ping(now)
                 if self.next_log_at <= now:
                     self.next_log_at = now + 1.0
@@ -1246,6 +1340,14 @@ class FakeGuest:
         self.reload_frames = 0
         self.combat_frames = 0
         self.target_frames = 0
+        # E2c-b v16: ActorAppearance (0x1E) validation/stats.
+        self.appearance_msgs = 0
+        self.appearance_actors = set()
+        self.appearance_entries_total = 0
+        self.appearance_entry_max = 0
+        self.appearance_errors = 0
+        self._appearance_unknown_warned = set()
+        self._appearance_logs = 0
         # E2a.2: speed/gait statistics from ActorFrame (speed u8 on 0..8 m/s
         # scale, pad = gait*1000).
         self.speed_min = 255
@@ -1268,6 +1370,13 @@ class FakeGuest:
         self.max_gap = 0.0
         self.next_report = 0.0
         self.next_ping_at = 0.0
+        self.next_guest_frame_at = 0.0
+        # Move the fake guest's player ghost to the real host's position so NPC
+        # discovery/spawn happens around the host player (not the old spawn).
+        self.host_pos = None
+        self.host_heading = 0.0
+        self._follow_logged = False
+        self._follow_frames = 0
         self._error_logs = 0
         self.epochs_seen = set()
 
@@ -1352,6 +1461,29 @@ class FakeGuest:
                 self.weapon_ids.add(rec["actorId"])
         self.log.write(f"fakeguest: spawn batch epoch={epoch} n={len(records)} "
                        f"ids={[r['actorId'] for r in records]}")
+
+    def _handle_appearance(self, payload: bytes, now: float) -> None:
+        """E2c-b v16 ActorAppearance (0x1E): validate + collect stats."""
+        self.appearance_msgs += 1
+        try:
+            epoch, actor_id, entries = validate_actor_appearance(payload)
+        except ValueError as exc:
+            self.appearance_errors += 1
+            self._error(f"ActorAppearance: {exc}")
+            return
+        self.appearance_actors.add(actor_id)
+        count = len(entries)
+        self.appearance_entries_total += count
+        self.appearance_entry_max = max(self.appearance_entry_max, count)
+        if actor_id not in self.known_ids and \
+                actor_id not in self._appearance_unknown_warned:
+            self._appearance_unknown_warned.add(actor_id)
+            self.log.write(f"fakeguest: WARN appearance actorId={actor_id} "
+                           f"before ActorSpawn")
+        if self._appearance_logs < 20:
+            self._appearance_logs += 1
+            self.log.write(f"fakeguest: appearance id={actor_id} count={count} "
+                           f"epoch={epoch}")
 
     def _handle_frames(self, payload: bytes, now: float) -> None:
         try:
@@ -1450,18 +1582,52 @@ class FakeGuest:
             deadline = start + a.duration
             self.next_report = start + 2.0
             self.next_ping_at = start + 1.0
+            self.next_guest_frame_at = start
             reader = FrameReader()
             while time.monotonic() < deadline:
                 now = time.monotonic()
+                # Fake guest must send a player FRAME so a fake host can start
+                # its NPC test (real game guest sends it too). Follow the real
+                # host's FRAME position so the ghost/NPC discovery is around
+                # the host player; fallback fixed point only for fake-host runs.
+                if now >= self.next_guest_frame_at and (
+                        self.host_pos is not None or now - start >= 2.0):
+                    gx, gy, gz = self.host_pos if self.host_pos else (
+                        100.0, 100.0, 100.0)
+                    gheading = self.host_heading if self.host_pos else 0.0
+                    try:
+                        send_frame(self.sock, MSG_FRAME,
+                                   struct.pack("<ffffBBBBfffffQQQQQQ",
+                                               gx, gy, gz, gheading,
+                                               0, 0, 0, 0,
+                                               0.0, 0.0, 0.0, 0.0, 0.0,
+                                               0, 0, 0, 0, 0, 0))
+                    except OSError:
+                        pass
+                    self.next_guest_frame_at = now + 0.1
                 for msg_type, payload in recv_available(self.sock, reader, wait=0.05):
                     now = time.monotonic()
+                    if msg_type == MSG_FRAME and len(payload) >= FRAME_MIN_SIZE:
+                        hx, hy, hz, hheading = struct.unpack_from(
+                            "<ffff", payload, 0)
+                        if all(is_finite_coord(v) for v in (hx, hy, hz, hheading)):
+                            self.host_pos = (hx, hy, hz)
+                            self.host_heading = hheading
+                            self._follow_frames += 1
+                            if not self._follow_logged:
+                                self._follow_logged = True
+                                self.log.write(
+                                    f"fakeguest: following host pos="
+                                    f"({hx:.1f},{hy:.1f},{hz:.1f})")
                     if msg_type == MSG_ACTOR_SPAWN_BATCH:
                         self._handle_spawn(payload, now)
                     elif msg_type == MSG_ACTOR_FRAMES:
                         self._handle_frames(payload, now)
                     elif msg_type == MSG_ACTOR_DESPAWN:
                         self._handle_despawn(payload, now)
-                    # ActorEvent/ActorOutfit/ActorResync: not needed for E1.
+                    elif msg_type == MSG_ACTOR_APPEARANCE:
+                        self._handle_appearance(payload, now)
+                    # ActorEvent/ActorOutfit: reserved, not needed for E1-E3b.
                     # Pong/PlayerJoined/Frame/...: ignore.
                 # E2c: after the first spawn keep listening for late outfit
                 # updates (heartbeat spawns) even if --duration is short.
@@ -1503,6 +1669,18 @@ class FakeGuest:
                 f"fakeguest: combat_frames={self.combat_frames}")
             self.log.write(
                 f"fakeguest: target_frames={self.target_frames}")
+            valid_appearance = max(0, self.appearance_msgs -
+                                   self.appearance_errors)
+            appearance_avg = (self.appearance_entries_total / valid_appearance
+                              if valid_appearance else 0.0)
+            self.log.write(
+                f"fakeguest: appearance_entries avg={appearance_avg:.2f} "
+                f"max={self.appearance_entry_max}")
+            self.log.write(
+                f"fakeguest: appearance_msgs={self.appearance_msgs} "
+                f"appearance_actors={len(self.appearance_actors)} "
+                f"entry_max={self.appearance_entry_max} "
+                f"errors={self.appearance_errors}")
             speed_avg = (self.speed_sum / self.speed_count
                          if self.speed_count else 0.0)
             gait_avg = (self.gait_sum / self.gait_count
@@ -1542,7 +1720,7 @@ class FakeGuest:
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        description="Headless fake v15 player for single-PC NPC replication tests "
+        description="Headless fake v16 player for single-PC NPC replication tests "
                     "(fake host sends 5 NPC actors to the game guest; fake guest "
                     "validates actor messages from the game host).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -1633,6 +1811,10 @@ def build_parser() -> argparse.ArgumentParser:
                            "behavior (requires --combat/--drawn/--*-after)")
     host.add_argument("--combat", action="store_true",
                       help="E3b: set Combat flag (16)")
+    host.add_argument("--appearance", action="store_true",
+                      help="E2c-b: send synthetic ActorAppearance (0x1E) per "
+                           "actor for the future visual test (real game host "
+                           "sends real appearance itself)")
     host.add_argument("--outfits-from-log", default=str(DEFAULT_PROBE_LOG),
                       help="parse `probe: model=... metaOutfit=...` pairs from "
                            "the game log and send them in ActorSpawn.metaOutfit "
