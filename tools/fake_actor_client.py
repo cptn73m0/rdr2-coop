@@ -380,6 +380,17 @@ def move_style_for_gait(gait: float) -> int:
     return 0      # idle
 
 
+def combat_cycle_enabled(args) -> bool:
+    """E3b.3: repeating combat cycles are active only for a combat run."""
+    cycle = getattr(args, "combat_cycle", 0.0) or 0.0
+    if cycle <= 0:
+        return False
+    if getattr(args, "combat", False) or getattr(args, "drawn", False):
+        return True
+    return any(getattr(args, name, 0.0) > 0 for name in
+               ("aim_after", "shoot_after", "reload_after"))
+
+
 def validate_spawn_batch(payload: bytes):
     """Return (epoch, records) or raise ValueError with a short reason."""
     if len(payload) < ACTOR_SPAWN_BATCH_HEADER:
@@ -668,6 +679,8 @@ class FakeHost:
         self._shoot_logged = False
         self._reload_logged = False
         self._reload_state = False
+        self._cycle_logged = -1
+        self._cycle_phase = None
 
     # -- actor construction -------------------------------------------------
     @staticmethod
@@ -822,6 +835,28 @@ class FakeHost:
         if a.scenario or a.dead:
             return flags, None, 0
         elapsed = now - a.spawn_time
+        if combat_cycle_enabled(a_args):
+            # E3b.3 repeating cycle: +0..2 Drawn, +2..7 Aim, +7..10 Shoot
+            # (targetActorId=1), +12..13 Reload. Pose is frozen for +2..10.
+            cycle = a_args.combat_cycle
+            cycle_idx = int(elapsed // cycle)
+            ce = elapsed % cycle
+            aim_active = 2.0 <= ce < 7.0
+            shoot_active = 7.0 <= ce < 10.0
+            reload_active = 12.0 <= ce < 13.0
+            if 0.0 <= ce < 10.0:
+                flags |= K_ACTOR_FLAG_DRAWN
+            if aim_active or shoot_active:
+                flags |= K_ACTOR_FLAG_AIMING | K_ACTOR_FLAG_DRAWN
+            if reload_active:
+                flags |= K_ACTOR_FLAG_RELOADING | K_ACTOR_FLAG_DRAWN
+            if getattr(a_args, "drawn", False) and elapsed >= 3.0:
+                flags |= K_ACTOR_FLAG_DRAWN
+            hold_start = None
+            if aim_active or shoot_active:
+                hold_start = cycle_idx * cycle + 2.0
+            target = 1 if shoot_active else 0
+            return flags, hold_start, target
         aim_after = getattr(a_args, "aim_after", 0.0)
         shoot_after = getattr(a_args, "shoot_after", 0.0)
         reload_after = getattr(a_args, "reload_after", 0.0)
@@ -952,7 +987,7 @@ class FakeHost:
                 f"fakehost: combat flags drawn={int(a.drawn)} "
                 f"aim_after={a.aim_after:.1f} shoot_after={a.shoot_after:.1f} "
                 f"reload_after={a.reload_after:.1f} combat={int(a.combat)} "
-                f"weapon=0x{a.weapon_hash:08X}")
+                f"cycle={a.combat_cycle:.1f} weapon=0x{a.weapon_hash:08X}")
             start = time.monotonic()
             deadline = start + a.duration
             reader = FrameReader()
@@ -1065,21 +1100,42 @@ class FakeHost:
             if a.drawn and elapsed >= 3.0 and not self._weapon_drawn_logged:
                 self._weapon_drawn_logged = True
                 self.log.write("fakehost: weapon drawn")
-            if (a.aim_after > 0 and elapsed >= a.aim_after and
-                    not self._aim_logged):
-                self._aim_logged = True
-                self.log.write("fakehost: aim")
-            if (a.shoot_after > 0 and elapsed >= a.shoot_after and
-                    not self._shoot_logged):
-                self._shoot_logged = True
-                self.log.write("fakehost: shoot")
-            if a.reload_after > 0:
-                reload_active = (elapsed >= a.reload_after and
-                                 ((elapsed - a.reload_after) % 8.0) < 1.0)
-                if reload_active != self._reload_state:
-                    self._reload_state = reload_active
-                    self.log.write("fakehost: reload " +
-                                   ("on" if reload_active else "off"))
+            if combat_cycle_enabled(a):
+                # E3b.3: repeating aim/shoot/reload windows every combat cycle.
+                cycle = max(0.1, a.combat_cycle)
+                cycle_idx = int(elapsed // cycle)
+                ce = elapsed % cycle
+                if cycle_idx != self._cycle_logged:
+                    self._cycle_logged = cycle_idx
+                    self._cycle_phase = None
+                if 2.0 <= ce < 7.0:
+                    phase = "aim"
+                elif 7.0 <= ce < 10.0:
+                    phase = "shoot"
+                elif 12.0 <= ce < 13.0:
+                    phase = "reload"
+                else:
+                    phase = None
+                if phase and phase != self._cycle_phase:
+                    self._cycle_phase = phase
+                    self.log.write(
+                        f"fakehost: cycle {cycle_idx + 1} {phase}")
+            else:
+                if (a.aim_after > 0 and elapsed >= a.aim_after and
+                        not self._aim_logged):
+                    self._aim_logged = True
+                    self.log.write("fakehost: aim")
+                if (a.shoot_after > 0 and elapsed >= a.shoot_after and
+                        not self._shoot_logged):
+                    self._shoot_logged = True
+                    self.log.write("fakehost: shoot")
+                if a.reload_after > 0:
+                    reload_active = (elapsed >= a.reload_after and
+                                     ((elapsed - a.reload_after) % 8.0) < 1.0)
+                    if reload_active != self._reload_state:
+                        self._reload_state = reload_active
+                        self.log.write("fakehost: reload " +
+                                       ("on" if reload_active else "off"))
         # E3a: one actor (last id) dies; dead flag + health=0, frames fixed.
         if self.next_death is not None and now >= self.next_death:
             self.next_death = None
@@ -1532,6 +1588,11 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--reload-after", type=float, default=0.0,
                       help="E3b: seconds after spawn to start Reloading "
                            "impulses (1 s on / 4 s period); 0=off")
+    host.add_argument("--combat-cycle", type=float, default=20.0,
+                      help="E3b.3: repeat combat windows every SEC seconds: "
+                           "+0..2 drawn, +2..7 aim (idle), +7..10 shoot "
+                           "(target=1, idle), +12 reload 1 s; 0 = old one-shot "
+                           "behavior (requires --combat/--drawn/--*-after)")
     host.add_argument("--combat", action="store_true",
                       help="E3b: set Combat flag (16)")
     host.add_argument("--outfits-from-log", default=str(DEFAULT_PROBE_LOG),
@@ -1679,6 +1740,8 @@ def resolve_args(args):
         if args.aim_after < 0 or args.shoot_after < 0 or args.reload_after < 0:
             raise SystemExit("--aim-after/--shoot-after/--reload-after "
                              "must be >= 0")
+        if args.combat_cycle < 0:
+            raise SystemExit("--combat-cycle must be >= 0")
     if args.duration < 1:
         raise SystemExit("--duration must be >= 1 second")
     return args

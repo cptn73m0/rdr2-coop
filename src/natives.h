@@ -187,6 +187,8 @@ constexpr unsigned long long _IS_PED_CURRENT_WEAPON_HOLSTERED  = 0xBDD9C235D8D10
 constexpr unsigned long long _GET_PED_CURRENT_HELD_WEAPON      = 0x8425C5F057012DABull;
 constexpr unsigned long long _MAKE_PED_RELOAD                = 0x79E1E511FF7EFB13ull;
 constexpr unsigned long long SET_AMMO_IN_CLIP                = 0xDCD2A934D65CB497ull;
+// E3b.3: резерв патронов (SET_PED_AMMO(ped,weaponHash,ammo)) — 3 арг.
+constexpr unsigned long long SET_PED_AMMO                    = 0x14E56BC5B5DB6A19ull;
 constexpr unsigned long long _SET_FORCE_CURRENT_WEAPON_INTO_COCKED_STATE = 0x5230D3F6EE56CFE6ull;
 constexpr unsigned long long WEAPON_UNARMED = 0xA2719263ull;
 constexpr unsigned long long IS_PED_SITTING              = 0x84D0BF2B21862059ull;

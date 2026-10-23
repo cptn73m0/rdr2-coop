@@ -321,36 +321,41 @@ Default `--weapon` = **0x169F59F7** (револьвер); `--weapon-list` без
   `targetActorId=1`; вне окна `targetActorId=0`;
 - `--reload-after SEC`: через SEC — Reloading (64) импульсами **1 с каждые
   8 с**; переходы логируются `fakehost: reload on/off`;
+- `--combat-cycle SEC` (**default 20**, 0 = одноразовые окна): повторяет
+  боевые окна каждый цикл: `+0..2` — Drawn, `+2..7` — Aiming (idle поза:
+  x,y,heading статичны), `+7..10` — Shoot (Drawn|Aiming + targetActorId=1,
+  idle), `+12..13` — Reload 1 с; повторяется до `--duration`. В лог:
+  `fakehost: cycle N aim/shoot/reload`. Одноразовые `--aim-after`/
+  `--shoot-after`/`--reload-after` действуют только при `--combat-cycle 0`;
 - `--weapon HASH` — явный реальный хэш оружия (0 = без оружия);
 - `--weapon-list [HASH,...]` — разные оружия по кругу акторам (без значения
   берётся 5 валидных хэшей); лог `fakehost: weapons=...`.
 
 **Тест E3b (fake host → игровой гость):**
 ```powershell
-# default real weapon 0x169F59F7 (revolver cattleman)
+# повторяющиеся окна aim/shoot/reload каждые 20 с (default)
 python tools\fake_actor_client.py --mode host --name TestHost `
-  --combat --drawn --aim-after 4 --shoot-after 6 --reload-after 5 `
+  --combat --drawn --combat-cycle 20 `
   --despawn-after 0 --duration 120
 
 # разные валидные оружия по кругу (5 моделей):
 python tools\fake_actor_client.py --mode host --name TestHost `
-  --weapon-list `
-  --combat --drawn --aim-after 4 --shoot-after 6 --reload-after 5 `
+  --weapon-list --combat --drawn --combat-cycle 20 `
   --despawn-after 0 --duration 120
 ```
 Ожидаемые строки host:
 ```
 fakehost: weapons=0x169F59F7, 0x6DFA071B, 0xF5175BA1, 0x5B78B8DD, 0x63F46DE6
-fakehost: combat flags drawn=1 aim_after=4.0 shoot_after=6.0 reload_after=5.0 combat=1 weapon=0x169F59F7
-fakehost: weapon drawn
-fakehost: aim
-fakehost: shoot
-fakehost: reload on
-fakehost: reload off
+fakehost: combat flags drawn=1 aim_after=0.0 shoot_after=0.0 reload_after=0.0 combat=1 cycle=20.0 weapon=0x169F59F7
+fakehost: cycle 1 aim
+fakehost: cycle 1 shoot
+fakehost: cycle 1 reload
+fakehost: cycle 2 aim
 fakehost: spawn epoch=1 n=5
 ```
-В игре-госте: NPC с валидным оружием; через 3 с достают, целятся
-(неподвижно), стреляют (Drawn|Aiming + targetActorId=1), перезаряжаются.
+В игре-госте: NPC с валидным оружием; каждые 20 с достают револьвер,
+целятся 5 с (неподвижно), стреляют 3 с (Drawn|Aiming + targetActorId=1),
+перезаряжаются 1 с — и так пока идёт `--duration`.
 
 **Проверка полей в сети (игровой хост → fake guest):**
 ```powershell
@@ -411,7 +416,8 @@ fakeguest: target_frames=N
 | `--drawn` | off | E3b: через 3 с после спавна флаг Drawn (4) |
 | `--aim-after` | 0 (off) | E3b: через SEC — Aiming+Drawn на 8 с, актор стоит |
 | `--shoot-after` | 0 (off) | E3b: через SEC — Drawn\|Aiming на 3 с (shoot) |
-| `--reload-after` | 0 (off) | E3b: через SEC — Reloading (64) импульсами 1 с каждые 8 с; логи on/off |
+| `--reload-after` | 0 (off) | E3b: через SEC — Reloading (64) импульсами 1 с каждые 8 с; логи on/off (только при `--combat-cycle 0`) |
+| `--combat-cycle` | 20 | E3b.3: повторять aim(+2..7)/shoot(+7..10)/reload(+12) каждый SEC; 0 = одноразовые окна |
 | `--combat` | off | E3b: флаг Combat (16) |
 | `--dead-after` | 0 | E3a: через сколько секунд после первого спавна убить последний actorId (0 = off) |
 | `--revive-after` | 10 | E3a: через сколько после смерти возродить (0 = остаётся мёртвым) |

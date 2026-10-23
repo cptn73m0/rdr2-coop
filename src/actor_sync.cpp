@@ -510,6 +510,18 @@ void SetAmmoInClipEntity(unsigned int ped, uint32_t weaponHash, int ammo)
     Call();
 }
 
+// E3b.3: резерв патронов (иначе после SET_AMMO_IN_CLIP(0) перезарядка
+// мгновенно пополняется/не играет).
+void SetPedAmmoEntity(unsigned int ped, uint32_t weaponHash, int ammo)
+{
+    using namespace natives_api;
+    Init(natives::SET_PED_AMMO);
+    Push(ped);
+    Push(static_cast<unsigned long long>(weaponHash));
+    Push(ammo);
+    Call();
+}
+
 void TaskAimGunAtCoordEntity(unsigned int ped, float x, float y, float z)
 {
     using namespace natives_api;
@@ -517,7 +529,7 @@ void TaskAimGunAtCoordEntity(unsigned int ped, float x, float y, float z)
     Push(ped);
     Push(x); Push(y); Push(z);
     Push(static_cast<unsigned long long>(0xFFFFFFFF)); // time -1
-    Push(false); // p5
+    Push(true);  // p5 (E3b.3: instant aim)
     Push(false); // p6
     Call();
 }
@@ -1157,13 +1169,14 @@ void LogWeaponFail(uint32_t actorId, uint32_t hash, uint32_t giveRet)
 
 // E3b.1/E3b.2: диагностика оружейного состояния движка (npc_debug=1, 5 с).
 void LogWeaponDebug(uint32_t actorId, bool ready, bool armed, uint32_t cur,
-                    uint32_t held, uint32_t hash, int ammo, bool drawn)
+                    uint32_t held, uint32_t hash, int ammo, bool drawn,
+                    bool aimTask, bool shootTask, bool moving)
 {
     sh_log::Write(
         "actor: weapon dbg id=%u ready=%d armed=%d cur=0x%X held=0x%X "
-        "hash=0x%X ammo=%d drawn=%d\n",
+        "hash=0x%X ammo=%d drawn=%d aimTask=%d shootTask=%d moving=%d\n",
         actorId, ready ? 1 : 0, armed ? 1 : 0, cur, held, hash, ammo,
-        drawn ? 1 : 0);
+        drawn ? 1 : 0, aimTask ? 1 : 0, shootTask ? 1 : 0, moving ? 1 : 0);
 }
 
 void LogDeath(uint32_t actorId)
@@ -1878,6 +1891,10 @@ struct Proxy
     bool weaponDrawnUnverified = false;
     unsigned int weaponEquipDemandTick = 0;
     bool weaponFailLogged = false;
+    // E3b.3: стойка в бою (StandStill один раз) и флаг выдачи shoot-задачи.
+    bool combatStance = false;
+    unsigned int combatStanceStartTick = 0;
+    bool shootTaskActive = false;
 };
 
 std::map<uint32_t, Proxy> g_proxies;
@@ -2561,6 +2578,12 @@ void MoveProxy(Proxy& p)
     if (p.scenarioFlag)
         return;
 
+    // E3b.3: пока активен бой (aim/shoot/reload) — НЕ выдаём TASK_FOLLOW.
+    // Стойка (StandStill) выдаётся один раз при входе в бой в
+    // ProcessActorWeapons; после снятия флагов движение возобновится.
+    if (p.weaponAimFlag || p.weaponShootPulse || p.weaponReloadFlag)
+        return;
+
     const Vec3 cur = GetCoords(p.handle);
     const float dx = p.tx - cur.x;
     const float dy = p.ty - cur.y;
@@ -2749,6 +2772,8 @@ void ApplyProxyDeath(Proxy& p)
     p.aimCaptured = false;
     p.prevAimFlag = false;
     p.equipWaitActive = false;
+    p.combatStance = false;
+    p.shootTaskActive = false;
     p.deathApplied = true;
     LogDeath(p.actorId);
 }
@@ -2790,6 +2815,8 @@ void ApplyProxyRevive(Proxy& p)
     p.weaponGiveFailLogged = false;
     p.weaponFailLogged = false;
     p.weaponDrawnUnverified = false;
+    p.combatStance = false;
+    p.shootTaskActive = false;
     LogRevive(p.actorId);
 }
 
@@ -3123,6 +3150,28 @@ void ProcessActorWeapons(unsigned int tick)
         const bool wantAim = p.weaponAimFlag || p.weaponShootPulse;
         const bool wantReload = p.weaponReloadFlag;
 
+        // E3b.3: пока бой активен — StandStill ОДИН раз при входе и держим
+        // стойку; MoveProxy в это время не выдаёт TASK_FOLLOW. После снятия
+        // флагов движение возобновляется.
+        const bool combatActive = wantAim || wantShoot || wantReload;
+        if (combatActive && !p.combatStance)
+        {
+            StandStill(p.handle);
+            p.taskActive = false;
+            p.moveTaskValid = false;
+            p.combatStance = true;
+            p.combatStanceStartTick = tick;
+            ++taskCalls;
+        }
+        else if (!combatActive && p.combatStance)
+        {
+            p.combatStance = false;
+            p.aimCaptured = false;
+            p.weaponAimTaskActive = false;
+            p.taskActive = false;
+            p.moveTaskValid = false; // движение вернётся на след. тике
+        }
+
         // 2) DRAW не гейтится готовностью: при Drawn/aim/shoot/reload всегда
         // SET_CURRENT_PED_WEAPON(equipNow=true); `state=drawn` при armed/ready,
         // иначе через 2 с `drawn(unverified)` — оружие должно появиться визуально.
@@ -3212,7 +3261,10 @@ void ProcessActorWeapons(unsigned int tick)
         // 4) AIM: точка захватывается ОДИН раз при переходе Aiming 0->1;
         // reissue только при смене оружия / heading>25° / 5 с. Лог — старт.
         const bool aimEdge = wantAim && !p.prevAimFlag;
-        if (aimEdge && armed && taskCalls < 2)
+        // E3b.3: aim-задачу не перевыдавать чаще 5 с (300 тиков).
+        const bool aimCooldownOk =
+            p.lastAimTaskTick == 0 || (tick - p.lastAimTaskTick) >= 300;
+        if (aimEdge && armed && aimCooldownOk && taskCalls < 2)
         {
             const Vec3 pos = GetCoords(p.handle);
             const float rad = p.heading * kRadPerDeg;
@@ -3234,7 +3286,7 @@ void ProcessActorWeapons(unsigned int tick)
             }
         }
         else if (wantAim && p.aimCaptured && armed && !shootDue &&
-                 taskCalls < 2)
+                 aimCooldownOk && taskCalls < 2)
         {
             float dHeading = std::fabs(p.heading - p.aimCaptureHeading);
             while (dHeading > 180.f) dHeading = std::fabs(dHeading - 360.f);
@@ -3277,8 +3329,11 @@ void ProcessActorWeapons(unsigned int tick)
             p.weaponAimTaskActive = false;
         }
 
-        // 5) SHOOT: только armed (E3b.2 — без жёсткого cur==hash), <=1/с.
-        if (wantShoot && armed && taskCalls < 2 &&
+        // 5) SHOOT: после aim-стойки (≥1 тик, не в тике выдачи aim), armed,
+        // <=1/с, firingPattern=0.
+        if (wantShoot && armed && p.combatStance &&
+            (tick - p.combatStanceStartTick) >= 2 &&
+            tick > p.lastAimTaskTick && taskCalls < 2 &&
             (tick - p.lastShootTick) >= kWeaponShootCooldownTicks)
         {
             const Vec3 pos = GetCoords(p.handle);
@@ -3287,6 +3342,7 @@ void ProcessActorWeapons(unsigned int tick)
             const float sy = pos.y + std::cos(rad) * kWeaponAimDistance;
             TaskShootAtCoordEntity(p.handle, sx, sy, pos.z);
             p.lastShootTick = tick;
+            p.shootTaskActive = true;
             p.weaponAimTaskActive = false; // shoot заменяет aim
             p.aimCaptured = true;          // точку не теряем (reissue молча)
             ++taskCalls;
@@ -3299,6 +3355,9 @@ void ProcessActorWeapons(unsigned int tick)
         if (wantReload && armed && taskCalls < 2 &&
             !p.reloadInProgress)
         {
+            // E3b.3: резерв 999 перед опустошением клипа — иначе перезарядка
+            // мгновенно пополняется/не играет. Затем clip off и ammo=0.
+            SetPedAmmoEntity(p.handle, p.weaponGiven, 999);
             SetPedInfiniteClipEntity(p.handle, false);
             SetAmmoInClipEntity(p.handle, p.weaponGiven, 0);
             TaskReloadWeaponEntity(p.handle);
@@ -3311,9 +3370,15 @@ void ProcessActorWeapons(unsigned int tick)
                  (!wantReload ||
                   tick - p.reloadStartTick >= kWeaponReloadTimeoutTicks))
         {
+            // Вернуть infinite clip/резерв через 2 с или при снятии флага.
+            SetPedAmmoEntity(p.handle, p.weaponGiven, 999);
             SetPedInfiniteClipEntity(p.handle, true);
             p.reloadInProgress = false;
         }
+        // shootTask активен ~0.5 с после выдачи (для dbg).
+        if (p.shootTaskActive &&
+            (tick - p.lastShootTick) > 30)
+            p.shootTaskActive = false;
         if (equipExpired)
             p.equipWaitActive = false; // следующий retry на след. тике
 
@@ -3322,8 +3387,10 @@ void ProcessActorWeapons(unsigned int tick)
         {
             p.lastWeaponDbgTick = tick;
             const int ammo = GetAmmoInClipEntity(p.handle, p.weaponGiven);
+            const bool moving = p.moveTaskValid && !p.combatStance;
             LogWeaponDebug(p.actorId, ready, armed, cur, held, p.weaponGiven,
-                           ammo, p.weaponInHands);
+                           ammo, p.weaponInHands, p.weaponAimTaskActive,
+                           p.shootTaskActive, moving);
         }
 
         p.prevAimFlag = wantAim;
@@ -3387,6 +3454,8 @@ void QueueSpawnBatch(uint32_t epoch,
                 p.weaponGiveFailLogged = false;
                 p.weaponFailLogged = false;
                 p.weaponDrawnUnverified = false;
+                p.combatStance = false;
+                p.shootTaskActive = false;
             }
             continue;
         }
