@@ -90,6 +90,9 @@ public:
     using OnActorAppearance = std::function<void(
         uint32_t epoch, uint32_t actorId,
         const std::vector<net::ActorAppearanceEntry>& entries)>;
+    // E5 (v17): хост получает запрос урона по NPC от гостя (0x1F).
+    using OnActorDamageRequest = std::function<void(
+        uint32_t epoch, uint32_t actorId, uint16_t damage, uint32_t weaponHash)>;
 
     Client();
     ~Client();
@@ -141,6 +144,12 @@ public:
     // ТОЛЬКО хосту. Возвращает false, если ещё нет JOIN_OK / сокет закрыт /
     // кадр не удалось поставить в очередь.
     bool SendActorResync(uint32_t epoch, uint32_t lastSeq, uint8_t reason);
+    // E5 (v17): гость сообщает хосту урон по реплицированному NPC (0x1F).
+    // Сервер релеит ТОЛЬКО хосту; хост не шлёт. damage клампится в
+    // 1..kMaxActorDamage; при epoch/actorId=0 или роли хоста не отправляется.
+    // Возвращает false, если ещё нет JOIN_OK / сокет закрыт / не гость.
+    bool SendActorDamage(uint32_t epoch, uint32_t actorId, uint16_t damage,
+                         uint32_t weaponHash);
     // Текущее состояние роли по мнению сервера (обновляется HostChanged).
     bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
@@ -174,6 +183,7 @@ public:
     void SetActorOutfit(OnActorOutfit cb);
     void SetActorAppearance(OnActorAppearance cb);
     void SetActorResyncRequest(OnActorResyncRequest cb);
+    void SetActorDamageRequest(OnActorDamageRequest cb);
 
     ClientState State() const;
 
@@ -230,6 +240,7 @@ private:
     OnActorOutfit onActorOutfit_;
     OnActorAppearance onActorAppearance_;
     OnActorResyncRequest onActorResyncRequest_;
+    OnActorDamageRequest onActorDamageRequest_;
     std::atomic<bool> joined_{false};
     std::atomic<bool> isHost_{false};
     std::atomic<uint32_t> rttMs_{0};

@@ -56,6 +56,9 @@ struct Config {
     // E2a: применять meta-outfit (внешность) на прокси NPC (default 1).
     // При 0 — поведение E1: только random variation.
     bool npcAppearance = true;
+    // E5: host-authoritative урон по NPC (гость шлёт damage, хост применяет).
+    // default 1; 0 = рубильник для отладки/отката без пересборки.
+    bool npcDamage = true;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —

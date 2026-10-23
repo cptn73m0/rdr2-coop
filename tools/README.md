@@ -380,8 +380,9 @@ fakeguest: target_frames=N
 
 ### E3c: животные и свободные лошади
 
-Протокол v16 не менялся: `ActorSpawn.kind` = **0 human, 1 animal, 2 horse**.
-Host-флаги добавляют акторов сверх `--num` (людей):
+`ActorSpawn.kind` = **0 human, 1 animal, 2 horse** (поле есть с v15/v16;
+текущий E5-протокол v17 его не меняет). Host-флаги добавляют акторов сверх
+`--num` (людей):
 
 - `--animals N` — N наземных животных kind=1; модели берутся из
   `Peds.json` (A_C_DEER_01, A_C_BOAR_01, A_C_WOLF, A_C_BUFFALO_01,
@@ -423,6 +424,66 @@ fakeguest: animal_frames=... animal_dead_frames=... horse_frames=... horse_dead_
 животные/лошади двигаются по паттерну без телепортов. Для визуального теста
 запустить fake host **до** игры-гостя; гость увидит животных/лошадей рядом с
 собой (fake guest не нужен).
+
+**Трупы (E3c corpse demo):**
+```powershell
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --num 0 --animals 3 --horses 2 --pattern mixed `
+  --kill-after 15 --despawn-after 0 --duration 120
+```
+Через 15 с после первого спавна хост убивает **одно животное и одну лошадь**
+(dead-флаг + health=0; остальные не трогаются); `--kill-all` убивает всех
+animals/horses разом. `--revive-after` относится только к людям (kind=0):
+животные/лошади остаются трупами. Логи:
+```
+fakehost: kill animal id=1
+fakehost: kill horse id=4
+fakeguest: corpses animal_died=1 horse_died=1
+```
+`fakeguest: corpses animal_died=A horse_died=R` — уникальные actorId животных/
+лошадей, у которых были dead-кадры; `*_dead_frames` — число таких кадров.
+Для визуального теста fake host запускается первым, затем игра-гостем.
+
+### E5: host-authoritative урон (ActorDamage 0x1F)
+
+Fake host принимает `ActorDamage` (0x1F, 16 B: `epoch/actorId/damage u16/pad/
+weaponHash`) от игрового гостя (или fake guest) и **сам применяет** урон:
+human HP=200, animal/horse HP=100. При hp≤0 актор получает dead-флаг,
+`health=0`, хост шлёт труп; логи:
+```
+fakehost: damage id=1 dmg=60 hp_left=140
+...
+fakehost: damage id=1 dmg=60 hp_left=0
+fakehost: killed id=1 by damage
+```
+Некорректный 0x1F (размер/epoch/actorId/damage) игнорируется с WARN.
+
+**Smoke без игры (fake host + fake guest):**
+```powershell
+# 1) fake host: 2 human + 1 animal, actor id=1 — human (HP 200)
+python tools\fake_actor_client.py --mode host --name DamageHost `
+  --num 2 --animals 1 --pattern mixed `
+  --despawn-after 0 --duration 20
+
+# 2) fake guest: после 2 с бьёт actor id=1 по 60 каждые 0.5 с
+python tools\fake_actor_client.py --mode guest --name DamageGuest `
+  --damage-after 2 --damage-actor 1 --damage 60 --duration 8
+```
+Ожидаемо: host hp 140→80→20→0 и `killed id=1 by damage`; guest получает
+последний spawn с health=0 и dead-кадры (`fakeguest: ... dead_frames>0`),
+`errors=0`.
+Для животного (HP 100) хватает двух пакетов по 60; actorId животных идут
+после людей, лошадей — после животных.
+
+**Реальный E5-тест (игра-гость стреляет в прокси):**
+```powershell
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --num 2 --animals 2 --horses 1 --pattern mixed `
+  --despawn-after 0 --duration 300
+# затем запустить RDR2 и подключиться ГОСТЕМ, стрелять в прокси
+```
+Игровой гость шлёт 0x1F; fake host логирует damage/killed, присылает dead;
+гость видит падение/труп. В guest-логе `actor: ... death` (human/animal).
 
 ### E2c: поздние outfit-обновления (metaOutfit resolver)
 
@@ -557,8 +618,10 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 | `--combat-cycle` | 20 | E3b.3: повторять aim(+2..7)/shoot(+7..10)/reload(+12) каждый SEC; 0 = одноразовые окна |
 | `--combat` | off | E3b: флаг Combat (16) |
 | `--appearance` | off | E2c-b host: синтетические ActorAppearance (0x1E) по акторам для дымового/визуального теста |
-| `--dead-after` | 0 | E3a: через сколько секунд после первого спавна убить последний actorId (0 = off) |
-| `--revive-after` | 10 | E3a: через сколько после смерти возродить (0 = остаётся мёртвым) |
+| `--dead-after` | 0 | E3a: через сколько секунд после первого спавна убить последний HUMAN actorId (0 = off) |
+| `--revive-after` | 10 | E3a: через сколько после смерти возродить человека (kind=0; animals/horses не оживляются) |
+| `--kill-after` | 0 | E3c: через SEC после первого спавна убить одно животное kind=1 и одну лошадь kind=2 (0 = off) |
+| `--kill-all` | off | E3c: убить всех animals/horses (с `--kill-after` — по таймеру, без него — сразу) |
 | `--outfits-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | пары `model+metaOutfit` из probe-лога; пустая строка — выкл. |
 | `--circle-radius` | 3.0 | радиус круга движения NPC, м |
 | `--speed` | 1.0 | базовая скорость движения, м/с (фактическая = speed*gait; в кадр идёт speed/8*255) |
@@ -567,6 +630,10 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 | `--peds-json` | `third_party/rdr2-hashdb/Peds.json` | откуда брать хэши моделей |
 | `--models` | — | свои модели (hex через запятую, ≥`--num`) |
 | `--log-file` | `tools/fake_actor_client.log` | лог-файл (append) |
+| `--protocol-version` | auto | override JOIN protocol version (например `16` для старого сервера; по умолчанию — из `net/protocol.h`) |
+| `--damage-after` | 0 | guest E5 smoke: через SEC повторять ActorDamage (0x1F) каждые 0.5 с |
+| `--damage-actor` | 0 | guest E5 smoke: actorId цели для ActorDamage |
+| `--damage` | 60 | guest E5 smoke: урон в одном 0x1F (1..1000) |
 
 ### Важно / troubleshooting
 

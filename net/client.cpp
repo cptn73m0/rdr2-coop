@@ -298,6 +298,18 @@ bool ParseActorAppearance(const std::vector<uint8_t>& p, uint32_t& outEpoch,
     return true;
 }
 
+// E5 (v17): запрос урона от гостя (0x1F). Точный размер 16, epoch/actorId != 0,
+// damage 1..kMaxActorDamage.
+bool ParseActorDamage(const std::vector<uint8_t>& p,
+                      net::ActorDamagePayload& out)
+{
+    if (p.size() != sizeof(net::ActorDamagePayload)) return false;
+    std::memcpy(&out, p.data(), sizeof(out));
+    return out.epoch != 0 && out.actorId != 0 &&
+           out.damage >= net::kMinActorDamage &&
+           out.damage <= net::kMaxActorDamage;
+}
+
 } // namespace
 
 Client::Client() = default;
@@ -364,6 +376,7 @@ void Client::SetActorEvent(OnActorEvent cb) { onActorEvent_ = std::move(cb); }
 void Client::SetActorOutfit(OnActorOutfit cb) { onActorOutfit_ = std::move(cb); }
 void Client::SetActorAppearance(OnActorAppearance cb) { onActorAppearance_ = std::move(cb); }
 void Client::SetActorResyncRequest(OnActorResyncRequest cb) { onActorResyncRequest_ = std::move(cb); }
+void Client::SetActorDamageRequest(OnActorDamageRequest cb) { onActorDamageRequest_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -617,6 +630,27 @@ void Client::SendActorAppearance(
         return; // защита от рассинхрона констант
     SendRaw(MakeFrame((uint8_t)net::Msg::ActorAppearance,
                       pay.data(), static_cast<uint32_t>(pay.size())));
+}
+
+bool Client::SendActorDamage(uint32_t epoch, uint32_t actorId,
+                             uint16_t damage, uint32_t weaponHash)
+{
+    // E5 (v17): 0x1F — гость -> сервер -> хосту. Хост урон применяет сам и
+    // запросы не шлёт; до JOIN_OK тоже не шлём. damage клампится в 1..1000.
+    if (!joined_.load()) return false;
+    if (isHost_.load()) return false;
+    if (epoch == 0 || actorId == 0) return false;
+    if (damage < net::kMinActorDamage) damage = net::kMinActorDamage;
+    if (damage > net::kMaxActorDamage) damage = net::kMaxActorDamage;
+    net::ActorDamagePayload msg{};
+    msg.epoch = epoch;
+    msg.actorId = actorId;
+    msg.damage = damage;
+    msg.pad = 0;
+    msg.weaponHash = weaponHash;
+    return SendRaw(MakeFrame((uint8_t)net::Msg::ActorDamage,
+                             reinterpret_cast<const uint8_t*>(&msg),
+                             static_cast<uint32_t>(sizeof(msg))));
 }
 
 void Client::SendShot(const net::ShotPayload& sp)
@@ -1011,6 +1045,14 @@ bool Client::RunOnce()
                 net::ActorResyncPayload req{};
                 if (ParseActorResync(p, req) && onActorResyncRequest_)
                     onActorResyncRequest_(req);
+                break;
+            }
+            case net::Msg::ActorDamage:
+            {
+                net::ActorDamagePayload req{};
+                if (ParseActorDamage(p, req) && onActorDamageRequest_)
+                    onActorDamageRequest_(req.epoch, req.actorId, req.damage,
+                                          req.weaponHash);
                 break;
             }
             case net::Msg::PlayerJoined:

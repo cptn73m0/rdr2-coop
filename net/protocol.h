@@ -14,7 +14,8 @@ namespace net {
 // v15 (E0): actor-репликация NPC — ActorSpawnBatch/ActorFrames/ActorDespawn/
 //           ActorEvent/ActorOutfit (хост) и ActorResync (гость -> хост).
 // v16 (E2c-b): ActorAppearance — точная внешность NPC (asset/tint), хост -> гость.
-constexpr uint16_t kProtocolVersion = 16;
+// v17 (E5): ActorDamage — запрос урона по NPC от гостя хосту (host-authoritative).
+constexpr uint16_t kProtocolVersion = 17;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -62,6 +63,8 @@ enum class Msg : uint8_t {
     ActorResync     = 0x1D, // гость -> сервер -> хосту: запрос resync
     // E2c-b (v16): точная внешность NPC — только хост -> сервер -> гость.
     ActorAppearance = 0x1E, // хост -> сервер -> гость: asset/tint внешности
+    // E5 (v17): запрос урона по NPC — только гость -> сервер -> хосту.
+    ActorDamage     = 0x1F, // гость -> сервер -> хосту: урон по актёру
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -527,6 +530,22 @@ constexpr std::size_t kActorAppearanceMaxSize =
     kActorAppearanceMaxComponents * sizeof(ActorAppearanceEntry);
 static_assert(kActorAppearanceMaxSize == 460,
               "ActorAppearance max payload must be 460 bytes");
+
+// ---------------- E5 (v17): урон по NPC от гостя хосту ----------------
+// Гость сообщает хосту, что он попал по реплицированному NPC. Урон применяет
+// только хост (host-authoritative); сервер релеит запрос исключительно хосту.
+constexpr uint16_t kMinActorDamage = 1;
+constexpr uint16_t kMaxActorDamage = 1000;
+
+struct ActorDamagePayload {
+    uint32_t epoch = 0;      // эпоха хоста
+    uint32_t actorId = 0;    // id актёра, по которому попали
+    uint16_t damage = 0;     // 1..kMaxActorDamage
+    uint16_t pad = 0;
+    uint32_t weaponHash = 0; // оружие, которым нанесён урон (0 = неизвестно)
+};
+static_assert(sizeof(ActorDamagePayload) == 16,
+              "ActorDamagePayload must be 16 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

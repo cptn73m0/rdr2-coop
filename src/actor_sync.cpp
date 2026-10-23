@@ -894,6 +894,27 @@ void SetEntityHealthValue(unsigned int handle, int health)
     Call();
 }
 
+// E5: сырое здоровье и APPLY_DAMAGE_TO_PED (host apply; fallback — SetEntityHealth).
+int GetEntityHealthValue(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::GET_ENTITY_HEALTH);
+    Push(handle);
+    return static_cast<int>(Call());
+}
+
+void ApplyDamageToPedEntity(unsigned int ped, int damage)
+{
+    using namespace natives_api;
+    Init(natives::APPLY_DAMAGE_TO_PED);
+    Push(ped);
+    Push(damage);
+    Push(static_cast<unsigned long long>(0)); // p2
+    Push(static_cast<unsigned long long>(0)); // boneId
+    Push(static_cast<unsigned long long>(0)); // pedKiller
+    Call();
+}
+
 int GetEntityMaxHealthValue(unsigned int handle)
 {
     using namespace natives_api;
@@ -1432,6 +1453,19 @@ void LogAnimalDeath(uint32_t actorId)
     sh_log::Write("actor: animal death id=%u\n", actorId);
 }
 
+// E5 (v17): отправка/применение урона по NPC (npc_debug=1).
+void LogDamageSend(uint32_t actorId, uint16_t damage, uint32_t weaponHash)
+{
+    sh_log::Write("actor: damage send id=%u dmg=%u weapon=0x%X\n",
+                  actorId, static_cast<unsigned int>(damage), weaponHash);
+}
+
+void LogDamageApply(uint32_t actorId, uint16_t damage, int hp)
+{
+    sh_log::Write("actor: damage apply id=%u dmg=%u hp=%d\n",
+                  actorId, static_cast<unsigned int>(damage), hp);
+}
+
 void LogDeath(uint32_t actorId)
 {
     sh_log::Write("actor: death id=%u\n", actorId);
@@ -1464,6 +1498,7 @@ struct Inbox
     std::vector<net::ActorFrame> frames;
     std::deque<net::ActorDespawnPayload> despawns;
     std::vector<AppearanceMsg> appearances; // E2c-b (v16)
+    std::deque<net::ActorDamagePayload> damage; // E5 (v17): запросы урона
     uint32_t events = 0;
     uint32_t outfits = 0;
     bool resyncRequested = false;
@@ -1479,6 +1514,7 @@ void ClearInboxLocked()
     g_inbox.frames.clear();
     g_inbox.despawns.clear();
     g_inbox.appearances.clear();
+    g_inbox.damage.clear();
     g_inbox.events = 0;
     g_inbox.outfits = 0;
     g_inbox.resyncRequested = false;
@@ -1660,6 +1696,19 @@ unsigned int g_lastHeartbeatTick = 0;
 uint16_t g_frameSeq = 0;
 std::deque<net::ActorDespawnPayload> g_despawnQueue;
 bool g_resendAllSpawns = false;
+// E5 (v17): host-authoritative урон от гостя. Лимиты: <=8 применений/тик,
+// <=15/с суммарно, per-actor не чаще 100 мс; APPLY-верификация с fallback.
+unsigned int g_hostDamageWindowTick = 0;
+unsigned int g_hostDamageWindowCount = 0;
+std::unordered_map<uint32_t, unsigned int> g_hostLastDamageTick;
+struct DamageVerify
+{
+    unsigned int handle = 0;
+    int hpBefore = 0;
+    uint16_t damage = 0;
+    unsigned int tick = 0;
+};
+std::vector<DamageVerify> g_damageVerify;
 
 uint32_t MakeEpoch(unsigned int tickCount)
 {
@@ -2154,6 +2203,10 @@ void HostResetState()
     g_lastDiscoveryTick = 0;
     g_lastHeartbeatTick = 0;
     g_resendAllSpawns = false;
+    g_hostDamageWindowTick = 0;
+    g_hostDamageWindowCount = 0;
+    g_hostLastDamageTick.clear();
+    g_damageVerify.clear();
 }
 
 // E2c: host-резолв meta-outfit перебором кандидатов модели (round-robin,
@@ -2354,6 +2407,101 @@ void ProcessHostAppearanceCapture(unsigned int tick)
     }
 }
 
+// E5 (v17): host применяет урон, присланный гостем (0x1F). Лимиты: <=8
+// применений/тик, <=15/с, per-actor 100 мс, дистанция до стрелка <=150 м.
+// Смерть — естественная (движок), далее dead flag/despawn как у E1-E3.
+void ProcessActorDamageRequests(const TickContext& ctx)
+{
+    const unsigned int tick = ctx.tickCount;
+
+    // 0) Верификация APPLY_DAMAGE_TO_PED: если через ~100 мс health не
+    // уменьшился (натив не сработал) — fallback SET_ENTITY_HEALTH(hp-damage).
+    for (auto it = g_damageVerify.begin(); it != g_damageVerify.end();)
+    {
+        if (tick - it->tick < 6)
+        {
+            ++it;
+            continue;
+        }
+        if (it->handle && DoesExist(it->handle) && !IsDeadPed(it->handle))
+        {
+            const int hp = GetEntityHealthValue(it->handle);
+            if (hp > 0 && hp >= it->hpBefore)
+            {
+                int newHp = hp - static_cast<int>(it->damage);
+                if (newHp < 0) newHp = 0;
+                SetEntityHealthValue(it->handle, newHp);
+            }
+        }
+        it = g_damageVerify.erase(it);
+    }
+
+    // Забираем очередь из inbox (сетевой поток только копирует).
+    std::deque<net::ActorDamagePayload> reqs;
+    {
+        std::lock_guard<std::mutex> lk(g_inboxMutex);
+        reqs.swap(g_inbox.damage);
+    }
+    if (!coopcfg::Get().npcDamage)
+        return; // рубильник: запросы дренируются без применения
+
+    if (g_hostDamageWindowTick == 0 || tick - g_hostDamageWindowTick >= 60)
+    {
+        g_hostDamageWindowTick = tick;
+        g_hostDamageWindowCount = 0;
+    }
+    int applied = 0;
+    for (const net::ActorDamagePayload& req : reqs)
+    {
+        if (applied >= 8) break;
+        if (g_hostDamageWindowCount >= 15) break;
+        if (req.epoch != g_hostEpoch || req.actorId == 0) continue;
+        if (req.damage < net::kMinActorDamage ||
+            req.damage > net::kMaxActorDamage)
+            continue;
+
+        unsigned int handle = 0;
+        bool found = false;
+        for (const auto& kv : g_roster)
+        {
+            if (kv.second.actorId == req.actorId)
+            {
+                handle = kv.first;
+                found = true;
+                break;
+            }
+        }
+        if (!found || !DoesExist(handle) || IsDeadPed(handle))
+            continue;
+
+        if (!ctx.partnerValid)
+            continue;
+        const Vec3 p = GetCoords(handle);
+        const float dx = p.x - ctx.partnerX;
+        const float dy = p.y - ctx.partnerY;
+        const float dz = p.z - ctx.partnerZ;
+        if (dx * dx + dy * dy + dz * dz > 150.0f * 150.0f)
+            continue;
+
+        auto last = g_hostLastDamageTick.find(req.actorId);
+        if (last != g_hostLastDamageTick.end() && tick - last->second < 6)
+            continue; // не чаще 100 мс на actorId
+
+        const int hpBefore = GetEntityHealthValue(handle);
+        if (hpBefore <= 0)
+            continue;
+        ApplyDamageToPedEntity(handle, static_cast<int>(req.damage));
+        g_damageVerify.push_back({handle, hpBefore, req.damage, tick});
+        g_hostLastDamageTick[req.actorId] = tick;
+        ++g_hostDamageWindowCount;
+        ++applied;
+        if (coopcfg::Get().npcDebug)
+            LogDamageApply(req.actorId, req.damage, hpBefore);
+    }
+    if (g_hostLastDamageTick.size() > 64)
+        g_hostLastDamageTick.clear(); // защита от роста карты
+}
+
 void HostTick(const TickContext& ctx)
 {
     if (!sh::HasWorldQueries() || !sh::worldGetAllPeds)
@@ -2388,6 +2536,9 @@ void HostTick(const TickContext& ctx)
     {
         ProcessHostAppearanceCapture(ctx.tickCount);
     }
+
+    // E5: применить урон гостей по roster-акторам (v17 0x1F).
+    ProcessActorDamageRequests(ctx);
 
     // despawn — не чаще 1 сообщения за тик
     if (!g_despawnQueue.empty())
@@ -2542,6 +2693,8 @@ struct Proxy
 
 std::map<uint32_t, Proxy> g_proxies;
 std::unordered_map<uint32_t, unsigned int> g_handleByActor;
+// E5 (v17): reverse-map handle -> actorId для детекта aim-target гостя.
+std::unordered_map<unsigned int, uint32_t> g_actorByHandle;
 uint32_t g_guestEpoch = 0;
 
 // P3-фикс (task-45): pending spawn хранит тик первого появления — нужен
@@ -2659,6 +2812,10 @@ bool DeleteProxy(Proxy& proxy)
     }
 
     bool ok = true;
+
+    // E5: убрать reverse-map до удаления (handle обнуляется в DeleteEntitySafe).
+    if (proxy.handle)
+        g_actorByHandle.erase(proxy.handle);
 
     // E3a.2: удалить scenario point (проп) при despawn/epoch cleanup.
     if (proxy.scenarioPoint)
@@ -2853,6 +3010,7 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     }
 
     g_handleByActor[handle] = p.actorId;
+    g_actorByHandle[handle] = p.actorId;
     g_proxies[p.actorId] = p;
     ++g_perfGuestSpawns;
     if (p.kind == net::kActorKindHuman)
@@ -4982,6 +5140,64 @@ bool GetHandleForActorId(uint32_t actorId, unsigned int& handle)
     return true;
 }
 
+// E5 (v17): гость — handle прокси -> actorId; false для не-прокси/мёртвых.
+bool GetDamageTargetInfo(unsigned int handle, uint32_t& actorId)
+{
+    actorId = 0;
+    if (!handle)
+        return false;
+    auto it = g_actorByHandle.find(handle);
+    if (it == g_actorByHandle.end())
+        return false;
+    auto pit = g_proxies.find(it->second);
+    if (pit == g_proxies.end() || pit->second.dead)
+        return false;
+    actorId = it->second;
+    return true;
+}
+
+// E5 (v17): гость шлёт запрос урона хосту (0x1F). Лимиты: 100 мс на actorId,
+// <=10/с суммарно; damage clamp 1..1000; при npc_actor/npc_damage=0 — ничего.
+bool SendDamageToActor(unsigned int handle, uint16_t damage,
+                       uint32_t weaponHash)
+{
+    if (!coopcfg::Get().npcActor || !coopcfg::Get().npcDamage)
+        return false;
+    if (g_guestEpoch == 0)
+        return false;
+    uint32_t actorId = 0;
+    if (!GetDamageTargetInfo(handle, actorId))
+        return false;
+    uint16_t dmg = damage;
+    if (dmg < net::kMinActorDamage) dmg = net::kMinActorDamage;
+    if (dmg > net::kMaxActorDamage) dmg = net::kMaxActorDamage;
+
+    const unsigned long long nowMs = GetTickCount64();
+    static unsigned long long s_winMs = 0;
+    static unsigned int s_winCount = 0;
+    static std::unordered_map<uint32_t, unsigned long long> s_lastMs;
+    if (s_winMs == 0 || nowMs - s_winMs >= 1000)
+    {
+        s_winMs = nowMs;
+        s_winCount = 0;
+    }
+    if (s_winCount >= 10)
+        return false; // общий лимит <=10/с
+    auto last = s_lastMs.find(actorId);
+    if (last != s_lastMs.end() && nowMs - last->second < 100)
+        return false; // per-actor 100 мс
+    if (!coop::SendActorDamage(g_guestEpoch, actorId, dmg, weaponHash))
+        return false;
+    s_lastMs[actorId] = nowMs;
+    ++s_winCount;
+    if (s_lastMs.size() > 64)
+        s_lastMs.clear();
+    if (coopcfg::Get().npcDebug)
+        LogDamageSend(actorId, dmg, weaponHash);
+    return true;
+}
+
+
 // ---------------- callbacks net/client (сетевой поток) ----------------
 void OnActorSpawnBatch(uint32_t epoch,
                        const std::vector<net::ActorSpawn>& actors)
@@ -5041,6 +5257,21 @@ void OnActorAppearance(uint32_t epoch, uint32_t actorId,
     msg.actorId = actorId;
     msg.entries = entries;
     g_inbox.appearances.push_back(std::move(msg));
+}
+
+// E5 (v17): запрос урона от гостя — только копия в inbox под mutex.
+void OnActorDamageRequest(uint32_t epoch, uint32_t actorId, uint16_t damage,
+                          uint32_t weaponHash)
+{
+    if (!coopcfg::Get().npcActor) return;
+    std::lock_guard<std::mutex> lk(g_inboxMutex);
+    if (g_inbox.damage.size() >= 64) return; // защита от флуда
+    net::ActorDamagePayload d{};
+    d.epoch = epoch;
+    d.actorId = actorId;
+    d.damage = damage;
+    d.weaponHash = weaponHash;
+    g_inbox.damage.push_back(d);
 }
 
 void OnActorResyncRequest(const net::ActorResyncPayload& req)

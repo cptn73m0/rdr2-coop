@@ -62,6 +62,15 @@ void OnActorOutfit(uint32_t epoch, uint32_t actorId,
 // E2c-b (v16): точная внешность NPC (asset/tint) от хоста.
 void OnActorAppearance(uint32_t epoch, uint32_t actorId,
                        const std::vector<net::ActorAppearanceEntry>& entries);
+// E5 (v17): запрос урона от гостя (0x1F) — только копия в inbox под mutex.
+void OnActorDamageRequest(uint32_t epoch, uint32_t actorId, uint16_t damage,
+                          uint32_t weaponHash);
+// E5: гость — handle прокси -> actorId (для детекта aim-target); false если
+// это не прокси или прокси мёртв.
+bool GetDamageTargetInfo(unsigned int handle, uint32_t& actorId);
+// E5: гость — отправить запрос урона хосту по actorId из handle (лимиты:
+// 100 мс/actor, <=10/с, npc_damage). true — запрос ушёл.
+bool SendDamageToActor(unsigned int handle, uint16_t damage, uint32_t weaponHash);
 // Хост получает запрос resync от гостя: следующий тик перешлёт всех акторов.
 void OnActorResyncRequest(const net::ActorResyncPayload& req);
 

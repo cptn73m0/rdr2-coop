@@ -4154,6 +4154,58 @@ void ResetLocalShotDetector()
 // Реализация ниже (anonymous namespace), нужна здесь для детекта выстрела.
 unsigned long long GetLocalWeaponHash(unsigned int ped);
 
+// E5 (v17): урон по NPC-прокси от гостя — по классу оружия (30..80).
+uint16_t NpcDamageForWeapon(unsigned long long weapon)
+{
+    if (!weapon) return 30;
+    auto isW = [weapon](unsigned long long nativeHash) -> bool {
+        using namespace natives_api;
+        Init(nativeHash);
+        Push(static_cast<unsigned long long>(weapon));
+        return Call() != 0;
+    };
+    if (isW(natives::IS_WEAPON_SHOTGUN)) return 80;
+    if (isW(natives::IS_WEAPON_RIFLE) || isW(natives::IS_WEAPON_REPEATER) ||
+        isW(natives::_IS_WEAPON_SNIPER)) return 60;
+    if (isW(natives::IS_WEAPON_REVOLVER) || isW(natives::IS_WEAPON_PISTOL))
+        return 35;
+    return 30;
+}
+
+// E5 (v17): после реального выстрела игрока — если free-aim цель является
+// NPC-прокси, попросить хост применить урон (сам гость урон НЕ наносит).
+void TrySendNpcDamage(unsigned int localPed, unsigned long long weapon)
+{
+    if (!coopcfg::Get().npcActor || !coopcfg::Get().npcDamage)
+        return;
+    if (s_amHost.load())
+        return; // E5: урон применяет хост, запросы шлёт только гость
+    using namespace natives_api;
+    Init(natives::GET_PLAYER_INDEX);
+    const int player = static_cast<int>(Call());
+    if (player < 0) return;
+    unsigned long long entityBuf = 0;
+    Init(natives::GET_ENTITY_PLAYER_IS_FREE_AIMING_AT);
+    Push(static_cast<unsigned long long>(player));
+    Push(reinterpret_cast<unsigned long long>(&entityBuf));
+    if (!Call()) return;
+    const unsigned int target = static_cast<unsigned int>(entityBuf);
+    if (!target) return;
+    const Vec3 a = GetEntityCoords(localPed);
+    const Vec3 b = GetEntityCoords(target);
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float dz = b.z - a.z;
+    if (dx * dx + dy * dy + dz * dz > 120.0f * 120.0f)
+        return;
+    uint32_t actorId = 0;
+    if (!actor_sync::GetDamageTargetInfo(target, actorId))
+        return;
+    const uint16_t dmg = NpcDamageForWeapon(weapon);
+    actor_sync::SendDamageToActor(target, dmg,
+                                  static_cast<uint32_t>(weapon));
+}
+
 void UpdateLocalShotEvents(unsigned int ped)
 {
     using namespace natives_api;
@@ -4330,6 +4382,10 @@ void UpdateLocalShotEvents(unsigned int ped)
         sh_log::Write("coop: send shot (%.1f %.1f %.1f) [fallback]\n",
                       sp.x, sp.y, sp.z);
     }
+
+    // E5 (v17): реальный выстрел в NPC-прокси -> запрос урона хосту.
+    if (sentAmmo > 0 || fallback)
+        TrySendNpcDamage(ped, weapon);
 }
 
 // Здоровье локального педа 0..1 (GET_ENTITY_HEALTH / max примерно 100..200 —
@@ -5332,6 +5388,8 @@ void InitNetworkClient()
     g_netClient.SetActorResyncRequest(actor_sync::OnActorResyncRequest);
     // E2c-b (v16): точная внешность NPC (asset/tint) от хоста — в inbox.
     g_netClient.SetActorAppearance(actor_sync::OnActorAppearance);
+    // E5 (v17): запрос урона от гостя (0x1F) — в inbox actor_sync.
+    g_netClient.SetActorDamageRequest(actor_sync::OnActorDamageRequest);
 
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
     coopcfg::Config& cfg = coopcfg::Load();
@@ -5375,6 +5433,13 @@ void SendActorAppearance(uint32_t epoch, uint32_t actorId,
                          const std::vector<net::ActorAppearanceEntry>& entries)
 {
     g_netClient.SendActorAppearance(epoch, actorId, entries);
+}
+
+// E5 (v17): гость -> хост запрос урона по NPC (0x1F).
+bool SendActorDamage(uint32_t epoch, uint32_t actorId, uint16_t damage,
+                     uint32_t weaponHash)
+{
+    return g_netClient.SendActorDamage(epoch, actorId, damage, weaponHash);
 }
 
 void SendActorFrames(uint32_t epoch, uint16_t seq,

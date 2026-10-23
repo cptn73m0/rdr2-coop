@@ -36,6 +36,9 @@ void SendActorDespawn(const net::ActorDespawnPayload& msg);
 // E2c-b (v16): точная внешность NPC (asset/tint) — хост -> сервер -> гости.
 void SendActorAppearance(uint32_t epoch, uint32_t actorId,
                          const std::vector<net::ActorAppearanceEntry>& entries);
+// E5 (v17): гость -> хост запрос урона по NPC (0x1F, только guest).
+bool SendActorDamage(uint32_t epoch, uint32_t actorId, uint16_t damage,
+                     uint32_t weaponHash);
 // E1: запрос resync от гостя. ВАЖНО: в net/client пока есть только приём
 // ActorResync, но НЕ отправка (Client::SendActorResync отсутствует) — заглушка
 // до правки net-слоя (net-review), игровой слой вызывает безопасно.

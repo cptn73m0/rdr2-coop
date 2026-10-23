@@ -57,6 +57,9 @@ struct OnlinePlayer {
     float x = 0, y = 0, z = 0, heading = 0;
     bool hasLoc = false;
     bool isHost = false;   // первый подключившийся (его время/погода = канонические)
+    // E5 (v17): окно rate-limit для ActorDamage (0x1F), защищено g_mutex.
+    uint64_t damageWindowMs = 0;
+    int damageCount = 0;
 };
 
 std::mutex g_mutex;                       // защищает g_online и g_lastPos
@@ -87,6 +90,9 @@ constexpr uint64_t kPreJoinTimeoutMs = 5000;
 constexpr std::size_t kMaxPingEchoBytes = 64;
 // Per-IP anti-flood: не больше N новых TCP-соединений в секунду с одного IP.
 constexpr int kMaxNewConnectionsPerIpPerSecond = 12;
+// E5 (v17): не больше N запросов урона (0x1F) в секунду от одного клиента,
+// чтобы спам не занимал канал и не нагружал хоста вхолостую.
+constexpr int kMaxActorDamagePerSecond = 32;
 std::mutex g_rateMutex;
 struct IpRate
 {
@@ -421,6 +427,19 @@ bool IsValidActorAppearance(const std::vector<uint8_t>& pay)
             return false;
     }
     return true;
+}
+
+// E5 (v17): урон по NPC от гостя. Точный размер, epoch/actorId != 0,
+// damage 1..kMaxActorDamage; хост-получатель решает сам.
+bool IsValidActorDamage(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() != sizeof(net::ActorDamagePayload))
+        return false;
+    net::ActorDamagePayload msg{};
+    std::memcpy(&msg, pay.data(), sizeof(msg));
+    return msg.epoch != 0 && msg.actorId != 0 &&
+           msg.damage >= net::kMinActorDamage &&
+           msg.damage <= net::kMaxActorDamage;
 }
 
 bool IsValidActorResync(const std::vector<uint8_t>& pay)
@@ -1296,6 +1315,56 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                 RelayHostOnly(sock, name, pay,
                               (uint8_t)net::Msg::ActorAppearance,
                               IsValidActorAppearance, "ActorAppearance");
+                break;
+            }
+            case net::Msg::ActorDamage:
+            {
+                // E5 (v17): урон по NPC — только гость -> сервер -> хосту.
+                // Хост урон не запрашивает (он его применяет), гостям не
+                // релеим; защита от флуда — не больше kMaxActorDamagePerSecond
+                // запросов в секунду от клиента (лишние молча дропаются).
+                if (!IsValidActorDamage(pay))
+                    break;
+                bool senderIsHost = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    auto it = g_online.find(name);
+                    if (it != g_online.end())
+                    {
+                        senderIsHost = it->second.isHost;
+                        if (!senderIsHost)
+                        {
+                            const uint64_t now = NowMs();
+                            if (it->second.damageWindowMs == 0 ||
+                                now - it->second.damageWindowMs >= 1000)
+                            {
+                                it->second.damageWindowMs = now;
+                                it->second.damageCount = 0;
+                            }
+                            const bool overLimit =
+                                it->second.damageCount >= kMaxActorDamagePerSecond;
+                            if (!overLimit)
+                            {
+                                ++it->second.damageCount;
+                                const std::vector<uint8_t> msg = MakeMsg(
+                                    (uint8_t)net::Msg::ActorDamage,
+                                    pay.data(),
+                                    static_cast<uint32_t>(pay.size()));
+                                for (auto& kv : g_online)
+                                {
+                                    if (kv.second.isHost && kv.second.sock)
+                                    {
+                                        kv.second.sock->Send(msg.data(),
+                                                             (int)msg.size());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (senderIsHost)
+                    LogWarn("[!] " + name + ": ActorDamage от хоста проигнорирован");
                 break;
             }
             case net::Msg::ActorResync:

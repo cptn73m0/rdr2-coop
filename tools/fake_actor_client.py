@@ -31,27 +31,31 @@ import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Protocol constants: read kProtocolVersion / ActorAppearance id from
-# net/protocol.h so the tool never lags behind the server (v16 = 0x1E).
+# Protocol constants: read kProtocolVersion / Actor* message ids from
+# net/protocol.h so the tool never lags behind the server.
 # ---------------------------------------------------------------------------
 def _protocol_defaults():
     version = 16
     appearance_msg = 0x1E
+    damage_msg = 0x1F
     header = Path(__file__).resolve().parents[1] / "net" / "protocol.h"
     try:
         text = header.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return version, appearance_msg
+        return version, appearance_msg, damage_msg
     match = re.search(r"kProtocolVersion\s*=\s*(\d+)", text)
     if match:
         version = int(match.group(1))
     match = re.search(r"ActorAppearance\s*=\s*(0x[0-9A-Fa-f]+|\d+)", text)
     if match:
         appearance_msg = int(match.group(1), 0)
-    return version, appearance_msg
+    match = re.search(r"ActorDamage\s*=\s*(0x[0-9A-Fa-f]+|\d+)", text)
+    if match:
+        damage_msg = int(match.group(1), 0)
+    return version, appearance_msg, damage_msg
 
 
-PROTOCOL_VERSION, MSG_ACTOR_APPEARANCE = _protocol_defaults()
+PROTOCOL_VERSION, MSG_ACTOR_APPEARANCE, MSG_ACTOR_DAMAGE = _protocol_defaults()
 MSG_JOIN = 0x01
 MSG_JOIN_OK = 0x02
 MSG_JOIN_REJECTED = 0x0F
@@ -65,6 +69,7 @@ MSG_ACTOR_DESPAWN = 0x1A
 MSG_ACTOR_EVENT = 0x1B
 MSG_ACTOR_OUTFIT = 0x1C
 MSG_ACTOR_RESYNC = 0x1D
+ACTOR_DAMAGE_SIZE = 16
 
 K_MAX_ACTORS = 12
 K_ACTOR_KIND_HUMAN = 0
@@ -312,10 +317,11 @@ def send_leave(sock: socket.socket) -> None:
 
 
 def join_session(sock: socket.socket, name: str, model: int, log: Log,
-                 tag: str = "fake", timeout: float = 10.0):
+                 tag: str = "fake", timeout: float = 10.0,
+                 version: int = PROTOCOL_VERSION):
     """JOIN and wait for JoinOk (or JoinRejected). Returns (sid, coords, is_host)."""
     reader = FrameReader()
-    send_join(sock, name, model)
+    send_join(sock, name, model, version=version)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for msg_type, payload in recv_available(sock, reader, wait=0.1):
@@ -544,6 +550,21 @@ def validate_actor_appearance(payload: bytes):
             "tint0": tint0, "tint1": tint1, "tint2": tint2,
         })
     return epoch, actor_id, entries
+
+
+def parse_actor_damage(payload: bytes):
+    """v17 ActorDamage (0x1F): epoch/actorId/damage/pad/weaponHash."""
+    if len(payload) != ACTOR_DAMAGE_SIZE:
+        raise ValueError(f"ActorDamage size={len(payload)} != {ACTOR_DAMAGE_SIZE}")
+    epoch, actor_id, damage, _pad, weapon_hash = struct.unpack_from(
+        "<IIHHI", payload, 0)
+    if epoch == 0:
+        raise ValueError("ActorDamage epoch=0")
+    if actor_id == 0:
+        raise ValueError("ActorDamage actorId=0")
+    if not 1 <= damage <= 1000:
+        raise ValueError(f"ActorDamage damage={damage} not in 1..1000")
+    return epoch, actor_id, damage, weapon_hash
 
 
 def validate_despawn(payload: bytes):
@@ -780,6 +801,8 @@ class Actor:
         self.scenario_hash = scenario_hash  # E3a: ActorSpawn.scenarioHash
         self.scenario_name = scenario_name  # E3a: human-readable name
         self.weapon_hash = weapon_hash  # E3b: ActorSpawn.weaponHash
+        self.hp = 200 if kind == K_ACTOR_KIND_HUMAN else 100  # E5 damage model
+        self.max_hp = self.hp
         self.dead = False  # E3a: dead flag/health=0 until revive
         self.dead_pos = None  # fixed corpse position
         self.dead_heading = 0.0
@@ -809,6 +832,9 @@ class FakeHost:
         self.next_respawn = None
         self.next_death = None
         self.next_revive = None
+        self.next_kill = None
+        self._kill_done = False
+        self._damage_warns = 0
         self.next_frame_at = None
         self.next_log_at = None
         self.next_ping_at = 0.0
@@ -951,7 +977,7 @@ class FakeHost:
                 a.actor_id, self.epoch, a.model,
                 a.center[0], a.center[1], a.center[2],
                 math.degrees(a.phase) % 360.0,
-                health=0 if a.dead else 200,
+                health=0 if a.dead else a.hp,
                 move_style=move_style,
                 meta_outfit=a.meta_outfit,
                 flags=flags,
@@ -1115,8 +1141,9 @@ class FakeHost:
         self.log.write(f"fakehost: connecting to {a.host}:{a.port} as {a.name}")
         try:
             self.sock = connect(a.host, a.port)
-            _sid, _coords, is_host = join_session(self.sock, a.name, a.model,
-                                                  self.log, tag="fakehost")
+            _sid, _coords, is_host = join_session(
+                self.sock, a.name, a.model, self.log, tag="fakehost",
+                version=getattr(a, "protocol_version", PROTOCOL_VERSION))
             if not is_host:
                 self.log.write(
                     "fakehost: ERROR: this tool is not HOST. Start fake host "
@@ -1201,6 +1228,8 @@ class FakeHost:
                                 self.log.write("fakehost: guest FRAME resumed; "
                                                "resending roster")
                                 self._send_spawn(list(self.actors), "resume")
+                    elif msg_type == MSG_ACTOR_DAMAGE:
+                        self._handle_actor_damage(payload)
                     # Other messages (PlayerJoined/Pong/...): ignore.
 
                 if not self.spawned:
@@ -1298,12 +1327,91 @@ class FakeHost:
         self.next_death = (now + self.args.dead_after
                            if self.args.dead_after > 0 else None)
         self.next_revive = None
+        self.next_kill = (now + self.args.kill_after
+                          if self.args.kill_after > 0 else None)
+        self._kill_done = False
         self.next_frame_at = now
         self.next_log_at = now + 1.0
         self.frames_sent = 0
         self.log.write("fakehost: guest frame at x=%.2f y=%.2f z=%.2f" %
                        self.guest_pos)
         self._send_spawn(self.actors, "initial")
+
+    def _handle_actor_damage(self, payload: bytes) -> None:
+        """E5 v17: apply guest ActorDamage to our fake-host actor."""
+        try:
+            epoch, actor_id, damage, _weapon = parse_actor_damage(payload)
+        except ValueError as exc:
+            if self._damage_warns < 10:
+                self._damage_warns += 1
+                self.log.write(f"fakehost: WARN ActorDamage: {exc}")
+            return
+        if epoch != self.epoch:
+            if self._damage_warns < 10:
+                self._damage_warns += 1
+                self.log.write(f"fakehost: WARN ActorDamage epoch={epoch} "
+                               f"!= local {self.epoch}")
+            return
+        target = next((x for x in self.actors if x.actor_id == actor_id), None)
+        if target is None:
+            if self._damage_warns < 10:
+                self._damage_warns += 1
+                self.log.write(f"fakehost: WARN ActorDamage unknown "
+                               f"id={actor_id}")
+            return
+        if target.dead:
+            return
+        target.hp = max(0, target.hp - damage)
+        self.log.write(f"fakehost: damage id={actor_id} dmg={damage} "
+                       f"hp_left={target.hp}")
+        if target.hp > 0:
+            return
+        if target.scenario:
+            pos = (target.center[0], target.center[1],
+                   math.degrees(target.phase) % 360.0)
+        else:
+            pos = self._motion_pos(target, time.monotonic())
+        target.dead = True
+        target.dead_pos = (pos[0], pos[1], target.center[2])
+        target.dead_heading = pos[2]
+        try:
+            self._send_spawn([target], "damage kill")
+        except OSError as exc:
+            self.log.write(f"fakehost: damage kill spawn failed: {exc}")
+        self.log.write(f"fakehost: killed id={actor_id} by damage")
+
+    def _kill_animals_horses(self, now: float) -> None:
+        """E3c: mark one animal + one horse (or all) dead, send as corpse."""
+        if self._kill_done:
+            return
+        candidates = [x for x in self.actors
+                      if x.kind in (K_ACTOR_KIND_ANIMAL, K_ACTOR_KIND_HORSE)
+                      and not x.dead]
+        if self.args.kill_all:
+            targets = candidates
+        else:
+            targets = []
+            for kind in (K_ACTOR_KIND_ANIMAL, K_ACTOR_KIND_HORSE):
+                target = next((x for x in candidates if x.kind == kind), None)
+                if target is not None:
+                    targets.append(target)
+        self._kill_done = True
+        if not targets:
+            self.log.write("fakehost: kill skipped: no animals/horses")
+            return
+        for target in targets:
+            pos = self._motion_pos(target, now)
+            target.dead = True
+            target.dead_pos = (pos[0], pos[1], target.center[2])
+            target.dead_heading = pos[2]
+            try:
+                self._send_spawn([target], "kill")
+            except OSError as exc:
+                self.log.write(f"fakehost: kill spawn failed: {exc}")
+            if target.kind == K_ACTOR_KIND_ANIMAL:
+                self.log.write(f"fakehost: kill animal id={target.actor_id}")
+            else:
+                self.log.write(f"fakehost: kill horse id={target.actor_id}")
 
     def _update_timers(self, now: float) -> None:
         a = self.args
@@ -1375,12 +1483,25 @@ class FakeHost:
             if target is not None and target.dead:
                 target.dead = False
                 target.dead_pos = None
+                target.hp = target.max_hp
                 target.spawn_time = now
                 try:
                     self._send_spawn([target], "revive")
                 except OSError as exc:
                     self.log.write(f"fakehost: revive spawn failed: {exc}")
                 self.log.write(f"fakehost: revive id={target.actor_id}")
+        # E3c corpse demo: kill one animal + one horse, or all animals/horses.
+        if not self._kill_done and self.spawned:
+            should_kill = False
+            if a.kill_after > 0:
+                if self.next_kill is None:
+                    self.next_kill = self.spawn_time + a.kill_after
+                should_kill = now >= self.next_kill
+            elif a.kill_all:
+                # --kill-all without --kill-after: kill once after first frame.
+                should_kill = True
+            if should_kill:
+                self._kill_animals_horses(now)
         # Despawn actor 5 once (0 = disabled): it disappears from frame batches.
         if self.next_despawn is not None and now >= self.next_despawn:
             self.next_despawn = None
@@ -1465,6 +1586,12 @@ class FakeGuest:
         self.animal_dead_frames = 0
         self.horse_frames = 0
         self.horse_dead_frames = 0
+        self.animal_died = set()
+        self.horse_died = set()
+        # E5: optional fake-guest ActorDamage smoke (--damage-after).
+        self.damage_next_at = 0.0
+        self.damage_sent = 0
+        self._damage_logged = False
         # E2c-b v16: ActorAppearance (0x1E) validation/stats.
         self.appearance_msgs = 0
         self.appearance_actors = set()
@@ -1548,6 +1675,11 @@ class FakeGuest:
             if kind_name is not None:
                 self.actor_kinds[actor_id] = kind_name
                 self.kind_ids[kind_name].add(actor_id)
+                if rec["flags"] & K_ACTOR_FLAG_DEAD:
+                    if kind_name == "animal":
+                        self.animal_died.add(actor_id)
+                    elif kind_name == "horse":
+                        self.horse_died.add(actor_id)
             # E2c: first spawn can carry metaOutfit=0; a later heartbeat spawn
             # for the same actorId may resolve it to a hash (0 -> hash).
             if actor_id not in self.outfit_first_seen:
@@ -1652,10 +1784,12 @@ class FakeGuest:
                 self.animal_frames += 1
                 if is_dead:
                     self.animal_dead_frames += 1
+                    self.animal_died.add(rec["actorId"])
             elif kind_name == "horse":
                 self.horse_frames += 1
                 if is_dead:
                     self.horse_dead_frames += 1
+                    self.horse_died.add(rec["actorId"])
             self.speed_sum += speed
             self.speed_count += 1
             self.speed_min = min(self.speed_min, speed)
@@ -1713,8 +1847,9 @@ class FakeGuest:
         rc = 2
         try:
             self.sock = connect(a.host, a.port)
-            _sid, _coords, is_host = join_session(self.sock, a.name, a.model,
-                                                  self.log, tag="fakeguest")
+            _sid, _coords, is_host = join_session(
+                self.sock, a.name, a.model, self.log, tag="fakeguest",
+                version=getattr(a, "protocol_version", PROTOCOL_VERSION))
             if is_host:
                 self.log.write(
                     "fakeguest: ERROR: this tool is HOST. Start the game first "
@@ -1725,6 +1860,8 @@ class FakeGuest:
             self.next_report = start + 2.0
             self.next_ping_at = start + 1.0
             self.next_guest_frame_at = start
+            self.damage_next_at = (start + a.damage_after
+                                   if a.damage_after > 0 else 0.0)
             reader = FrameReader()
             while time.monotonic() < deadline:
                 now = time.monotonic()
@@ -1781,6 +1918,25 @@ class FakeGuest:
                 if now >= self.next_ping_at:
                     self.next_ping_at = now + 1.0
                     send_ping(self.sock)
+                # E5 smoke: fake guest can damage a fake-host actor without
+                # the game; repeatedly send ActorDamage (0x1F) after SEC.
+                if a.damage_after > 0 and now >= self.damage_next_at:
+                    if (self.current_epoch and
+                            a.damage_actor in self.known_ids):
+                        payload = struct.pack(
+                            "<IIHHI", self.current_epoch, a.damage_actor,
+                            a.damage, 0, 0)
+                        try:
+                            send_frame(self.sock, MSG_ACTOR_DAMAGE, payload)
+                            self.damage_sent += 1
+                            if not self._damage_logged:
+                                self._damage_logged = True
+                                self.log.write(
+                                    f"fakeguest: damage test id="
+                                    f"{a.damage_actor} dmg={a.damage}")
+                        except OSError:
+                            pass
+                    self.damage_next_at = now + 0.5
             now = time.monotonic()
             self.log.write(self._summary(now))
             if self.first_frame_at is not None and self.first_spawn_at is not None:
@@ -1802,6 +1958,10 @@ class FakeGuest:
                 f"animal_dead_frames={self.animal_dead_frames} "
                 f"horse_frames={self.horse_frames} "
                 f"horse_dead_frames={self.horse_dead_frames}")
+            self.log.write(
+                f"fakeguest: corpses "
+                f"animal_died={len(self.animal_died)} "
+                f"horse_died={len(self.horse_died)}")
             self.log.write(f"fakeguest: mounted={len(self.mounted_ids)}")
             self.log.write(
                 f"fakeguest: mounted reserved_ok={len(self.mounted_reserved_ok)} "
@@ -1895,6 +2055,17 @@ def build_parser() -> argparse.ArgumentParser:
                          "(E2c heartbeat; 0 = normal --duration)")
     ap.add_argument("--guest-name", default=None,
                     help="host mode: expected guest name (informational)")
+    ap.add_argument("--protocol-version", type=int, default=None,
+                    help="override protocol version sent in JOIN (default: "
+                         "auto from net/protocol.h; useful to smoke an older "
+                         "server binary, e.g. --protocol-version 16)")
+    ap.add_argument("--damage-after", type=float, default=0.0,
+                    help="guest E5 smoke: after SEC, repeatedly send ActorDamage "
+                         "(0x1F) to --damage-actor every 0.5 s (0 = off)")
+    ap.add_argument("--damage-actor", type=int, default=0,
+                    help="guest E5 smoke: target actorId for ActorDamage")
+    ap.add_argument("--damage", type=int, default=60,
+                    help="guest E5 smoke: damage per ActorDamage packet (1..1000)")
 
     host = ap.add_argument_group("host mode")
     host.add_argument("--num", type=int, default=5,
@@ -1937,7 +2108,13 @@ def build_parser() -> argparse.ArgumentParser:
                            "on one scenario point (default 12)")
     host.add_argument("--dead-after", type=float, default=0.0,
                       help="E3a: seconds after first spawn to mark the last "
-                           "actor dead (0 = off)")
+                           "HUMAN actor dead (0 = off)")
+    host.add_argument("--kill-after", type=float, default=0.0,
+                      help="E3c: seconds after first spawn to kill one animal "
+                           "(kind=1) and one horse (kind=2), dead frame + health=0")
+    host.add_argument("--kill-all", action="store_true",
+                      help="E3c: kill ALL animals/horses at --kill-after "
+                           "(or immediately if --kill-after=0); humans unaffected")
     host.add_argument("--revive-after", type=float, default=10.0,
                       help="E3a: seconds after death to revive that actor "
                            "(0 = stay dead)")
@@ -2006,6 +2183,16 @@ def resolve_args(args):
         args.model = int(str(args.model), 0) & 0xFFFFFFFFFFFFFFFF
     except ValueError:
         raise SystemExit(f"--model must be a hash (hex or decimal): {args.model!r}")
+    if args.protocol_version is None:
+        args.protocol_version = PROTOCOL_VERSION
+    elif not 1 <= args.protocol_version <= 0xFFFF:
+        raise SystemExit("--protocol-version must be 1..65535")
+    if args.damage_after < 0:
+        raise SystemExit("--damage-after must be >= 0")
+    if not 1 <= args.damage <= 1000:
+        raise SystemExit("--damage must be 1..1000")
+    if args.damage_after > 0 and args.damage_actor <= 0:
+        raise SystemExit("--damage-actor must be > 0 with --damage-after")
     if args.mode == "host":
         if not 0 <= args.num <= K_MAX_ACTORS:
             raise SystemExit(f"--num must be 0..{K_MAX_ACTORS}")
@@ -2106,6 +2293,8 @@ def resolve_args(args):
                         f"fallback hash(es)")
         if args.dead_after < 0 or args.revive_after < 0:
             raise SystemExit("--dead-after/--revive-after must be >= 0")
+        if args.kill_after < 0:
+            raise SystemExit("--kill-after must be >= 0")
         if args.scenario_spacing <= 0:
             raise SystemExit("--scenario-spacing must be > 0")
         try:
@@ -2154,7 +2343,7 @@ def main(argv=None) -> int:
     log.write("=" * 70)
     log.write(f"fake_actor_client: mode={args.mode} name={args.name} "
               f"server={args.host}:{args.port} duration={args.duration}s "
-              f"protocol=v{PROTOCOL_VERSION}")
+              f"protocol=v{args.protocol_version}")
     client = FakeHost(args, log) if args.mode == "host" else FakeGuest(args, log)
     try:
         rc = client.run()

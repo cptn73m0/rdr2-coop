@@ -330,6 +330,15 @@ constexpr unsigned long long _IS_META_PED_FISH          = 0x118D476A6F1A13F1ull;
 // E3c: только бесхозные лошади (без всадника) и не лошади игроков.
 constexpr unsigned long long _GET_RIDER_OF_MOUNT             = 0xB676EFDA03DADA52ull;
 constexpr unsigned long long _IS_ANIMAL_CONTROLLED_BY_A_PLAYER = 0x0E2F43516F998269ull;
+// E5 (v17): host-authoritative урон по NPC — APPLY_DAMAGE_TO_PED + классы
+// оружия для расчёта урона на госте.
+constexpr unsigned long long APPLY_DAMAGE_TO_PED              = 0x697157CED63F18D4ull;
+constexpr unsigned long long IS_WEAPON_REVOLVER               = 0xC212F1D05A8232BBull;
+constexpr unsigned long long IS_WEAPON_PISTOL                 = 0xDDC64F5E31EEDAB6ull;
+constexpr unsigned long long IS_WEAPON_REPEATER               = 0xDDB2578E95EF7138ull;
+constexpr unsigned long long IS_WEAPON_RIFLE                  = 0x0A82317B7EBFC420ull;
+constexpr unsigned long long IS_WEAPON_SHOTGUN                = 0xC75386174ECE95D5ull;
+constexpr unsigned long long _IS_WEAPON_SNIPER                = 0x6AD66548840472E5ull;
 constexpr unsigned long long IS_PED_A_PLAYER                  = 0x12534C348C6CB68Bull;
 constexpr unsigned long long GET_PED_TYPE                     = 0xFF059E1E4C01E63Cull;
 constexpr unsigned long long _GET_SCENARIO_POINT_TYPE_PED_IS_USING = 0x2D0571BB55879DA2ull;

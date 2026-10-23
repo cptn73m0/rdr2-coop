@@ -215,14 +215,15 @@ for _limit_name, (_actual, _expected) in _PINNED_LIMITS.items():
 KNOWN_FAIL_TESTS = set()
 
 # --------------------------------------------------------------------------
-# Protocol v15 (E0) + v16 (E2c-b): actor replication messages 0x18..0x1E.
-# The v15 wire format is signed off in the net-review E0 task; the v16
-# ActorAppearance extension is signed off in the E2c-b task. These tests are
-# skipped while net/protocol.h is still v14 (E0 not merged) and become strict
-# automatically once the header carries the Actor* messages. Expected values
-# below are pinned to the E0/E2c-b spec: spawn 64 B, frame 32 B, max 12 actors,
-# batch sizes 776/392 B, despawn/resync 12 B, event 32 B, outfit 792 B,
-# appearance header 12 B + entry 28 B (max 12 + 16*28 = 460 B, 16 компонентов).
+# Protocol v15 (E0) + v16 (E2c-b) + v17 (E5): actor replication messages
+# 0x18..0x1F. The v15 wire format is signed off in the net-review E0 task; the
+# v16 ActorAppearance and v17 ActorDamage extensions are signed off in the
+# E2c-b / E5 tasks. These tests are skipped while net/protocol.h is still v14
+# (E0 not merged) and become strict automatically once the header carries the
+# Actor* messages. Expected values below are pinned to the spec: spawn 64 B,
+# frame 32 B, max 12 actors, batch sizes 776/392 B, despawn/resync 12 B,
+# event 32 B, outfit 792 B, appearance header 12 B + entry 28 B
+# (max 12 + 16*28 = 460 B, 16 компонентов), damage 16 B.
 # --------------------------------------------------------------------------
 _ACTOR_MSG_PINS = {
     "ActorSpawnBatch": 0x18,
@@ -359,6 +360,41 @@ ACTOR_TESTS = {
 APPEARANCE_TESTS = {
     "test_actor_appearance_host_only",
     "test_actor_appearance_validation",
+}
+
+# --------------------------------------------------------------------------
+# Protocol v17 (E5): ActorDamage (0x1F) — запрос урона от гостя хосту.
+# payload 16 B: epoch u32, actorId u32, damage u16 (1..1000), pad u16,
+# weaponHash u32. Направление только guest -> server -> host.
+# --------------------------------------------------------------------------
+DAMAGE_AVAILABLE = False
+TYPE_ACTOR_DAMAGE = None
+ACTOR_DAMAGE_SIZE = 0
+MIN_ACTOR_DAMAGE = 0
+MAX_ACTOR_DAMAGE = 0
+if PROTO >= 17:
+    _damage_size = _struct_size_optional("ActorDamagePayload")
+    if "ActorDamage" not in MSG or _damage_size is None:
+        raise RuntimeError(
+            "protocol v17 is present but ActorDamage spec is incomplete: "
+            f"msg={'ActorDamage' in MSG}, size={_damage_size}")
+    require(MSG["ActorDamage"] == 0x1F,
+            f"Msg::ActorDamage expected 0x1F, got {MSG['ActorDamage']}")
+    require(_damage_size == 16, "ActorDamagePayload expected 16 B (v17 spec)")
+    MIN_ACTOR_DAMAGE = _proto_const("kMinActorDamage")
+    MAX_ACTOR_DAMAGE = _proto_const("kMaxActorDamage")
+    require(MIN_ACTOR_DAMAGE == 1,
+            f"kMinActorDamage expected 1, got {MIN_ACTOR_DAMAGE}")
+    require(MAX_ACTOR_DAMAGE == 1000,
+            f"kMaxActorDamage expected 1000, got {MAX_ACTOR_DAMAGE}")
+    TYPE_ACTOR_DAMAGE = MSG["ActorDamage"]
+    ACTOR_DAMAGE_SIZE = 16
+    DAMAGE_AVAILABLE = True
+
+# Names of the conditional v17 ActorDamage tests (skipped while v17 missing).
+DAMAGE_TESTS = {
+    "test_actor_damage_direction",
+    "test_actor_damage_validation",
 }
 
 # 50-100 rounds of the JOIN race per task; overridable for slow CI.
@@ -515,6 +551,16 @@ def actor_appearance(epoch=1, actor_id=1, entries=None):
     require(len(header) == ACTOR_APPEARANCE_HEADER_SIZE,
             "ActorAppearance header must be 12 B")
     return header + b"".join(entries)
+
+
+def actor_damage(epoch=1, actor_id=1, damage=50, pad=0,
+                 weapon_hash=0x8B264946):
+    require(DAMAGE_AVAILABLE, "v17 ActorDamage is not in net/protocol.h yet")
+    payload = struct.pack("<IIHHI", epoch, actor_id, damage, pad, weapon_hash)
+    require(len(payload) == ACTOR_DAMAGE_SIZE,
+            f"ActorDamage builder mismatch: "
+            f"{len(payload)} != {ACTOR_DAMAGE_SIZE}")
+    return payload
 
 
 def frame_bytes(type_, payload):
@@ -1207,7 +1253,7 @@ def test_worldstate_host_only(exe, tmp):
 
 
 # --------------------------------------------------------------------------
-# Protocol v15 (E0) / v16 (E2c-b): actor replication messages 0x18..0x1E.
+# Protocol v15 (E0) / v16 (E2c-b) / v17 (E5): actor replication 0x18..0x1F.
 # Tests are conditional on net/protocol.h carrying the Actor* messages; while
 # E0/E2c-b are not merged they are reported as [skip]. After merge they are
 # strict and match the spec in docs/PROTOCOL.md.
@@ -1563,6 +1609,65 @@ def test_actor_appearance_validation(exe, tmp):
                                epoch=1, actor_id=7,
                                entries=[actor_appearance_entry(reserved=1)]),
                            "ActorAppearance(reserved!=0)")
+        # Unknown message type must not be relayed and must not crash.
+        host.sendall(frame_bytes(0x7E, b"\x00" * 32))
+        require(recv_type(guest, 0x7E, 0.5) is None,
+                "unknown type must not be relayed")
+        host.close()
+        guest.close()
+
+
+def test_actor_damage_direction(exe, tmp):
+    log("[test] v17 actor damage: guest -> host only (16 B relay)")
+    require(DAMAGE_AVAILABLE, "v17 ActorDamage messages missing")
+    with Server(exe, tmp / "actor_damage") as srv:
+        host, guest = _actor_pair(srv)
+
+        dmg = actor_damage(epoch=1, actor_id=7, damage=42,
+                           weapon_hash=0x8B264946)
+        require(len(dmg) == ACTOR_DAMAGE_SIZE, "damage size mismatch")
+        # Гость -> сервер -> хост: байт-в-байт, только хосту.
+        guest.sendall(frame_bytes(TYPE_ACTOR_DAMAGE, dmg))
+        got = recv_type(host, TYPE_ACTOR_DAMAGE, 2.0)
+        require(got == dmg,
+                "guest ActorDamage must relay byte-identical to the host")
+        # Гостям/отправителю не релеим: эха быть не должно.
+        require(recv_type(guest, TYPE_ACTOR_DAMAGE, 0.5) is None,
+                "ActorDamage must not be relayed back to the guest")
+        # Хост -> сервер: drop (урон применяет сам хост, запросы не шлёт).
+        host.sendall(frame_bytes(TYPE_ACTOR_DAMAGE, dmg))
+        require(recv_type(guest, TYPE_ACTOR_DAMAGE, 0.5) is None,
+                "host ActorDamage must be dropped (guest-only direction)")
+        host.close()
+        guest.close()
+
+
+def test_actor_damage_validation(exe, tmp):
+    log("[test] v17 actor damage: size/epoch/actorId/damage validation")
+    require(DAMAGE_AVAILABLE, "v17 ActorDamage messages missing")
+    with Server(exe, tmp / "actor_damage_validate") as srv:
+        host, guest = _actor_pair(srv)
+
+        good = actor_damage(epoch=1, actor_id=7, damage=50)
+        require(len(good) == ACTOR_DAMAGE_SIZE, "damage size mismatch")
+        # Точный размер 16 B.
+        _actor_expect_drop(guest, host, TYPE_ACTOR_DAMAGE, good[:-1],
+                           "short ActorDamage")
+        _actor_expect_drop(guest, host, TYPE_ACTOR_DAMAGE, good + b"\x00",
+                           "oversized ActorDamage")
+        # epoch/actorId=0 и damage вне 1..1000 невалидны.
+        _actor_expect_drop(guest, host, TYPE_ACTOR_DAMAGE,
+                           actor_damage(epoch=0, actor_id=7),
+                           "ActorDamage(epoch=0)")
+        _actor_expect_drop(guest, host, TYPE_ACTOR_DAMAGE,
+                           actor_damage(epoch=1, actor_id=0),
+                           "ActorDamage(actorId=0)")
+        _actor_expect_drop(guest, host, TYPE_ACTOR_DAMAGE,
+                           actor_damage(epoch=1, actor_id=7, damage=0),
+                           "ActorDamage(damage=0)")
+        _actor_expect_drop(guest, host, TYPE_ACTOR_DAMAGE,
+                           actor_damage(epoch=1, actor_id=7, damage=1001),
+                           "ActorDamage(damage=1001)")
         # Unknown message type must not be relayed and must not crash.
         host.sendall(frame_bytes(0x7E, b"\x00" * 32))
         require(recv_type(guest, 0x7E, 0.5) is None,
@@ -2297,7 +2402,7 @@ def main():
         test_payload_sizes_and_host_only_messages,
         test_relay_misc_messages,
         test_worldstate_host_only,
-        # Protocol v15 (E0) actor tests + v16 (E2c-b) ActorAppearance tests.
+        # Protocol v15 (E0) actor tests + v16 (E2c-b) Appearance + v17 (E5) Damage.
         test_actor_spawn_host_only,
         test_actor_frames_host_only,
         test_actor_despawn_event_outfit,
@@ -2306,6 +2411,8 @@ def main():
         test_actor_duplicate_actor_ids,
         test_actor_appearance_host_only,
         test_actor_appearance_validation,
+        test_actor_damage_direction,
+        test_actor_damage_validation,
         test_actor_gating_no_actor_log,
         test_oversized_and_truncated,
         test_host_migration,
@@ -2332,6 +2439,11 @@ def main():
                 log(f"[skip] {test.__name__}: protocol v16 ActorAppearance is "
                     "not in net/protocol.h yet (E2c-b merge pending)")
                 continue
+            if test.__name__ in DAMAGE_TESTS and not DAMAGE_AVAILABLE:
+                skipped += 1
+                log(f"[skip] {test.__name__}: protocol v17 ActorDamage is "
+                    "not in net/protocol.h yet (E5 merge pending)")
+                continue
             try:
                 test(exe, tmp)
                 if test.__name__ in KNOWN_FAIL_TESTS:
@@ -2351,11 +2463,14 @@ def main():
         appearance_status = ("pending" if not APPEARANCE_AVAILABLE else
                              f"on({MAX_ACTOR_APPEARANCE}comp/"
                              f"{ACTOR_APPEARANCE_MAX}B)")
+        damage_status = ("pending" if not DAMAGE_AVAILABLE else
+                         f"on({ACTOR_DAMAGE_SIZE}B)")
         log(f"{passed} passed, {failures} failed, {known_fails} known-fail"
             f"{skipped_part} "
             f"(protocol v{PROTO}, outfit={OUTFIT_SIZE}B, "
             f"actors={'on' if ACTOR_AVAILABLE else 'pending'}, "
             f"appearance={appearance_status}, "
+            f"damage={damage_status}, "
             f"cap={CAP_ACTIVE}/rate={CAP_RATE}/s, "
             f"name<={MAX_NAME_BYTES}B)")
         if failures:

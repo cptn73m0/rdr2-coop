@@ -97,6 +97,8 @@ void WriteDefaultIni()
     fputs("npc_animal_cap = 4\n", f);
     fputs("# E2a: meta-outfit внешность NPC-прокси (0 = только random variation).\n", f);
     fputs("npc_appearance = 1\n", f);
+    fputs("# E5: host-authoritative урон по NPC/животным (0 = выключить урон).\n", f);
+    fputs("npc_damage = 1\n", f);
     fclose(f);
 }
 
@@ -174,6 +176,7 @@ void ApplyLine(const std::string& raw, Config& out)
             out.npcAnimalCap = static_cast<int>(a);
     }
     else if (key == "npc_appearance") out.npcAppearance = AsBool(val);
+    else if (key == "npc_damage") out.npcDamage = AsBool(val);
     else if (key == "ped_model")
     {
         unsigned long long m = 0;
