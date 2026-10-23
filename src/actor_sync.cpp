@@ -534,15 +534,18 @@ void TaskAimGunAtCoordEntity(unsigned int ped, float x, float y, float z)
     Call();
 }
 
-void TaskShootAtCoordEntity(unsigned int ped, float x, float y, float z)
+// E3b.4: duration 1000-1500 мс — движок сам отстреляет несколько патронов
+// с темпом оружия; 200 мс — fallback-режим одиночных выстрелов.
+void TaskShootAtCoordEntity(unsigned int ped, float x, float y, float z,
+                            int durationMs)
 {
     using namespace natives_api;
     Init(natives::TASK_SHOOT_AT_COORD);
     Push(ped);
     Push(x); Push(y); Push(z);
-    Push(static_cast<unsigned long long>(200)); // duration ~1 выстрел
-    Push(static_cast<unsigned long long>(0));   // firingPattern=0 (E3b.1)
-    Push(static_cast<unsigned long long>(0));   // p6
+    Push(static_cast<unsigned long long>(static_cast<unsigned int>(durationMs)));
+    Push(static_cast<unsigned long long>(0)); // firingPattern=0 (E3b.1)
+    Push(static_cast<unsigned long long>(0)); // p6
     Call();
 }
 
@@ -1167,16 +1170,19 @@ void LogWeaponFail(uint32_t actorId, uint32_t hash, uint32_t giveRet)
                   actorId, hash, giveRet);
 }
 
-// E3b.1/E3b.2: диагностика оружейного состояния движка (npc_debug=1, 5 с).
+// E3b.1/E3b.2/E3b.4: диагностика оружейного состояния движка (npc_debug=1, 5 с).
 void LogWeaponDebug(uint32_t actorId, bool ready, bool armed, uint32_t cur,
                     uint32_t held, uint32_t hash, int ammo, bool drawn,
-                    bool aimTask, bool shootTask, bool moving)
+                    bool aimTask, bool shootTask, bool moving,
+                    unsigned int shootTasks)
 {
     sh_log::Write(
         "actor: weapon dbg id=%u ready=%d armed=%d cur=0x%X held=0x%X "
-        "hash=0x%X ammo=%d drawn=%d aimTask=%d shootTask=%d moving=%d\n",
+        "hash=0x%X ammo=%d drawn=%d aimTask=%d shootTask=%d moving=%d "
+        "shootTasks=%u\n",
         actorId, ready ? 1 : 0, armed ? 1 : 0, cur, held, hash, ammo,
-        drawn ? 1 : 0, aimTask ? 1 : 0, shootTask ? 1 : 0, moving ? 1 : 0);
+        drawn ? 1 : 0, aimTask ? 1 : 0, shootTask ? 1 : 0, moving ? 1 : 0,
+        shootTasks);
 }
 
 void LogDeath(uint32_t actorId)
@@ -1895,6 +1901,13 @@ struct Proxy
     bool combatStance = false;
     unsigned int combatStanceStartTick = 0;
     bool shootTaskActive = false;
+    // E3b.4: continuous-fire state machine (aim -> long shoot -> wait -> aim).
+    uint8_t firePhase = 0;        // 0 aim, 1 shoot-ready, 2 wait burst end
+    unsigned int firePhaseTick = 0;
+    unsigned int shootTaskCount = 0; // всего выданных shoot-задач (для dbg/лога)
+    bool fireUseFallback = false;    // движок не стреляет длинной очередью
+    bool fireShotWorked = false;     // в текущем эпизоде реально стрелял/тратил ammo
+    int fireAmmoBefore = -1;
 };
 
 std::map<uint32_t, Proxy> g_proxies;
@@ -2774,6 +2787,8 @@ void ApplyProxyDeath(Proxy& p)
     p.equipWaitActive = false;
     p.combatStance = false;
     p.shootTaskActive = false;
+    p.firePhase = 0;
+    p.fireShotWorked = false;
     p.deathApplied = true;
     LogDeath(p.actorId);
 }
@@ -2817,6 +2832,8 @@ void ApplyProxyRevive(Proxy& p)
     p.weaponDrawnUnverified = false;
     p.combatStance = false;
     p.shootTaskActive = false;
+    p.firePhase = 0;
+    p.fireShotWorked = false;
     LogRevive(p.actorId);
 }
 
@@ -3086,6 +3103,8 @@ void ProcessActorWeapons(unsigned int tick)
             p.aimCaptured = false;
             p.weaponAimTaskActive = false;
             p.prevAimFlag = false;
+            p.firePhase = 0;
+            p.shootTaskActive = false;
             continue;
         }
         int taskCalls = 0;
@@ -3093,9 +3112,7 @@ void ProcessActorWeapons(unsigned int tick)
         const uint32_t wantWeapon =
             IsWeaponHashUsable(p.weaponHash) ? p.weaponHash : 0;
 
-        // 1) Выдать/сменить/убрать оружие по хэшу из ActorSpawn/heartbeat.
-        // E3b.2: GIVE_WEAPON_TO_PED с невалидным хэшем молча возвращает 0 —
-        // логируем ret, при ret==0 повторяем ровно 1 раз через 30 тиков.
+        // 1) Выдать/сменить/убрать оружие (E3b.2: ret GIVE + 1 retry).
         if (wantWeapon != p.weaponGiven)
         {
             if (p.weaponGiven)
@@ -3108,6 +3125,7 @@ void ProcessActorWeapons(unsigned int tick)
                 p.equipWaitActive = false;
                 p.weaponGiveFailLogged = false;
                 p.weaponFailLogged = false;
+                p.firePhase = 0;
             }
             if (wantWeapon)
             {
@@ -3124,7 +3142,6 @@ void ProcessActorWeapons(unsigned int tick)
                  p.weaponGiveRet == 0 && !p.weaponGiveFailLogged &&
                  (tick - p.weaponGiveTick) >= 30)
         {
-            // Ретрай 1 раз: возможно модель/оружие ещё не были готовы.
             p.weaponGiveRet = GiveWeaponToPedEntity(p.handle, wantWeapon);
             p.weaponGiveAttempts = 2;
             p.weaponGiveTick = tick;
@@ -3140,19 +3157,18 @@ void ProcessActorWeapons(unsigned int tick)
             p.weaponInHands = false;
             p.aimCaptured = false;
             p.prevAimFlag = false;
+            p.firePhase = 0;
             continue;
         }
 
-        // E3b.1: боевые желания нужны и для draw/holster (не убираем оружие,
-        // пока идет aim/shoot/reload, даже если Drawn-флаг ещё не поднялся).
+        // боевые желания
         const bool wantShoot =
             p.weaponShootPulse || (p.weaponAimFlag && p.weaponCombatFlag);
         const bool wantAim = p.weaponAimFlag || p.weaponShootPulse;
         const bool wantReload = p.weaponReloadFlag;
 
-        // E3b.3: пока бой активен — StandStill ОДИН раз при входе и держим
-        // стойку; MoveProxy в это время не выдаёт TASK_FOLLOW. После снятия
-        // флагов движение возобновляется.
+        // E3b.3: при входе в бой — StandStill один раз; MoveProxy в это время
+        // не выдаёт TASK_FOLLOW.
         const bool combatActive = wantAim || wantShoot || wantReload;
         if (combatActive && !p.combatStance)
         {
@@ -3169,12 +3185,12 @@ void ProcessActorWeapons(unsigned int tick)
             p.aimCaptured = false;
             p.weaponAimTaskActive = false;
             p.taskActive = false;
-            p.moveTaskValid = false; // движение вернётся на след. тике
+            p.moveTaskValid = false;
         }
 
-        // 2) DRAW не гейтится готовностью: при Drawn/aim/shoot/reload всегда
-        // SET_CURRENT_PED_WEAPON(equipNow=true); `state=drawn` при armed/ready,
-        // иначе через 2 с `drawn(unverified)` — оружие должно появиться визуально.
+        // 2) DRAW не гейтится готовностью: SET_CURRENT(equipNow=true) всегда
+        // при Drawn/aim/shoot/reload; drawn при armed, иначе через 2 с
+        // drawn(unverified).
         const bool wantDraw =
             p.weaponDrawnFlag || wantAim || wantShoot || wantReload;
         if (wantDraw && !p.weaponInHands)
@@ -3222,15 +3238,13 @@ void ProcessActorWeapons(unsigned int tick)
             LogWeaponEvent(p.actorId, p.weaponGiven, "holstered");
         }
 
-        // 3) E3b.2: мягкий armed — IS_PED_ARMED(ped,1) ИЛИ cur==hash ИЛИ
-        // held != 0/unarmed; НЕ требуем совпадения cur==hash.
+        // 3) Мягкий armed (E3b.2).
         const uint32_t cur = GetCurrentWeapon(p.handle);
         const uint32_t held = GetHeldWeapon(p.handle);
         const bool heldValid =
             held != 0 && held != static_cast<uint32_t>(natives::WEAPON_UNARMED);
         const bool armed = IsPedArmedEntity(p.handle) ||
                            cur == p.weaponGiven || heldValid;
-        // ready для боя: armed и (готов стрелять ИЛИ в руках валидное оружие).
         const bool ready = armed && (IsWeaponReady(p.handle) || heldValid);
         if (armed)
         {
@@ -3255,16 +3269,118 @@ void ProcessActorWeapons(unsigned int tick)
             LogWeaponFail(p.actorId, p.weaponGiven, p.weaponGiveRet);
         }
 
-        const bool shootDue = wantShoot && ready && taskCalls < 2 &&
-            (tick - p.lastShootTick) >= kWeaponShootCooldownTicks;
+        // ================= E3b.4: continuous fire =================
+        // aim -> длинная очередь (1200 мс) -> ждать окончание -> aim -> ...
+        // Если длинная очередь не стреляет — fallback: 200 мс + пауза
+        // 350-500 мс, каждый цикл через переприцеливание.
+        const bool fireCycle = wantShoot && armed && !wantReload &&
+                               !p.reloadInProgress;
+        if (fireCycle)
+        {
+            // В shoot-окне держим бесконечный клип и патроны.
+            SetPedInfiniteClipEntity(p.handle, true);
+            if (GetAmmoInClipEntity(p.handle, p.weaponGiven) <= 0)
+                SetAmmoInClipEntity(p.handle, p.weaponGiven, 999);
 
-        // 4) AIM: точка захватывается ОДИН раз при переходе Aiming 0->1;
-        // reissue только при смене оружия / heading>25° / 5 с. Лог — старт.
+            const unsigned int phaseAge = tick - p.firePhaseTick;
+            if (p.firePhase == 0)
+            {
+                // Переприцеливание перед очередью (каждый цикл).
+                if (phaseAge >= 3 && taskCalls < 2)
+                {
+                    const Vec3 pos = GetCoords(p.handle);
+                    const float rad = p.heading * kRadPerDeg;
+                    p.aimCaptureX = pos.x - std::sin(rad) * kWeaponAimDistance;
+                    p.aimCaptureY = pos.y + std::cos(rad) * kWeaponAimDistance;
+                    p.aimCaptureZ = pos.z;
+                    p.aimCaptureHeading = p.heading;
+                    p.aimWeapon = p.weaponGiven;
+                    p.aimCaptured = true;
+                    p.aimCaptureTick = tick;
+                    TaskAimGunAtCoordEntity(p.handle, p.aimCaptureX,
+                                            p.aimCaptureY, p.aimCaptureZ);
+                    p.weaponAimTaskActive = true;
+                    p.lastAimTaskTick = tick;
+                    p.firePhase = 1;
+                    p.firePhaseTick = tick;
+                    ++taskCalls;
+                }
+            }
+            else if (p.firePhase == 1)
+            {
+                // Дать цель-задаче осесть, затем одна длинная shoot-задача.
+                if (phaseAge >= 3 && taskCalls < 2)
+                {
+                    if (IsWeaponReady(p.handle))
+                    {
+                        p.fireAmmoBefore = GetAmmoInClipEntity(
+                            p.handle, p.weaponGiven);
+                        TaskShootAtCoordEntity(
+                            p.handle, p.aimCaptureX, p.aimCaptureY,
+                            p.aimCaptureZ, p.fireUseFallback ? 200 : 1200);
+                        ++p.shootTaskCount;
+                        p.shootTaskActive = true;
+                        p.lastShootTick = tick;
+                        p.fireShotWorked = false;
+                        p.weaponAimTaskActive = false;
+                        p.firePhase = 2;
+                        p.firePhaseTick = tick;
+                        ++taskCalls;
+                        LogWeaponEvent(p.actorId, p.weaponGiven, "shoot");
+                    }
+                    else if (phaseAge > 90)
+                    {
+                        p.firePhase = 0;
+                        p.firePhaseTick = tick;
+                    }
+                }
+            }
+            else // firePhase == 2: ждём окончания очереди
+            {
+                if (IsShootingPed(p.handle))
+                    p.fireShotWorked = true;
+                const int ammoNow =
+                    GetAmmoInClipEntity(p.handle, p.weaponGiven);
+                if (p.fireAmmoBefore >= 0 && ammoNow < p.fireAmmoBefore)
+                    p.fireShotWorked = true;
+
+                if (p.fireUseFallback)
+                {
+                    // Fallback: 200 мс выстрел, пауза 350-500 мс.
+                    if ((phaseAge >= 21 && !IsShootingPed(p.handle) &&
+                         IsWeaponReady(p.handle)) ||
+                        phaseAge >= 30)
+                    {
+                        p.firePhase = 0;
+                        p.firePhaseTick = tick;
+                    }
+                }
+                else
+                {
+                    // Длинная очередь: ждём 1.2-1.3 с / окончание стрельбы.
+                    if (phaseAge >= 78 ||
+                        (phaseAge >= 24 && !IsShootingPed(p.handle) &&
+                         IsWeaponReady(p.handle)))
+                    {
+                        if (!p.fireShotWorked && phaseAge >= 24)
+                            p.fireUseFallback = true; // длинная очередь не пошла
+                        p.firePhase = 0;
+                        p.firePhaseTick = tick;
+                    }
+                }
+            }
+        }
+        else if (!wantShoot)
+        {
+            p.firePhase = 0;
+            p.shootTaskActive = false;
+        }
+
+        // 4) AIM для aim-эпизодов без стрельбы (fire-cycle управляет сам).
         const bool aimEdge = wantAim && !p.prevAimFlag;
-        // E3b.3: aim-задачу не перевыдавать чаще 5 с (300 тиков).
         const bool aimCooldownOk =
             p.lastAimTaskTick == 0 || (tick - p.lastAimTaskTick) >= 300;
-        if (aimEdge && armed && aimCooldownOk && taskCalls < 2)
+        if (!fireCycle && aimEdge && armed && aimCooldownOk && taskCalls < 2)
         {
             const Vec3 pos = GetCoords(p.handle);
             const float rad = p.heading * kRadPerDeg;
@@ -3277,15 +3393,12 @@ void ProcessActorWeapons(unsigned int tick)
             p.aimCaptureTick = tick;
             p.weaponAimTaskActive = true;
             p.lastAimTaskTick = tick;
-            if (!shootDue)
-            {
-                TaskAimGunAtCoordEntity(p.handle, p.aimCaptureX, p.aimCaptureY,
-                                        p.aimCaptureZ);
-                ++taskCalls;
-                LogWeaponEvent(p.actorId, p.weaponGiven, "aim");
-            }
+            TaskAimGunAtCoordEntity(p.handle, p.aimCaptureX, p.aimCaptureY,
+                                    p.aimCaptureZ);
+            ++taskCalls;
+            LogWeaponEvent(p.actorId, p.weaponGiven, "aim");
         }
-        else if (wantAim && p.aimCaptured && armed && !shootDue &&
+        else if (!fireCycle && wantAim && p.aimCaptured && armed &&
                  aimCooldownOk && taskCalls < 2)
         {
             float dHeading = std::fabs(p.heading - p.aimCaptureHeading);
@@ -3329,34 +3442,10 @@ void ProcessActorWeapons(unsigned int tick)
             p.weaponAimTaskActive = false;
         }
 
-        // 5) SHOOT: после aim-стойки (≥1 тик, не в тике выдачи aim), armed,
-        // <=1/с, firingPattern=0.
-        if (wantShoot && armed && p.combatStance &&
-            (tick - p.combatStanceStartTick) >= 2 &&
-            tick > p.lastAimTaskTick && taskCalls < 2 &&
-            (tick - p.lastShootTick) >= kWeaponShootCooldownTicks)
+        // 5) RELOAD (E3b.3): резерв 999 -> infinite clip off -> ammo 0 ->
+        // TASK_RELOAD; вернуть через 2 с/снятия флага.
+        if (wantReload && armed && taskCalls < 2 && !p.reloadInProgress)
         {
-            const Vec3 pos = GetCoords(p.handle);
-            const float rad = p.heading * kRadPerDeg;
-            const float sx = pos.x - std::sin(rad) * kWeaponAimDistance;
-            const float sy = pos.y + std::cos(rad) * kWeaponAimDistance;
-            TaskShootAtCoordEntity(p.handle, sx, sy, pos.z);
-            p.lastShootTick = tick;
-            p.shootTaskActive = true;
-            p.weaponAimTaskActive = false; // shoot заменяет aim
-            p.aimCaptured = true;          // точку не теряем (reissue молча)
-            ++taskCalls;
-            LogWeaponEvent(p.actorId, p.weaponGiven, "shoot");
-        }
-
-        // 6) RELOAD: сначала отключить infinite clip (иначе магазин мгновенно
-        // полный и TASK_RELOAD_WEAPON не играет), затем ammo=0, затем reload;
-        // вернуть infinite clip через 2 с или при снятии флага.
-        if (wantReload && armed && taskCalls < 2 &&
-            !p.reloadInProgress)
-        {
-            // E3b.3: резерв 999 перед опустошением клипа — иначе перезарядка
-            // мгновенно пополняется/не играет. Затем clip off и ammo=0.
             SetPedAmmoEntity(p.handle, p.weaponGiven, 999);
             SetPedInfiniteClipEntity(p.handle, false);
             SetAmmoInClipEntity(p.handle, p.weaponGiven, 0);
@@ -3370,19 +3459,16 @@ void ProcessActorWeapons(unsigned int tick)
                  (!wantReload ||
                   tick - p.reloadStartTick >= kWeaponReloadTimeoutTicks))
         {
-            // Вернуть infinite clip/резерв через 2 с или при снятии флага.
             SetPedAmmoEntity(p.handle, p.weaponGiven, 999);
             SetPedInfiniteClipEntity(p.handle, true);
             p.reloadInProgress = false;
         }
-        // shootTask активен ~0.5 с после выдачи (для dbg).
-        if (p.shootTaskActive &&
-            (tick - p.lastShootTick) > 30)
+        if (p.shootTaskActive && (tick - p.lastShootTick) > 30)
             p.shootTaskActive = false;
         if (equipExpired)
             p.equipWaitActive = false; // следующий retry на след. тике
 
-        // 7) Диагностика движка: 1 строка / 5 с при npc_debug=1.
+        // 6) Диагностика движка: 1 строка / 5 с при npc_debug=1.
         if (coopcfg::Get().npcDebug && (tick - p.lastWeaponDbgTick) >= 300)
         {
             p.lastWeaponDbgTick = tick;
@@ -3390,7 +3476,7 @@ void ProcessActorWeapons(unsigned int tick)
             const bool moving = p.moveTaskValid && !p.combatStance;
             LogWeaponDebug(p.actorId, ready, armed, cur, held, p.weaponGiven,
                            ammo, p.weaponInHands, p.weaponAimTaskActive,
-                           p.shootTaskActive, moving);
+                           p.shootTaskActive, moving, p.shootTaskCount);
         }
 
         p.prevAimFlag = wantAim;
@@ -3456,6 +3542,8 @@ void QueueSpawnBatch(uint32_t epoch,
                 p.weaponDrawnUnverified = false;
                 p.combatStance = false;
                 p.shootTaskActive = false;
+                p.firePhase = 0;
+                p.fireShotWorked = false;
             }
             continue;
         }
