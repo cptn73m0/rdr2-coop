@@ -84,11 +84,20 @@ K_ACTOR_FLAG_SCENARIO = 1 << 5
 K_ACTOR_FLAG_RELOADING = 1 << 6
 K_ACTOR_FLAG_AIMING = 1 << 7
 K_MOVE_STYLE_RIDE_HORSE = 3
-# E3b: RDR2 weapon hashes are NOT joaat of the weapon name. These are real
-# hashes seen in game/probe logs (WEAPON_UNARMED=0xA2719263); joaat of
-# "weapon_revolver_cattleman" is rejected by GIVE_WEAPON_TO_PED.
-DEFAULT_WEAPON_HASH = 0x67DC3FDE
-DEFAULT_WEAPON_LIST = (0x67DC3FDE, 0x5C54EFD4, 0x6DFA071B)
+# E3b: RDR2 weapon hashes are NOT joaat of the weapon name. These are verified
+# against third_party/rdr2-hashdb/CatalogItems.json:
+#   WEAPON_REVOLVER_CATTLEMAN=0x169F59F7, WEAPON_SHOTGUN_DOUBLEBARREL=0x6DFA071B,
+#   WEAPON_REPEATER_CARBINE=0xF5175BA1, WEAPON_PISTOL_M1899=0x5B78B8DD,
+#   WEAPON_RIFLE_SPRINGFIELD=0x63F46DE6.
+# 0x8B264946 (joaat of the name) is invalid; 0x67DC3FDE is WEAPON_MELEE_TORCH.
+DEFAULT_WEAPON_HASH = 0x169F59F7
+DEFAULT_WEAPON_LIST = (
+    0x169F59F7,  # WEAPON_REVOLVER_CATTLEMAN
+    0x6DFA071B,  # WEAPON_SHOTGUN_DOUBLEBARREL
+    0xF5175BA1,  # WEAPON_REPEATER_CARBINE
+    0x5B78B8DD,  # WEAPON_PISTOL_M1899
+    0x63F46DE6,  # WEAPON_RIFLE_SPRINGFIELD
+)
 # E3a fallback scenario hashes (dynScenario values seen in probe logs).
 FALLBACK_SCENARIO_HASHES = [
     0x62A4554D, 0xF6CD006D, 0x4BF802FE, 0x85AE7E5D, 0x189292F9,
@@ -1507,10 +1516,11 @@ def build_parser() -> argparse.ArgumentParser:
                            f"(default 0x{DEFAULT_WEAPON_HASH:08X}; joaat of the "
                            "weapon name is NOT valid)")
     host.add_argument("--weapon-list",
-                      default=None,
-                      help="E3b: comma-separated real weapon hashes assigned to "
-                           "actors round-robin (e.g. "
-                           "0x67DC3FDE,0x5C54EFD4,0x6DFA071B)")
+                      nargs="?", default=None,
+                      const=",".join(f"0x{h:08X}" for h in DEFAULT_WEAPON_LIST),
+                      help="E3b: real weapon hashes assigned round-robin; "
+                           "with no value uses validated list "
+                           "0x169F59F7,0x6DFA071B,0xF5175BA1,0x5B78B8DD,0x63F46DE6")
     host.add_argument("--drawn", action="store_true",
                       help="E3b: keep holstered first 3 s, then set Drawn flag")
     host.add_argument("--aim-after", type=float, default=0.0,
@@ -1649,9 +1659,11 @@ def resolve_args(args):
         except ValueError:
             raise SystemExit(f"--weapon must be a hash (hex or decimal): "
                              f"{args.weapon!r}")
-        if args.weapon_list:
+        weapon_list_text = (str(args.weapon_list).strip()
+                            if args.weapon_list is not None else "")
+        if weapon_list_text and weapon_list_text.lower() not in ("none", "off"):
             weapon_hashes = []
-            for part in str(args.weapon_list).replace(";", ",").split(","):
+            for part in weapon_list_text.replace(";", ",").split(","):
                 part = part.strip()
                 if not part:
                     continue

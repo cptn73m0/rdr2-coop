@@ -293,11 +293,22 @@ E3b сдаёт `ActorSpawn.weaponHash` для акторов и боевые ф�
 `Drawn=4`, `Changing=8`, `Combat=16`, `Reloading=64`, `Aiming=128`
 (+ `mounted=1`, `dead=2`, `scenario=32`).
 
-Важно: **joaat имени оружия не подходит** для RDR2 — например,
-joaat(`weapon_revolver_cattleman`) = 0x8B264946 отклоняется
-`GIVE_WEAPON_TO_PED`. Default — реальный валидный хэш из probe:
-**0x67DC3FDE** (WEAPON_UNARMED = 0xA2719263). Другие валидные хэши:
-`0x5C54EFD4`, `0x6DFA071B`.
+**Проверенные оружейные хэши** (сверено с
+`third_party/rdr2-hashdb/CatalogItems.json` и ScriptHook `WeaponHashes.cs`):
+
+| Оружие | Hash |
+|---|---|
+| `WEAPON_REVOLVER_CATTLEMAN` | **0x169F59F7** (default) |
+| `WEAPON_SHOTGUN_DOUBLEBARREL` | 0x6DFA071B |
+| `WEAPON_REPEATER_CARBINE` | 0xF5175BA1 |
+| `WEAPON_PISTOL_M1899` | 0x5B78B8DD |
+| `WEAPON_RIFLE_SPRINGFIELD` | 0x63F46DE6 |
+
+**Важно:** joaat имени оружия **не подходит** — `GIVE_WEAPON_TO_PED` его
+отклоняет (joaat(`weapon_revolver_cattleman`) = 0x8B264946 невалиден).
+`0x67DC3FDE` — это `WEAPON_MELEE_TORCH` (факел), не револьвер.
+Default `--weapon` = **0x169F59F7** (револьвер); `--weapon-list` без
+значения использует все 5 валидных хэшей по кругу акторам.
 
 Таймлайн (от первого спавна):
 - `--combat`: флаг Combat (16) постоянно (и в spawn, и в кадрах);
@@ -311,26 +322,26 @@ joaat(`weapon_revolver_cattleman`) = 0x8B264946 отклоняется
 - `--reload-after SEC`: через SEC — Reloading (64) импульсами **1 с каждые
   8 с**; переходы логируются `fakehost: reload on/off`;
 - `--weapon HASH` — явный реальный хэш оружия (0 = без оружия);
-- `--weapon-list HASH,HASH,...` — разные оружия по кругу акторам (например
-  `0x67DC3FDE,0x5C54EFD4,0x6DFA071B`); лог `fakehost: weapons=...`.
+- `--weapon-list [HASH,...]` — разные оружия по кругу акторам (без значения
+  берётся 5 валидных хэшей); лог `fakehost: weapons=...`.
 
 **Тест E3b (fake host → игровой гость):**
 ```powershell
-# default real weapon 0x67DC3FDE
+# default real weapon 0x169F59F7 (revolver cattleman)
 python tools\fake_actor_client.py --mode host --name TestHost `
   --combat --drawn --aim-after 4 --shoot-after 6 --reload-after 5 `
   --despawn-after 0 --duration 120
 
-# разные оружия у акторов (round-robin):
+# разные валидные оружия по кругу (5 моделей):
 python tools\fake_actor_client.py --mode host --name TestHost `
-  --weapon-list 0x67DC3FDE,0x5C54EFD4,0x6DFA071B `
+  --weapon-list `
   --combat --drawn --aim-after 4 --shoot-after 6 --reload-after 5 `
   --despawn-after 0 --duration 120
 ```
 Ожидаемые строки host:
 ```
-fakehost: weapons=0x67DC3FDE, 0x5C54EFD4, 0x6DFA071B
-fakehost: combat flags drawn=1 aim_after=4.0 shoot_after=6.0 reload_after=5.0 combat=1 weapon=0x67DC3FDE
+fakehost: weapons=0x169F59F7, 0x6DFA071B, 0xF5175BA1, 0x5B78B8DD, 0x63F46DE6
+fakehost: combat flags drawn=1 aim_after=4.0 shoot_after=6.0 reload_after=5.0 combat=1 weapon=0x169F59F7
 fakehost: weapon drawn
 fakehost: aim
 fakehost: shoot
@@ -395,8 +406,8 @@ fakeguest: target_frames=N
 | `--scenario-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | E3a: откуда брать `dynScenario=0x...` fallback (пустая строка — встроенный fallback) |
 | `--scenario-hash` | — | E3a: явный scenarioHash для всех сценарных акторов |
 | `--scenario-spacing` | 12.0 | E3a.4: радиус широкого кольца сценарных акторов (м), чтобы не накладывались на одну scenario point |
-| `--weapon` | `0x67DC3FDE` | E3b: реальный RDR2 weapon hash (joaat имени НЕ подходит); 0 = без оружия |
-| `--weapon-list` | — | E3b: реальные хэши оружия через запятую, назначаются акторам round-robin |
+| `--weapon` | `0x169F59F7` | E3b: реальный RDR2 weapon hash (cattleman; joaat имени НЕ подходит); 0 = без оружия |
+| `--weapon-list` | — (const: 5 валидных) | E3b: реальные хэши оружия через запятую round-robin; без значения — 0x169F59F7,0x6DFA071B,0xF5175BA1,0x5B78B8DD,0x63F46DE6 |
 | `--drawn` | off | E3b: через 3 с после спавна флаг Drawn (4) |
 | `--aim-after` | 0 (off) | E3b: через SEC — Aiming+Drawn на 8 с, актор стоит |
 | `--shoot-after` | 0 (off) | E3b: через SEC — Drawn\|Aiming на 3 с (shoot) |
