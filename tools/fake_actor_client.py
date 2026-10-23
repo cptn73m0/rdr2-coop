@@ -1220,6 +1220,13 @@ class FakeGuest:
         self.despawns = 0
         self.errors = 0
         self.outfits_nonzero = 0
+        # E2c: track metaOutfit changes per actorId (heartbeat spawn updates).
+        self.outfit_ids = set()
+        self.outfit_last = {}
+        self.outfit_first_seen = set()
+        self.outfit_updates = 0
+        self.resolved_late_ids = set()
+        self._outfit_update_logs = 0
         self.models_nonzero = 0
         # E2b: mounted actors (flags bit0) and their ActorSpawn.reserved mount
         # model hash. Heartbeat spawn batches repeat actorIds, so use sets.
@@ -1296,10 +1303,30 @@ class FakeGuest:
             self.known_ids.clear()
             self.epochs_seen.add(epoch)
         for rec in records:
-            self.unique_ids.add(rec["actorId"])
-            self.known_ids.add(rec["actorId"])
-            if rec["metaOutfit"] != 0:
-                self.outfits_nonzero += 1
+            actor_id = rec["actorId"]
+            meta_outfit = rec["metaOutfit"]
+            self.unique_ids.add(actor_id)
+            self.known_ids.add(actor_id)
+            # E2c: first spawn can carry metaOutfit=0; a later heartbeat spawn
+            # for the same actorId may resolve it to a hash (0 -> hash).
+            if actor_id not in self.outfit_first_seen:
+                self.outfit_first_seen.add(actor_id)
+                prev_meta = meta_outfit
+            else:
+                prev_meta = self.outfit_last.get(actor_id, 0)
+                if prev_meta != meta_outfit:
+                    self.outfit_updates += 1
+                    if (meta_outfit != 0 and prev_meta == 0 and
+                            actor_id not in self.resolved_late_ids):
+                        self.resolved_late_ids.add(actor_id)
+                    if self._outfit_update_logs < 20:
+                        self._outfit_update_logs += 1
+                        self.log.write(
+                            f"fakeguest: outfit update id={actor_id} "
+                            f"0x{prev_meta:08X} -> 0x{meta_outfit:08X}")
+            self.outfit_last[actor_id] = meta_outfit
+            if meta_outfit != 0:
+                self.outfit_ids.add(actor_id)
             if rec["model"] != 0:
                 self.models_nonzero += 1
             if rec["flags"] & K_ACTOR_FLAG_MOUNTED:
@@ -1436,6 +1463,10 @@ class FakeGuest:
                         self._handle_despawn(payload, now)
                     # ActorEvent/ActorOutfit/ActorResync: not needed for E1.
                     # Pong/PlayerJoined/Frame/...: ignore.
+                # E2c: after the first spawn keep listening for late outfit
+                # updates (heartbeat spawns) even if --duration is short.
+                if self.first_spawn_at is not None and a.outfit_wait > 0:
+                    deadline = max(deadline, self.first_spawn_at + a.outfit_wait)
                 if now >= self.next_report:
                     self.next_report = now + 2.0
                     self.log.write(self._summary(now))
@@ -1449,7 +1480,10 @@ class FakeGuest:
                     f"fakeguest: latency spawn->first frame "
                     f"≈{(self.first_frame_at - self.first_spawn_at) * 1000.0:.0f} ms, "
                     f"max actor gap ≈{self.max_gap * 1000.0:.0f} ms")
-            self.log.write(f"fakeguest: outfits nonzero={self.outfits_nonzero}")
+            self.log.write(
+                f"fakeguest: outfits nonzero={len(self.outfit_ids)} "
+                f"outfit_updates={self.outfit_updates} "
+                f"resolved_late={len(self.resolved_late_ids)}")
             self.log.write(f"fakeguest: models nonzero={self.models_nonzero}")
             self.log.write(f"fakeguest: mounted={len(self.mounted_ids)}")
             self.log.write(
@@ -1526,6 +1560,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JOIN ped model hash (u64)")
     ap.add_argument("--log-file", default=str(DEFAULT_LOG),
                     help="append log file (also mirrored to stdout)")
+    ap.add_argument("--outfit-wait", type=float, default=0.0,
+                    help="guest: keep listening SEC seconds after the first "
+                         "ActorSpawnBatch to catch late metaOutfit updates "
+                         "(E2c heartbeat; 0 = normal --duration)")
     ap.add_argument("--guest-name", default=None,
                     help="host mode: expected guest name (informational)")
 
@@ -1742,6 +1780,8 @@ def resolve_args(args):
                              "must be >= 0")
         if args.combat_cycle < 0:
             raise SystemExit("--combat-cycle must be >= 0")
+    if getattr(args, "outfit_wait", 0.0) < 0:
+        raise SystemExit("--outfit-wait must be >= 0")
     if args.duration < 1:
         raise SystemExit("--duration must be >= 1 second")
     return args

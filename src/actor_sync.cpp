@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "coop.h"
+#include "gen_metaped_outfits.h" // E2c: база model->outfit-кандидатов
 #include "log.h"
 #include "native_call.h"
 #include "natives.h"
@@ -1088,6 +1089,20 @@ void LogAppearance(uint32_t actorId, uint32_t model, uint32_t outfit,
                   actorId, model, outfit, state);
 }
 
+// E2c: host-резолв одежды перебором кандидатов модели.
+void LogOutfitResolved(uint32_t actorId, uint32_t model, uint32_t hash,
+                       unsigned int scans)
+{
+    sh_log::Write("actor: outfit resolved id=%u model=0x%X hash=0x%X scans=%u\n",
+                  actorId, model, hash, scans);
+}
+
+void LogOutfitFailed(uint32_t actorId, uint32_t model, unsigned int cands)
+{
+    sh_log::Write("actor: outfit failed id=%u model=0x%X cands=%u\n",
+                  actorId, model, cands);
+}
+
 // E2b: логи всадника/лошади (гейт enabled снаружи — module пути).
 void LogMountSpawn(uint32_t actorId, uint32_t model)
 {
@@ -1395,6 +1410,10 @@ struct RosterEntry
     uint32_t actorId = 0;
     uint32_t model = 0;
     unsigned int lastSeenTick = 0;
+    // E2c: поздний резолв meta-outfit перебором кандидатов модели.
+    uint32_t metaOutfit = 0;   // найденный/нативный outfit hash (в спавн)
+    uint16_t outfitCursor = 0; // сколько кандидатов уже проверено
+    uint8_t outfitState = 0;   // 0 none, 1 scanning, 2 resolved, 3 failed
 };
 
 std::map<unsigned int, RosterEntry> g_roster;
@@ -1416,7 +1435,8 @@ uint32_t MakeEpoch(unsigned int tickCount)
     return e;
 }
 
-net::ActorSpawn BuildSpawn(unsigned int handle, uint32_t actorId)
+net::ActorSpawn BuildSpawn(unsigned int handle, uint32_t actorId,
+                           uint32_t resolvedMetaOutfit)
 {
     net::ActorSpawn s{};
     s.actorId = actorId;
@@ -1424,7 +1444,10 @@ net::ActorSpawn BuildSpawn(unsigned int handle, uint32_t actorId)
     s.kind = net::kActorKindHuman;
     s.flags = static_cast<uint8_t>(BuildFlags(handle));
     s.model = GetModelOf(handle);
-    s.metaOutfit = GetMetaOutfit(handle);
+    // E2c: нативный hash истинный, если !=0; иначе — поздний резолв из roster
+    // (перебор кандидатов модели на хосте).
+    const uint32_t nativeOutfit = GetMetaOutfit(handle);
+    s.metaOutfit = nativeOutfit ? nativeOutfit : resolvedMetaOutfit;
     // E2b: всадник — один actor. ActorSpawn.reserved = хэш модели лошади
     // (только когда флаг mounted); mountActorId не используем (лошадь не
     // отдельный actor, чтобы не менять протокол/идентификаторы).
@@ -1689,8 +1712,11 @@ void HostDiscovery(const TickContext& ctx)
         if (e.actorId == 0) e.actorId = g_nextActorId++;
         e.model = GetModelOf(handle);
         e.lastSeenTick = tick;
+        // E2c: нативный outfit (если есть) или перебор кандидатов позже.
+        e.metaOutfit = GetMetaOutfit(handle);
+        e.outfitState = e.metaOutfit ? 2u : 0u;
         g_roster[handle] = e;
-        newSpawns.push_back(BuildSpawn(handle, e.actorId));
+        newSpawns.push_back(BuildSpawn(handle, e.actorId, e.metaOutfit));
     }
 
     // 5) спавн-батч: новые акторы ИЛИ heartbeat (join/resync/20-).
@@ -1705,7 +1731,8 @@ void HostDiscovery(const TickContext& ctx)
             for (const auto& kv : g_roster)
             {
                 if (!DoesExist(kv.first)) continue;
-                out.push_back(BuildSpawn(kv.first, kv.second.actorId));
+                out.push_back(BuildSpawn(kv.first, kv.second.actorId,
+                                         kv.second.metaOutfit));
             }
         }
         else
@@ -1749,6 +1776,79 @@ void HostResetState()
     g_resendAllSpawns = false;
 }
 
+// E2c: host-резолв meta-outfit перебором кандидатов модели (round-robin,
+// бюджет нативных вызовов на тик). При успехе — форсируем heartbeat spawn,
+// чтобы гость получил hash ≤2.5 с (обычный heartbeat cadence).
+void ProcessHostOutfitResolution(unsigned int tick)
+{
+    (void)tick;
+    if (g_roster.empty())
+        return;
+
+    // Кто ещё сканируется (без нативов) + ротация стартовой позиции, чтобы
+    // при числе акторов > бюджета никто не голодал.
+    std::vector<unsigned int> order;
+    order.reserve(g_roster.size());
+    for (const auto& kv : g_roster)
+    {
+        const RosterEntry& e = kv.second;
+        if (e.metaOutfit != 0 || e.outfitState == 3) continue;
+        order.push_back(kv.first);
+    }
+    if (order.empty())
+        return;
+
+    static unsigned int s_rotate = 0;
+    const int scanning = static_cast<int>(order.size());
+    int budget = 24; // ≤24 нативных вызовов/тик суммарно
+    const int perActorCap = (budget / scanning) > 0 ? (budget / scanning) : 1;
+    for (int i = 0; i < scanning; ++i)
+    {
+        if (budget <= 0) break;
+        const unsigned int handle =
+            order[(s_rotate + static_cast<unsigned int>(i)) %
+                  static_cast<unsigned int>(scanning)];
+        auto it = g_roster.find(handle);
+        if (it == g_roster.end()) continue;
+        RosterEntry& e = it->second;
+        if (e.metaOutfit != 0 || e.outfitState == 3) continue;
+
+        const uint32_t* hashes = nullptr;
+        uint16_t count = 0;
+        if (!metaped_outfits::LookupMetaOutfits(e.model, &hashes, &count) ||
+            count == 0)
+        {
+            e.outfitState = 3;
+            LogOutfitFailed(e.actorId, e.model, 0);
+            continue;
+        }
+
+        e.outfitState = 1;
+        int scanned = 0;
+        while (budget > 0 && e.outfitCursor < count && scanned < perActorCap)
+        {
+            const uint32_t cand = hashes[e.outfitCursor++];
+            --budget;
+            ++scanned;
+            if (IsMetaOutfitEquipped(handle, cand))
+            {
+                e.metaOutfit = cand;
+                e.outfitState = 2;
+                g_resendAllSpawns = true; // ближайший heartbeat пошлёт hash
+                LogOutfitResolved(e.actorId, e.model, cand, e.outfitCursor);
+                break;
+            }
+        }
+        if (e.outfitState == 1 && e.outfitCursor >= count)
+        {
+            e.outfitState = 3;
+            LogOutfitFailed(e.actorId, e.model, count);
+        }
+    }
+    s_rotate = (s_rotate + 1) % static_cast<unsigned int>(scanning);
+}
+
+
 void HostTick(const TickContext& ctx)
 {
     if (!sh::HasWorldQueries() || !sh::worldGetAllPeds)
@@ -1768,6 +1868,9 @@ void HostTick(const TickContext& ctx)
         ProbeTick(ctx.localPed, ctx.tickCount);
 
     HostDiscovery(ctx);
+
+    // E2c: поздний резолв outfit для 78% NPC без нативного metaOutfit.
+    ProcessHostOutfitResolution(ctx.tickCount);
 
     // despawn — не чаще 1 сообщения за тик
     if (!g_despawnQueue.empty())
@@ -1802,6 +1905,7 @@ struct Proxy
     int outfitRequest = 0;              // id REQUEST_META_PED_OUTFIT
     unsigned int outfitRequestTick = 0; // тик запроса (таймаут 3 с)
     uint8_t appearanceState = 0;        // 0 none, 1 requested, 2 applied, 3 failed
+    bool appearanceReapply = false;     // E2c: metaOutfit обновился на heartbeat
     // E2a.2: trail движения (последние ~1 с позиций) и сглаженные
     // скорость/направление для lookahead-ведения цели.
     struct TrailPoint
@@ -2277,8 +2381,12 @@ void ProcessActorAppearance(unsigned int tick)
             RandomizeComponents(p.handle);
             SetVisible(p.handle);
         }
-        LogAppearance(p.actorId, p.model, p.metaOutfit,
-                      ok ? "applied" : "failed");
+        // E2c: повторное применение после heartbeat-обновления metaOutfit.
+        const char* state = !ok ? "failed"
+            : (p.appearanceReapply ? "reapplied" : "applied");
+        if (ok)
+            p.appearanceReapply = false;
+        LogAppearance(p.actorId, p.model, p.metaOutfit, state);
     }
 }
 
@@ -3523,6 +3631,21 @@ void QueueSpawnBatch(uint32_t epoch,
                 p.scenarioHash = s.scenarioHash;
                 p.scenarioFlag = true;
                 p.scenarioState = 0; // применить заново в ProcessActorScenarios
+            }
+            // E2c: поздний outfit с heartbeat — если metaOutfit изменился
+            // (0→hash или hash→другой), повторить appearance-применение (E2a).
+            if (!p.dead && s.metaOutfit != 0 &&
+                s.metaOutfit != p.metaOutfit)
+            {
+                if (p.outfitRequest)
+                {
+                    ReleaseMetaPedOutfitRequest(p.outfitRequest);
+                    p.outfitRequest = 0;
+                }
+                p.metaOutfit = s.metaOutfit;
+                p.appearanceState = 0; // ProcessActorAppearance запросит заново
+                p.outfitRequestTick = 0;
+                p.appearanceReapply = true;
             }
             // E3b: heartbeat обновляет оружие (hash сменился/убрали) —
             // перевыдадим в ProcessActorWeapons.

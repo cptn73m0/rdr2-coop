@@ -371,6 +371,33 @@ fakeguest: target_frames=N
 кадров с соответствующим флагом (`drawn=4`, `aim=128`, `reload=64`,
 `combat=16`); `target_frames=N` — кадры с `targetActorId!=0` (shoot-окно).
 
+### E2c: поздние outfit-обновления (metaOutfit resolver)
+
+E2c: игровой хост подбирает `metaOutfit` для NPC, у которых он был 0, и
+присылает его в **heartbeat-spawn** для уже существующего `actorId`
+(metaOutfit меняется `0 → hash`). Fake guest отслеживает это по actorId.
+
+**Проверка (игра-хост первой, fake guest вторым):**
+```powershell
+# игра подключена ПЕРВОЙ (хост) с npc_actor=1; E2c resolver на хосте
+python tools\fake_actor_client.py --mode guest --name TestGuest `
+  --outfit-wait 60 --duration 120
+```
+`--outfit-wait SEC` — после первого spawn продолжать слушать ещё SEC секунд
+(даже если `--duration` короче), чтобы увидеть поздние heartbeat-обновления.
+
+Ожидаемые строки:
+```
+fakeguest: outfit update id=1 0x00000000 -> 0x12345678
+fakeguest: outfits nonzero=N outfit_updates=K resolved_late=Q
+```
+- `nonzero=N` — уникальные actorId с `metaOutfit != 0`;
+- `outfit_updates=K` — spawn-записи, где у существующего actorId изменился
+  metaOutfit (`0→hash` или `hash→другой`);
+- `resolved_late=Q` — actorId, получившие ненулевой outfit не на первом
+  спавне (позже, в heartbeat).
+Exit 0/PASS — как обычно (≥1 spawn-batch и ≥10 frames).
+
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 
 **Порядок: сервер → игра-хост → fake guest.**
@@ -400,6 +427,7 @@ fakeguest: target_frames=N
 | `--host`, `--port` | `127.0.0.1`, `7777` | адрес сервера |
 | `--name` | `TestHost` / `TestGuest` | ник в JOIN |
 | `--duration` | 300 (host) / 120 (guest) | сколько секунд работать |
+| `--outfit-wait` | 0 | guest: после первого spawn слушать ещё SEC секунд для поздних metaOutfit-обновлений (E2c) |
 | `--model 0x...` | `0x54D8BE8E` | модель ped'а для JOIN |
 | `--num` | 5 | число NPC (только host, 1..12) |
 | `--pattern` | `circle` | `circle` / `line` (4 м назад-вперёд) / `mixed` (2 круга, 2 линии, остальные стоят) |
