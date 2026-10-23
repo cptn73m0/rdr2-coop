@@ -215,23 +215,36 @@ E3a сдаёт в `ActorSpawn`:
 - `flags |= scenario (bit5)` для первых `--scenario N` акторов;
 - `ActorSpawn.scenarioHash` = `joaat(lowercase name)` для имён из
   `--scenario-names` (default:
-  `PROP_HUMAN_SEAT_CHAIR,WORLD_HUMAN_CAMP_FIRE_SIT,PROP_HUMAN_SEAT_BENCH`),
-  назначаются сценарным акторам по кругу. Это **валидные сценарные имена** для
-  `TASK_START_SCENARIO_IN_PLACE_HASH` (dyn-хэши из probe для неё не подходят).
+  `WORLD_HUMAN_SMOKE_CIGARETTE,WORLD_HUMAN_STAND_IMPATIENT` — «стоячие»
+  сценарии без пропсов), назначаются сценарным акторам по кругу. Это
+  **валидные сценарные имена** для `TASK_START_SCENARIO_IN_PLACE_HASH`
+  (dyn-хэши из probe для неё не подходят).
   `--scenario-names none` — fallback на уникальные `dynScenario=0x...` из
   `--scenario-from-log`; `--scenario-hash 0x...` — явный хэш.
 - у сценарных акторов `moveStyle=0`, в кадрах — scenario-флаг,
   `animState=0, speed=0, pad=0`, позиция фиксирована (стоят/сидят);
   остальные акторы двигаются по `--pattern`.
+- **Разные spawn-позиции:** i-й актор спавнится на кольце вокруг гостя,
+  угол `2π*i/num`, радиус **3–6 м** (первый 3 м, последний 6 м). Движение
+  идёт вокруг СВОЕЙ точки спавна, а не общей, поэтому NPC не стоят друг в
+  друге.
 - `--dead-after SEC` (default 0 = off): через SEC после первого спавна
   **последний actorId** получает `dead flag (bit1) + health=0`; кадры
   мёртвого — `speed=0, animState=0`, позиция зафиксирована (труп).
 - `--revive-after SEC` (default 10): через SEC после смерти dead-флаг
   снимается, `health=200`, кадры снова обычные; `0` — остаётся мёртвым.
+  Для `PROP_HUMAN_SEAT_CHAIR` / `WORLD_HUMAN_CAMP_FIRE_SIT` нужен
+  соответствующий проп (стул/костёр) — в чистом поле применяется
+  at-position fallback, но поза может не сесть; для чистого теста use
+  `WORLD_HUMAN_SMOKE_CIGARETTE`/`WORLD_HUMAN_STAND_IMPATIENT`.
 
 **Тест E3a (fake host → игровой гость):**
 ```powershell
-# 2 сценарных (сидят) + 3 ходят по кругу; явно задаём валидные имена
+# 2 сценарных (курит/стоит) + 3 ходят; разные spawn-позиции 3-6 м
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --scenario 2 --pattern circle --despawn-after 0 --duration 300
+
+# вариант со стулом (нужен проп chair):
 python tools\fake_actor_client.py --mode host --name TestHost `
   --scenario 2 --scenario-names "PROP_HUMAN_SEAT_CHAIR,WORLD_HUMAN_CAMP_FIRE_SIT" `
   --pattern circle --despawn-after 0 --duration 300
@@ -244,13 +257,14 @@ python tools\fake_actor_client.py --mode host --name TestHost `
 Ожидаемые строки host:
 ```
 fakehost: scenario=2/5
-fakehost: scenario hashes=0x993DE59F (PROP_HUMAN_SEAT_CHAIR), 0xB6091C7C (WORLD_HUMAN_CAMP_FIRE_SIT)
+fakehost: scenario hashes=0xE25A61E5 (WORLD_HUMAN_SMOKE_CIGARETTE), 0xBBFC4627 (WORLD_HUMAN_STAND_IMPATIENT)
 fakehost: spawn epoch=1 n=5
 fakehost: death id=5
 fakehost: revive id=5
 ```
-В игре-госте: 2 NPC сидят/работают на месте, 3 идут; через 20 с последний
-падает (труп, health=0), через 10 с снова живой.
+В игре-госте: 2 NPC стоят/курят на своих позициях, 3 идут по кругу вокруг
+своих точек; через 20 с последний падает (труп, health=0), через 10 с снова
+живой.
 
 **Проверка полей в сети (игровой хост → fake guest):**
 ```powershell
@@ -302,7 +316,7 @@ fakeguest: scenario_frames=K
 | `--mounted` | 0 | E2b: сколько из `--num` акторов верхом (первые N; 0..num); flags bit0 + `ActorSpawn.reserved=mount model` |
 | `--mount-model` | — | E2b: явный хэш лошади для всех всадников (иначе `A_C_HORSE_*` из Peds.json) |
 | `--scenario` | 0 | E3a: сколько из `--num` акторов в сценарии (первые N; idle + flags bit5 + scenarioHash) |
-| `--scenario-names` | `PROP_HUMAN_SEAT_CHAIR,WORLD_HUMAN_CAMP_FIRE_SIT,PROP_HUMAN_SEAT_BENCH` | E3a: валидные имена сценариев; хэш = joaat(lowercase); `none` — fallback в probe-лог |
+| `--scenario-names` | `WORLD_HUMAN_SMOKE_CIGARETTE,WORLD_HUMAN_STAND_IMPATIENT` | E3a: валидные имена сценариев; хэш = joaat(lowercase); `none` — fallback в probe-лог |
 | `--scenario-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | E3a: откуда брать `dynScenario=0x...` fallback (пустая строка — встроенный fallback) |
 | `--scenario-hash` | — | E3a: явный scenarioHash для всех сценарных акторов |
 | `--dead-after` | 0 | E3a: через сколько секунд после первого спавна убить последний actorId (0 = off) |

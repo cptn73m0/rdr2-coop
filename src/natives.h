@@ -255,6 +255,17 @@ constexpr unsigned long long TASK_START_SCENARIO_IN_PLACE_HASH = 0x524B543612291
 // E3a.1: fallback-поза в текущей точке (12 арг: ped,hash,x,y,z,heading,duration,
 // sitting,teleport,p9str,p10f,p11bool). Верификация — IS_PED_USING_ANY_SCENARIO.
 constexpr unsigned long long TASK_START_SCENARIO_AT_POSITION   = 0x4D1F61FC34AF3CD1ull;
+// E3a.2: канонический путь через scenario point (нужен для sit/work с пропом):
+// CREATE_SCENARIO_POINT_HASH(hash,x,y,z,heading,p5,p6,p7) -> int point;
+// TASK_USE_SCENARIO_POINT(ped,point,"",0,false,false,0,false,0.0f,false);
+// _DELETE_SCENARIO_POINT(point) — очистка; _GET_SCENARIO_POINT_TYPE — диагностика.
+constexpr unsigned long long CREATE_SCENARIO_POINT_HASH        = 0x94B745CE41DB58A1ull;
+constexpr unsigned long long CREATE_SCENARIO_POINT_HASH_ATTACHED_TO_ENTITY =
+    0x794AB1379A74064Dull;
+constexpr unsigned long long TASK_USE_SCENARIO_POINT           = 0xCCDAE6324B6A821Cull;
+constexpr unsigned long long _DELETE_SCENARIO_POINT            = 0x81948DFE4F5A0283ull;
+constexpr unsigned long long _GET_SCENARIO_POINT_TYPE          = 0xA92450B5AE687AAFull;
+constexpr unsigned long long DOES_SCENARIO_POINT_EXIST         = 0x841475AC96E794D1ull;
 
 // P2: укрытие и действия с целью (переноска/лутание).
 constexpr unsigned long long TASK_ENTER_COVER                 = 0x4972A022AE6DAFA1ull;

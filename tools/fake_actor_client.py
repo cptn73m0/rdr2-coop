@@ -84,11 +84,12 @@ FALLBACK_SCENARIO_HASHES = [
     0x62A4554D, 0xF6CD006D, 0x4BF802FE, 0x85AE7E5D, 0x189292F9,
 ]
 # Valid RDR2 scenario names for TASK_START_SCENARIO_IN_PLACE_HASH (E3a).
-# Hashes are joaat(lowercase_name); these are known sitting scenarios.
+# Defaults are "standing" scenarios that need no props (cleared field test);
+# chair/campfire scenarios require a matching prop, pass them via --scenario-names.
+# Hashes are joaat(lowercase_name).
 DEFAULT_SCENARIO_NAMES = (
-    "PROP_HUMAN_SEAT_CHAIR",
-    "WORLD_HUMAN_CAMP_FIRE_SIT",
-    "PROP_HUMAN_SEAT_BENCH",
+    "WORLD_HUMAN_SMOKE_CIGARETTE",
+    "WORLD_HUMAN_STAND_IMPATIENT",
 )
 
 
@@ -659,8 +660,11 @@ class FakeHost:
 
     def _new_actor(self, actor_id: int, center, spawn_time: float) -> Actor:
         index = actor_id - 1
-        angle = math.radians(72.0 * index)
-        dist = 3.0 + 0.75 * (index % 4)  # 3.0 .. 5.25 m around the guest
+        num = max(1, self.args.num)
+        # Distinct spawn ring around the guest: angle 2*pi*i/num, radius 3..6 m.
+        # Every actor also moves around its OWN spawn point (a.center).
+        angle = (2.0 * math.pi * index / num) if num > 1 else math.pi
+        dist = 4.5 if num == 1 else (3.0 + 3.0 * index / (num - 1))
         cx = center[0] + dist * math.cos(angle)
         cy = center[1] + dist * math.sin(angle)
         model, meta = self._model_and_meta(index)

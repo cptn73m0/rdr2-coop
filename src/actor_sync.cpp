@@ -560,7 +560,8 @@ void StartScenarioInPlace(unsigned int ped, uint32_t scenarioHash)
 // TASK_START_SCENARIO_AT_POSITION(ped,hash,x,y,z,heading,duration,sitting,
 // teleport,p9str,p10f,p11bool) — 12 арг по NativeDecl.
 void StartScenarioAtPosition(unsigned int ped, uint32_t scenarioHash,
-                             float x, float y, float z, float heading)
+                             float x, float y, float z, float heading,
+                             bool sitting)
 {
     static char emptyString[] = "";
     using namespace natives_api;
@@ -569,11 +570,71 @@ void StartScenarioAtPosition(unsigned int ped, uint32_t scenarioHash,
     Push(static_cast<unsigned long long>(scenarioHash));
     Push(x); Push(y); Push(z); Push(heading);
     Push(static_cast<unsigned long long>(0xFFFFFFFF)); // duration -1
-    Push(false); // isSittingScenario
-    Push(false); // teleportToScenario
+    Push(sitting); // isSittingScenario
+    Push(false);   // teleportToScenario
     Push(reinterpret_cast<unsigned long long>(emptyString)); // p9: ""
     Push(-1.0f); // p10
     Push(false); // p11
+    Call();
+}
+
+// E3a.2: canonical scenario point path (sit/work с пропом: стул/костёр).
+int CreateScenarioPointHash(uint32_t scenarioHash, float x, float y, float z,
+                            float heading)
+{
+    using namespace natives_api;
+    Init(natives::CREATE_SCENARIO_POINT_HASH);
+    Push(static_cast<unsigned long long>(scenarioHash));
+    Push(x); Push(y); Push(z); Push(heading);
+    Push(static_cast<unsigned long long>(0)); // p5
+    Push(static_cast<unsigned long long>(0)); // p6
+    Push(false);                              // p7
+    return static_cast<int>(Call());
+}
+
+bool DoesScenarioPointExist(int point)
+{
+    if (!point) return false;
+    using namespace natives_api;
+    Init(natives::DOES_SCENARIO_POINT_EXIST);
+    Push(static_cast<unsigned long long>(static_cast<int>(point)));
+    return Call() != 0;
+}
+
+uint32_t GetScenarioPointType(int point)
+{
+    if (!point) return 0;
+    using namespace natives_api;
+    Init(natives::_GET_SCENARIO_POINT_TYPE);
+    Push(static_cast<unsigned long long>(static_cast<int>(point)));
+    return static_cast<uint32_t>(Call());
+}
+
+void DeleteScenarioPoint(int point)
+{
+    if (!point) return;
+    using namespace natives_api;
+    Init(natives::_DELETE_SCENARIO_POINT);
+    Push(static_cast<unsigned long long>(static_cast<int>(point)));
+    Call();
+}
+
+// TASK_USE_SCENARIO_POINT(ped, point, "", 0, false, false, 0, false, 0.0f, false)
+void UseScenarioPoint(unsigned int ped, int point)
+{
+    static char emptyString[] = "";
+    using namespace natives_api;
+    Init(natives::TASK_USE_SCENARIO_POINT);
+    Push(ped);
+    Push(static_cast<unsigned long long>(static_cast<int>(point)));
+    Push(reinterpret_cast<unsigned long long>(emptyString)); // conditionalAnim ""
+    Push(static_cast<unsigned long long>(0)); // p3
+    Push(false); // p4
+    Push(false); // p5
+    Push(static_cast<unsigned long long>(0)); // p6
+    Push(false); // p7
+    Push(0.0f);  // p8
+    Push(false); // p9
     Call();
 }
 
@@ -870,6 +931,15 @@ void LogScenarioFailed(uint32_t actorId, uint32_t hash, const char* stage)
 {
     sh_log::Write("actor: scenario failed id=%u hash=0x%X stage=%s\n",
                   actorId, hash, stage);
+}
+
+// E3a.2: scenario point: создание/использование и его тип.
+void LogScenarioPoint(uint32_t actorId, uint32_t hash, int point,
+                      uint32_t type, bool ok)
+{
+    sh_log::Write(
+        "actor: scenario stage=point %s id=%u hash=0x%X point=%d type=0x%X\n",
+        ok ? "ok" : "failed", actorId, hash, point, type);
 }
 
 void LogDeath(uint32_t actorId)
@@ -1530,8 +1600,10 @@ struct Proxy
     uint32_t scenarioHash = 0;    // ActorSpawn.scenarioHash (dyn scenario)
     uint32_t scenarioApplied = 0; // какой hash реально применяли
     bool scenarioFlag = false;    // kActorFlagScenario из кадров
-    uint8_t scenarioState = 0;    // 0 none, 1 applying, 2 active, 3 failed
+    uint8_t scenarioState = 0;    // 0 none,1 inplace,2 active,3 point,4 atpos,5 failed
     unsigned int scenarioTick = 0;
+    int scenarioPoint = 0;        // E3a.2: handle scenario point (для sit/work)
+    uint32_t scenarioPointType = 0;
     bool deathApplied = false;    // health=0 + invincible=false применены
 };
 
@@ -1650,6 +1722,14 @@ bool DeleteProxy(Proxy& proxy)
     }
 
     bool ok = true;
+
+    // E3a.2: удалить scenario point (проп) при despawn/epoch cleanup.
+    if (proxy.scenarioPoint)
+    {
+        DeleteScenarioPoint(proxy.scenarioPoint);
+        proxy.scenarioPoint = 0;
+        proxy.scenarioPointType = 0;
+    }
 
     // E2b: всадник — это rider+horse; удаляем обе сущности. Если хоть одна
     // не удалилась — proxy остаётся в учёте (повтор/таймаут), не теряем.
@@ -2369,6 +2449,12 @@ void ApplyProxyDeath(Proxy& p)
     p.moveTaskValid = false;
     p.scenarioState = 0;
     p.scenarioApplied = 0;
+    if (p.scenarioPoint)
+    {
+        DeleteScenarioPoint(p.scenarioPoint);
+        p.scenarioPoint = 0;
+        p.scenarioPointType = 0;
+    }
     SetInvincible(p.handle, false);
     SetEntityHealthValue(p.handle, 0);
     p.deathApplied = true;
@@ -2399,6 +2485,13 @@ void ApplyProxyRevive(Proxy& p)
 
 // E3a: сценарии-позы (sit/work). Пока сценарий активен — движение не выдаётся
 // (MoveProxy проверяет scenarioFlag); при снятии флага возвращаем движение.
+// E3a.2: ped реально в сценарии (поза)? ok-критерий для всех вариантов.
+bool IsPedInScenario(unsigned int ped)
+{
+    return IsScenarioActive(ped) || GetDynamicScenario2(ped) != 0 ||
+           GetDynamicScenario(ped) != 0;
+}
+
 void ProcessActorScenarios(unsigned int tick)
 {
     for (auto& kv : g_proxies)
@@ -2413,12 +2506,18 @@ void ProcessActorScenarios(unsigned int tick)
         if (!want)
         {
             if (p.scenarioState == 1 || p.scenarioState == 2 ||
-                p.scenarioState == 3)
+                p.scenarioState == 3 || p.scenarioState == 4)
             {
                 // Хост вышел из сценария — снимаем задачу, вернём движение.
                 StandStill(p.handle);
                 p.taskActive = false;
                 p.moveTaskValid = false;
+            }
+            if (p.scenarioPoint)
+            {
+                DeleteScenarioPoint(p.scenarioPoint);
+                p.scenarioPoint = 0;
+                p.scenarioPointType = 0;
             }
             p.scenarioState = 0;
             p.scenarioApplied = 0;
@@ -2442,22 +2541,28 @@ void ProcessActorScenarios(unsigned int tick)
                 StandStill(p.handle);
                 LogScenarioFailed(p.actorId, 0, "inplace");
                 LogScenarioApply(p.actorId, 0, false);
-                p.scenarioState = 4;
+                p.scenarioState = 5;
             }
             continue;
         }
 
-        // Первый запуск / смена хэша (state 4 = failed, при новом hash — retry).
+        // Первый запуск / смена хэша (state 5 = failed: при новом hash — retry).
         const bool needApply =
-            p.scenarioState == 0 ||
-            (p.scenarioState != 2 && p.scenarioApplied != p.scenarioHash);
+            p.scenarioState == 0 || p.scenarioApplied != p.scenarioHash;
         if (needApply)
         {
-            // Снять текущее движение/позу и попробовать in-place сценарий.
+            // Снять текущую позу/движение, очистить старый point.
+            if (p.scenarioPoint)
+            {
+                DeleteScenarioPoint(p.scenarioPoint);
+                p.scenarioPoint = 0;
+                p.scenarioPointType = 0;
+            }
             StandStill(p.handle);
             SetMoveBlend(p.handle, 0.0f);
             p.taskActive = false;
             p.moveTaskValid = false;
+            // a) in-place (быстрый путь; для «стоячих» сценариев в чистом поле)
             StartScenarioInPlace(p.handle, p.scenarioHash);
             p.scenarioState = 1;
             p.scenarioTick = tick;
@@ -2467,25 +2572,36 @@ void ProcessActorScenarios(unsigned int tick)
 
         if (p.scenarioState == 1)
         {
-            const bool active = IsScenarioActive(p.handle) ||
-                                GetDynamicScenario2(p.handle) != 0 ||
-                                GetDynamicScenario(p.handle) != 0;
-            if (active)
+            if (IsPedInScenario(p.handle))
             {
                 p.scenarioState = 2;
                 LogScenarioApply(p.actorId, p.scenarioHash, true);
             }
             else if (tick - p.scenarioTick > kScenarioVerifyTicks)
             {
-                // E3a.1: in-place не подошёл — снять задачу и попробовать
-                // TASK_START_SCENARIO_AT_POSITION в текущей точке.
+                // b) scenario point (канонический путь для sit/work с пропом).
                 LogScenarioFailed(p.actorId, p.scenarioHash, "inplace");
                 StandStill(p.handle);
                 const Vec3 pos = GetCoords(p.handle);
-                StartScenarioAtPosition(p.handle, p.scenarioHash,
-                                        pos.x, pos.y, pos.z,
-                                        GetHeading(p.handle));
-                p.scenarioState = 3;
+                const float heading = GetHeading(p.handle);
+                const int point = CreateScenarioPointHash(
+                    p.scenarioHash, pos.x, pos.y, pos.z, heading);
+                if (point && DoesScenarioPointExist(point))
+                {
+                    p.scenarioPoint = point;
+                    p.scenarioPointType = GetScenarioPointType(point);
+                    UseScenarioPoint(p.handle, point);
+                    p.scenarioState = 3;
+                }
+                else
+                {
+                    if (point) DeleteScenarioPoint(point);
+                    LogScenarioPoint(p.actorId, p.scenarioHash, point, 0, false);
+                    // c) at-position c sitting=true.
+                    StartScenarioAtPosition(p.handle, p.scenarioHash,
+                                            pos.x, pos.y, pos.z, heading, true);
+                    p.scenarioState = 4;
+                }
                 p.scenarioTick = tick;
             }
             continue;
@@ -2493,25 +2609,52 @@ void ProcessActorScenarios(unsigned int tick)
 
         if (p.scenarioState == 3)
         {
-            const bool active = IsScenarioActive(p.handle) ||
-                                GetDynamicScenario2(p.handle) != 0 ||
-                                GetDynamicScenario(p.handle) != 0;
-            if (active)
+            if (IsPedInScenario(p.handle))
+            {
+                p.scenarioState = 2;
+                LogScenarioPoint(p.actorId, p.scenarioHash, p.scenarioPoint,
+                                 p.scenarioPointType, true);
+                LogScenarioApply(p.actorId, p.scenarioHash, true);
+            }
+            else if (tick - p.scenarioTick > kScenarioVerifyTicks)
+            {
+                LogScenarioPoint(p.actorId, p.scenarioHash, p.scenarioPoint,
+                                 p.scenarioPointType, false);
+                StandStill(p.handle);
+                if (p.scenarioPoint)
+                {
+                    DeleteScenarioPoint(p.scenarioPoint);
+                    p.scenarioPoint = 0;
+                    p.scenarioPointType = 0;
+                }
+                const Vec3 pos = GetCoords(p.handle);
+                StartScenarioAtPosition(p.handle, p.scenarioHash,
+                                        pos.x, pos.y, pos.z,
+                                        GetHeading(p.handle), true);
+                p.scenarioState = 4;
+                p.scenarioTick = tick;
+            }
+            continue;
+        }
+
+        if (p.scenarioState == 4)
+        {
+            if (IsPedInScenario(p.handle))
             {
                 p.scenarioState = 2;
                 LogScenarioApply(p.actorId, p.scenarioHash, true);
             }
             else if (tick - p.scenarioTick > kScenarioVerifyTicks)
             {
-                // Оба варианта не удались: fallback stand (+ state=failed).
+                // d) всё не удалось: fallback stand (+ state=failed).
                 LogScenarioFailed(p.actorId, p.scenarioHash, "atpos");
                 StandStill(p.handle);
                 LogScenarioApply(p.actorId, p.scenarioHash, false);
-                p.scenarioState = 4;
+                p.scenarioState = 5;
             }
             continue;
         }
-        // state 2 (active) / 4 (failed): поза держится/стоим, движение не выдаём.
+        // state 2 (active) / 5 (failed): поза держится/стоим, движение не выдаём.
     }
 }
 
