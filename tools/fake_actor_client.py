@@ -77,8 +77,14 @@ DEFAULT_MOUNT_MODELS = [
 ]
 K_ACTOR_FLAG_MOUNTED = 1 << 0
 K_ACTOR_FLAG_DEAD = 1 << 1
+K_ACTOR_FLAG_DRAWN = 1 << 2
+K_ACTOR_FLAG_CHANGING = 1 << 3
+K_ACTOR_FLAG_COMBAT = 1 << 4
 K_ACTOR_FLAG_SCENARIO = 1 << 5
+K_ACTOR_FLAG_RELOADING = 1 << 6
+K_ACTOR_FLAG_AIMING = 1 << 7
 K_MOVE_STYLE_RIDE_HORSE = 3
+DEFAULT_WEAPON_NAME = "weapon_revolver_cattleman"
 # E3a fallback scenario hashes (dynScenario values seen in probe logs).
 FALLBACK_SCENARIO_HASHES = [
     0x62A4554D, 0xF6CD006D, 0x4BF802FE, 0x85AE7E5D, 0x189292F9,
@@ -293,12 +299,14 @@ def pack_actor_spawn(actor_id: int, epoch: int, model: int,
                      x: float, y: float, z: float, heading: float,
                      health: int = 200, move_style: int = 0,
                      meta_outfit: int = 0, flags: int = 0,
-                     mount_model: int = 0, scenario_hash: int = 0) -> bytes:
+                     mount_model: int = 0, scenario_hash: int = 0,
+                     weapon_hash: int = 0) -> bytes:
     return struct.pack(
         "<IHBBIIIIIffffBBBBhhhHII",
         actor_id, epoch & 0xFFFF, 0, flags & 0xFF,  # actorId/epoch/kind/flags
-        model & 0xFFFFFFFF, meta_outfit & 0xFFFFFFFF, 0, 0,
-        scenario_hash & 0xFFFFFFFF,              # model, meta, mount, weapon, scenario
+        model & 0xFFFFFFFF, meta_outfit & 0xFFFFFFFF,
+        0, weapon_hash & 0xFFFFFFFF,              # mountActorId, weaponHash
+        scenario_hash & 0xFFFFFFFF,              # scenarioHash
         float(x), float(y), float(z), float(heading),
         health & 0xFF, move_style & 0xFF, 0, 0,  # health, moveStyle, phase, pad
         0, 0, 0, 0,                              # vx, vy, vz, pad2
@@ -374,7 +382,7 @@ def validate_spawn_batch(payload: bytes):
     for i in range(count):
         rec = payload[ACTOR_SPAWN_BATCH_HEADER + i * ACTOR_SPAWN_SIZE:
                       ACTOR_SPAWN_BATCH_HEADER + (i + 1) * ACTOR_SPAWN_SIZE]
-        (actor_id, _epoch16, _kind, flags, model, meta, _mount, _weapon,
+        (actor_id, _epoch16, _kind, flags, model, meta, _mount, weapon,
          scenario, x, y, z, heading, health, move_style, _phase, _pad,
          _vx, _vy, _vz, _pad2, reserved, _res2) = struct.unpack_from(
             "<IHBBIIIIIffffBBBBhhhHII", rec, 0)
@@ -390,7 +398,7 @@ def validate_spawn_batch(payload: bytes):
             "x": x, "y": y, "z": z,
             "heading": heading, "health": health, "moveStyle": move_style,
             "flags": flags, "mountModel": reserved,
-            "scenarioHash": scenario,
+            "scenarioHash": scenario, "weaponHash": weapon,
         })
     return epoch, records
 
@@ -591,7 +599,7 @@ class Actor:
                  direction: float = 0.0, gait: float = 1.0,
                  mounted: bool = False, mount_model: int = 0,
                  scenario: bool = False, scenario_hash: int = 0,
-                 scenario_name: str = ""):
+                 scenario_name: str = "", weapon_hash: int = 0):
         self.actor_id = actor_id
         self.model = model
         self.meta_outfit = meta_outfit
@@ -606,6 +614,7 @@ class Actor:
         self.scenario = scenario  # E3a: in scenario (sits/works in place)
         self.scenario_hash = scenario_hash  # E3a: ActorSpawn.scenarioHash
         self.scenario_name = scenario_name  # E3a: human-readable name
+        self.weapon_hash = weapon_hash  # E3b: ActorSpawn.weaponHash
         self.dead = False  # E3a: dead flag/health=0 until revive
         self.dead_pos = None  # fixed corpse position
         self.dead_heading = 0.0
@@ -637,6 +646,10 @@ class FakeHost:
         self.lost = False
         self.rc = 1
         self._outfit_logged = False
+        self._weapon_drawn_logged = False
+        self._aim_logged = False
+        self._shoot_logged = False
+        self._reload_logged = False
 
     # -- actor construction -------------------------------------------------
     @staticmethod
@@ -693,7 +706,8 @@ class FakeHost:
                     idx % len(self.args.scenario_names_list)]
         return Actor(actor_id, model, meta, (cx, cy, center[2]), angle,
                      spawn_time, motion, angle, gait, mounted, mount_model,
-                     scenario, scenario_hash, scenario_name)
+                     scenario, scenario_hash, scenario_name,
+                     weapon_hash=self.args.weapon_hash)
 
     def _make_actors(self, center):
         now = time.monotonic()
@@ -711,6 +725,8 @@ class FakeHost:
                 flags |= K_ACTOR_FLAG_SCENARIO
             if a.dead:
                 flags |= K_ACTOR_FLAG_DEAD
+            if getattr(self.args, "combat", False):
+                flags |= K_ACTOR_FLAG_COMBAT
             if a.mounted:
                 move_style = K_MOVE_STYLE_RIDE_HORSE
             elif a.scenario or a.dead:
@@ -726,7 +742,8 @@ class FakeHost:
                 meta_outfit=a.meta_outfit,
                 flags=flags,
                 mount_model=a.mount_model,
-                scenario_hash=a.scenario_hash))
+                scenario_hash=a.scenario_hash,
+                weapon_hash=a.weapon_hash))
         return records
 
     def _send_spawn(self, actors, why: str = "") -> None:
@@ -771,6 +788,34 @@ class FakeHost:
         y = a.center[1] + self.args.circle_radius * math.sin(theta)
         return x, y, (math.degrees(theta) + 90.0) % 360.0
 
+    def _combat_state(self, a: Actor, now: float):
+        """E3b flags timeline. Returns (flags, idle_start_offset|None)."""
+        a_args = self.args
+        flags = K_ACTOR_FLAG_COMBAT if getattr(a_args, "combat", False) else 0
+        if a.scenario or a.dead:
+            return flags, None
+        elapsed = now - a.spawn_time
+        aim_after = getattr(a_args, "aim_after", 0.0)
+        shoot_after = getattr(a_args, "shoot_after", 0.0)
+        reload_after = getattr(a_args, "reload_after", 0.0)
+        aim_active = aim_after > 0 and aim_after <= elapsed < aim_after + 8.0
+        shoot_active = (shoot_after > 0 and
+                        shoot_after <= elapsed < shoot_after + 3.0)
+        reload_active = (reload_after > 0 and elapsed >= reload_after and
+                         ((elapsed - reload_after) % 4.0) < 1.0)
+        if aim_active or shoot_active:
+            flags |= K_ACTOR_FLAG_AIMING | K_ACTOR_FLAG_DRAWN
+        if reload_active:
+            flags |= K_ACTOR_FLAG_RELOADING | K_ACTOR_FLAG_DRAWN
+        if getattr(a_args, "drawn", False) and elapsed >= 3.0:
+            flags |= K_ACTOR_FLAG_DRAWN
+        idle_start = None
+        if aim_active:
+            idle_start = aim_after
+        elif shoot_active:
+            idle_start = shoot_after
+        return flags, idle_start
+
     def _frames_payload(self):
         now = time.monotonic()
         records = []
@@ -780,6 +825,8 @@ class FakeHost:
                 flags |= K_ACTOR_FLAG_MOUNTED
             if a.scenario:
                 flags |= K_ACTOR_FLAG_SCENARIO
+            combat_flags, idle_start = self._combat_state(a, now)
+            flags |= combat_flags
             move_speed = (self.args.speed * a.gait) if a.gait > 0 else 0.0
             speed_u8 = encode_speed_u8(move_speed)
             gait_pad = encode_gait_pad(a.gait)
@@ -793,6 +840,10 @@ class FakeHost:
                 # E3a: scenario actors stand/sit in place (idle).
                 x, y = a.center[0], a.center[1]
                 heading = math.degrees(a.phase) % 360.0
+                anim_state, speed_u8, gait_pad = 0, 0, 0
+            elif idle_start is not None:
+                # E3b: aiming/shooting actor stands still (Aiming, anim=0).
+                x, y, heading = self._motion_pos(a, a.spawn_time + idle_start)
                 anim_state, speed_u8, gait_pad = 0, 0, 0
             else:
                 x, y, heading = self._motion_pos(a, now)
@@ -856,6 +907,11 @@ class FakeHost:
                     self.log.write(f"fakehost: WARN {a.scenario_warning}")
             else:
                 self.log.write("fakehost: scenario=0")
+            self.log.write(
+                f"fakehost: combat flags drawn={int(a.drawn)} "
+                f"aim_after={a.aim_after:.1f} shoot_after={a.shoot_after:.1f} "
+                f"reload_after={a.reload_after:.1f} combat={int(a.combat)} "
+                f"weapon=0x{a.weapon_hash:08X}")
             start = time.monotonic()
             deadline = start + a.duration
             reader = FrameReader()
@@ -963,6 +1019,23 @@ class FakeHost:
 
     def _update_timers(self, now: float) -> None:
         a = self.args
+        if self.spawned:
+            elapsed = now - self.spawn_time
+            if a.drawn and elapsed >= 3.0 and not self._weapon_drawn_logged:
+                self._weapon_drawn_logged = True
+                self.log.write("fakehost: weapon drawn")
+            if (a.aim_after > 0 and elapsed >= a.aim_after and
+                    not self._aim_logged):
+                self._aim_logged = True
+                self.log.write("fakehost: aim")
+            if (a.shoot_after > 0 and elapsed >= a.shoot_after and
+                    not self._shoot_logged):
+                self._shoot_logged = True
+                self.log.write("fakehost: shoot")
+            if (a.reload_after > 0 and elapsed >= a.reload_after and
+                    not self._reload_logged):
+                self._reload_logged = True
+                self.log.write("fakehost: reload")
         # E3a: one actor (last id) dies; dead flag + health=0, frames fixed.
         if self.next_death is not None and now >= self.next_death:
             self.next_death = None
@@ -1059,6 +1132,12 @@ class FakeGuest:
         self.scenario_frames = 0
         self.dead_frames = 0
         self.dead_ids = set()
+        # E3b: weapon/combat flags.
+        self.weapon_ids = set()
+        self.drawn_frames = 0
+        self.aim_frames = 0
+        self.reload_frames = 0
+        self.combat_frames = 0
         # E2a.2: speed/gait statistics from ActorFrame (speed u8 on 0..8 m/s
         # scale, pad = gait*1000).
         self.speed_min = 255
@@ -1141,6 +1220,8 @@ class FakeGuest:
                     self.scenario_zero.add(actor_id)
                     self._error(f"ActorSpawnBatch: scenario actorId={actor_id} "
                                 f"has scenarioHash=0")
+            if rec["weaponHash"] != 0:
+                self.weapon_ids.add(rec["actorId"])
         self.log.write(f"fakeguest: spawn batch epoch={epoch} n={len(records)} "
                        f"ids={[r['actorId'] for r in records]}")
 
@@ -1188,6 +1269,14 @@ class FakeGuest:
                 self.dead_ids.add(rec["actorId"])
             if rec["flags"] & K_ACTOR_FLAG_SCENARIO:
                 self.scenario_frames += 1
+            if rec["flags"] & K_ACTOR_FLAG_DRAWN:
+                self.drawn_frames += 1
+            if rec["flags"] & K_ACTOR_FLAG_AIMING:
+                self.aim_frames += 1
+            if rec["flags"] & K_ACTOR_FLAG_RELOADING:
+                self.reload_frames += 1
+            if rec["flags"] & K_ACTOR_FLAG_COMBAT:
+                self.combat_frames += 1
         unknown = [r["actorId"] for r in records
                    if r["actorId"] not in self.known_ids]
         if unknown and self.frames_msgs <= 5:
@@ -1268,6 +1357,13 @@ class FakeGuest:
                 f"dead_frames={self.dead_frames}")
             self.log.write(
                 f"fakeguest: scenario_frames={self.scenario_frames}")
+            self.log.write(
+                f"fakeguest: weapon_spawns={len(self.weapon_ids)} "
+                f"drawn_frames={self.drawn_frames} "
+                f"aim_frames={self.aim_frames} "
+                f"reload_frames={self.reload_frames}")
+            self.log.write(
+                f"fakeguest: combat_frames={self.combat_frames}")
             speed_avg = (self.speed_sum / self.speed_count
                          if self.speed_count else 0.0)
             gait_avg = (self.gait_sum / self.gait_count
@@ -1366,6 +1462,22 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--revive-after", type=float, default=10.0,
                       help="E3a: seconds after death to revive that actor "
                            "(0 = stay dead)")
+    host.add_argument("--weapon", default=hex(joaat(DEFAULT_WEAPON_NAME)),
+                      help="E3b: weapon hash written to ActorSpawn.weaponHash "
+                           "for all actors (default: joaat weapon_revolver_cattleman)")
+    host.add_argument("--drawn", action="store_true",
+                      help="E3b: keep holstered first 3 s, then set Drawn flag")
+    host.add_argument("--aim-after", type=float, default=0.0,
+                      help="E3b: seconds after spawn to aim (Aiming, idle) "
+                           "for 8 s; 0=off")
+    host.add_argument("--shoot-after", type=float, default=0.0,
+                      help="E3b: seconds after spawn to shoot (Drawn|Aiming "
+                           "for 3 s); 0=off")
+    host.add_argument("--reload-after", type=float, default=0.0,
+                      help="E3b: seconds after spawn to start Reloading "
+                           "impulses (1 s on / 4 s period); 0=off")
+    host.add_argument("--combat", action="store_true",
+                      help="E3b: set Combat flag (16)")
     host.add_argument("--outfits-from-log", default=str(DEFAULT_PROBE_LOG),
                       help="parse `probe: model=... metaOutfit=...` pairs from "
                            "the game log and send them in ActorSpawn.metaOutfit "
@@ -1486,6 +1598,14 @@ def resolve_args(args):
             raise SystemExit("--dead-after/--revive-after must be >= 0")
         if args.scenario_spacing <= 0:
             raise SystemExit("--scenario-spacing must be > 0")
+        try:
+            args.weapon_hash = int(str(args.weapon), 0) & 0xFFFFFFFF
+        except ValueError:
+            raise SystemExit(f"--weapon must be a hash (hex or decimal): "
+                             f"{args.weapon!r}")
+        if args.aim_after < 0 or args.shoot_after < 0 or args.reload_after < 0:
+            raise SystemExit("--aim-after/--shoot-after/--reload-after "
+                             "must be >= 0")
     if args.duration < 1:
         raise SystemExit("--duration must be >= 1 second")
     return args

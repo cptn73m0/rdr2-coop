@@ -49,6 +49,7 @@ constexpr int kMaxAppearanceRequestsPerTick = 2;        // бюджет REQUEST
 constexpr unsigned int kAppearanceTimeoutTicks = 180;  // 3 с ожидания наряда
 constexpr float kRadPerDeg = 0.017453292519943295f;
 
+
 // E2a.2: smooth walk gait — trail-following (полилиния позиций хоста) +
 // одна долгоживущая go-to задача с in-place update цели.
 constexpr int kTrailLen = 10;                    // 1 с истории позиций (10 Гц)
@@ -98,6 +99,14 @@ constexpr bool kScenarioFallbackEnabled = false;
 // scenario point, откатываем координаты назад и не двигаем, пока флаг активен.
 constexpr float kScenarioSpacingMeters = 8.0f;
 constexpr float kScenarioWarpRevertMeters = 3.0f;
+
+// E3b: боевые визуалы NPC (оружие/aim/shoot/reload).
+constexpr unsigned int kWeaponDrawForceTicks = 30;    // форс equipNow ~0.5 с
+constexpr unsigned int kWeaponChangeWaitTicks = 20;   // ожидание при Changing
+constexpr unsigned int kWeaponAimReissueTicks = 10;   // перевыдача aim не чаще
+constexpr unsigned int kWeaponShootCooldownTicks = 60; // <= 1 выстрел/с
+constexpr unsigned int kWeaponReloadTimeoutTicks = 120; // вернуть infinite clip
+constexpr float kWeaponAimDistance = 25.0f;           // цель «вперёд по heading»
 
 // P3-фиксы по ревью E1 (task-45).
 constexpr unsigned int kPendingSpawnTimeoutTicks = 300; // 5 с ожидания модели
@@ -396,6 +405,132 @@ uint32_t GetMetaOutfit(unsigned int ped)
     Init(natives::GET_PED_META_OUTFIT_HASH);
     Push(ped);
     return static_cast<uint32_t>(Call());
+}
+
+// ---------------- E3b: оружие/бой NPC-прокси (визуалы) ----------------
+// Арности и порядок аргументов повторяют рабочий player-ghost из coop.cpp
+// (GIVE/equip/aim/shoot/reload там проверены в игре).
+bool IsWeaponHashUsable(uint32_t hash)
+{
+    return hash != 0 && hash != static_cast<uint32_t>(natives::WEAPON_UNARMED);
+}
+
+void GiveWeaponToPedEntity(unsigned int ped, uint32_t weaponHash)
+{
+    using namespace natives_api;
+    Init(natives::GIVE_WEAPON_TO_PED);
+    Push(ped);
+    Push(static_cast<unsigned long long>(weaponHash));
+    Push(static_cast<unsigned long long>(999)); // ammoCount
+    Push(static_cast<unsigned long long>(0));   // bForceInHand
+    Push(static_cast<unsigned long long>(0));   // bForceInHolster
+    Push(static_cast<unsigned long long>(0));   // attachPoint
+    Push(static_cast<unsigned long long>(0));   // bAllowMultipleCopies
+    Push(0.5f);                                 // p7
+    Push(1.0f);                                 // p8
+    Push(static_cast<unsigned long long>(0));   // addReason
+    Push(static_cast<unsigned long long>(1));   // bIgnoreUnlocks
+    Push(0.5f);                                 // permanentDegradation
+    Push(static_cast<unsigned long long>(0));   // p12
+    Call();
+}
+
+void RemoveWeaponFromPedEntity(unsigned int ped, uint32_t weaponHash)
+{
+    if (!weaponHash) return;
+    using namespace natives_api;
+    Init(natives::REMOVE_WEAPON_FROM_PED);
+    Push(ped);
+    Push(static_cast<unsigned long long>(weaponHash));
+    Push(true); // p2
+    Push(static_cast<unsigned long long>(0)); // removeReason Default
+    Call();
+}
+
+void SetCurrentPedWeaponEntity(unsigned int ped, uint32_t weaponHash,
+                               bool equipNow)
+{
+    using namespace natives_api;
+    Init(natives::SET_CURRENT_PED_WEAPON);
+    Push(ped);
+    Push(static_cast<unsigned long long>(weaponHash));
+    Push(equipNow);
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Push(static_cast<unsigned long long>(0));
+    Call();
+}
+
+void HidePedWeaponsEntity(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::_HIDE_PED_WEAPONS);
+    Push(ped);
+    Push(static_cast<unsigned long long>(2)); // p0 (как в coop)
+    Push(false);                              // immediately=false -> анимация
+    Call();
+}
+
+void SetPedInfiniteAmmoEntity(unsigned int ped, uint32_t weaponHash)
+{
+    using namespace natives_api;
+    Init(natives::SET_PED_INFINITE_AMMO);
+    Push(ped);
+    Push(static_cast<unsigned long long>(1));
+    Push(static_cast<unsigned long long>(weaponHash));
+    Call();
+}
+
+void SetPedInfiniteClipEntity(unsigned int ped, bool on)
+{
+    using namespace natives_api;
+    Init(natives::_SET_PED_INFINITE_AMMO_CLIP);
+    Push(ped);
+    Push(on ? 1 : 0);
+    Call();
+}
+
+void SetAmmoInClipEntity(unsigned int ped, uint32_t weaponHash, int ammo)
+{
+    using namespace natives_api;
+    Init(natives::SET_AMMO_IN_CLIP);
+    Push(ped);
+    Push(static_cast<unsigned long long>(weaponHash));
+    Push(ammo);
+    Call();
+}
+
+void TaskAimGunAtCoordEntity(unsigned int ped, float x, float y, float z)
+{
+    using namespace natives_api;
+    Init(natives::TASK_AIM_GUN_AT_COORD);
+    Push(ped);
+    Push(x); Push(y); Push(z);
+    Push(static_cast<unsigned long long>(0xFFFFFFFF)); // time -1
+    Push(false); // p5
+    Push(false); // p6
+    Call();
+}
+
+void TaskShootAtCoordEntity(unsigned int ped, float x, float y, float z)
+{
+    using namespace natives_api;
+    Init(natives::TASK_SHOOT_AT_COORD);
+    Push(ped);
+    Push(x); Push(y); Push(z);
+    Push(static_cast<unsigned long long>(200));        // duration ~1 выстрел
+    Push(static_cast<unsigned long long>(0x5D60E4E0)); // SingleShot
+    Push(static_cast<unsigned long long>(0));          // p6
+    Call();
+}
+
+void TaskReloadWeaponEntity(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::TASK_RELOAD_WEAPON);
+    Push(ped);
+    Push(true); // p1 (как в SDK/coop)
+    Call();
 }
 
 // ---------------- E2a: meta-ped-outfit запросы (per-actor, не singleton) ----------------
@@ -977,6 +1112,13 @@ void LogScenarioReverted(uint32_t actorId, float dist)
                   actorId, dist);
 }
 
+// E3b: переходы оружия/боя (drawn/holstered/aim/shoot/reload).
+void LogWeaponEvent(uint32_t actorId, uint32_t hash, const char* state)
+{
+    sh_log::Write("actor: weapon id=%u hash=0x%X state=%s\n",
+                  actorId, hash, state);
+}
+
 void LogDeath(uint32_t actorId)
 {
     sh_log::Write("actor: death id=%u\n", actorId);
@@ -1286,7 +1428,9 @@ net::ActorFrame BuildFrame(unsigned int handle, uint32_t actorId)
     const Vec3 p = GetCoords(handle);
     f.x = p.x; f.y = p.y; f.z = p.z;
     f.heading = mounted ? GetHeading(mountHandle) : GetHeading(handle);
-    f.targetActorId = 0;
+    // E3b: shoot-пульс для гостя (поле targetActorId до E3b не использовалось,
+    // протокол/размер кадра не меняются): 1 = хост сейчас стреляет.
+    f.targetActorId = IsShootingPed(handle) ? 1u : 0u;
     f.seq = g_frameSeq;
     return f;
 }
@@ -1644,6 +1788,29 @@ struct Proxy
     float scenarioSpawnHeading = 0.f;
     bool scenarioSpawnValid = false;
     bool deathApplied = false;    // health=0 + invincible=false применены
+    // E3b: оружие/бой (только визуалы на госте).
+    uint32_t weaponHash = 0;      // ActorSpawn.weaponHash (хост, held weapon)
+    uint32_t weaponGiven = 0;     // выданное оружие (GIVE_WEAPON_TO_PED)
+    bool weaponInHands = false;   // латч «оружие в руках»
+    bool weaponDrawPending = false;
+    bool weaponHolsterPending = false;
+    unsigned int weaponDrawStartTick = 0;
+    unsigned int weaponHolsterStartTick = 0;
+    // Флаги из кадров (E3b).
+    bool weaponDrawnFlag = false;
+    bool weaponChangingFlag = false;
+    bool weaponAimFlag = false;
+    bool weaponCombatFlag = false;
+    bool weaponReloadFlag = false;
+    bool weaponShootPulse = false; // f.targetActorId != 0
+    // Aim/shoot/reload task state.
+    bool weaponAimTaskActive = false;
+    unsigned int lastAimTaskTick = 0;
+    float aimPointX = 0.f, aimPointY = 0.f, aimPointZ = 0.f;
+    bool aimPointValid = false;
+    unsigned int lastShootTick = 0;
+    bool reloadInProgress = false;
+    unsigned int reloadStartTick = 0;
 };
 
 std::map<uint32_t, Proxy> g_proxies;
@@ -1923,6 +2090,14 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     p.scenarioState = 0;
     p.scenarioApplied = 0;
     p.deathApplied = false;
+    // E3b: стартовое оружие/флаги из спавна (Drawn/Changing/Aiming/Reloading).
+    p.weaponHash = s.weaponHash;
+    p.weaponGiven = 0; // выдадим в ProcessActorWeapons
+    p.weaponDrawnFlag = (s.flags & net::kActorFlagDrawn) != 0;
+    p.weaponChangingFlag = (s.flags & net::kActorFlagChanging) != 0;
+    p.weaponAimFlag = (s.flags & net::kActorFlagAiming) != 0;
+    p.weaponCombatFlag = (s.flags & net::kActorFlagCombat) != 0;
+    p.weaponReloadFlag = (s.flags & net::kActorFlagReloading) != 0;
     if (p.dead)
     {
         SetInvincible(handle, false);
@@ -2497,6 +2672,13 @@ void ApplyProxyDeath(Proxy& p)
     }
     SetInvincible(p.handle, false);
     SetEntityHealthValue(p.handle, 0);
+    // E3b: смерть — сброс боевых латчей/задач (оружие остаётся выданным).
+    p.weaponInHands = false;
+    p.weaponDrawPending = false;
+    p.weaponHolsterPending = false;
+    p.weaponAimTaskActive = false;
+    p.aimPointValid = false;
+    p.reloadInProgress = false;
     p.deathApplied = true;
     LogDeath(p.actorId);
 }
@@ -2520,6 +2702,16 @@ void ApplyProxyRevive(Proxy& p)
     p.moveTaskValid = false;
     if (p.scenarioFlag && p.scenarioHash)
         p.scenarioState = 0; // переприменить позу после revive
+    // E3b: revive — восстановить оружие по weaponHash (выдадим заново) и
+    // сбросить боевые латчи; Task-задачи перевыдаст ProcessActorWeapons.
+    if (IsWeaponHashUsable(p.weaponHash))
+        p.weaponGiven = 0;
+    p.weaponInHands = false;
+    p.weaponDrawPending = false;
+    p.weaponHolsterPending = false;
+    p.weaponAimTaskActive = false;
+    p.aimPointValid = false;
+    p.reloadInProgress = false;
     LogRevive(p.actorId);
 }
 
@@ -2773,6 +2965,176 @@ void ProcessActorScenarios(unsigned int tick)
 
 // E2a.2: трейл движения (последние ~1 с позиций) — по нему сглаживаем
 // направление и ведём прокси по фактическому маршруту хоста без срезания углов.
+// E3b: боевые визуалы NPC. Не трогаем dead/mounted/сценарий; не более
+// 2 task-вызовов на актора за тик. Арности повторяют рабочий player-ghost
+// из coop.cpp (GIVE/equip/aim/shoot/reload проверены в игре).
+void ProcessActorWeapons(unsigned int tick)
+{
+    for (auto& kv : g_proxies)
+    {
+        Proxy& p = kv.second;
+        if (!p.handle || !DoesExist(p.handle))
+            continue;
+        if (p.dead || p.mounted || p.scenarioFlag)
+            continue; // не ломаем труп/седло/позу
+        int taskCalls = 0;
+
+        const uint32_t wantWeapon =
+            IsWeaponHashUsable(p.weaponHash) ? p.weaponHash : 0;
+
+        // 1) Выдать/сменить/убрать оружие по хэшу из ActorSpawn/heartbeat.
+        if (wantWeapon != p.weaponGiven)
+        {
+            if (p.weaponGiven)
+            {
+                RemoveWeaponFromPedEntity(p.handle, p.weaponGiven);
+                p.weaponGiven = 0;
+                p.weaponInHands = false;
+                p.weaponDrawPending = false;
+                p.weaponHolsterPending = false;
+            }
+            if (wantWeapon)
+            {
+                GiveWeaponToPedEntity(p.handle, wantWeapon);
+                SetPedInfiniteAmmoEntity(p.handle, wantWeapon);
+                SetPedInfiniteClipEntity(p.handle, true);
+                p.weaponGiven = wantWeapon;
+            }
+        }
+        if (!p.weaponGiven)
+        {
+            p.weaponInHands = false;
+            continue;
+        }
+
+        // 2) Дождаться анимации draw/holster; при залипании — форс equipNow.
+        if (p.weaponDrawPending)
+        {
+            if (IsWeaponReady(p.handle))
+            {
+                p.weaponDrawPending = false;
+                p.weaponInHands = true;
+            }
+            else if (tick - p.weaponDrawStartTick >= kWeaponDrawForceTicks)
+            {
+                SetCurrentPedWeaponEntity(p.handle, p.weaponGiven, true);
+                p.weaponDrawPending = false;
+                p.weaponInHands = true;
+            }
+        }
+        if (p.weaponHolsterPending &&
+            tick - p.weaponHolsterStartTick >= kWeaponChangeWaitTicks)
+            p.weaponHolsterPending = false;
+
+        // 3) Drawn <-> holster (не спамим: ждём Changing/анимацию).
+        if (!p.weaponChangingFlag && !p.weaponDrawPending &&
+            !p.weaponHolsterPending)
+        {
+            if (p.weaponDrawnFlag && !p.weaponInHands)
+            {
+                SetCurrentPedWeaponEntity(p.handle, p.weaponGiven, false);
+                p.weaponDrawPending = true;
+                p.weaponDrawStartTick = tick;
+                LogWeaponEvent(p.actorId, p.weaponGiven, "drawn");
+            }
+            else if (!p.weaponDrawnFlag && p.weaponInHands)
+            {
+                HidePedWeaponsEntity(p.handle);
+                p.weaponHolsterPending = true;
+                p.weaponHolsterStartTick = tick;
+                p.weaponInHands = false;
+                p.weaponAimTaskActive = false;
+                LogWeaponEvent(p.actorId, p.weaponGiven, "holstered");
+            }
+        }
+
+        // 4) Бой: shoot-сигнал = targetActorId (хост) ИЛИ Aiming+Combat
+        // (упрощённый визуал боевых NPC); aim = Aiming || shoot-пульс.
+        const bool wantShoot =
+            p.weaponShootPulse || (p.weaponAimFlag && p.weaponCombatFlag);
+        const bool wantAim = p.weaponAimFlag || p.weaponShootPulse;
+        if ((wantAim || p.weaponReloadFlag) && !p.weaponInHands &&
+            !p.weaponDrawPending)
+        {
+            // Боевая задача требует оружие в руках — экипируем мгновенно.
+            SetCurrentPedWeaponEntity(p.handle, p.weaponGiven, true);
+            p.weaponInHands = true;
+            p.weaponHolsterPending = false;
+        }
+
+        const Vec3 pos = GetCoords(p.handle);
+        const float rad = p.heading * kRadPerDeg;
+        const float aimX = pos.x - std::sin(rad) * kWeaponAimDistance;
+        const float aimY = pos.y + std::cos(rad) * kWeaponAimDistance;
+        const float aimZ = pos.z;
+
+        // 5) Aim: не перевыдавать каждый тик; обновлять при сдвиге точки,
+        // смене оружия и не чаще kWeaponAimReissueTicks.
+        if (wantAim && p.weaponInHands)
+        {
+            const bool moved =
+                !p.aimPointValid ||
+                std::fabs(aimX - p.aimPointX) > 0.5f ||
+                std::fabs(aimY - p.aimPointY) > 0.5f ||
+                std::fabs(aimZ - p.aimPointZ) > 0.5f;
+            if (moved && taskCalls < 2 &&
+                (tick - p.lastAimTaskTick) >= kWeaponAimReissueTicks)
+            {
+                TaskAimGunAtCoordEntity(p.handle, aimX, aimY, aimZ);
+                p.weaponAimTaskActive = true;
+                p.lastAimTaskTick = tick;
+                p.aimPointX = aimX;
+                p.aimPointY = aimY;
+                p.aimPointZ = aimZ;
+                p.aimPointValid = true;
+                ++taskCalls;
+                LogWeaponEvent(p.actorId, p.weaponGiven, "aim");
+            }
+        }
+        else if (!wantAim && p.weaponAimTaskActive)
+        {
+            StandStill(p.handle);
+            p.weaponAimTaskActive = false;
+            p.aimPointValid = false;
+            p.taskActive = false;
+            p.moveTaskValid = false;
+            ++taskCalls;
+        }
+
+        // 6) Shoot: <= 1/с; заменяет aim-задачу (как у player-ghost).
+        if (wantShoot && p.weaponInHands && taskCalls < 2 &&
+            (tick - p.lastShootTick) >= kWeaponShootCooldownTicks)
+        {
+            TaskShootAtCoordEntity(p.handle, aimX, aimY, aimZ);
+            p.lastShootTick = tick;
+            p.weaponAimTaskActive = false;
+            p.aimPointValid = false;
+            ++taskCalls;
+            LogWeaponEvent(p.actorId, p.weaponGiven, "shoot");
+        }
+
+        // 7) Reload: rising edge; клип в 0, чтобы анимация реально играла.
+        if (p.weaponReloadFlag && !p.reloadInProgress && p.weaponInHands &&
+            taskCalls < 2)
+        {
+            SetPedInfiniteClipEntity(p.handle, false);
+            SetAmmoInClipEntity(p.handle, p.weaponGiven, 0);
+            TaskReloadWeaponEntity(p.handle);
+            p.reloadInProgress = true;
+            p.reloadStartTick = tick;
+            ++taskCalls;
+            LogWeaponEvent(p.actorId, p.weaponGiven, "reload");
+        }
+        else if (p.reloadInProgress &&
+                 (!p.weaponReloadFlag ||
+                  tick - p.reloadStartTick >= kWeaponReloadTimeoutTicks))
+        {
+            SetPedInfiniteClipEntity(p.handle, true);
+            p.reloadInProgress = false;
+        }
+    }
+}
+
 void AppendTrailPoint(Proxy& p, float x, float y, float z)
 {
     if (p.trailCount > 0)
@@ -2812,6 +3174,18 @@ void QueueSpawnBatch(uint32_t epoch,
                 p.scenarioHash = s.scenarioHash;
                 p.scenarioFlag = true;
                 p.scenarioState = 0; // применить заново в ProcessActorScenarios
+            }
+            // E3b: heartbeat обновляет оружие (hash сменился/убрали) —
+            // перевыдадим в ProcessActorWeapons.
+            if (!p.dead && s.weaponHash != p.weaponHash)
+            {
+                p.weaponHash = s.weaponHash;
+                p.weaponGiven = 0;
+                p.weaponInHands = false;
+                p.weaponDrawPending = false;
+                p.weaponHolsterPending = false;
+                p.weaponAimTaskActive = false;
+                p.reloadInProgress = false;
             }
             continue;
         }
@@ -3098,6 +3472,13 @@ void GuestTick(const TickContext& ctx)
             p.gaitQ = f.pad;   // E2a.2: desired gait хоста (ratio*1000)
             p.flags = static_cast<uint16_t>(f.flags);
             p.dead = (f.flags & net::kActorFlagDead) != 0;
+            // E3b: боевые флаги из кадров (targetActorId = shoot-пульс хоста).
+            p.weaponDrawnFlag = (f.flags & net::kActorFlagDrawn) != 0;
+            p.weaponChangingFlag = (f.flags & net::kActorFlagChanging) != 0;
+            p.weaponAimFlag = (f.flags & net::kActorFlagAiming) != 0;
+            p.weaponCombatFlag = (f.flags & net::kActorFlagCombat) != 0;
+            p.weaponReloadFlag = (f.flags & net::kActorFlagReloading) != 0;
+            p.weaponShootPulse = f.targetActorId != 0;
             // E3a: сценарий-флаг из кадров; смерть/оживление — health/invincible.
             p.scenarioFlag =
                 (f.flags & net::kActorFlagScenario) != 0 && !p.mounted;
@@ -3140,6 +3521,10 @@ void GuestTick(const TickContext& ctx)
     // 5) движение/поворот каждый тик
     for (auto& kv : g_proxies)
         MoveProxy(kv.second);
+
+    // E3b: боевые визуалы NPC (оружие/aim/shoot/reload) — после движения,
+    // чтобы боевые задачи имели приоритет над walk-задачами.
+    ProcessActorWeapons(tick);
 
     // E2b: удалить лошадь после слезания/смерти с задержкой (учёт не теряем:
     // TryDeleteMount при неудаче оставляет mountHandle на повтор/таймаут).

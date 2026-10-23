@@ -286,6 +286,57 @@ fakeguest: scenario_frames=K
 `dead_frames=M` — сколько кадров пришло с dead-флагом (в начале 0, после
 смерти растёт; после revive перестаёт).
 
+### E3b: бой/оружие
+
+E3b сдаёт `ActorSpawn.weaponHash` (по умолчанию
+`joaat("weapon_revolver_cattleman")` = **0x8B264946**) для всех акторов и
+боевые флаги в `ActorFrame.flags` (биты):
+`Drawn=4`, `Changing=8`, `Combat=16`, `Reloading=64`, `Aiming=128`
+(+ `mounted=1`, `dead=2`, `scenario=32`).
+
+Таймлайн (от первого спавна):
+- `--combat`: флаг Combat (16) постоянно (и в spawn, и в кадрах);
+- `--drawn`: первые 3 с оружие в кобуре, затем Drawn (4); лог
+  `fakehost: weapon drawn`;
+- `--aim-after SEC`: через SEC — Aiming (128) + Drawn на 8 с, актор стоит
+  (anim=0, speed=0); затем снимается;
+- `--shoot-after SEC`: через SEC — Drawn|Aiming на 3 с (shoot-поза/импульсы);
+- `--reload-after SEC`: через SEC — Reloading (64) импульсами по 1 с каждые
+  4 с;
+- `--weapon HASH` — явный хэш оружия (0 = без оружия).
+
+**Тест E3b (fake host → игровой гость):**
+```powershell
+python tools\fake_actor_client.py --mode host --name TestHost `
+  --weapon 0x8B264946 --combat --drawn `
+  --aim-after 4 --shoot-after 6 --reload-after 5 `
+  --despawn-after 0 --duration 120
+```
+Ожидаемые строки host:
+```
+fakehost: combat flags drawn=1 aim_after=4.0 shoot_after=6.0 reload_after=5.0 combat=1 weapon=0x8B264946
+fakehost: weapon drawn
+fakehost: aim
+fakehost: shoot
+fakehost: reload
+fakehost: spawn epoch=1 n=5
+```
+В игре-госте: все NPC с револьвером; через 3 с достают его, позже целятся
+(стоят), стреляют (Drawn|Aiming), перезаряжаются.
+
+**Проверка полей в сети (игровой хост → fake guest):**
+```powershell
+python tools\fake_actor_client.py --mode guest --name TestGuest --duration 120
+```
+Ожидаемые строки E3b:
+```
+fakeguest: weapon_spawns=N drawn_frames=... aim_frames=... reload_frames=...
+fakeguest: combat_frames=...
+```
+`weapon_spawns=N` — уникальные actorId с `weaponHash!=0`; остальные — число
+кадров с соответствующим флагом (`drawn=4`, `aim=128`, `reload=64`,
+`combat=16`).
+
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 
 **Порядок: сервер → игра-хост → fake guest.**
@@ -326,6 +377,12 @@ fakeguest: scenario_frames=K
 | `--scenario-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | E3a: откуда брать `dynScenario=0x...` fallback (пустая строка — встроенный fallback) |
 | `--scenario-hash` | — | E3a: явный scenarioHash для всех сценарных акторов |
 | `--scenario-spacing` | 12.0 | E3a.4: радиус широкого кольца сценарных акторов (м), чтобы не накладывались на одну scenario point |
+| `--weapon` | `0x8B264946` | E3b: хэш оружия (`joaat weapon_revolver_cattleman`); 0 = без оружия |
+| `--drawn` | off | E3b: через 3 с после спавна флаг Drawn (4) |
+| `--aim-after` | 0 (off) | E3b: через SEC — Aiming+Drawn на 8 с, актор стоит |
+| `--shoot-after` | 0 (off) | E3b: через SEC — Drawn\|Aiming на 3 с (shoot) |
+| `--reload-after` | 0 (off) | E3b: через SEC — Reloading (64) импульсами 1 с каждые 4 с |
+| `--combat` | off | E3b: флаг Combat (16) |
 | `--dead-after` | 0 | E3a: через сколько секунд после первого спавна убить последний actorId (0 = off) |
 | `--revive-after` | 10 | E3a: через сколько после смерти возродить (0 = остаётся мёртвым) |
 | `--outfits-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | пары `model+metaOutfit` из probe-лога; пустая строка — выкл. |
