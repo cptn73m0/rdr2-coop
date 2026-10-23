@@ -660,11 +660,19 @@ class FakeHost:
 
     def _new_actor(self, actor_id: int, center, spawn_time: float) -> Actor:
         index = actor_id - 1
-        num = max(1, self.args.num)
-        # Distinct spawn ring around the guest: angle 2*pi*i/num, radius 3..6 m.
-        # Every actor also moves around its OWN spawn point (a.center).
-        angle = (2.0 * math.pi * index / num) if num > 1 else math.pi
-        dist = 4.5 if num == 1 else (3.0 + 3.0 * index / (num - 1))
+        scenario = actor_id <= self.args.scenario
+        if scenario:
+            # E3a.4: spread scenario actors on a wide ring so they do not share
+            # the same scenario point (the game warps to the nearest one).
+            n = max(1, self.args.scenario)
+            angle = (2.0 * math.pi * index / n) if n > 1 else math.pi
+            dist = self.args.scenario_spacing
+        else:
+            num = max(1, self.args.num)
+            # Distinct spawn ring around the guest: angle 2*pi*i/num, radius 3..6 m.
+            # Every actor also moves around its OWN spawn point (a.center).
+            angle = (2.0 * math.pi * index / num) if num > 1 else math.pi
+            dist = 4.5 if num == 1 else (3.0 + 3.0 * index / (num - 1))
         cx = center[0] + dist * math.cos(angle)
         cy = center[1] + dist * math.sin(angle)
         model, meta = self._model_and_meta(index)
@@ -675,7 +683,6 @@ class FakeHost:
         if mounted and self.args.mount_models:
             mount_model = self.args.mount_models[
                 (actor_id - 1) % len(self.args.mount_models)]
-        scenario = actor_id <= self.args.scenario
         scenario_hash = 0
         scenario_name = ""
         if scenario and self.args.scenario_hashes:
@@ -930,6 +937,18 @@ class FakeHost:
         self.actors = self._make_actors(self.guest_pos)
         self.spawned = True
         self.spawn_time = now
+        if self.args.scenario:
+            scen = [a for a in self.actors if a.scenario]
+            min_dist = 0.0
+            if len(scen) >= 2:
+                min_dist = min(
+                    math.hypot(a.center[0] - b.center[0],
+                               a.center[1] - b.center[1])
+                    for i, a in enumerate(scen)
+                    for b in scen[i + 1:])
+            self.log.write(
+                f"fakehost: scenario positions distance_min={min_dist:.2f} "
+                f"(n={len(scen)}, spacing={self.args.scenario_spacing:.1f})")
         self.next_despawn = (now + self.args.despawn_after
                              if self.args.despawn_after > 0 else None)
         self.next_death = (now + self.args.dead_after
@@ -1337,6 +1356,10 @@ def build_parser() -> argparse.ArgumentParser:
                            "this probe log (empty string disables)")
     host.add_argument("--scenario-hash", default=None,
                       help="E3a: explicit scenario hash for all scenario actors")
+    host.add_argument("--scenario-spacing", type=float, default=12.0,
+                      help="E3a.4: ring radius (m) for scenario actors around "
+                           "the guest; they are evenly spaced to avoid stacking "
+                           "on one scenario point (default 12)")
     host.add_argument("--dead-after", type=float, default=0.0,
                       help="E3a: seconds after first spawn to mark the last "
                            "actor dead (0 = off)")
@@ -1461,6 +1484,8 @@ def resolve_args(args):
                         f"fallback hash(es)")
         if args.dead_after < 0 or args.revive_after < 0:
             raise SystemExit("--dead-after/--revive-after must be >= 0")
+        if args.scenario_spacing <= 0:
+            raise SystemExit("--scenario-spacing must be > 0")
     if args.duration < 1:
         raise SystemExit("--duration must be >= 1 second")
     return args

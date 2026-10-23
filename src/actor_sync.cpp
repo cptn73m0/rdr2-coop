@@ -91,6 +91,13 @@ constexpr int kHumanMaxHealth = 200;              // fallback, если нати
 // fallback'и (scenario point / at-position) оставлены заготовкой под флагом,
 // но в цепочке НЕ используются: они переставляли/сваривали NPC.
 constexpr bool kScenarioFallbackEnabled = false;
+// E3a.4: анти-наложение поз. PRE-CHECK: не сажать сценарий, если другой прокси
+// со сценарием (pending/active) ближе kScenarioSpacingMeters — иначе оба
+// варпаются движком к одной scenario point. POST-CHECK: если через 2 с пед
+// сместился от spawn-позиции > kScenarioWarpRevertMeters — движок увёл его к
+// scenario point, откатываем координаты назад и не двигаем, пока флаг активен.
+constexpr float kScenarioSpacingMeters = 8.0f;
+constexpr float kScenarioWarpRevertMeters = 3.0f;
 
 // P3-фиксы по ревью E1 (task-45).
 constexpr unsigned int kPendingSpawnTimeoutTicks = 300; // 5 с ожидания модели
@@ -957,6 +964,19 @@ void LogScenarioPoint(uint32_t actorId, uint32_t hash, int point,
         ok ? "ok" : "failed", actorId, hash, point, type);
 }
 
+// E3a.4: анти-наложение поз (spacing skip + warp revert).
+void LogScenarioSkip(uint32_t actorId, uint32_t otherId, float dist)
+{
+    sh_log::Write("actor: scenario skip id=%u reason=spacing other=%u dist=%.1f\n",
+                  actorId, otherId, dist);
+}
+
+void LogScenarioReverted(uint32_t actorId, float dist)
+{
+    sh_log::Write("actor: scenario reverted id=%u reason=warp dist=%.1f\n",
+                  actorId, dist);
+}
+
 void LogDeath(uint32_t actorId)
 {
     sh_log::Write("actor: death id=%u\n", actorId);
@@ -1615,10 +1635,14 @@ struct Proxy
     uint32_t scenarioHash = 0;    // ActorSpawn.scenarioHash (dyn scenario)
     uint32_t scenarioApplied = 0; // какой hash реально применяли
     bool scenarioFlag = false;    // kActorFlagScenario из кадров
-    uint8_t scenarioState = 0;    // 0 none,1 inplace,2 active,3 point,4 atpos,5 failed
+    uint8_t scenarioState = 0;    // 0 none,1 inplace,2 active,3 point,4 atpos,5 failed,6 skipped/reverted
     unsigned int scenarioTick = 0;
     int scenarioPoint = 0;        // E3a.2: handle scenario point (для sit/work)
     uint32_t scenarioPointType = 0;
+    // E3a.4: позиция/heading на момент выдачи сценария — для warp-guard.
+    float scenarioSpawnX = 0.f, scenarioSpawnY = 0.f, scenarioSpawnZ = 0.f;
+    float scenarioSpawnHeading = 0.f;
+    bool scenarioSpawnValid = false;
     bool deathApplied = false;    // health=0 + invincible=false применены
 };
 
@@ -2464,6 +2488,7 @@ void ApplyProxyDeath(Proxy& p)
     p.moveTaskValid = false;
     p.scenarioState = 0;
     p.scenarioApplied = 0;
+    p.scenarioSpawnValid = false;
     if (p.scenarioPoint)
     {
         DeleteScenarioPoint(p.scenarioPoint);
@@ -2509,6 +2534,52 @@ bool IsPedInScenario(unsigned int ped)
 
 void ProcessActorScenarios(unsigned int tick)
 {
+    // E3a.4: ближайший ДРУГОЙ прокси со сценарием (pending/active) в радиусе
+    // kScenarioSpacingMeters. Детерминизм: выигрывает меньший actorId (map
+    // обходится по возрастанию, поэтому он применяет первым).
+    auto findNearbyScenarioOther = [&](const Proxy& self,
+                                       float& outDist) -> uint32_t {
+        outDist = 0.f;
+        const Vec3 selfPos = self.scenarioSpawnValid
+            ? Vec3{self.scenarioSpawnX, self.scenarioSpawnY, self.scenarioSpawnZ}
+            : GetCoords(self.handle);
+        uint32_t blocker = 0;
+        float bestDist = 1e30f;
+        for (auto& okv : g_proxies)
+        {
+            const Proxy& o = okv.second;
+            if (&o == &self) continue;
+            // Детерминизм: выигрывает тот, кто начал сценарий РАНЬШЕ; при
+            // равном времени (тот же тик) — меньший actorId.
+            const bool startedEarlier =
+                o.scenarioTick != 0 && o.scenarioTick < tick;
+            const bool sameTickSmaller =
+                o.scenarioTick == tick && o.actorId < self.actorId;
+            if (!startedEarlier && !sameTickSmaller) continue;
+            if (!o.scenarioFlag || o.dead || o.mounted) continue;
+            if (o.scenarioState != 1 && o.scenarioState != 2) continue;
+            Vec3 op;
+            if (o.scenarioSpawnValid)
+                op = Vec3{o.scenarioSpawnX, o.scenarioSpawnY, o.scenarioSpawnZ};
+            else if (o.handle && DoesExist(o.handle))
+                op = GetCoords(o.handle);
+            else
+                continue;
+            const float dx = selfPos.x - op.x;
+            const float dy = selfPos.y - op.y;
+            const float dz = selfPos.z - op.z;
+            const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (d < kScenarioSpacingMeters && d < bestDist)
+            {
+                bestDist = d;
+                blocker = o.actorId;
+            }
+        }
+        if (blocker)
+            outDist = bestDist;
+        return blocker;
+    };
+
     for (auto& kv : g_proxies)
     {
         Proxy& p = kv.second;
@@ -2535,6 +2606,7 @@ void ProcessActorScenarios(unsigned int tick)
             }
             p.scenarioState = 0;
             p.scenarioApplied = 0;
+            p.scenarioSpawnValid = false;
             continue;
         }
 
@@ -2552,14 +2624,13 @@ void ProcessActorScenarios(unsigned int tick)
             else if (p.scenarioState == 1 &&
                      tick - p.scenarioTick > kScenarioVerifyTicks)
             {
-                // Хэш так и не пришёл — не двигаем, но не варпаем.
                 LogScenarioApply(p.actorId, 0, false);
                 p.scenarioState = 5;
             }
             continue;
         }
 
-        // Первый запуск / смена хэша: ровно один in-place вызов.
+        // Первый запуск / смена хэша: pre-check + ровно один in-place вызов.
         const bool needApply =
             p.scenarioState == 0 || p.scenarioApplied != p.scenarioHash;
         if (needApply)
@@ -2575,8 +2646,28 @@ void ProcessActorScenarios(unsigned int tick)
             SetMoveBlend(p.handle, 0.0f);
             p.taskActive = false;
             p.moveTaskValid = false;
-            // E3a.3: единственный путь применения позы — in-place. Верификация
-            // ниже только диагностика; варпающих fallback'ов в цепочке нет.
+
+            // E3a.4: запоминаем spawn-позицию для warp-guard и spacing-check.
+            const Vec3 pos = GetCoords(p.handle);
+            p.scenarioSpawnX = pos.x;
+            p.scenarioSpawnY = pos.y;
+            p.scenarioSpawnZ = pos.z;
+            p.scenarioSpawnHeading = GetHeading(p.handle);
+            p.scenarioSpawnValid = true;
+
+            // PRE-CHECK: не сажаем в позу рядом с другим сценарным прокси —
+            // иначе движок сварпает обоих к одной scenario point.
+            float blockDist = 0.f;
+            const uint32_t blocker = findNearbyScenarioOther(p, blockDist);
+            if (blocker)
+            {
+                LogScenarioSkip(p.actorId, blocker, blockDist);
+                p.scenarioState = 6; // skipped: стоим на spawn, поза не нужна
+                p.scenarioApplied = p.scenarioHash;
+                p.scenarioTick = tick;
+                continue;
+            }
+
             StartScenarioInPlace(p.handle, p.scenarioHash);
             p.scenarioState = 1;
             p.scenarioTick = tick;
@@ -2588,19 +2679,46 @@ void ProcessActorScenarios(unsigned int tick)
         {
             if (tick - p.scenarioTick > kScenarioVerifyTicks)
             {
-                // Оптимистичное подтверждение: поза уже играет (verify-геттеры
-                // для части сценариев врут). state=ok в любом случае.
-                const bool flagOk = IsPedInScenario(p.handle);
-                p.scenarioState = 2;
-                LogScenarioApply(p.actorId, p.scenarioHash, true,
-                                 flagOk ? "flag" : "assumed");
+                // E3a.4 POST-CHECK: если движок увёл педа к scenario point
+                // (поза in-place часто варпает к ближайшей курилке/стулу) —
+                // вернуть на spawn-позицию и не двигать, пока флаг активен.
+                const Vec3 cur = GetCoords(p.handle);
+                float warpDist = 0.f;
+                if (p.scenarioSpawnValid)
+                {
+                    const float ddx = cur.x - p.scenarioSpawnX;
+                    const float ddy = cur.y - p.scenarioSpawnY;
+                    const float ddz = cur.z - p.scenarioSpawnZ;
+                    warpDist = std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+                }
+                if (p.scenarioSpawnValid &&
+                    warpDist > kScenarioWarpRevertMeters)
+                {
+                    StandStill(p.handle);
+                    SetMoveBlend(p.handle, 0.0f);
+                    SetCoordsNative(p.handle, p.scenarioSpawnX, p.scenarioSpawnY,
+                                    p.scenarioSpawnZ);
+                    SetHeadingNative(p.handle, p.scenarioSpawnHeading);
+                    p.taskActive = false;
+                    p.moveTaskValid = false;
+                    p.scenarioState = 6; // reverted: стоим на spawn, поза снята
+                    LogScenarioReverted(p.actorId, warpDist);
+                }
+                else
+                {
+                    // Оптимистичное подтверждение: поза уже играет (verify для
+                    // части сценариев врёт). state=ok в любом случае.
+                    const bool flagOk = IsPedInScenario(p.handle);
+                    p.scenarioState = 2;
+                    LogScenarioApply(p.actorId, p.scenarioHash, true,
+                                     flagOk ? "flag" : "assumed");
+                }
             }
             continue;
         }
 
-        // E3a.3: fallback-цепочка (scenario point / at-position) НЕ используется
-        // в рабочей цепочке — оставлена заготовкой под kScenarioFallbackEnabled=false:
-        // она переставляла/сваривала NPC. При включении флага — старый путь.
+        // E3a.3/E3a.4: fallback-цепочка (point/at-position) НЕ используется
+        // в рабочей цепочке — оставлена заготовкой под kScenarioFallbackEnabled.
         if constexpr (kScenarioFallbackEnabled)
         {
             if (p.scenarioState == 3)
@@ -2649,7 +2767,7 @@ void ProcessActorScenarios(unsigned int tick)
                 continue;
             }
         }
-        // state 2 (ok/поза держится) / 5 (не двигаем): ничего не делаем.
+        // state 2 (ok/поза), 5 (failed), 6 (skipped/reverted): не двигаем.
     }
 }
 

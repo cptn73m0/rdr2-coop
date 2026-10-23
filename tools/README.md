@@ -224,10 +224,14 @@ E3a сдаёт в `ActorSpawn`:
 - у сценарных акторов `moveStyle=0`, в кадрах — scenario-флаг,
   `animState=0, speed=0, pad=0`, позиция фиксирована (стоят/сидят);
   остальные акторы двигаются по `--pattern`.
-- **Разные spawn-позиции:** i-й актор спавнится на кольце вокруг гостя,
-  угол `2π*i/num`, радиус **3–6 м** (первый 3 м, последний 6 м). Движение
-  идёт вокруг СВОЕЙ точки спавна, а не общей, поэтому NPC не стоят друг в
-  друге.
+- **Разные spawn-позиции:** движущиеся акторы спавнятся на кольце вокруг
+  гостя, угол `2π*i/num`, радиус **3–6 м** (первый 3 м, последний 6 м), и
+  двигаются вокруг СВОЕЙ точки спавна. Сценарные акторы (первые
+  `--scenario N`) спавнятся на **широком кольце радиусом
+  `--scenario-spacing` (default 12 м)**, равномерно по углу `2π*i/N` —
+  чтобы движок не варпал их в одну ближайшую scenario point и они не
+  накладывались друг на друга. При старте пишется
+  `fakehost: scenario positions distance_min=...`.
 - `--dead-after SEC` (default 0 = off): через SEC после первого спавна
   **последний actorId** получает `dead flag (bit1) + health=0`; кадры
   мёртвого — `speed=0, animState=0`, позиция зафиксирована (труп).
@@ -240,9 +244,10 @@ E3a сдаёт в `ActorSpawn`:
 
 **Тест E3a (fake host → игровой гость):**
 ```powershell
-# 2 сценарных (курит/стоит) + 3 ходят; разные spawn-позиции 3-6 м
+# 2 сценарных (курит/стоит) далеко друг от друга + 3 ходят; разные spawn-позиции
 python tools\fake_actor_client.py --mode host --name TestHost `
-  --scenario 2 --pattern circle --despawn-after 0 --duration 300
+  --scenario 2 --scenario-spacing 12 --pattern circle `
+  --despawn-after 0 --duration 300
 
 # вариант со стулом (нужен проп chair):
 python tools\fake_actor_client.py --mode host --name TestHost `
@@ -258,13 +263,14 @@ python tools\fake_actor_client.py --mode host --name TestHost `
 ```
 fakehost: scenario=2/5
 fakehost: scenario hashes=0xE25A61E5 (WORLD_HUMAN_SMOKE_CIGARETTE), 0xBBFC4627 (WORLD_HUMAN_STAND_IMPATIENT)
+fakehost: scenario positions distance_min=24.00 (n=2, spacing=12.0)
 fakehost: spawn epoch=1 n=5
 fakehost: death id=5
 fakehost: revive id=5
 ```
-В игре-госте: 2 NPC стоят/курят на своих позициях, 3 идут по кругу вокруг
-своих точек; через 20 с последний падает (труп, health=0), через 10 с снова
-живой.
+В игре-госте: 2 NPC курят/стоят на разных точках (≥12 м друг от друга),
+3 идут по кругу вокруг своих точек; через 20 с последний падает (труп,
+health=0), через 10 с снова живой.
 
 **Проверка полей в сети (игровой хост → fake guest):**
 ```powershell
@@ -319,6 +325,7 @@ fakeguest: scenario_frames=K
 | `--scenario-names` | `WORLD_HUMAN_SMOKE_CIGARETTE,WORLD_HUMAN_STAND_IMPATIENT` | E3a: валидные имена сценариев; хэш = joaat(lowercase); `none` — fallback в probe-лог |
 | `--scenario-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | E3a: откуда брать `dynScenario=0x...` fallback (пустая строка — встроенный fallback) |
 | `--scenario-hash` | — | E3a: явный scenarioHash для всех сценарных акторов |
+| `--scenario-spacing` | 12.0 | E3a.4: радиус широкого кольца сценарных акторов (м), чтобы не накладывались на одну scenario point |
 | `--dead-after` | 0 | E3a: через сколько секунд после первого спавна убить последний actorId (0 = off) |
 | `--revive-after` | 10 | E3a: через сколько после смерти возродить (0 = остаётся мёртвым) |
 | `--outfits-from-log` | `E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log` | пары `model+metaOutfit` из probe-лога; пустая строка — выкл. |
