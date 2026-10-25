@@ -95,6 +95,8 @@ void WriteDefaultIni()
     fputs("npc_radius = 60\n", f);
     fputs("# E3c: максимум животных и бесхозных лошадей (0..12; 0 = выключено).\n", f);
     fputs("npc_animal_cap = 4\n", f);
+    fputs("# E5.2: верхний предел удержания трупа, сек (0..600; 0 = не держать).\n", f);
+    fputs("npc_corpse_max_sec = 300\n", f);
     fputs("# E2a: meta-outfit внешность NPC-прокси (0 = только random variation).\n", f);
     fputs("npc_appearance = 1\n", f);
     fputs("# E5: host-authoritative урон по NPC/животным (0 = выключить урон).\n", f);
@@ -177,6 +179,13 @@ void ApplyLine(const std::string& raw, Config& out)
     }
     else if (key == "npc_appearance") out.npcAppearance = AsBool(val);
     else if (key == "npc_damage") out.npcDamage = AsBool(val);
+    else if (key == "npc_corpse_max_sec")
+    {
+        char* end = nullptr;
+        const long c = std::strtol(val.c_str(), &end, 10);
+        if (end != val.c_str() && *end == '\0' && c >= 0 && c <= 600)
+            out.npcCorpseMaxSec = static_cast<int>(c);
+    }
     else if (key == "ped_model")
     {
         unsigned long long m = 0;

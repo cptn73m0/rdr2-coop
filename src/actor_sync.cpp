@@ -79,6 +79,16 @@ constexpr unsigned int kMountDismountDelayTicks = 45;  // 0.75 с — удали
 constexpr unsigned int kMountDeathDeleteTicks = 150;   // 2.5 с — удалить horse
 constexpr unsigned int kMountReseatCheckTicks = 60;    // 1 с — reseat watchdog
 constexpr int kMountMaxSeatAttempts = 3;            // после — fallback пешком
+// E5.2: удержание трупа в roster, пока host-труп существует (npc_corpse_max_sec,
+// default 300=5 мин — верхний предел; 0 = не держать).
+constexpr unsigned int kCorpseHoldTicksPerSec = 60;
+// E5.3: сглаживание всадника/лошади: дальний lead и редкий retarget.
+constexpr float kMountLookaheadSeconds = 0.28f;   // lead 0.25-0.3 с
+constexpr float kMountLookaheadMin = 0.8f;
+constexpr float kMountLookaheadMax = 4.5f;
+constexpr float kMountRetargetMeters = 1.75f;     // 1.5-2.0 м
+constexpr float kMountStuckStoppingRange = 1.0f;  // fallback после 2 неудач
+constexpr unsigned int kMountStuckRetargets = 2;
 // Причины actor: mount despawn (контракт игрового слоя).
 constexpr unsigned int kMountReasonDismount = 1;
 constexpr unsigned int kMountReasonDespawn = 2;
@@ -208,6 +218,8 @@ PerfP95 g_perfGuestMotion;
 PerfP95 g_perfGuestWeapons;
 // E2a: ошибка позиции (target vs ped), семплим в мм, логируем/1000 = метры.
 PerfP95 g_motionErr;
+PerfP95 g_mountErr; // E5.3: ошибка позиции лошади (диагностика mounted)
+unsigned int g_mountedRetargets = 0; // E5.3: retarget/update целей за окно
 unsigned int g_lastPerfLogTick = 0;
 // E4: счётчики окна (сбрасываются после строки perf: npc ...).
 unsigned long long g_perfHostSpawns = 0;
@@ -1140,7 +1152,7 @@ void UpdateTaskGoToCoord(unsigned int ped, float x, float y, float z,
 }
 
 void FollowNavmesh(unsigned int ped, float x, float y, float z, float speed,
-                   float heading)
+                   float heading, float stoppingRange = kFollowStoppingRange)
 {
     using namespace natives_api;
     Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
@@ -1148,7 +1160,7 @@ void FollowNavmesh(unsigned int ped, float x, float y, float z, float speed,
     Push(x); Push(y); Push(z);
     Push(speed);
     Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
-    Push(kFollowStoppingRange);                        // 0.25: не гасим у точки
+    Push(stoppingRange); // 0.25 по умолчанию / 1.0 при stuck-fallback
     Push(static_cast<unsigned long long>(4));          // flags
     Push(heading);                                     // p8: heading (0 = авто)
     Call();
@@ -1469,6 +1481,18 @@ void LogDamageApply(uint32_t actorId, uint16_t damage, int hp)
                   actorId, static_cast<unsigned int>(damage), hp);
 }
 
+// E5.2: удержание/despawn трупов (roster dead-retention).
+void LogCorpseHold(uint32_t actorId, unsigned int kind)
+{
+    sh_log::Write("actor: corpse hold id=%u kind=%u\n", actorId, kind);
+}
+
+void LogCorpseDespawn(uint32_t actorId, unsigned int afterSec)
+{
+    sh_log::Write("actor: corpse despawn id=%u reason=dead after=%u\n",
+                  actorId, afterSec);
+}
+
 void LogDeath(uint32_t actorId)
 {
     sh_log::Write("actor: death id=%u\n", actorId);
@@ -1681,6 +1705,8 @@ struct RosterEntry
     uint32_t metaOutfit = 0;   // найденный/нативный outfit hash (в спавн)
     uint16_t outfitCursor = 0; // сколько кандидатов уже проверено
     uint8_t outfitState = 0;   // 0 none, 1 scanning, 2 resolved, 3 failed
+    // E5.2: тик смерти для удержания трупа (0 = жив/не удерживается).
+    unsigned int deadSinceTick = 0;
     // E2c-b (v16): захваченные asset/tint для отправки гостям.
     std::vector<net::ActorAppearanceEntry> appearance;
     uint32_t appearanceFingerprint = 0;
@@ -1996,15 +2022,43 @@ void HostDiscovery(const TickContext& ctx)
     for (const Cand& c : candidates)
         present.insert(c.handle);
 
+    // E5.2: удержанные трупы (deadSinceTick != 0) — их не отдаём candidates,
+    // но держим в roster, пока host-труп существует (верхний предел
+    // npc_corpse_max_sec, default 300 с).
+    std::vector<unsigned int> retainedCorpses;
+
     // Порог despawn — 70 м (radius+10): старые акторы между радиусом
     // обнаружения и 70 м не пропадают, продолжаем слать им кадры.
     const float keepRadius2 = (radius + 10.0f) * (radius + 10.0f);
-    for (const auto& kv : g_roster)
+    for (auto& kv : g_roster)
     {
         if (present.count(kv.first)) continue;
         const unsigned int handle = kv.first;
         if (!DoesExist(handle)) continue;
-        if (IsDeadPed(handle)) continue;
+        if (IsDeadPed(handle))
+        {
+            // Держим мёртвого актора, пока на хосте существует труп; верхний
+            // предел (npc_corpse_max_sec) — защита от вечного удержания.
+            const unsigned int maxSec =
+                static_cast<unsigned int>(coopcfg::Get().npcCorpseMaxSec);
+            const unsigned int maxTicks =
+                maxSec * kCorpseHoldTicksPerSec;
+            if (maxTicks == 0)
+                continue; // npc_corpse_max_sec=0: не держим (despawn сразу)
+            RosterEntry& e = kv.second;
+            if (e.deadSinceTick == 0)
+            {
+                e.deadSinceTick = tick;
+                LogCorpseHold(e.actorId, e.kind);
+            }
+            if (tick - e.deadSinceTick <= maxTicks)
+            {
+                present.insert(handle); // не даём reconciliation удалить
+                retainedCorpses.push_back(handle);
+            }
+            continue; // предел истёк — уйдёт в despawn(reason=dead)
+        }
+        kv.second.deadSinceTick = 0; // ожил/новый — сброс hold
         const Vec3 p = GetCoords(handle);
         const float dx = p.x - local.x;
         const float dy = p.y - local.y;
@@ -2042,16 +2096,26 @@ void HostDiscovery(const TickContext& ctx)
     if (animalCap < 0) animalCap = 0;
     if (animalCap > net::kMaxActors) animalCap = net::kMaxActors;
 
+    // E5.2: удержанные трупы сохраняют слоты первыми (actorId стабилен,
+    // heartbeat/кадры продолжают идти с dead flag).
+    std::unordered_set<unsigned int> selectedSet;
+    for (unsigned int h : retainedCorpses)
+    {
+        if (static_cast<int>(selected.size()) >= net::kMaxActors) break;
+        selected.push_back(h);
+        selectedSet.insert(h);
+    }
     // 1) уже известные люди, которые всё ещё в кандидатах
     for (const auto& kv : g_roster)
     {
         if (static_cast<int>(selected.size()) >= cap) break;
         if (kv.second.kind != net::kActorKindHuman) continue;
-        if (present.count(kv.first))
-            selected.push_back(kv.first);
+        if (!present.count(kv.first)) continue;
+        if (selectedSet.count(kv.first)) continue;
+        selected.push_back(kv.first);
+        selectedSet.insert(kv.first);
     }
     // 2) добор новыми ближайшими людьми
-    std::unordered_set<unsigned int> selectedSet(selected.begin(), selected.end());
     for (const Cand& c : candidates)
     {
         if (static_cast<int>(selected.size()) >= cap) break;
@@ -2067,12 +2131,11 @@ void HostDiscovery(const TickContext& ctx)
     {
         if (animalsSelected >= animalCap) break;
         if (kv.second.kind == net::kActorKindHuman) continue;
-        if (present.count(kv.first))
-        {
-            selected.push_back(kv.first);
-            selectedSet.insert(kv.first);
-            ++animalsSelected;
-        }
+        if (!present.count(kv.first)) continue;
+        if (selectedSet.count(kv.first)) continue;
+        selected.push_back(kv.first);
+        selectedSet.insert(kv.first);
+        ++animalsSelected;
     }
     for (const Cand& c : animalCandidates)
     {
@@ -2089,10 +2152,18 @@ void HostDiscovery(const TickContext& ctx)
     {
         if (selectedSet.count(kv.first)) continue;
         const bool dead = DoesExist(kv.first) && IsDeadPed(kv.first);
+        const bool heldCorpse = kv.second.deadSinceTick != 0;
         const bool stillPresent = present.count(kv.first) != 0;
+        if (heldCorpse)
+        {
+            const unsigned int afterSec =
+                (tick - kv.second.deadSinceTick) / kCorpseHoldTicksPerSec;
+            LogCorpseDespawn(kv.second.actorId, afterSec);
+        }
         QueueDespawn(kv.second.actorId,
-                     dead ? kDespawnDead
-                          : (stillPresent ? kDespawnEvicted : kDespawnGone));
+                     (dead || heldCorpse)
+                         ? kDespawnDead
+                         : (stillPresent ? kDespawnEvicted : kDespawnGone));
         dropHandles.push_back(kv.first);
     }
     for (unsigned int h : dropHandles)
@@ -2617,6 +2688,7 @@ struct Proxy
     unsigned int mountDeathTick = 0; // тик смерти rider (horse удаляем позже)
     unsigned int lastReseatTick = 0;
     int mountSeatAttempts = 0;
+    unsigned int mountStuckCount = 0; // E5.3: 2 завершённые задачи -> fallback
     // Долгоживущая go-to задача для ЛОШАДИ (rider не двигаем).
     uint32_t mountTaskHash = 0;
     bool mountTaskActive = false;
@@ -3336,6 +3408,7 @@ void MoveMountedProxy(Proxy& p)
     }
 
     g_motionErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
+    g_mountErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
 
     const float rawSpeedMs =
         static_cast<float>(p.speed) * kSpeedByteToMetersPerSec;
@@ -3378,12 +3451,14 @@ void MoveMountedProxy(Proxy& p)
     }
     else
     {
-        float L = kLookaheadBase + p.ewmaSpeed * kLookaheadPerSpeed;
-        if (L < kLookaheadMinMeters) L = kLookaheadMinMeters;
-        if (L > kLookaheadMaxMeters) L = kLookaheadMaxMeters;
+        // E5.3: lead по времени (0.28 с) вместо малого статичного шага —
+        // лошадь не дёргается на каждом кадре.
+        float L = p.ewmaSpeed * kMountLookaheadSeconds;
+        if (L < kMountLookaheadMin) L = kMountLookaheadMin;
+        if (L > kMountLookaheadMax) L = kMountLookaheadMax;
         if (p.ewmaSpeed < kSlowHostSpeed)
         {
-            L = kSlowCatchupStep;
+            L = kSlowCatchupStep * 2.0f;
             targetX = p.tx;
             targetY = p.ty;
         }
@@ -3398,9 +3473,10 @@ void MoveMountedProxy(Proxy& p)
 
     if (!idleStand)
     {
-        // Одна долгоживущая задача для лошади + in-place update.
+        // Одна долгоживущая задача для лошади + редкий in-place update.
         bool needIssue = !p.mountTaskActive;
         const bool wasActive = p.mountTaskActive;
+        bool stuckRepair = false;
         if (!needIssue &&
             tick - p.mountLastStatusTick >= kMotionStatusCheckTicks)
         {
@@ -3410,28 +3486,50 @@ void MoveMountedProxy(Proxy& p)
             {
                 needIssue = true;
                 p.mountTaskActive = false;
+                ++p.mountStuckCount;
+                stuckRepair = p.mountStuckCount >= kMountStuckRetargets;
             }
         }
         if (needIssue)
         {
+            // E5.3: после 2 «завершённых» задач подряд — перезапуск с
+            // stoppingRange 1.0 (лошадь не топчется на месте).
             FollowNavmesh(horse, targetX, targetY, p.tz, gotoGait,
-                          kFollowHeadingSentinel);
+                          kFollowHeadingSentinel,
+                          stuckRepair ? kMountStuckStoppingRange
+                                      : kFollowStoppingRange);
             p.mountTaskHash = natives::SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD;
             p.mountTaskActive = true;
             p.mountLastUpdateTick = tick;
             p.mountLastStatusTick = tick;
             p.mountMoveTarget = Vec3{targetX, targetY, p.tz};
             if (wasActive)
+            {
                 ++g_motionReissue;
+                ++g_mountedRetargets;
+            }
             else
+            {
                 ++g_motionIssued;
+            }
+            if (stuckRepair)
+                p.mountStuckCount = 0;
         }
         else if (tick - p.mountLastUpdateTick >= kMotionUpdateTicks)
         {
-            UpdateTaskGoToCoord(horse, targetX, targetY, p.tz, gotoGait,
-                                kFollowStoppingRange);
+            // E5.3: обновляем цель только когда она ушла на >=1.75 м —
+            // иначе задача перевыдаётся каждый тик и лошадь дёргается.
+            const float tdx = targetX - p.mountMoveTarget.x;
+            const float tdy = targetY - p.mountMoveTarget.y;
+            if (tdx * tdx + tdy * tdy >=
+                kMountRetargetMeters * kMountRetargetMeters)
+            {
+                UpdateTaskGoToCoord(horse, targetX, targetY, p.tz, gotoGait,
+                                    kFollowStoppingRange);
+                p.mountMoveTarget = Vec3{targetX, targetY, p.tz};
+                ++g_mountedRetargets;
+            }
             p.mountLastUpdateTick = tick;
-            p.mountMoveTarget = Vec3{targetX, targetY, p.tz};
         }
 
         if (std::fabs(gotoGait - p.mountLastGait) > 0.01f)
@@ -4974,10 +5072,16 @@ void GuestTick(const TickContext& ctx)
                 "err_p95=%.2f\n",
                 g_motionIssued, g_motionReissue, g_motionGaitRestart,
                 g_motionErr.P95Ms() / 1000.0);
+            // E5.3: диагностика сглаживания всадников/лошадей.
+            sh_log::Write(
+                "actor: motion mounted err_p95=%.2f retargets=%u\n",
+                g_mountErr.P95Ms() / 1000.0, g_mountedRetargets);
             g_motionIssued = 0;
             g_motionReissue = 0;
             g_motionGaitRestart = 0;
             g_motionErr.Clear();
+            g_mountErr.Clear();
+            g_mountedRetargets = 0;
         }
     }
 }
