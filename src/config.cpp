@@ -103,6 +103,12 @@ void WriteDefaultIni()
     fputs("npc_damage = 1\n", f);
     fputs("# E6: UI-статус игрока (карта/пауза/сатчель/магазин) в имени (0 = выкл).\n", f);
     fputs("npc_presence = 1\n", f);
+    fputs("# E7.1: гость подавляет свою ambient-популяцию (0 = выключено).\n", f);
+    fputs("npc_visitor = 1\n", f);
+    fputs("# E7.1: подавлять локальный трафик у гостя (default 0: E3d-a ещё нет).\n", f);
+    fputs("npc_visitor_vehicles = 0\n", f);
+    fputs("# E7.1: сохранять сценарных/событийных NPC (vendors/quest/events).\n", f);
+    fputs("npc_visitor_preserve_events = 1\n", f);
     fclose(f);
 }
 
@@ -182,6 +188,11 @@ void ApplyLine(const std::string& raw, Config& out)
     else if (key == "npc_appearance") out.npcAppearance = AsBool(val);
     else if (key == "npc_damage") out.npcDamage = AsBool(val);
     else if (key == "npc_presence") out.npcPresence = AsBool(val);
+    else if (key == "npc_visitor") out.npcVisitor = AsBool(val);
+    else if (key == "npc_visitor_vehicles")
+        out.npcVisitorVehicles = AsBool(val);
+    else if (key == "npc_visitor_preserve_events")
+        out.npcVisitorPreserveEvents = AsBool(val);
     else if (key == "npc_corpse_max_sec")
     {
         char* end = nullptr;

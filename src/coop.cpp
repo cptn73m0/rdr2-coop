@@ -3,6 +3,7 @@
 #include "ghost_frame.h"
 #include "log.h"
 #include "natives.h"
+#include "script_hook.h"
 #include "net/client.h"
 #include "persist.h"
 #include "world_scan.h"
@@ -583,6 +584,28 @@ unsigned int s_lastUiPresenceLogTick = 0;
 bool s_remotePresenceValid = false;
 uint16_t s_remotePresenceFlags = 0;
 unsigned int s_lastRemotePresenceTick = 0;
+// E7.1: visitor mode (гость подавляет локальную ambient-популяцию).
+bool s_joinOkSeen = false;
+bool s_visitorModeActive = false;
+// E7.1 v2: cleanup существующей ambient-толпы (гость) + road population.
+constexpr unsigned int kVisitorCleanupIntervalTicks = 600; // ~10 c
+constexpr float kVisitorCleanupRadius = 120.0f;
+constexpr int kVisitorCleanupQueueMax = 32;
+constexpr unsigned int kVisitorCleanupFadeTicks = 24; // ~0.4 c
+constexpr int kVisitorCleanupDeletePerTick = 8;
+constexpr unsigned int kClearAreaAmbientFlag = 1048576u;
+struct VisitorCleanupPed
+{
+    unsigned int handle = 0;
+    unsigned int fade = 0;
+};
+VisitorCleanupPed s_visitorCleanup[kVisitorCleanupQueueMax];
+int s_visitorCleanupCount = 0;
+unsigned int s_lastVisitorCleanupTick = 0;
+unsigned int s_visitorCleanupRemoved = 0;
+unsigned int s_lastVisitorCleanupLogTick = 0;
+bool s_visitorCleanupRanOnce = false;
+bool s_visitorRoadPopDisabled = false;
 char s_presenceNameBuf[96] = "";
 
 bool UiAppActiveHash(unsigned long long appHash)
@@ -844,7 +867,321 @@ uint8_t s_remoteActionRaw = 0;
 // начале Tick().
 net::WorldState s_worldState{};
 bool s_haveWorldState = false;
-std::atomic<bool> s_amHost{false};  // сервер назначил нас хостом
+std::atomic<bool> s_amHost{false};
+
+// E7.1 v2: модели продавцов/барменов (rdr2-hashdb/Peds.json) — сохраняем.
+static const uint32_t kVendorModels[] = {
+    0x0A219825u, // U_F_M_TLJBARTENDER_01
+    0x0D1298F7u, // U_M_M_NBXBARTENDER_02
+    0x104FE6B3u, // U_M_M_STRGENSTOREOWNER_01
+    0x1EE53C9Cu, // U_M_M_NBXBARTENDER_01
+    0x23DA7E9Fu, // U_M_M_RHDBARTENDER_01
+    0x3E471440u, // U_F_M_VHTBARTENDER_01
+    0x400E34A9u, // U_M_M_SDCUSTOMVENDOR_01
+    0x42DD47BFu, // U_M_M_WALGENERALSTOREOWNER_01
+    0x5339E46Bu, // S_M_M_MARKETVENDOR_01
+    0x54123716u, // U_M_M_NBXGENERALSTOREOWNER_01
+    0x6958B082u, // U_M_O_BLWGENERALSTOREOWNER_01
+    0x893751E8u, // U_M_M_RHDGENSTOREOWNER_02
+    0x8E81C857u, // U_M_O_BLWBARTENDER_01
+    0x904CC489u, // U_M_O_VALBARTENDER_01
+    0x9B3E551Bu, // U_M_M_VALGENSTOREOWNER_01
+    0x9B9EF6B7u, // U_M_M_RHDGENSTOREOWNER_01
+    0xB733CF0Fu, // U_M_M_VALBARTENDER_01
+    0xC5DF0CFEu, // U_M_M_ARMGENERALSTOREOWNER_01
+    0xCE72526Eu, // U_M_O_VHTEXOTICSHOPKEEPER_01
+    0xD31B229Fu, // U_M_M_TUMBARTENDER_01
+    0xDD6D1B34u, // U_M_O_ARMBARTENDER_01
+    0xF1029EA3u, // U_M_M_SDEXOTICSSHOPKEEPER_01
+    0xF1711637u, // U_F_M_TUMGENERALSTOREOWNER_01
+};
+
+bool IsVendorModel(uint32_t model)
+{
+    for (uint32_t m : kVendorModels)
+    {
+        if (m == model)
+            return true;
+        if (m > model)
+            return false;
+    }
+    return false;
+}
+
+bool IsMissionEntityCoop(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::IS_ENTITY_A_MISSION_ENTITY);
+    Push(handle);
+    return Call() != 0;
+}
+
+bool IsPlayerPedCoop(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_A_PLAYER);
+    Push(handle);
+    return Call() != 0;
+}
+
+uint32_t GetEntityModelCoop(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::GET_ENTITY_MODEL);
+    Push(handle);
+    return static_cast<uint32_t>(Call());
+}
+
+bool IsPedInAnyVehicleCoop(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_IN_ANY_VEHICLE);
+    Push(handle);
+    Push(false);
+    return Call() != 0;
+}
+
+// Сценарный/динамический сценарный пед (продавцы/работники/события).
+bool IsPedOnMountCoop(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_ON_MOUNT);
+    Push(handle);
+    return Call() != 0;
+}
+
+bool IsAnimalControlledByPlayerCoop(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::_IS_ANIMAL_CONTROLLED_BY_A_PLAYER);
+    Push(handle);
+    return Call() != 0;
+}
+
+bool IsPedUsingScenarioCoop(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_USING_ANY_SCENARIO);
+    Push(handle);
+    if (Call() != 0)
+        return true;
+    Init(natives::_GET_ACTIVE_DYNAMIC_SCENARIO);
+    Push(handle);
+    if (Call() != 0)
+        return true;
+    Init(natives::_GET_ACTIVE_DYNAMIC_SCENARIO_2);
+    Push(handle);
+    return Call() != 0;
+}
+
+// «Чистый» ambient-пед, которого можно убрать у гостя.
+bool IsRemovableAmbientPed(unsigned int handle, unsigned int localPed)
+{
+    if (!handle || handle == localPed)
+        return false;
+    if (handle == s_ghost || IsWorldSyncExcluded(handle))
+        return false; // ghost/лошадь партнёра
+    if (!DoesEntityExist(handle))
+        return false;
+    if (IsPedDeadOrDying(handle))
+        return false;
+    if (IsPlayerPedCoop(handle))
+        return false;
+    if (IsPedOnMountCoop(handle))
+        return false; // всадник (не разрываем пару конь+всадник)
+    if (IsAnimalControlledByPlayerCoop(handle))
+        return false; // животное/лошадь игрока
+    if (IsMissionEntityCoop(handle))
+        return false; // mission/script/quest NPC
+    if (coopcfg::Get().npcVisitorPreserveEvents)
+    {
+        if (IsPedUsingScenarioCoop(handle))
+            return false; // продавцы/работники/события
+        if (IsVendorModel(GetEntityModelCoop(handle)))
+            return false;
+        if (IsPedInAnyVehicleCoop(handle))
+            return false; // не трогаем водителей/трафик
+    }
+    return true;
+}
+
+// Собрать очередь на удаление (радиус ~120 м вокруг игрока).
+void QueueVisitorAmbientCleanup(unsigned int localPed)
+{
+    if (!sh::HasWorldQueries() || !sh::worldGetAllPeds)
+        return;
+    static int handles[2048];
+    int count = sh::worldGetAllPeds(handles, 2048);
+    if (count < 0)
+        count = 0;
+    if (count > 2048)
+        count = 2048;
+    const Vec3 center = GetEntityCoords(localPed);
+    for (int i = 0; i < count && s_visitorCleanupCount < kVisitorCleanupQueueMax;
+         ++i)
+    {
+        const unsigned int h = static_cast<unsigned int>(handles[i]);
+        if (!IsRemovableAmbientPed(h, localPed))
+            continue;
+        const Vec3 cp = GetEntityCoords(h);
+        const float dx = cp.x - center.x;
+        const float dy = cp.y - center.y;
+        const float dz = cp.z - center.z;
+        if (dx * dx + dy * dy + dz * dz >
+            kVisitorCleanupRadius * kVisitorCleanupRadius)
+            continue;
+        bool duplicate = false;
+        for (int q = 0; q < s_visitorCleanupCount; ++q)
+        {
+            if (s_visitorCleanup[q].handle == h)
+            {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate)
+            continue;
+        VisitorCleanupPed e;
+        e.handle = h;
+        e.fade = kVisitorCleanupFadeTicks;
+        s_visitorCleanup[s_visitorCleanupCount++] = e;
+    }
+}
+
+// Фейд alpha -> 0 за ~0.4 c, затем DELETE_ENTITY; <=8 удалений/тик.
+void ProcessVisitorCleanup()
+{
+    int deletions = 0;
+    for (int i = 0; i < s_visitorCleanupCount;)
+    {
+        VisitorCleanupPed& e = s_visitorCleanup[i];
+        if (!e.handle || !DoesEntityExist(e.handle))
+        {
+            e = s_visitorCleanup[--s_visitorCleanupCount];
+            continue;
+        }
+        if (e.fade > 0)
+        {
+            using namespace natives_api;
+            Init(natives::SET_ENTITY_ALPHA);
+            Push(e.handle);
+            Push(static_cast<unsigned long long>(
+                (255u * e.fade) / kVisitorCleanupFadeTicks));
+            Push(false);
+            Call();
+            --e.fade;
+            ++i;
+            continue;
+        }
+        if (deletions >= kVisitorCleanupDeletePerTick)
+        {
+            ++i;
+            continue;
+        }
+        using namespace natives_api;
+        unsigned int h = e.handle;
+        Init(natives::DELETE_ENTITY);
+        Push(reinterpret_cast<unsigned long long>(&h));
+        Call();
+        if (!DoesEntityExist(e.handle))
+            ++s_visitorCleanupRemoved;
+        e = s_visitorCleanup[--s_visitorCleanupCount];
+        ++deletions;
+    }
+    if (s_visitorCleanupRemoved > 0 &&
+        s_tickCount - s_lastVisitorCleanupLogTick >= 60)
+    {
+        s_lastVisitorCleanupLogTick = s_tickCount;
+        if (coopcfg::Get().npcDebug)
+            sh_log::Write("actor: visitor cleanup removed=%u\n",
+                          s_visitorCleanupRemoved);
+        s_visitorCleanupRemoved = 0;
+    }
+}
+
+// E7.1 v2: visitor mode — гость гасит ТОЛЬКО ambient-плотности (crowd/animals,
+// опционально трафик), сохраняя scenario/vendor/quest/event NPC. Хост не
+// подавляет; npc_actor=0/npc_visitor=0 — поведение как раньше.
+void UpdateVisitorMode()
+{
+    const bool want = coopcfg::Get().npcActor &&
+                      coopcfg::Get().npcVisitor &&
+                      g_netStarted && s_joinOkSeen && !s_amHost.load();
+    if (want)
+    {
+        const bool vehicles = coopcfg::Get().npcVisitorVehicles;
+        world_sync::SuppressAmbientForVisitor(vehicles);
+
+        // Persistent road population — только при подавлении машин; парно
+        // включаем обратно при выходе из visitor mode.
+        if (vehicles && !s_visitorRoadPopDisabled)
+        {
+            using namespace natives_api;
+            Init(natives::DISABLE_AMBIENT_ROAD_POPULATION);
+            Push(true);
+            Call();
+            s_visitorRoadPopDisabled = true;
+        }
+
+        const unsigned int localPed = GetPlayerPedFor(0);
+        if (localPed)
+        {
+            const bool due = !s_visitorCleanupRanOnce ||
+                (s_tickCount - s_lastVisitorCleanupTick >=
+                 kVisitorCleanupIntervalTicks);
+            if (due)
+            {
+                s_visitorCleanupRanOnce = true;
+                s_lastVisitorCleanupTick = s_tickCount;
+                if (coopcfg::Get().npcVisitorPreserveEvents)
+                {
+                    QueueVisitorAmbientCleanup(localPed);
+                }
+                else
+                {
+                    // Агрессивный режим (opt-in): CLEAR_AREA с флагом
+                    // AMBIENT_POPULATION; может задеть сценарных NPC.
+                    const Vec3 c = GetEntityCoords(localPed);
+                    using namespace natives_api;
+                    Init(natives::CLEAR_AREA);
+                    Push(c.x); Push(c.y); Push(c.z);
+                    Push(kVisitorCleanupRadius);
+                    Push(kClearAreaAmbientFlag);
+                    Call();
+                }
+            }
+            if (coopcfg::Get().npcVisitorPreserveEvents)
+                ProcessVisitorCleanup();
+        }
+
+        if (!s_visitorModeActive)
+        {
+            s_visitorModeActive = true;
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write(
+                    "actor: visitor mode on (ambient suppressed, preserve "
+                    "scenario/events)\n");
+        }
+    }
+    else
+    {
+        if (s_visitorRoadPopDisabled)
+        {
+            using namespace natives_api;
+            Init(natives::ENABLE_AMBIENT_ROAD_POPULATION);
+            Call();
+            s_visitorRoadPopDisabled = false;
+        }
+        s_visitorCleanupCount = 0;
+        s_visitorCleanupRanOnce = false;
+        if (s_visitorModeActive)
+        {
+            s_visitorModeActive = false;
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write("actor: visitor mode off\n");
+        }
+    }
+}
 unsigned int s_lastWorldSendTick = 0; // троттлинг отправки WorldState
 // P2: Action v2 — действие/сценарий удалённого игрока (из сетевого потока).
 std::mutex s_actionMtx;
@@ -5786,6 +6123,8 @@ void Tick()
         UpdateLocalShotEvents(playerPed);
         // E6 (v18): детект/отправка локального UI-статуса.
         UpdateLocalPresence();
+        // E7.1: гость подавляет локальную ambient-популяцию (visitor mode).
+        UpdateVisitorMode();
 
         // P1: репликация мира/NPC. Хост шлёт снапшоты, гость применяет их
         // и подавляет собственную ambient-популяцию. По умолчанию выключено
@@ -6100,6 +6439,7 @@ void Tick()
 
     if (ev.joinOk)
     {
+        s_joinOkSeen = true;
         s_amHost.store(ev.joinIsHost);
         if (ev.joinHasHeading)
             s_pendingHeading = ev.joinHeading;
@@ -6128,6 +6468,7 @@ void Tick()
     if (ev.connectionLost)
     {
         s_pendingConnectionLost = true;
+        s_joinOkSeen = false; // E7.1: до reconnect гость не подавляет
         // E6: presence сбрасываем — после reconnect статус придёт заново.
         s_remotePresenceValid = false;
         s_remotePresenceFlags = 0;
@@ -6142,6 +6483,7 @@ void Tick()
     {
         std::snprintf(s_leaveName, sizeof(s_leaveName), "%s", ev.leaveName);
         s_pendingLeave = true;
+        s_joinOkSeen = false; // E7.1: вышел из сессии — visitor mode off
         // E6: статус ушедшего игрока больше не показываем.
         s_remotePresenceValid = false;
         s_remotePresenceFlags = 0;

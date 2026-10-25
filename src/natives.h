@@ -30,6 +30,10 @@ constexpr unsigned long long SET_ENTITY_NO_COLLISION_ENTITY = 0xE037BF068223C38D
 constexpr unsigned long long SET_ENTITY_COMPLETELY_DISABLE_COLLISION = 0xE0580EC84813875Aull;
 constexpr unsigned long long FREEZE_ENTITY_POSITION      = 0x7D9EFB7AD6B19754ull;
 constexpr unsigned long long DELETE_ENTITY               = 0x4CD38C78BD19A497ull;
+// E7.1: фейд ambient-педов перед удалением (entity,alpha,skin=false).
+constexpr unsigned long long SET_ENTITY_ALPHA             = 0x0DF7692B1D9E7BA7ull;
+// E7.1: CLEAR_AREA(x,y,z,radius,flag); flag 1048576 = AMBIENT_POPULATION.
+constexpr unsigned long long CLEAR_AREA                   = 0x3B882A96EA77D5B1ull;
 // DELETE_PED (0xCC0EF140F99365C5) принимает Ped* (указатель на handle,
 // зануляет его) — НЕ значение; иначе пед не удаляется (как REMOVE_BLIP).
 constexpr unsigned long long DELETE_PED                   = 0xCC0EF140F99365C5ull;
@@ -77,6 +81,7 @@ constexpr unsigned long long IS_PED_DEAD_OR_DYING          = 0x3317DEDB88C95038u
 constexpr unsigned long long IS_PED_RUNNING                = 0xC5286FFC176F28A2ull;
 constexpr unsigned long long IS_PED_WALKING                = 0xDE4C184B2B9B071Aull;
 constexpr unsigned long long IS_PED_ON_MOUNT               = 0x460BC76A0E10655Eull;
+constexpr unsigned long long IS_PED_IN_ANY_VEHICLE         = 0x997ABD671D25CA0Bull;
 constexpr unsigned long long TASK_GO_STRAIGHT_TO_COORD     = 0xD76B57B44F1E6F8Bull;
 // Высота земли в точке (для установки педа на землю, а не «в воздух»).
 constexpr unsigned long long GET_GROUND_Z_FOR_3D_COORD      = 0x24FA4267BB8D2431ull;
@@ -260,8 +265,13 @@ constexpr unsigned long long IS_ENTITY_A_MISSION_ENTITY     = 0x138190F64DB4BBD1
 constexpr unsigned long long _SET_AMBIENT_HUMAN_DENSITY_MULTIPLIER_THIS_FRAME  = 0xBA0980B5C0A11924ull;
 constexpr unsigned long long _SET_AMBIENT_PED_DENSITY_MULTIPLIER_THIS_FRAME    = 0xAB0D553FE20A6E25ull;
 constexpr unsigned long long _SET_AMBIENT_ANIMAL_DENSITY_MULTIPLIER_THIS_FRAME = 0xC0258742B034DFAFull;
+// E7.1: сценарные ambient-педы у гостя (visitor mode); 1 float-арг.
+constexpr unsigned long long SET_SCENARIO_PED_DENSITY_MULTIPLIER_THIS_FRAME  = 0x7A556143A1C03898ull;
 constexpr unsigned long long SET_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME         = 0x606374EBFC27B133ull;
 constexpr unsigned long long SET_RANDOM_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME  = 0x1F91D44490E1EA0Cull;
+// E7.1: persistent road population — выключать парно с включением обратно.
+constexpr unsigned long long DISABLE_AMBIENT_ROAD_POPULATION  = 0xC6DCC2A3A8825C85ull;
+constexpr unsigned long long ENABLE_AMBIENT_ROAD_POPULATION   = 0xBC90BDF4E5228EA1ull;
 
 // P2 (Action v2): наблюдаемые действия/сценарии. Клип/фазу AnimGraph
 // публичный SDK не отдаёт; читаем сценарий/укрытие/переноску/и т.п.

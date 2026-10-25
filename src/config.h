@@ -67,6 +67,14 @@ struct Config {
     // E6 (v18): синхронизация UI-статуса (карта/пауза/сатчель/магазин) и
     // суффикс в имени над головой. default 1; 0 = выключить presence.
     bool npcPresence = true;
+    // E7.1 visitor mode: гость подавляет свою ambient-популяцию (видит только
+    // реплицированный мир хоста). npc_visitor_vehicles=0 — оставить трафик.
+    bool npcVisitor = true;
+    // default 0: транспорт ещё не реплицируется (E3d-a) — оставляем трафик.
+    bool npcVisitorVehicles = false;
+    // Сохранять сценарных/событийных NPC (продавцы/работники/энкаунтеры).
+    // 0 = агрессивное подавление (CLEAR_AREA ambient-флагом).
+    bool npcVisitorPreserveEvents = true;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —

@@ -761,7 +761,9 @@ std::mutex g_trainMutex;
 std::vector<uint8_t> g_pendingTrain;
 bool g_hasPendingTrain = false;
 
-void SuppressLocalWorld()
+// E7.1: общий набор THIS_FRAME-множителей ambient-плотности.
+// suppressVehicles=false — трафик не трогаем (npc_visitor_vehicles=0).
+void SuppressAmbientDensities(bool suppressVehicles)
 {
     using namespace natives_api;
     Init(natives::_SET_AMBIENT_HUMAN_DENSITY_MULTIPLIER_THIS_FRAME);
@@ -770,10 +772,19 @@ void SuppressLocalWorld()
     Push(0.0f); Call();
     Init(natives::_SET_AMBIENT_ANIMAL_DENSITY_MULTIPLIER_THIS_FRAME);
     Push(0.0f); Call();
+    // E7.1 v2: scenario density НЕ обнуляем — продавцы/работники/события
+    // должны остаться в мире гостя (пользовательское требование).
+    if (!suppressVehicles)
+        return;
     Init(natives::SET_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME);
     Push(0.0f); Call();
     Init(natives::SET_RANDOM_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME);
     Push(0.0f); Call();
+}
+
+void SuppressLocalWorld()
+{
+    SuppressAmbientDensities(true);
 }
 
 unsigned int CreateProxy(const net::WorldEntity& e)
@@ -1174,6 +1185,12 @@ void ApplyPendingTrainSnapshot(unsigned int tickCount)
 }
 
 } // namespace
+
+// E7.1: публичная обёртка visitor mode (вызывается из coop::Tick гостя).
+void SuppressAmbientForVisitor(bool suppressVehicles)
+{
+    SuppressAmbientDensities(suppressVehicles);
+}
 
 void OnSnapshot(const std::vector<uint8_t>& payload)
 {

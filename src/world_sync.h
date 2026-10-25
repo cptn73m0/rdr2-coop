@@ -28,6 +28,11 @@ void OnTrainSnapshot(const std::vector<uint8_t>& payload);
 // Убрать прокси/сбросить состояние (выход из сессии, смена роли, disable).
 void Reset();
 
+// E7.1 visitor mode: погасить ambient-плотности у гостя (THIS_FRAME-нативы —
+// вызывать каждый кадр). suppressVehicles=false — оставить локальный трафик.
+// Вызывается из coop::Tick при npc_visitor=1 и роли гостя.
+void SuppressAmbientForVisitor(bool suppressVehicles);
+
 // P1→P2: сопоставление сущности и стабильного netId (только игровой поток).
 // Хост: handle → netId (для ActionState.targetNetId).
 // Гость: netId → handle (чтобы применить переноску/лутание к прокси).
