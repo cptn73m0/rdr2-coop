@@ -114,6 +114,9 @@ constexpr unsigned long long TASK_RELOAD_WEAPON            = 0x62D2916F56B9CD2Du
 constexpr unsigned long long GET_ENTITY_PLAYER_IS_FREE_AIMING_AT = 0xA6817C110B830EADull;
 constexpr unsigned long long GET_GAMEPLAY_CAM_COORD = 0x595320200B98596Eull;
 constexpr unsigned long long GET_GAMEPLAY_CAM_ROT   = 0x0252D2B5582957A6ull;
+// E5.1: кость головы (headshot-детект на госте).
+constexpr unsigned long long GET_ENTITY_BONE_INDEX_BY_NAME   = 0xBACA8FE9C76C124Eull;
+constexpr unsigned long long GET_WORLD_POSITION_OF_ENTITY_BONE = 0x82CFA50E34681CA5ull;
 constexpr unsigned long long GET_PED_LAST_WEAPON_IMPACT_COORD    = 0x6C4D0409BA1A2BC2ull;
 constexpr unsigned long long GET_MOUNT                     = 0xE7E11B8DCBED1058ull;
 // Верховая езда (получатель): посадить педа на лошадь / снять / перейти на лошадь.

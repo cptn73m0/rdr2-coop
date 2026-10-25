@@ -4172,9 +4172,75 @@ uint16_t NpcDamageForWeapon(unsigned long long weapon)
     return 30;
 }
 
+// E5.1: хедшот — проверяем, проходит ли выстрел/луч камеры через сферу
+// головы (кость SKEL_Head, радиус ~0.30 м), и голова ближе центра тела.
+// Если кость/камера недоступны — false (graceful fallback на body-урон).
+bool IsEntityHeadshot(unsigned int entity, const Vec3* impact)
+{
+    using namespace natives_api;
+    static const char kHeadBoneName[] = "SKEL_Head";
+    Init(natives::GET_ENTITY_BONE_INDEX_BY_NAME);
+    Push(entity);
+    Push(reinterpret_cast<unsigned long long>(kHeadBoneName));
+    const int bone = static_cast<int>(Call());
+    if (bone <= 0)
+        return false;
+    Vec3 head{0.f, 0.f, 0.f};
+    Init(natives::GET_WORLD_POSITION_OF_ENTITY_BONE);
+    Push(entity);
+    Push(static_cast<unsigned long long>(static_cast<unsigned int>(bone)));
+    CallVec3(head);
+    if (!std::isfinite(head.x) || !std::isfinite(head.y) ||
+        !std::isfinite(head.z))
+        return false;
+    if (head.x == 0.f && head.y == 0.f && head.z == 0.f)
+        return false;
+    const Vec3 body = GetEntityCoords(entity);
+    auto dist2 = [](const Vec3& p, const Vec3& q) {
+        const float dx = p.x - q.x;
+        const float dy = p.y - q.y;
+        const float dz = p.z - q.z;
+        return dx * dx + dy * dy + dz * dz;
+    };
+    constexpr float kHeadRadius2 = 0.30f * 0.30f;
+
+    // 1) Точка попадания последнего выстрела (точнее, если натив доступен).
+    if (impact && (impact->x != 0.f || impact->y != 0.f || impact->z != 0.f))
+    {
+        const float dh = dist2(*impact, head);
+        return dh <= kHeadRadius2 && dh < dist2(*impact, body);
+    }
+
+    // 2) Fallback: луч камеры (GET_GAMEPLAY_CAM_COORD + GET_GAMEPLAY_CAM_ROT).
+    Vec3 cam{0.f, 0.f, 0.f};
+    Init(natives::GET_GAMEPLAY_CAM_COORD);
+    CallVec3(cam);
+    Vec3 rot{0.f, 0.f, 0.f};
+    Init(natives::GET_GAMEPLAY_CAM_ROT);
+    Push(static_cast<unsigned long long>(2)); // порядок как в SDK
+    CallVec3(rot);
+    constexpr float kDegToRad = 0.01745329252f;
+    const float pitch = rot.x * kDegToRad;
+    const float yaw = rot.z * kDegToRad;
+    const float cp = std::cos(pitch);
+    const Vec3 dir{-std::sin(yaw) * cp, std::cos(yaw) * cp, std::sin(pitch)};
+    const Vec3 vh{head.x - cam.x, head.y - cam.y, head.z - cam.z};
+    const float t = vh.x * dir.x + vh.y * dir.y + vh.z * dir.z;
+    if (t <= 0.f)
+        return false;
+    const Vec3 proj{cam.x + dir.x * t, cam.y + dir.y * t, cam.z + dir.z * t};
+    if (dist2(proj, head) > kHeadRadius2)
+        return false;
+    const Vec3 vb{body.x - cam.x, body.y - cam.y, body.z - cam.z};
+    const float tb = vb.x * dir.x + vb.y * dir.y + vb.z * dir.z;
+    return tb <= 0.f || t < tb;
+}
+
 // E5 (v17): после реального выстрела игрока — если free-aim цель является
 // NPC-прокси, попросить хост применить урон (сам гость урон НЕ наносит).
-void TrySendNpcDamage(unsigned int localPed, unsigned long long weapon)
+// E5.1: headshot -> damage=250 (ваншот), иначе урон по классу оружия.
+void TrySendNpcDamage(unsigned int localPed, unsigned long long weapon,
+                      const Vec3* impact)
 {
     if (!coopcfg::Get().npcActor || !coopcfg::Get().npcDamage)
         return;
@@ -4201,9 +4267,11 @@ void TrySendNpcDamage(unsigned int localPed, unsigned long long weapon)
     uint32_t actorId = 0;
     if (!actor_sync::GetDamageTargetInfo(target, actorId))
         return;
-    const uint16_t dmg = NpcDamageForWeapon(weapon);
-    actor_sync::SendDamageToActor(target, dmg,
-                                  static_cast<uint32_t>(weapon));
+    const bool headshot = IsEntityHeadshot(target, impact);
+    const uint16_t dmg =
+        headshot ? static_cast<uint16_t>(250) : NpcDamageForWeapon(weapon);
+    actor_sync::SendDamageToActor(target, dmg, static_cast<uint32_t>(weapon),
+                                  headshot);
 }
 
 void UpdateLocalShotEvents(unsigned int ped)
@@ -4384,8 +4452,9 @@ void UpdateLocalShotEvents(unsigned int ped)
     }
 
     // E5 (v17): реальный выстрел в NPC-прокси -> запрос урона хосту.
+    // E5.1: передаём точку попадания для headshot-детекта.
     if (sentAmmo > 0 || fallback)
-        TrySendNpcDamage(ped, weapon);
+        TrySendNpcDamage(ped, weapon, haveImpact ? &impact : nullptr);
 }
 
 // Здоровье локального педа 0..1 (GET_ENTITY_HEALTH / max примерно 100..200 —

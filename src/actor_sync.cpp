@@ -1454,10 +1454,13 @@ void LogAnimalDeath(uint32_t actorId)
 }
 
 // E5 (v17): отправка/применение урона по NPC (npc_debug=1).
-void LogDamageSend(uint32_t actorId, uint16_t damage, uint32_t weaponHash)
+void LogDamageSend(uint32_t actorId, uint16_t damage, uint32_t weaponHash,
+                   bool headshot)
 {
-    sh_log::Write("actor: damage send id=%u dmg=%u weapon=0x%X\n",
-                  actorId, static_cast<unsigned int>(damage), weaponHash);
+    sh_log::Write(
+        "actor: damage send id=%u dmg=%u weapon=0x%X headshot=%d\n",
+        actorId, static_cast<unsigned int>(damage), weaponHash,
+        headshot ? 1 : 0);
 }
 
 void LogDamageApply(uint32_t actorId, uint16_t damage, int hp)
@@ -5159,7 +5162,7 @@ bool GetDamageTargetInfo(unsigned int handle, uint32_t& actorId)
 // E5 (v17): гость шлёт запрос урона хосту (0x1F). Лимиты: 100 мс на actorId,
 // <=10/с суммарно; damage clamp 1..1000; при npc_actor/npc_damage=0 — ничего.
 bool SendDamageToActor(unsigned int handle, uint16_t damage,
-                       uint32_t weaponHash)
+                       uint32_t weaponHash, bool headshot)
 {
     if (!coopcfg::Get().npcActor || !coopcfg::Get().npcDamage)
         return false;
@@ -5193,7 +5196,7 @@ bool SendDamageToActor(unsigned int handle, uint16_t damage,
     if (s_lastMs.size() > 64)
         s_lastMs.clear();
     if (coopcfg::Get().npcDebug)
-        LogDamageSend(actorId, dmg, weaponHash);
+        LogDamageSend(actorId, dmg, weaponHash, headshot);
     return true;
 }
 

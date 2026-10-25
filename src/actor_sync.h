@@ -70,7 +70,8 @@ void OnActorDamageRequest(uint32_t epoch, uint32_t actorId, uint16_t damage,
 bool GetDamageTargetInfo(unsigned int handle, uint32_t& actorId);
 // E5: гость — отправить запрос урона хосту по actorId из handle (лимиты:
 // 100 мс/actor, <=10/с, npc_damage). true — запрос ушёл.
-bool SendDamageToActor(unsigned int handle, uint16_t damage, uint32_t weaponHash);
+bool SendDamageToActor(unsigned int handle, uint16_t damage, uint32_t weaponHash,
+                       bool headshot);
 // Хост получает запрос resync от гостя: следующий тик перешлёт всех акторов.
 void OnActorResyncRequest(const net::ActorResyncPayload& req);
 
