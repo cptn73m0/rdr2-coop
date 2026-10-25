@@ -215,15 +215,16 @@ for _limit_name, (_actual, _expected) in _PINNED_LIMITS.items():
 KNOWN_FAIL_TESTS = set()
 
 # --------------------------------------------------------------------------
-# Protocol v15 (E0) + v16 (E2c-b) + v17 (E5): actor replication messages
-# 0x18..0x1F. The v15 wire format is signed off in the net-review E0 task; the
-# v16 ActorAppearance and v17 ActorDamage extensions are signed off in the
-# E2c-b / E5 tasks. These tests are skipped while net/protocol.h is still v14
-# (E0 not merged) and become strict automatically once the header carries the
-# Actor* messages. Expected values below are pinned to the spec: spawn 64 B,
-# frame 32 B, max 12 actors, batch sizes 776/392 B, despawn/resync 12 B,
-# event 32 B, outfit 792 B, appearance header 12 B + entry 28 B
-# (max 12 + 16*28 = 460 B, 16 компонентов), damage 16 B.
+# Protocol v15 (E0) + v16 (E2c-b) + v17 (E5) + v18 (E6): actor replication and
+# presence messages 0x18..0x20. The v15 wire format is signed off in the
+# net-review E0 task; v16 ActorAppearance / v17 ActorDamage / v18 PlayerPresence
+# extensions are signed off in the E2c-b / E5 / E6 tasks. These tests are
+# skipped while net/protocol.h is still v14 (E0 not merged) and become strict
+# automatically once the header carries the messages. Expected values below are
+# pinned to the spec: spawn 64 B, frame 32 B, max 12 actors, batch sizes
+# 776/392 B, despawn/resync 12 B, event 32 B, outfit 792 B, appearance header
+# 12 B + entry 28 B (max 12 + 16*28 = 460 B, 16 компонентов), damage 16 B,
+# player presence 8 B.
 # --------------------------------------------------------------------------
 _ACTOR_MSG_PINS = {
     "ActorSpawnBatch": 0x18,
@@ -397,6 +398,36 @@ DAMAGE_TESTS = {
     "test_actor_damage_validation",
 }
 
+# --------------------------------------------------------------------------
+# Protocol v18 (E6): PlayerPresence (0x20) — UI-статус игрока.
+# payload 8 B: epoch u32, flags u16, pad u16; flags bitmask (1=in_map,
+# 2=in_pause_menu, 4=in_satchel, 8=in_shop, 16=in_cutscene, 32=in_menu_other;
+# 0 = нет статуса). Направление: любой клиент -> сервер -> ДРУГОМУ клиенту.
+# --------------------------------------------------------------------------
+PRESENCE_AVAILABLE = False
+TYPE_PLAYER_PRESENCE = None
+PLAYER_PRESENCE_SIZE = 0
+PLAYER_PRESENCE_KNOWN_FLAGS = 0x3F  # pinned: bits 0..5 (v18 spec)
+if PROTO >= 18:
+    _presence_size = _struct_size_optional("PlayerPresencePayload")
+    if "PlayerPresence" not in MSG or _presence_size is None:
+        raise RuntimeError(
+            "protocol v18 is present but PlayerPresence spec is incomplete: "
+            f"msg={'PlayerPresence' in MSG}, size={_presence_size}")
+    require(MSG["PlayerPresence"] == 0x20,
+            f"Msg::PlayerPresence expected 0x20, got {MSG['PlayerPresence']}")
+    require(_presence_size == 8,
+            "PlayerPresencePayload expected 8 B (v18 spec)")
+    TYPE_PLAYER_PRESENCE = MSG["PlayerPresence"]
+    PLAYER_PRESENCE_SIZE = 8
+    PRESENCE_AVAILABLE = True
+
+# Names of the conditional v18 PlayerPresence tests (skipped while v18 missing).
+PRESENCE_TESTS = {
+    "test_player_presence_relay",
+    "test_player_presence_validation",
+}
+
 # 50-100 rounds of the JOIN race per task; overridable for slow CI.
 JOIN_RACE_ITERS = int(os.environ.get("RDR2_JOIN_RACE_ITERS", "50"))
 
@@ -560,6 +591,15 @@ def actor_damage(epoch=1, actor_id=1, damage=50, pad=0,
     require(len(payload) == ACTOR_DAMAGE_SIZE,
             f"ActorDamage builder mismatch: "
             f"{len(payload)} != {ACTOR_DAMAGE_SIZE}")
+    return payload
+
+
+def player_presence(epoch=1, flags=1, pad=0):
+    require(PRESENCE_AVAILABLE, "v18 PlayerPresence is not in net/protocol.h yet")
+    payload = struct.pack("<IHH", epoch, flags, pad)
+    require(len(payload) == PLAYER_PRESENCE_SIZE,
+            f"PlayerPresence builder mismatch: "
+            f"{len(payload)} != {PLAYER_PRESENCE_SIZE}")
     return payload
 
 
@@ -1676,6 +1716,67 @@ def test_actor_damage_validation(exe, tmp):
         guest.close()
 
 
+def test_player_presence_relay(exe, tmp):
+    log("[test] v18 player presence: bidirectional relay, no echo")
+    require(PRESENCE_AVAILABLE, "v18 PlayerPresence messages missing")
+    with Server(exe, tmp / "player_presence") as srv:
+        host, guest = _actor_pair(srv)
+
+        # host -> guest (in_map).
+        p_map = player_presence(epoch=1, flags=1)
+        host.sendall(frame_bytes(TYPE_PLAYER_PRESENCE, p_map))
+        got = recv_type(guest, TYPE_PLAYER_PRESENCE, 2.0)
+        require(got == p_map,
+                "host PlayerPresence must relay byte-identical to the guest")
+        require(recv_type(host, TYPE_PLAYER_PRESENCE, 0.5) is None,
+                "PlayerPresence must not echo back to the host sender")
+
+        # guest -> host (in_pause_menu).
+        p_pause = player_presence(epoch=1, flags=2)
+        guest.sendall(frame_bytes(TYPE_PLAYER_PRESENCE, p_pause))
+        got = recv_type(host, TYPE_PLAYER_PRESENCE, 2.0)
+        require(got == p_pause,
+                "guest PlayerPresence must relay byte-identical to the host")
+        require(recv_type(guest, TYPE_PLAYER_PRESENCE, 0.5) is None,
+                "PlayerPresence must not echo back to the guest sender")
+
+        # flags=0 («нет статуса») — валиден и релеится.
+        p_idle = player_presence(epoch=1, flags=0)
+        host.sendall(frame_bytes(TYPE_PLAYER_PRESENCE, p_idle))
+        require(recv_type(guest, TYPE_PLAYER_PRESENCE, 2.0) == p_idle,
+                "PlayerPresence(flags=0) must relay")
+        host.close()
+        guest.close()
+
+
+def test_player_presence_validation(exe, tmp):
+    log("[test] v18 player presence: size/epoch/flags validation")
+    require(PRESENCE_AVAILABLE, "v18 PlayerPresence messages missing")
+    with Server(exe, tmp / "player_presence_validate") as srv:
+        host, guest = _actor_pair(srv)
+
+        good = player_presence(epoch=1, flags=4)  # in_satchel
+        require(len(good) == PLAYER_PRESENCE_SIZE, "presence size mismatch")
+        # Точный размер 8 B.
+        _actor_expect_drop(host, guest, TYPE_PLAYER_PRESENCE, good[:-1],
+                           "short PlayerPresence")
+        _actor_expect_drop(host, guest, TYPE_PLAYER_PRESENCE, good + b"\x00",
+                           "oversized PlayerPresence")
+        # epoch=0 и неизвестные биты flags невалидны.
+        _actor_expect_drop(host, guest, TYPE_PLAYER_PRESENCE,
+                           player_presence(epoch=0, flags=1),
+                           "PlayerPresence(epoch=0)")
+        _actor_expect_drop(host, guest, TYPE_PLAYER_PRESENCE,
+                           player_presence(epoch=1, flags=0x40),
+                           "PlayerPresence(unknown flag bit)")
+        # Unknown message type must not be relayed and must not crash.
+        host.sendall(frame_bytes(0x7E, b"\x00" * 32))
+        require(recv_type(guest, 0x7E, 0.5) is None,
+                "unknown type must not be relayed")
+        host.close()
+        guest.close()
+
+
 def test_actor_gating_no_actor_log(exe, tmp):
     log("[test] v15 gating: no 'actor:' log lines in a normal session")
     # Server-side gating only: mock clients never send actor messages, so this
@@ -2413,6 +2514,8 @@ def main():
         test_actor_appearance_validation,
         test_actor_damage_direction,
         test_actor_damage_validation,
+        test_player_presence_relay,
+        test_player_presence_validation,
         test_actor_gating_no_actor_log,
         test_oversized_and_truncated,
         test_host_migration,
@@ -2444,6 +2547,11 @@ def main():
                 log(f"[skip] {test.__name__}: protocol v17 ActorDamage is "
                     "not in net/protocol.h yet (E5 merge pending)")
                 continue
+            if test.__name__ in PRESENCE_TESTS and not PRESENCE_AVAILABLE:
+                skipped += 1
+                log(f"[skip] {test.__name__}: protocol v18 PlayerPresence is "
+                    "not in net/protocol.h yet (E6 merge pending)")
+                continue
             try:
                 test(exe, tmp)
                 if test.__name__ in KNOWN_FAIL_TESTS:
@@ -2465,12 +2573,15 @@ def main():
                              f"{ACTOR_APPEARANCE_MAX}B)")
         damage_status = ("pending" if not DAMAGE_AVAILABLE else
                          f"on({ACTOR_DAMAGE_SIZE}B)")
+        presence_status = ("pending" if not PRESENCE_AVAILABLE else
+                           f"on({PLAYER_PRESENCE_SIZE}B)")
         log(f"{passed} passed, {failures} failed, {known_fails} known-fail"
             f"{skipped_part} "
             f"(protocol v{PROTO}, outfit={OUTFIT_SIZE}B, "
             f"actors={'on' if ACTOR_AVAILABLE else 'pending'}, "
             f"appearance={appearance_status}, "
             f"damage={damage_status}, "
+            f"presence={presence_status}, "
             f"cap={CAP_ACTIVE}/rate={CAP_RATE}/s, "
             f"name<={MAX_NAME_BYTES}B)")
         if failures:

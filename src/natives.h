@@ -46,6 +46,11 @@ constexpr unsigned long long UI_BG_SET_TEXT_SCALE   = 0xA1253A3C870B6843ull;
 constexpr unsigned long long UI_BG_SET_TEXT_COLOR   = 0x16FA5CE47F184F1Eull;
 constexpr unsigned long long UI_BG_DISPLAY_TEXT     = 0x16794E044C9EFB58ull;
 constexpr unsigned long long MISC_VAR_STRING        = 0xFA925AC00EB830B9ull;
+// E6 (v18): UI-статус (пауза/карта/сатчель/магазин) для presence.
+constexpr unsigned long long IS_PAUSE_MENU_ACTIVE      = 0x535384D6067BA42Eull;
+constexpr unsigned long long IS_UIAPP_ACTIVE_BY_HASH   = 0x25B7A0206BDFAC76ull;
+constexpr unsigned long long IS_UIAPP_RUNNING_BY_HASH  = 0x4E511D093A86AD49ull;
+constexpr unsigned long long IS_UIAPP_RUNNING          = 0xDE4A9B35D028979Full;
 constexpr unsigned long long MAP_BLIP_ADD_FOR_ENTITY = 0x23F74C2FDA6E7C61ull;
 constexpr unsigned long long MAP_BLIP_ADD_FOR_COORDS = 0x554D9D53F696D002ull;
 constexpr unsigned long long MAP_BLIP_ADD_MODIFIER  = 0x662D364ABF16DE2Full;

@@ -93,6 +93,8 @@ public:
     // E5 (v17): хост получает запрос урона по NPC от гостя (0x1F).
     using OnActorDamageRequest = std::function<void(
         uint32_t epoch, uint32_t actorId, uint16_t damage, uint32_t weaponHash)>;
+    // E6 (v18): UI-статус другого игрока (карта/пауза/сатчель/магазин).
+    using OnPlayerPresence = std::function<void(uint32_t epoch, uint16_t flags)>;
 
     Client();
     ~Client();
@@ -150,6 +152,10 @@ public:
     // Возвращает false, если ещё нет JOIN_OK / сокет закрыт / не гость.
     bool SendActorDamage(uint32_t epoch, uint32_t actorId, uint16_t damage,
                          uint32_t weaponHash);
+    // E6 (v18): сообщить свой UI-статус (карта/пауза/сатчель/магазин...) —
+    // любой роль; сервер релеит ДРУГОМУ игроку. flags маскируются известными
+    // битами; 0 = нет статуса. Возвращает false до JOIN_OK/при epoch=0.
+    bool SendPlayerPresence(uint32_t epoch, uint16_t flags);
     // Текущее состояние роли по мнению сервера (обновляется HostChanged).
     bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
@@ -184,6 +190,7 @@ public:
     void SetActorAppearance(OnActorAppearance cb);
     void SetActorResyncRequest(OnActorResyncRequest cb);
     void SetActorDamageRequest(OnActorDamageRequest cb);
+    void SetPlayerPresence(OnPlayerPresence cb);
 
     ClientState State() const;
 
@@ -241,6 +248,7 @@ private:
     OnActorAppearance onActorAppearance_;
     OnActorResyncRequest onActorResyncRequest_;
     OnActorDamageRequest onActorDamageRequest_;
+    OnPlayerPresence onPlayerPresence_;
     std::atomic<bool> joined_{false};
     std::atomic<bool> isHost_{false};
     std::atomic<uint32_t> rttMs_{0};

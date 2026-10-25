@@ -310,6 +310,17 @@ bool ParseActorDamage(const std::vector<uint8_t>& p,
            out.damage <= net::kMaxActorDamage;
 }
 
+// E6 (v18): UI-статус другого игрока (0x20). Точный размер 8, epoch != 0,
+// только известные биты flags (неизвестные -> drop).
+bool ParsePlayerPresence(const std::vector<uint8_t>& p,
+                         net::PlayerPresencePayload& out)
+{
+    if (p.size() != sizeof(net::PlayerPresencePayload)) return false;
+    std::memcpy(&out, p.data(), sizeof(out));
+    if (out.epoch == 0) return false;
+    return (out.flags & ~net::kPlayerPresenceKnownFlags) == 0;
+}
+
 } // namespace
 
 Client::Client() = default;
@@ -377,6 +388,7 @@ void Client::SetActorOutfit(OnActorOutfit cb) { onActorOutfit_ = std::move(cb); 
 void Client::SetActorAppearance(OnActorAppearance cb) { onActorAppearance_ = std::move(cb); }
 void Client::SetActorResyncRequest(OnActorResyncRequest cb) { onActorResyncRequest_ = std::move(cb); }
 void Client::SetActorDamageRequest(OnActorDamageRequest cb) { onActorDamageRequest_ = std::move(cb); }
+void Client::SetPlayerPresence(OnPlayerPresence cb) { onPlayerPresence_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -649,6 +661,22 @@ bool Client::SendActorDamage(uint32_t epoch, uint32_t actorId,
     msg.pad = 0;
     msg.weaponHash = weaponHash;
     return SendRaw(MakeFrame((uint8_t)net::Msg::ActorDamage,
+                             reinterpret_cast<const uint8_t*>(&msg),
+                             static_cast<uint32_t>(sizeof(msg))));
+}
+
+bool Client::SendPlayerPresence(uint32_t epoch, uint16_t flags)
+{
+    // E6 (v18): 0x20 — любой роль -> сервер -> другому игроку (без эха).
+    // 0 = «нет специального статуса»; неизвестные биты маскируем, чтобы
+    // не получать drop от сервера.
+    if (!joined_.load()) return false;
+    if (epoch == 0) return false;
+    net::PlayerPresencePayload msg{};
+    msg.epoch = epoch;
+    msg.flags = static_cast<uint16_t>(flags & net::kPlayerPresenceKnownFlags);
+    msg.pad = 0;
+    return SendRaw(MakeFrame((uint8_t)net::Msg::PlayerPresence,
                              reinterpret_cast<const uint8_t*>(&msg),
                              static_cast<uint32_t>(sizeof(msg))));
 }
@@ -1053,6 +1081,13 @@ bool Client::RunOnce()
                 if (ParseActorDamage(p, req) && onActorDamageRequest_)
                     onActorDamageRequest_(req.epoch, req.actorId, req.damage,
                                           req.weaponHash);
+                break;
+            }
+            case net::Msg::PlayerPresence:
+            {
+                net::PlayerPresencePayload req{};
+                if (ParsePlayerPresence(p, req) && onPlayerPresence_)
+                    onPlayerPresence_(req.epoch, req.flags);
                 break;
             }
             case net::Msg::PlayerJoined:

@@ -60,6 +60,9 @@ struct OnlinePlayer {
     // E5 (v17): окно rate-limit для ActorDamage (0x1F), защищено g_mutex.
     uint64_t damageWindowMs = 0;
     int damageCount = 0;
+    // E6 (v18): окно rate-limit для PlayerPresence (0x20), защищено g_mutex.
+    uint64_t presenceWindowMs = 0;
+    int presenceCount = 0;
 };
 
 std::mutex g_mutex;                       // защищает g_online и g_lastPos
@@ -93,6 +96,8 @@ constexpr int kMaxNewConnectionsPerIpPerSecond = 12;
 // E5 (v17): не больше N запросов урона (0x1F) в секунду от одного клиента,
 // чтобы спам не занимал канал и не нагружал хоста вхолостую.
 constexpr int kMaxActorDamagePerSecond = 32;
+// E6 (v18): UI-статус — не больше N сообщений (0x20) в секунду от клиента.
+constexpr int kMaxPlayerPresencePerSecond = 10;
 std::mutex g_rateMutex;
 struct IpRate
 {
@@ -440,6 +445,19 @@ bool IsValidActorDamage(const std::vector<uint8_t>& pay)
     return msg.epoch != 0 && msg.actorId != 0 &&
            msg.damage >= net::kMinActorDamage &&
            msg.damage <= net::kMaxActorDamage;
+}
+
+// E6 (v18): UI-статус игрока. Точный размер 8, epoch != 0, только известные
+// биты flags (неизвестные -> drop); flags=0 допустим («нет статуса»).
+bool IsValidPlayerPresence(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() != sizeof(net::PlayerPresencePayload))
+        return false;
+    net::PlayerPresencePayload msg{};
+    std::memcpy(&msg, pay.data(), sizeof(msg));
+    if (msg.epoch == 0)
+        return false;
+    return (msg.flags & ~net::kPlayerPresenceKnownFlags) == 0;
 }
 
 bool IsValidActorResync(const std::vector<uint8_t>& pay)
@@ -1365,6 +1383,37 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                 }
                 if (senderIsHost)
                     LogWarn("[!] " + name + ": ActorDamage от хоста проигнорирован");
+                break;
+            }
+            case net::Msg::PlayerPresence:
+            {
+                // E6 (v18): UI-статус — любой клиент -> сервер -> ДРУГОМУ
+                // клиенту (без эха отправителю; при одном подключённом некому
+                // релеить). Защита от флуда: <= kMaxPlayerPresencePerSecond/с.
+                if (!IsValidPlayerPresence(pay))
+                    break;
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto it = g_online.find(name);
+                if (it == g_online.end())
+                    break;
+                const uint64_t now = NowMs();
+                if (it->second.presenceWindowMs == 0 ||
+                    now - it->second.presenceWindowMs >= 1000)
+                {
+                    it->second.presenceWindowMs = now;
+                    it->second.presenceCount = 0;
+                }
+                if (it->second.presenceCount >= kMaxPlayerPresencePerSecond)
+                    break; // rate-limited: молча дропаем
+                ++it->second.presenceCount;
+                const std::vector<uint8_t> msg = MakeMsg(
+                    (uint8_t)net::Msg::PlayerPresence,
+                    pay.data(), static_cast<uint32_t>(pay.size()));
+                for (auto& kv : g_online)
+                {
+                    if (kv.second.sock && kv.second.sock != sock)
+                        kv.second.sock->Send(msg.data(), (int)msg.size());
+                }
                 break;
             }
             case net::Msg::ActorResync:

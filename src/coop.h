@@ -39,6 +39,8 @@ void SendActorAppearance(uint32_t epoch, uint32_t actorId,
 // E5 (v17): гость -> хост запрос урона по NPC (0x1F, только guest).
 bool SendActorDamage(uint32_t epoch, uint32_t actorId, uint16_t damage,
                      uint32_t weaponHash);
+// E6 (v18): сообщить свой UI-статус (карта/пауза/сатчель/магазин) другому.
+bool SendPlayerPresence(uint32_t epoch, uint16_t flags);
 // E1: запрос resync от гостя. ВАЖНО: в net/client пока есть только приём
 // ActorResync, но НЕ отправка (Client::SendActorResync отсутствует) — заглушка
 // до правки net-слоя (net-review), игровой слой вызывает безопасно.

@@ -482,6 +482,11 @@ struct InboxEvents
 
     bool hostChanged = false;
     bool hostChangedIsHost = false;
+
+    // E6 (v18): UI-статус удалённого игрока (карта/пауза/сатчель/магазин).
+    bool presenceValid = false;
+    uint32_t presenceEpoch = 0;
+    uint16_t presenceFlags = 0;
 };
 
 struct NetInbox
@@ -547,6 +552,163 @@ void TakeInboxEvents(InboxEvents& out)
     std::lock_guard<std::mutex> lk(s_inboxMtx);
     out = s_inbox.events;
     s_inbox.events = InboxEvents{};
+}
+
+// ---------------- E6 (v18): UI-статус (presence) ----------------
+// RAGE-хэши имён UI-приложений (joaat lowercase, из задачи E6).
+constexpr unsigned long long kUiAppPauseMenu = 0x01C46AD2ull;
+constexpr unsigned long long kUiAppMap       = 0x8646B488ull;
+constexpr unsigned long long kUiAppSatchel   = 0xFFC21415ull;
+constexpr unsigned long long kUiAppShop      = 0xDBE4BF79ull;
+constexpr unsigned long long kUiAppPlayerMenu = 0x556A13C4ull;
+constexpr unsigned long long kUiAppInventory = 0x3008C430ull;
+
+constexpr unsigned int kPresenceDetectPeriodTicks = 5;
+constexpr unsigned int kPresenceHeartbeatTicks = 120; // ~2 c
+constexpr unsigned int kPresenceMaxPerSecond = 10;
+constexpr unsigned int kPresenceLogEveryTicks = 60;   // 1 строка/с
+// Удалённый статус без обновлений дольше ~12 с считаем устаревшим (heartbeat
+// 2 с; запас на паузу/лаг, но без «вечного» суффикса после пропажи партнёра).
+constexpr unsigned int kPresenceRemoteTimeoutTicks = 12 * 60;
+
+uint32_t s_presenceEpoch = 1;             // локальная эпоха сессии (<> 0)
+uint16_t s_localPresenceFlags = 0;
+uint16_t s_lastSentPresenceFlags = 0;
+bool s_presenceSentValid = false;
+unsigned int s_lastPresenceDetectTick = 0;
+unsigned int s_lastPresenceSendTick = 0;
+unsigned int s_presenceWindowTick = 0;
+unsigned int s_presenceWindowCount = 0;
+unsigned int s_lastUiPresenceLogTick = 0;
+bool s_remotePresenceValid = false;
+uint16_t s_remotePresenceFlags = 0;
+unsigned int s_lastRemotePresenceTick = 0;
+char s_presenceNameBuf[96] = "";
+
+bool UiAppActiveHash(unsigned long long appHash)
+{
+    using namespace natives_api;
+    Init(natives::IS_UIAPP_ACTIVE_BY_HASH);
+    Push(appHash);
+    if (Call() != 0)
+        return true;
+    Init(natives::IS_UIAPP_RUNNING_BY_HASH);
+    Push(appHash);
+    return Call() != 0;
+}
+
+bool UiAppRunningName(const char* appName)
+{
+    using namespace natives_api;
+    Init(natives::IS_UIAPP_RUNNING);
+    Push(reinterpret_cast<unsigned long long>(const_cast<char*>(appName)));
+    return Call() != 0;
+}
+
+// Эмпирический маппинг UIAPP -> биты v18 (уточняется по debug-логу ui:).
+uint16_t DetectLocalPresenceUi()
+{
+    using namespace natives_api;
+    Init(natives::IS_PAUSE_MENU_ACTIVE);
+    const bool pause = Call() != 0;
+
+    const bool pauseMenu = UiAppActiveHash(kUiAppPauseMenu) ||
+                           UiAppRunningName("pause_menu");
+    const bool map = UiAppActiveHash(kUiAppMap) || UiAppRunningName("map");
+    const bool satchel = UiAppActiveHash(kUiAppSatchel) ||
+                         UiAppRunningName("satchel");
+    const bool shop = UiAppActiveHash(kUiAppShop) || UiAppRunningName("shop");
+    const bool inv = UiAppActiveHash(kUiAppInventory) ||
+                     UiAppRunningName("inventory");
+    const bool playerMenu = UiAppActiveHash(kUiAppPlayerMenu) ||
+                            UiAppRunningName("player_menu");
+    const bool anyApp = pauseMenu || map || satchel || shop || inv ||
+                        playerMenu;
+
+    uint16_t flags = 0;
+    if (map) flags |= net::kPlayerPresenceInMap;
+    if (satchel || inv) flags |= net::kPlayerPresenceInSatchel;
+    if (shop) flags |= net::kPlayerPresenceInShop;
+    if (playerMenu) flags |= net::kPlayerPresenceInMenuOther;
+    if (pause) flags |= net::kPlayerPresenceInPauseMenu;
+
+    // Диагностика (npc_debug=1, 1/с, только когда пауза активна) — по ней
+    // фиксируем реальную привязку UIAPP-хэшей к карте/сатчелю/магазину.
+    if (coopcfg::Get().npcDebug && pause &&
+        s_tickCount - s_lastUiPresenceLogTick >= kPresenceLogEveryTicks)
+    {
+        s_lastUiPresenceLogTick = s_tickCount;
+        sh_log::Write(
+            "ui: pause=%d anyApp=%d pause_menu=%d map=%d satchel=%d shop=%d "
+            "inv=%d\n",
+            pause ? 1 : 0, anyApp ? 1 : 0, pauseMenu ? 1 : 0, map ? 1 : 0,
+            satchel ? 1 : 0, shop ? 1 : 0, inv ? 1 : 0);
+    }
+    return flags;
+}
+
+// Детект раз в ~5 тиков; отправка при изменении + heartbeat 2 с, <=10/с.
+void UpdateLocalPresence()
+{
+    if (!coopcfg::Get().npcActor || !coopcfg::Get().npcPresence)
+        return;
+    if (!g_netStarted)
+        return;
+    // E6: протухший статус партнёра (нет heartbeat) — суффикс снимаем.
+    if (s_remotePresenceValid &&
+        s_tickCount - s_lastRemotePresenceTick >
+            kPresenceRemoteTimeoutTicks)
+    {
+        s_remotePresenceValid = false;
+        s_remotePresenceFlags = 0;
+    }
+    if (s_tickCount - s_lastPresenceDetectTick < kPresenceDetectPeriodTicks)
+        return;
+    s_lastPresenceDetectTick = s_tickCount;
+
+    const uint16_t flags = DetectLocalPresenceUi();
+    s_localPresenceFlags = flags;
+    const bool changed = !s_presenceSentValid ||
+                         flags != s_lastSentPresenceFlags;
+    const bool heartbeat =
+        s_presenceSentValid &&
+        (s_tickCount - s_lastPresenceSendTick) >= kPresenceHeartbeatTicks;
+    if (!changed && !heartbeat)
+        return;
+
+    if (s_presenceWindowTick == 0 || s_tickCount - s_presenceWindowTick >= 60)
+    {
+        s_presenceWindowTick = s_tickCount;
+        s_presenceWindowCount = 0;
+    }
+    if (s_presenceWindowCount >= kPresenceMaxPerSecond)
+        return; // сервер всё равно rate-limit'ит 10/с
+
+    if (!SendPlayerPresence(s_presenceEpoch, flags))
+        return;
+    ++s_presenceWindowCount;
+    s_lastPresenceSendTick = s_tickCount;
+    s_lastSentPresenceFlags = flags;
+    s_presenceSentValid = true;
+}
+
+// Суффикс имени над головой для удалённого игрока (приоритет специфичных
+// экранов над общим pause-битом).
+const char* PresenceSuffix(uint16_t flags)
+{
+    if (flags & net::kPlayerPresenceInCutscene)
+        return "in cutscene";
+    if (flags & net::kPlayerPresenceInMap)
+        return "in map";
+    if (flags & net::kPlayerPresenceInSatchel)
+        return "in satchel";
+    if (flags & net::kPlayerPresenceInShop)
+        return "in shop";
+    if (flags & net::kPlayerPresenceInPauseMenu)
+        return "pause menu";
+    if (flags & net::kPlayerPresenceInMenuOther)
+        return "in menu";
+    return "";
 }
 
 // Состояние для спавна от сервера. Пишет/читает только игровой поток
@@ -5277,6 +5439,14 @@ void InitNetworkClient()
 {
     if (g_netStarted) return;
     g_netStarted = true;
+    // E6 (v18): локальная эпоха presence (nonzero; используется как маркер).
+    s_presenceEpoch = (static_cast<uint32_t>(GetTickCount64()) &
+                       0x7FFFFFFFu) | 1u;
+    s_presenceSentValid = false;
+    s_localPresenceFlags = 0;
+    s_lastSentPresenceFlags = 0;
+    s_remotePresenceValid = false;
+    s_remotePresenceFlags = 0;
 
     g_netClient.SetJoinOk([](const netio::JoinResult& jr) {
         sh_log::Write("net: JOIN_OK (hasSaved=%d, isHost=%d) from server\n",
@@ -5460,6 +5630,15 @@ void InitNetworkClient()
     // E5 (v17): запрос урона от гостя (0x1F) — в inbox actor_sync.
     g_netClient.SetActorDamageRequest(actor_sync::OnActorDamageRequest);
 
+    // E6 (v18): UI-статус другого игрока (карта/пауза/сатчель/магазин).
+    g_netClient.SetPlayerPresence([](uint32_t epoch, uint16_t flags) {
+        std::lock_guard<std::mutex> lk(s_inboxMtx);
+        InboxEvents& ev = s_inbox.events;
+        ev.presenceValid = true;
+        ev.presenceEpoch = epoch;
+        ev.presenceFlags = flags;
+    });
+
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
     coopcfg::Config& cfg = coopcfg::Load();
     sh_log::Write("net: connecting to %s:%d as '%s' (model=0x%llX)\n",
@@ -5509,6 +5688,12 @@ bool SendActorDamage(uint32_t epoch, uint32_t actorId, uint16_t damage,
                      uint32_t weaponHash)
 {
     return g_netClient.SendActorDamage(epoch, actorId, damage, weaponHash);
+}
+
+// E6 (v18): сообщить свой UI-статус другому игроку.
+bool SendPlayerPresence(uint32_t epoch, uint16_t flags)
+{
+    return g_netClient.SendPlayerPresence(epoch, flags);
 }
 
 void SendActorFrames(uint32_t epoch, uint16_t seq,
@@ -5599,6 +5784,8 @@ void Tick()
         UpdateLocalActionState(playerPed);
         UpdateLocalAim(playerPed);
         UpdateLocalShotEvents(playerPed);
+        // E6 (v18): детект/отправка локального UI-статуса.
+        UpdateLocalPresence();
 
         // P1: репликация мира/NPC. Хост шлёт снапшоты, гость применяет их
         // и подавляет собственную ambient-популяцию. По умолчанию выключено
@@ -5928,11 +6115,23 @@ void Tick()
         actor_sync::Reset();
         s_subtitleTicksLeft = 10 * 60;
     }
+    // E6 (v18): UI-статус удалённого игрока (для суффикса имени).
+    if (ev.presenceValid)
+    {
+        s_remotePresenceValid = true;
+        s_remotePresenceFlags = ev.presenceFlags;
+        s_lastRemotePresenceTick = s_tickCount;
+    }
+
     // Порядок важен: сначала connectionLost, потом leave, потом playerJoined
     // (события нового сеанса должны перебить старые).
     if (ev.connectionLost)
     {
         s_pendingConnectionLost = true;
+        // E6: presence сбрасываем — после reconnect статус придёт заново.
+        s_remotePresenceValid = false;
+        s_remotePresenceFlags = 0;
+        s_presenceSentValid = false;
         // После reconnect наряд/снаряжение надо переслать заново.
         s_sentOutfitValid = false;
         s_sentHorseOutfitValid = false;
@@ -5943,6 +6142,10 @@ void Tick()
     {
         std::snprintf(s_leaveName, sizeof(s_leaveName), "%s", ev.leaveName);
         s_pendingLeave = true;
+        // E6: статус ушедшего игрока больше не показываем.
+        s_remotePresenceValid = false;
+        s_remotePresenceFlags = 0;
+        s_presenceSentValid = false;
         // E1: игрок вышел — акторы устарели.
         actor_sync::Reset();
     }
@@ -5954,6 +6157,9 @@ void Tick()
         std::snprintf(s_joinedName, sizeof(s_joinedName), "Player %s joined",
                       ev.playerJoinedName);
         s_playerJoinedNotified = true;
+        s_presenceSentValid = false; // E6: новому игроку — свой статус заново
+        s_remotePresenceValid = false;
+        s_remotePresenceFlags = 0;
         s_pendingJoinWaitTicks = 0; // новый игрок — заново ждём его первый кадр
         s_subtitleTicksLeft = 8 * 60;
         std::snprintf(s_pedName, sizeof(s_pedName), "%s", ev.playerJoinedName);
@@ -6553,7 +6759,22 @@ void Tick()
             // head returns mid-body in this build, so we use a constant).
             Vec3 aboveHead = gp;
             aboveHead.z += 1.4f; // ~0.5 м над макушкой (опущено на 25% от 1.9f)
-            DrawNameAt(aboveHead, s_pedName);
+            // E6 (v18): суффикс UI-статуса удалённого игрока. s_pedName не
+            // мутируем (его используют логи/persist) — собираем буфер.
+            const char* displayName = s_pedName;
+            if (coopcfg::Get().npcActor && coopcfg::Get().npcPresence &&
+                s_remotePresenceValid)
+            {
+                const char* suffix = PresenceSuffix(s_remotePresenceFlags);
+                if (suffix[0])
+                {
+                    std::snprintf(s_presenceNameBuf,
+                                  sizeof(s_presenceNameBuf), "%s - %s",
+                                  s_pedName, suffix);
+                    displayName = s_presenceNameBuf;
+                }
+            }
+            DrawNameAt(aboveHead, displayName);
         }
     }
 

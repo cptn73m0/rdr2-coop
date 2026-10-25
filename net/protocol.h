@@ -15,7 +15,9 @@ namespace net {
 //           ActorEvent/ActorOutfit (хост) и ActorResync (гость -> хост).
 // v16 (E2c-b): ActorAppearance — точная внешность NPC (asset/tint), хост -> гость.
 // v17 (E5): ActorDamage — запрос урона по NPC от гостя хосту (host-authoritative).
-constexpr uint16_t kProtocolVersion = 17;
+// v18 (E6): PlayerPresence — UI-статус игрока (карта/пауза/сатчель/магазин),
+//           релеится сервером другому игроку (любое направление, без эха).
+constexpr uint16_t kProtocolVersion = 18;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -65,6 +67,8 @@ enum class Msg : uint8_t {
     ActorAppearance = 0x1E, // хост -> сервер -> гость: asset/tint внешности
     // E5 (v17): запрос урона по NPC — только гость -> сервер -> хосту.
     ActorDamage     = 0x1F, // гость -> сервер -> хосту: урон по актёру
+    // E6 (v18): UI-статус игрока — любой клиент -> сервер -> другому клиенту.
+    PlayerPresence  = 0x20, // клиент -> сервер -> другому клиенту: UI-статус
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -546,6 +550,31 @@ struct ActorDamagePayload {
 };
 static_assert(sizeof(ActorDamagePayload) == 16,
               "ActorDamagePayload must be 16 bytes");
+
+// ---------------- E6 (v18): UI-статус игрока (PlayerPresence) ----------------
+// Клиент сообщает серверу, открыт ли у него UI (карта/пауза/сатчель/магазин и
+// т.п.), чтобы второй игрок показал суффикс у ника («Name — in map»).
+// Сервер релеит сообщение ДРУГОМУ клиенту (без эха отправителю); направление
+// любое (хост и гость могут слать). flags=0 — «нет специального статуса».
+constexpr uint16_t kPlayerPresenceInMap       = 1u << 0;
+constexpr uint16_t kPlayerPresenceInPauseMenu = 1u << 1;
+constexpr uint16_t kPlayerPresenceInSatchel   = 1u << 2;
+constexpr uint16_t kPlayerPresenceInShop      = 1u << 3;
+constexpr uint16_t kPlayerPresenceInCutscene  = 1u << 4;
+constexpr uint16_t kPlayerPresenceInMenuOther = 1u << 5;
+// Биты 0..5 известны; 6..15 зарезервированы под будущее (сейчас drop).
+constexpr uint16_t kPlayerPresenceKnownFlags =
+    kPlayerPresenceInMap | kPlayerPresenceInPauseMenu |
+    kPlayerPresenceInSatchel | kPlayerPresenceInShop |
+    kPlayerPresenceInCutscene | kPlayerPresenceInMenuOther;
+
+struct PlayerPresencePayload {
+    uint32_t epoch = 0;
+    uint16_t flags = 0;  // kPlayerPresence* bitmask; 0 = нет статуса
+    uint16_t pad = 0;
+};
+static_assert(sizeof(PlayerPresencePayload) == 8,
+              "PlayerPresencePayload must be 8 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32
