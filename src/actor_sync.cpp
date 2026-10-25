@@ -89,6 +89,35 @@ constexpr float kMountLookaheadMax = 4.5f;
 constexpr float kMountRetargetMeters = 1.75f;     // 1.5-2.0 м
 constexpr float kMountStuckStoppingRange = 1.0f;  // fallback после 2 неудач
 constexpr unsigned int kMountStuckRetargets = 2;
+// E7.2: smooth NPC motion — интерполяция кадров, дальняя цель, редкий reissue.
+constexpr int kHostSampleCount = 3;              // история кадров хоста на proxy
+constexpr float kHostExtrapolateMaxMs = 150.0f;  // экстраполяция не дальше 150 мс
+constexpr float kHostHoldMs = 300.0f;            // нет кадров >300 мс — держим позу
+constexpr float kHumanLeadSeconds = 0.7f;        // lead = clamp(speed*0.7, 4, 12)
+constexpr float kHumanLeadMin = 4.0f;
+constexpr float kHumanLeadMax = 12.0f;
+constexpr float kHorseLeadSeconds = 0.7f;        // лошади: 0.5-0.8 с, clamp 5-20
+constexpr float kHorseLeadMin = 5.0f;
+constexpr float kHorseLeadMax = 20.0f;
+constexpr float kGoalMinProxyDist = 2.5f;        // dist(goal,proxy) >= 2.5 м
+constexpr unsigned int kStatusIntervalE72 = 3;   // статус задачи 2-3 тика
+constexpr unsigned int kUpdateIntervalE72 = 3;   // in-place update 2-3 тика
+constexpr float kUpdateMinShift = 0.4f;          // сдвиг цели для update, м
+constexpr float kTeleportDistE72 = 25.0f;        // телепорт: >25 м / |dz|>15
+constexpr float kTeleportDzE72 = 15.0f;
+constexpr unsigned long long kNoFramesSnapMs = 2000ull; // нет кадров >2 с
+constexpr float kStopSpeedE72 = 0.2f;            // стоп-гистерезис
+constexpr float kStopDistE72 = 1.0f;
+constexpr unsigned int kStopConfirmTicks = 15;   // ~0.25 с
+constexpr float kResumeSpeedE72 = 0.3f;
+constexpr unsigned int kResumeConfirmTicks = 12; // ~0.2 с
+constexpr float kMbrHysteresis = 0.15f;
+constexpr unsigned int kStuckConfirmTicks = 30;  // 0.5 с
+constexpr float kStuckDistE72 = 2.0f;
+// A2: marker-entity (invisible prop) — первый валидный из списка.
+constexpr uint32_t kMarkerModels[] = {0x04AC59BCu, 0x877C6202u, 0x85218677u,
+                                      0x8B944ACCu, 0x85F46DF3u};
+constexpr float kMarkerFollowSpeed = 1.0f;
 // Причины actor: mount despawn (контракт игрового слоя).
 constexpr unsigned int kMountReasonDismount = 1;
 constexpr unsigned int kMountReasonDespawn = 2;
@@ -1127,13 +1156,13 @@ float GetDesiredMoveBlendRatio(unsigned int ped)
 }
 
 // E2a.2: статус script-задачи (7 not_found / 8 finished → задачу надо выдать заново).
-int GetScriptTaskStatus(unsigned int ped, uint32_t taskHash)
+int GetScriptTaskStatus(unsigned int ped, uint32_t taskHash, bool p2 = true)
 {
     using namespace natives_api;
     Init(natives::GET_SCRIPT_TASK_STATUS);
     Push(ped);
     Push(static_cast<unsigned long long>(taskHash));
-    Push(true);
+    Push(p2);
     return static_cast<int>(Call());
 }
 
@@ -1522,6 +1551,7 @@ struct Inbox
     bool haveFrames = false;
     uint32_t framesEpoch = 0;
     uint16_t framesSeq = 0;
+    unsigned long long framesRecvMs = 0;
     std::vector<net::ActorFrame> frames;
     std::deque<net::ActorDespawnPayload> despawns;
     std::vector<AppearanceMsg> appearances; // E2c-b (v16)
@@ -2697,6 +2727,46 @@ struct Proxy
     unsigned int mountLastGaitTick = 0;
     float mountLastGait = -1.f;
     Vec3 mountMoveTarget{0.f, 0.f, 0.f};
+    // E7.2: интерполяция кадров хоста на 60 Гц + smooth far-target.
+    struct HostSample
+    {
+        float x = 0.f, y = 0.f, z = 0.f, heading = 0.f;
+        unsigned long long recvMs = 0;
+    };
+    HostSample hostSamples[kHostSampleCount]{};
+    int hostSampleCount = 0;
+    int hostSampleHead = 0;
+    float hostX = 0.f, hostY = 0.f, hostZ = 0.f, hostHeading = 0.f;
+    float hostVelX = 0.f, hostVelY = 0.f;
+    float hostSpeedInterp = 0.f;
+    unsigned long long lastFrameMs = 0;
+    float frameIntervalMs = 100.0f;
+    bool interpValid = false;
+    bool hostStale = false; // нет кадров >300 мс — держим позу/стоим
+    bool idleHeld = false;
+    unsigned int stopTicks = 0;
+    unsigned int moveTicks = 0;
+    unsigned int stuckTicks = 0;
+    float issuedGoalX = 0.f, issuedGoalY = 0.f;
+    bool issuedGoalValid = false;
+    float lastMbr = -1.f;
+    bool maxBlendSet = false;
+    float lastMinMbr = 0.f;
+    unsigned int lastUpdateTickE72 = 0;
+    unsigned int lastStatusTickE72 = 0;
+    // A/B: update-натив и marker-follow (A2) — per-actor, чтобы можно было
+    // откатить на A2 только для проблемного педа.
+    bool updateNativeOk = true;
+    unsigned int markerHandle = 0;
+    int markerModelRequest = 0;
+    unsigned int markerRequestTick = 0;
+    // диагностика окна 5 с для `actor: motion id=...`
+    unsigned int winReissue = 0;
+    unsigned int winSnap = 0;
+    unsigned int winGaitRestart = 0;
+    unsigned int winUpdate = 0;
+    unsigned int winStatusHist[9]{};
+    PerfP95 winErr;
     // E3a: сценарий (поза) и смерть/труп.
     uint32_t scenarioHash = 0;    // ActorSpawn.scenarioHash (dyn scenario)
     uint32_t scenarioApplied = 0; // какой hash реально применяли
@@ -2783,6 +2853,7 @@ std::vector<PendingSpawn> g_pendingSpawns;
 std::unordered_set<uint32_t> g_pendingSpawnIds;
 std::vector<net::ActorFrame> g_latestFrames;
 bool g_haveFrames = false;
+unsigned long long g_latestFramesRecvMs = 0;
 std::deque<net::ActorDespawnPayload> g_guestDespawnQueue;
 int g_modelRequestsThisTick = 0;
 int g_appearanceRequestsThisTick = 0; // E2a: бюджет REQUEST_META_PED_OUTFIT
@@ -2798,6 +2869,11 @@ unsigned int g_lastNoCollisionTick = 0;
 unsigned int g_motionIssued = 0;
 unsigned int g_motionReissue = 0;
 unsigned int g_motionGaitRestart = 0;
+// E7.2: snap/teleport/update-натив/stuck в окне сводки.
+unsigned int g_motionSnap = 0;
+unsigned int g_motionUpdateNative = 0;
+unsigned int g_motionStuck = 0;
+unsigned int g_lastTeleportLogTick = 0;
 
 // E2b: общая настройка созданного педа (rider или horse) — mission/visible/
 // invincible/LOD/no-collision + ground snap у вызывающего.
@@ -2876,8 +2952,16 @@ bool SeatRiderOnMount(Proxy& p)
 
 // P2-фикс (task-45): перед DELETE_PED снимаем mission-entity; если сущность
 // всё равно существует — НЕ теряем учёт (proxy остаётся в g_proxies, повтор).
+void DeleteMarkerObject(unsigned int marker);
+
 bool DeleteProxy(Proxy& proxy)
 {
+    // E7.2 A2: удалить marker-entity, если был (fallback marker-follow).
+    if (proxy.markerHandle)
+    {
+        DeleteMarkerObject(proxy.markerHandle);
+        proxy.markerHandle = 0;
+    }
     // E2a: не оставляем висящий meta-outfit-запрос при удалении прокси.
     if (proxy.outfitRequest)
     {
@@ -3342,6 +3426,337 @@ bool ComputeTrailTarget(const Proxy& p, float proxyX, float proxyY,
 
 // E2b: ведение всадника — двигаем ЛОШАДЬ (rider в седле, задач ему не даём).
 // Цель — трейл от rider-кадра (позиции хоста), gait из pad; reseat-watchdog.
+// ================= E7.2: smooth NPC motion helpers =================
+// Кольцо сэмплов кадра хоста (индекс 0 = самый свежий).
+Proxy::HostSample& HostSampleAt(Proxy& p, int newestIndex)
+{
+    int idx = (p.hostSampleHead - 1 - newestIndex) % kHostSampleCount;
+    if (idx < 0)
+        idx += kHostSampleCount;
+    return p.hostSamples[idx];
+}
+
+void PushHostSample(Proxy& p, float x, float y, float z, float heading,
+                    unsigned long long recvMs)
+{
+    if (p.hostSampleCount > 0)
+    {
+        const Proxy::HostSample& newest = HostSampleAt(p, 0);
+        if (recvMs > newest.recvMs)
+        {
+            const float dtMs = static_cast<float>(recvMs - newest.recvMs);
+            if (dtMs > 1.0f && dtMs < 2000.0f)
+                p.frameIntervalMs =
+                    p.frameIntervalMs * 0.7f + dtMs * 0.3f;
+        }
+    }
+    Proxy::HostSample& s = p.hostSamples[p.hostSampleHead];
+    s.x = x; s.y = y; s.z = z; s.heading = heading; s.recvMs = recvMs;
+    p.hostSampleHead = (p.hostSampleHead + 1) % kHostSampleCount;
+    if (p.hostSampleCount < kHostSampleCount)
+        ++p.hostSampleCount;
+    p.lastFrameMs = recvMs;
+}
+
+// Интерполяция/экстраполяция (<=150 мс) позы хоста на каждом тике (60 Гц).
+void UpdateHostInterpolation(Proxy& p, bool& outHavePose)
+{
+    outHavePose = false;
+    if (p.hostSampleCount == 0)
+        return;
+    const Proxy::HostSample& latest = HostSampleAt(p, 0);
+    const unsigned long long now = GetTickCount64();
+    const float ageMs =
+        (now > latest.recvMs) ? static_cast<float>(now - latest.recvMs) : 0.f;
+    float x = latest.x, y = latest.y, z = latest.z, heading = latest.heading;
+    if (p.hostSampleCount >= 2)
+    {
+        const Proxy::HostSample& older = HostSampleAt(p, 1);
+        const float dt =
+            (latest.recvMs > older.recvMs)
+                ? static_cast<float>(latest.recvMs - older.recvMs) / 1000.f
+                : 0.f;
+        if (dt > 0.001f)
+        {
+            const float vx = (latest.x - older.x) / dt;
+            const float vy = (latest.y - older.y) / dt;
+            p.hostVelX = p.hostVelX * 0.5f + vx * 0.5f;
+            p.hostVelY = p.hostVelY * 0.5f + vy * 0.5f;
+        }
+        if (ageMs <= kHostHoldMs)
+        {
+            const float ex =
+                std::min(ageMs, kHostExtrapolateMaxMs) / 1000.f;
+            float dx = p.hostVelX * ex;
+            float dy = p.hostVelY * ex;
+            const float len = std::sqrt(dx * dx + dy * dy);
+            const float maxStep =
+                std::min(p.ewmaSpeed, 8.0f) *
+                    (kHostExtrapolateMaxMs / 1000.f) +
+                0.5f;
+            if (len > maxStep && len > 0.0001f)
+            {
+                dx *= maxStep / len;
+                dy *= maxStep / len;
+            }
+            x += dx;
+            y += dy;
+        }
+    }
+    p.hostStale = ageMs > kHostHoldMs;
+    if (p.hostStale)
+    {
+        p.hostVelX = 0.f;
+        p.hostVelY = 0.f;
+    }
+    p.hostX = x;
+    p.hostY = y;
+    p.hostZ = z;
+    p.hostHeading = heading;
+    const float sp = p.hostStale ? 0.f : std::sqrt(p.hostVelX * p.hostVelX +
+                                                   p.hostVelY * p.hostVelY);
+    p.hostSpeedInterp = std::max(0.f, std::min(sp, 8.f));
+    p.ewmaSpeed = p.ewmaSpeed * 0.6f +
+                  std::min(p.hostSpeedInterp, 8.0f) * 0.4f;
+    p.interpValid = true;
+    outHavePose = true;
+}
+
+// Дальняя цель впереди хоста по ходу/heading; не клипаем к newest host point.
+void ComputeFarGoal(const Proxy& p, bool horse, float proxyX, float proxyY,
+                    float& outX, float& outY)
+{
+    // Нет кадров >300 мс — цель = поза хоста (держим позицию, не убегаем).
+    if (p.hostStale)
+    {
+        outX = p.hostX;
+        outY = p.hostY;
+        return;
+    }
+    const float speed = p.hostSpeedInterp;
+    const float leadMin = horse ? kHorseLeadMin : kHumanLeadMin;
+    const float leadMax = horse ? kHorseLeadMax : kHumanLeadMax;
+    float lead = speed * (horse ? kHorseLeadSeconds : kHumanLeadSeconds);
+    if (lead < leadMin) lead = leadMin;
+    if (lead > leadMax) lead = leadMax;
+
+    float dirX = 0.f, dirY = 0.f;
+    if (speed > 0.3f &&
+        (std::fabs(p.hostVelX) + std::fabs(p.hostVelY)) > 0.0001f)
+    {
+        dirX = p.hostVelX;
+        dirY = p.hostVelY;
+    }
+    else
+    {
+        const float rad = p.hostHeading * kRadPerDeg;
+        dirX = -std::sin(rad);
+        dirY = std::cos(rad);
+    }
+    float dl = std::sqrt(dirX * dirX + dirY * dirY);
+    if (dl < 0.0001f)
+    {
+        dirX = 0.f;
+        dirY = 1.f;
+        dl = 1.f;
+    }
+    dirX /= dl;
+    dirY /= dl;
+
+    // Разворот: если heading и направление движения расходятся — short lead.
+    const float hrad = p.hostHeading * kRadPerDeg;
+    const float hfx = -std::sin(hrad);
+    const float hfy = std::cos(hrad);
+    const float dotHV = dirX * hfx + dirY * hfy;
+    if (dotHV < 0.3f)
+        lead = leadMin;
+
+    // Минимальная дистанция goal-proxy 2.5 м.
+    outX = p.hostX + dirX * lead;
+    outY = p.hostY + dirY * lead;
+    float gdx = outX - proxyX, gdy = outY - proxyY;
+    float gd = std::sqrt(gdx * gdx + gdy * gdy);
+    if (gd < kGoalMinProxyDist)
+    {
+        const float need = kGoalMinProxyDist - gd;
+        outX += dirX * need;
+        outY += dirY * need;
+    }
+    // Точка должна быть впереди хоста (dot > 0).
+    if ((outX - p.hostX) * dirX + (outY - p.hostY) * dirY <= 0.f)
+    {
+        outX = p.hostX + dirX * leadMin;
+        outY = p.hostY + dirY * leadMin;
+    }
+}
+
+// Точный MBR по target speed (м/с); graceful clamp/fallback.
+float ComputeMoveBlendForSpeed(unsigned int ped, float targetSpeedMps)
+{
+    using namespace natives_api;
+    Init(natives::_COMPUTE_SPEED_FOR_PED_MOVE_BLEND_RATIO);
+    Push(ped);
+    Push(targetSpeedMps);
+    float mbr = CallFloat();
+    if (!(mbr >= 0.f && mbr <= 3.5f))
+        mbr = targetSpeedMps * 0.4f; // fallback, если натив не дал значение
+    if (mbr < 0.f) mbr = 0.f;
+    if (mbr > 3.f) mbr = 3.f;
+    return mbr;
+}
+
+void SetMaxMoveBlend(unsigned int ped, float value)
+{
+    using namespace natives_api;
+    Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
+    Push(ped);
+    Push(value);
+    Call();
+}
+
+void SetMinMoveBlend(unsigned int ped, float value)
+{
+    using namespace natives_api;
+    Init(natives::SET_PED_MIN_MOVE_BLEND_RATIO);
+    Push(ped);
+    Push(value);
+    Call();
+}
+
+void LogTeleportE72(uint32_t actorId, float dist)
+{
+    if (g_logTick - g_lastTeleportLogTick < kLogEveryTicks)
+        return;
+    g_lastTeleportLogTick = g_logTick;
+    sh_log::Write("actor: teleport id=%u dist=%.1f\n", actorId, dist);
+}
+
+float GetEntitySpeedNative(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::GET_ENTITY_SPEED);
+    Push(handle);
+    return CallFloat();
+}
+
+void DeleteMarkerObject(unsigned int marker)
+{
+    if (!marker)
+        return;
+    {
+        int h = static_cast<int>(marker);
+        using namespace natives_api;
+        Init(natives::DELETE_OBJECT);
+        Push(reinterpret_cast<unsigned long long>(&h));
+        Call();
+    }
+    if (DoesExist(marker))
+    {
+        int h2 = static_cast<int>(marker);
+        using namespace natives_api;
+        Init(natives::SET_OBJECT_AS_NO_LONGER_NEEDED);
+        Push(reinterpret_cast<unsigned long long>(&h2));
+        Call();
+    }
+}
+
+bool IsModelValidSafe(uint32_t model)
+{
+    using namespace natives_api;
+    Init(natives::IS_MODEL_VALID);
+    Push(static_cast<unsigned long long>(model));
+    return Call() != 0;
+}
+
+// E7.2: marker-entity для A2 (TASK_FOLLOW_TO_OFFSET_OF_ENTITY).
+unsigned int EnsureMarkerPed(Proxy& p, float x, float y, float z)
+{
+    if (p.markerHandle && DoesExist(p.markerHandle))
+        return p.markerHandle;
+    if (!coopcfg::Get().npcMotionMarker)
+        return 0;
+    if (p.markerModelRequest < 0)
+        return 0;
+    const unsigned int tick = g_logTick;
+    if (p.markerModelRequest == 0)
+    {
+        for (uint32_t model : kMarkerModels)
+        {
+            if (IsModelValidSafe(model))
+            {
+                RequestModel(model);
+                p.markerModelRequest = static_cast<int>(model);
+                p.markerRequestTick = tick;
+                return 0;
+            }
+        }
+        p.markerModelRequest = -1; // ни одна модель не валидна — A2 off
+        return 0;
+    }
+    const uint32_t model = static_cast<uint32_t>(p.markerModelRequest);
+    if (!HasModelLoaded(model))
+    {
+        if (tick - p.markerRequestTick > 300)
+            p.markerModelRequest = -1; // не загрузилась — A2 off
+        return 0;
+    }
+    using namespace natives_api;
+    Init(natives::CREATE_OBJECT);
+    Push(static_cast<unsigned long long>(model));
+    Push(x); Push(y); Push(z);
+    Push(false); // isNetwork
+    Push(false); // bScriptHostObj
+    Push(false); // dynamic
+    Push(false); // p7
+    Push(false); // p8
+    const unsigned int obj = static_cast<unsigned int>(Call());
+    if (!obj)
+        return 0;
+    SetMissionEntity(obj);
+    Init(natives::SET_ENTITY_VISIBLE);
+    Push(obj);
+    Push(false);
+    Call();
+    Init(natives::SET_ENTITY_COMPLETELY_DISABLE_COLLISION);
+    Push(obj);
+    Push(true);
+    Push(false);
+    Call();
+    Init(natives::FREEZE_ENTITY_POSITION);
+    Push(obj);
+    Push(true);
+    Call();
+    p.markerHandle = obj;
+    return obj;
+}
+
+void MoveMarker(Proxy& p, float x, float y, float z)
+{
+    if (!p.markerHandle || !DoesExist(p.markerHandle))
+        return;
+    SetCoordsNative(p.markerHandle, x, y, z);
+}
+
+void IssueMarkerFollow(unsigned int ped, unsigned int marker, float mbr,
+                       float stoppingRange)
+{
+    using namespace natives_api;
+    Init(natives::TASK_FOLLOW_TO_OFFSET_OF_ENTITY);
+    Push(ped);
+    Push(marker);
+    Push(0.f); Push(0.f); Push(0.f);
+    Push(mbr);                                    // movementSpeed
+    Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout -1
+    Push(stoppingRange);                          // 0.1
+    Push(true);  // p8: relativeOffset/persistFollowing
+    Push(true);  // p9
+    Push(false); // p10 walkOnly
+    Push(false); // p11
+    Push(true);  // p12
+    Push(false); // p13
+    Call();
+}
+
 void MoveMountedProxy(Proxy& p)
 {
     const unsigned int horse = p.mountHandle;
@@ -3378,171 +3793,265 @@ void MoveMountedProxy(Proxy& p)
                 LogMountFailed(p.actorId, "seat");
             else if (p.mountSeatAttempts > kMountMaxSeatAttempts)
             {
-                // Не смогли удержать в седле — fallback пешком, лошадь удалить.
                 LogMountFailed(p.actorId, "seat-fallback");
                 p.mounted = false;
                 p.dismountTick = tick;
                 p.taskActive = false;
+                p.mountTaskActive = false;
                 p.moveTaskValid = false;
                 return;
             }
         }
     }
 
+    bool havePose = false;
+    UpdateHostInterpolation(p, havePose);
     const Vec3 horsePos = GetCoords(horse);
-    const float dx = p.tx - horsePos.x;
-    const float dy = p.ty - horsePos.y;
-    const float dz = p.tz - horsePos.z;
-    const float dist = std::sqrt(dx * dx + dy * dy);
+    if (!havePose)
+        return;
 
-    if (dist > kTeleportDist || std::fabs(dz) > 8.0f)
+    // E7.2: нет кадров >2 с — snap в последнюю известную точку.
+    const unsigned long long nowMs = GetTickCount64();
+    if (p.lastFrameMs != 0 && nowMs - p.lastFrameMs > kNoFramesSnapMs)
     {
-        // Телепорт: обе сущности в цель, затем reseat.
+        const float dist = std::sqrt((p.tx - horsePos.x) * (p.tx - horsePos.x) +
+                                     (p.ty - horsePos.y) * (p.ty - horsePos.y));
         SetCoordsNative(horse, p.tx, p.ty, p.tz);
         SetHeadingNative(horse, p.heading);
         SetCoordsNative(p.handle, p.tx, p.ty, p.tz);
         SeatRiderOnMount(p);
         p.mountTaskActive = false;
         p.lastReseatTick = tick;
+        p.issuedGoalValid = false;
+        ++p.winSnap;
+        ++g_motionSnap;
+        LogTeleportE72(p.actorId, dist);
+        return;
+    }
+
+    const float dx = p.hostX - horsePos.x;
+    const float dy = p.hostY - horsePos.y;
+    const float dz = p.hostZ - horsePos.z;
+    const float dist = std::sqrt(dx * dx + dy * dy);
+    if (dist > kTeleportDistE72 || std::fabs(dz) > kTeleportDzE72)
+    {
+        SetCoordsNative(horse, p.hostX, p.hostY, p.hostZ);
+        SetHeadingNative(horse, p.hostHeading);
+        SetCoordsNative(p.handle, p.hostX, p.hostY, p.hostZ);
+        SeatRiderOnMount(p);
+        p.mountTaskActive = false;
+        p.taskActive = false;
+        p.lastReseatTick = tick;
+        p.issuedGoalValid = false;
+        ++p.winSnap;
+        ++g_motionSnap;
+        LogTeleportE72(p.actorId, dist);
         return;
     }
 
     g_motionErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
     g_mountErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
+    p.winErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
 
-    const float rawSpeedMs =
-        static_cast<float>(p.speed) * kSpeedByteToMetersPerSec;
-    p.ewmaSpeed = p.ewmaSpeed * (1.0f - kVelocityEwma) +
-                  rawSpeedMs * kVelocityEwma;
-
-    float gait = (p.gaitQ > 0)
-        ? static_cast<float>(p.gaitQ) / 1000.0f
-        : ((p.moveState >= 3) ? 3.0f : (p.moveState == 2) ? 2.0f : 1.0f);
-    if (gait < 0.1f) gait = 0.1f;
-    if (gait > 3.0f) gait = 3.0f;
-
-    // Всадник движется, если едет лошадь: moveState=RideHorse не означает
-    // «движется», поэтому смотрим сглаженную скорость.
-    const bool hostMoving = p.ewmaSpeed > 0.15f;
-    float targetX = p.tx;
-    float targetY = p.ty;
-    float gotoGait = gait;
-    bool idleStand = false;
-
-    if (!hostMoving)
+    // Стоп/старт гистерезис (лошадь).
+    const bool hostSlow = p.hostSpeedInterp < kStopSpeedE72;
+    if (hostSlow && dist < kStopDistE72)
     {
-        // Хост остановил лошадь: StandStill только когда лошадь уже рядом.
-        if (dist < kArriveDistMeters)
-        {
-            if (p.mountTaskActive)
-            {
-                SetDesiredMoveBlend(horse, 0.0f);
-                StandStill(horse);
-                p.mountTaskActive = false;
-                p.mountLastGait = 0.f;
-                p.mountLastGaitTick = tick;
-            }
-            idleStand = true;
-        }
-        else
-        {
-            gotoGait = 1.0f;
-        }
+        ++p.stopTicks;
+        p.moveTicks = 0;
     }
     else
     {
-        // E5.3: lead по времени (0.28 с) вместо малого статичного шага —
-        // лошадь не дёргается на каждом кадре.
-        float L = p.ewmaSpeed * kMountLookaheadSeconds;
-        if (L < kMountLookaheadMin) L = kMountLookaheadMin;
-        if (L > kMountLookaheadMax) L = kMountLookaheadMax;
-        if (p.ewmaSpeed < kSlowHostSpeed)
+        p.stopTicks = 0;
+        if (p.hostSpeedInterp > kResumeSpeedE72)
+            ++p.moveTicks;
+        else
+            p.moveTicks = 0;
+    }
+    if (p.stopTicks >= kStopConfirmTicks)
+    {
+        if (!p.idleHeld)
         {
-            L = kSlowCatchupStep * 2.0f;
-            targetX = p.tx;
-            targetY = p.ty;
+            SetDesiredMoveBlend(horse, 0.0f);
+            StandStill(horse);
+            SetMinMoveBlend(horse, 0.0f);
+            p.lastMinMbr = 0.f;
+            p.mountTaskActive = false;
+            p.mountLastGait = 0.f;
+            p.mountLastGaitTick = tick;
+            p.idleHeld = true;
+            p.lastMbr = 0.f;
         }
-        else if (!ComputeTrailTarget(p, horsePos.x, horsePos.y, L,
-                                     targetX, targetY))
+        return;
+    }
+    if (p.idleHeld && p.hostSpeedInterp > kResumeSpeedE72 &&
+        p.moveTicks >= kResumeConfirmTicks)
+        p.idleHeld = false;
+
+    float gx = 0.f, gy = 0.f;
+    ComputeFarGoal(p, true, horsePos.x, horsePos.y, gx, gy);
+    const float gdx = gx - horsePos.x;
+    const float gdy = gy - horsePos.y;
+    const float distGoal = std::sqrt(gdx * gdx + gdy * gdy);
+
+    float targetSpeed = p.hostSpeedInterp + std::max(0.f, distGoal - kHorseLeadMin) * 0.8f;
+    if (targetSpeed > 8.f) targetSpeed = 8.f;
+    float mbr = ComputeMoveBlendForSpeed(horse, targetSpeed);
+    if (p.hostSpeedInterp > 0.3f && mbr < 1.f) mbr = 1.f;
+    if (!p.maxBlendSet)
+    {
+        SetMaxMoveBlend(horse, 3.0f);
+        p.maxBlendSet = true;
+    }
+    if (std::fabs(mbr - p.lastMbr) > kMbrHysteresis)
+    {
+        SetDesiredMoveBlend(horse, mbr);
+        p.lastMbr = mbr;
+        ++g_motionGaitRestart;
+        ++p.winGaitRestart;
+    }
+    const float minMbr = (distGoal > 10.f && p.hostSpeedInterp > 1.f) ? 0.5f : 0.f;
+    if (std::fabs(minMbr - p.lastMinMbr) > 0.05f)
+    {
+        SetMinMoveBlend(horse, minMbr);
+        p.lastMinMbr = minMbr;
+    }
+
+    const float stopping = 0.05f; // E7.2: 0.05-0.1
+    const bool markerMode = coopcfg::Get().npcMotionMarker &&
+                            (!p.updateNativeOk ||
+                             !coopcfg::Get().npcMotionUpdate);
+    if (markerMode)
+    {
+        const unsigned int marker = EnsureMarkerPed(p, gx, gy, p.hostZ);
+        if (marker)
         {
-            const float rad = p.heading * kRadPerDeg;
-            targetX = p.tx - std::sin(rad) * L;
-            targetY = p.ty + std::cos(rad) * L;
+            bool needIssue = !p.mountTaskActive;
+            const bool wasActive = p.mountTaskActive;
+            if (!needIssue &&
+                tick - p.mountLastStatusTick >= kStatusIntervalE72)
+            {
+                p.mountLastStatusTick = tick;
+                const int st = GetScriptTaskStatus(
+                    horse, p.mountTaskHash,
+                    coopcfg::Get().npcMotionStatusP2);
+                if (st >= 0 && st <= 8)
+                    ++p.winStatusHist[st];
+                if (st == 7 || st == 8)
+                {
+                    needIssue = true;
+                    p.mountTaskActive = false;
+                }
+            }
+            if (needIssue)
+            {
+                IssueMarkerFollow(horse, marker, mbr, 0.1f);
+                p.mountTaskHash = natives::SCRIPT_TASK_FOLLOW_TO_OFFSET_OF_ENTITY;
+                p.mountTaskActive = true;
+                p.mountLastUpdateTick = tick;
+                p.mountLastStatusTick = tick;
+                p.mountMoveTarget = Vec3{gx, gy, p.hostZ};
+                p.issuedGoalX = gx;
+                p.issuedGoalY = gy;
+                p.issuedGoalValid = true;
+                ++g_motionIssued;
+                if (wasActive)
+                {
+                    ++p.winReissue;
+                    ++g_motionReissue;
+                }
+            }
+            else if (tick - p.mountLastUpdateTick >= kUpdateIntervalE72)
+            {
+                const float sx = gx - p.issuedGoalX;
+                const float sy = gy - p.issuedGoalY;
+                if (sx * sx + sy * sy >= kUpdateMinShift * kUpdateMinShift)
+                {
+                    MoveMarker(p, gx, gy, p.hostZ);
+                    p.issuedGoalX = gx;
+                    p.issuedGoalY = gy;
+                    p.mountMoveTarget = Vec3{gx, gy, p.hostZ};
+                    p.mountLastUpdateTick = tick;
+                    ++p.winUpdate;
+                }
+            }
+            return;
         }
     }
 
-    if (!idleStand)
+    // A: одна задача на фазу; reissue только 7/8/stuck.
+    bool needIssue = !p.mountTaskActive;
+    const bool wasActive = p.mountTaskActive;
+    if (!needIssue && tick - p.mountLastStatusTick >= kStatusIntervalE72)
     {
-        // Одна долгоживущая задача для лошади + редкий in-place update.
-        bool needIssue = !p.mountTaskActive;
-        const bool wasActive = p.mountTaskActive;
-        bool stuckRepair = false;
-        if (!needIssue &&
-            tick - p.mountLastStatusTick >= kMotionStatusCheckTicks)
+        p.mountLastStatusTick = tick;
+        const int st = GetScriptTaskStatus(horse, p.mountTaskHash,
+                                           coopcfg::Get().npcMotionStatusP2);
+        if (st >= 0 && st <= 8)
+            ++p.winStatusHist[st];
+        if (st == 7 || st == 8)
         {
-            p.mountLastStatusTick = tick;
-            const int st = GetScriptTaskStatus(horse, p.mountTaskHash);
-            if (st == 7 || st == 8)
-            {
-                needIssue = true;
-                p.mountTaskActive = false;
-                ++p.mountStuckCount;
-                stuckRepair = p.mountStuckCount >= kMountStuckRetargets;
-            }
+            needIssue = true;
+            p.mountTaskActive = false;
         }
-        if (needIssue)
+        else if (st == 1)
         {
-            // E5.3: после 2 «завершённых» задач подряд — перезапуск с
-            // stoppingRange 1.0 (лошадь не топчется на месте).
-            FollowNavmesh(horse, targetX, targetY, p.tz, gotoGait,
-                          kFollowHeadingSentinel,
-                          stuckRepair ? kMountStuckStoppingRange
-                                      : kFollowStoppingRange);
-            p.mountTaskHash = natives::SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD;
-            p.mountTaskActive = true;
-            p.mountLastUpdateTick = tick;
-            p.mountLastStatusTick = tick;
-            p.mountMoveTarget = Vec3{targetX, targetY, p.tz};
-            if (wasActive)
+            const float es = GetEntitySpeedNative(horse);
+            if (p.hostSpeedInterp > 0.5f &&
+                es < 0.15f * p.hostSpeedInterp && distGoal > kStuckDistE72)
             {
-                ++g_motionReissue;
-                ++g_mountedRetargets;
+                if (++p.stuckTicks >= kStuckConfirmTicks)
+                {
+                    needIssue = true;
+                    p.mountTaskActive = false;
+                    p.stuckTicks = 0;
+                    ++g_motionStuck;
+                }
             }
             else
             {
-                ++g_motionIssued;
+                p.stuckTicks = 0;
             }
-            if (stuckRepair)
-                p.mountStuckCount = 0;
         }
-        else if (tick - p.mountLastUpdateTick >= kMotionUpdateTicks)
+        else
         {
-            // E5.3: обновляем цель только когда она ушла на >=1.75 м —
-            // иначе задача перевыдаётся каждый тик и лошадь дёргается.
-            const float tdx = targetX - p.mountMoveTarget.x;
-            const float tdy = targetY - p.mountMoveTarget.y;
-            if (tdx * tdx + tdy * tdy >=
-                kMountRetargetMeters * kMountRetargetMeters)
-            {
-                UpdateTaskGoToCoord(horse, targetX, targetY, p.tz, gotoGait,
-                                    kFollowStoppingRange);
-                p.mountMoveTarget = Vec3{targetX, targetY, p.tz};
-                ++g_mountedRetargets;
-            }
+            p.stuckTicks = 0;
+        }
+    }
+    if (needIssue)
+    {
+        FollowNavmesh(horse, gx, gy, p.hostZ, mbr, kFollowHeadingSentinel,
+                      stopping);
+        p.mountTaskHash = natives::SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD;
+        p.mountTaskActive = true;
+        p.mountLastStatusTick = tick;
+        p.mountLastUpdateTick = tick;
+        p.mountMoveTarget = Vec3{gx, gy, p.hostZ};
+        p.issuedGoalX = gx;
+        p.issuedGoalY = gy;
+        p.issuedGoalValid = true;
+        p.stuckTicks = 0;
+        ++g_motionIssued;
+        if (wasActive)
+        {
+            ++p.winReissue;
+            ++g_motionReissue;
+        }
+    }
+    else if (coopcfg::Get().npcMotionUpdate && p.updateNativeOk &&
+             tick - p.mountLastUpdateTick >= kUpdateIntervalE72)
+    {
+        const float sx = gx - p.issuedGoalX;
+        const float sy = gy - p.issuedGoalY;
+        if (sx * sx + sy * sy >= kUpdateMinShift * kUpdateMinShift)
+        {
+            UpdateTaskGoToCoord(horse, gx, gy, p.hostZ, mbr, stopping);
+            p.issuedGoalX = gx;
+            p.issuedGoalY = gy;
+            p.mountMoveTarget = Vec3{gx, gy, p.hostZ};
             p.mountLastUpdateTick = tick;
-        }
-
-        if (std::fabs(gotoGait - p.mountLastGait) > 0.01f)
-        {
-            SetDesiredMoveBlend(horse, gotoGait);
-            p.mountLastGait = gotoGait;
-            p.mountLastGaitTick = tick;
-            ++g_motionGaitRestart;
-        }
-        else if (tick - p.mountLastGaitTick >= kGaitRefreshTicks)
-        {
-            SetDesiredMoveBlend(horse, gotoGait);
-            p.mountLastGaitTick = tick;
+            ++g_motionUpdateNative;
+            ++p.winUpdate;
         }
     }
 }
@@ -3551,7 +4060,7 @@ void MoveProxy(Proxy& p)
 {
     if (!DoesExist(p.handle))
     {
-        // E2b: rider пропал (битый handle/движок удалил) — лошадь не бросаем.
+        // E2b: rider пропал — лошадь не бросаем.
         if (p.mountHandle)
             TryDeleteMount(p, kMountReasonDespawn);
         return;
@@ -3568,7 +4077,7 @@ void MoveProxy(Proxy& p)
             else if (tickNow - p.mountDeathTick > kMountDeathDeleteTicks)
                 TryDeleteMount(p, kMountReasonDead);
         }
-        return; // труп не двигаем; хост пришлёт despawn
+        return;
     }
 
     if (p.mounted)
@@ -3586,174 +4095,264 @@ void MoveProxy(Proxy& p)
         }
     }
 
-    // E3a: пока хост в сценарии-позе (sit/work), движение не выдаём — поза
-    // держится сценарной задачей (ProcessActorScenarios). При снятии флага
-    // движение возобновится на следующем тике.
+    // E3a: сценарий-поза — движение не выдаём.
     if (p.scenarioFlag)
         return;
-
-    // E3b.3: пока активен бой (aim/shoot/reload) — НЕ выдаём TASK_FOLLOW.
-    // Стойка (StandStill) выдаётся один раз при входе в бой в
-    // ProcessActorWeapons; после снятия флагов движение возобновится.
+    // E3b.3: бой (aim/shoot/reload) приоритетнее движения.
     if (p.weaponAimFlag || p.weaponShootPulse || p.weaponReloadFlag)
         return;
 
+    bool havePose = false;
+    UpdateHostInterpolation(p, havePose);
+    if (!havePose)
+        return;
     const Vec3 cur = GetCoords(p.handle);
-    const float dx = p.tx - cur.x;
-    const float dy = p.ty - cur.y;
-    const float dz = p.tz - cur.z;
-    const float dist = std::sqrt(dx * dx + dy * dy);
 
-    if (dist > kTeleportDist || std::fabs(dz) > 8.0f)
+    // E7.2: нет кадров >2 с — snap в последнюю известную точку.
+    const unsigned long long nowMs = GetTickCount64();
+    if (p.lastFrameMs != 0 && nowMs - p.lastFrameMs > kNoFramesSnapMs)
     {
+        const float dist = std::sqrt((p.tx - cur.x) * (p.tx - cur.x) +
+                                     (p.ty - cur.y) * (p.ty - cur.y));
         SetCoordsNative(p.handle, p.tx, p.ty, p.tz);
         SetHeadingNative(p.handle, p.heading);
-        p.moveTaskValid = false;
         p.taskActive = false;
-        p.lastMoveState = -1;
+        p.issuedGoalValid = false;
+        ++p.winSnap;
+        ++g_motionSnap;
+        LogTeleportE72(p.actorId, dist);
         return;
     }
 
-    // E2a: ошибка позиции target-vs-ped для err_p95 (семпл в мм). Телепорты
-    // выше не семплим — это не ошибка сглаживания, а ресинк.
-    g_motionErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
-
-    // E2a.2: сглаженная скорость хоста из кадра (EWMA 0.3).
-    const float rawSpeedMs =
-        static_cast<float>(p.speed) * kSpeedByteToMetersPerSec;
-    p.ewmaSpeed = p.ewmaSpeed * (1.0f - kVelocityEwma) +
-                  rawSpeedMs * kVelocityEwma;
-
-    // E2a.2: gait из ActorFrame.pad (фактический desired у хоста), fallback —
-    // по moveState, если fake-host/старый кадр пришли без pad.
-    float gait = (p.gaitQ > 0)
-        ? static_cast<float>(p.gaitQ) / 1000.0f
-        : ((p.moveState >= 3) ? 3.0f : (p.moveState == 2) ? 2.0f : 1.0f);
-    if (gait < 0.1f) gait = 0.1f;
-    if (gait > 3.0f) gait = 3.0f;
-
-    const unsigned int tick = g_logTick;
-    float targetX = p.tx;
-    float targetY = p.ty;
-    float gotoGait = gait;
-    bool idleStand = false;
-
-    if (p.moveState == 0)
+    const float dx = p.hostX - cur.x;
+    const float dy = p.hostY - cur.y;
+    const float dz = p.hostZ - cur.z;
+    const float dist = std::sqrt(dx * dx + dy * dy);
+    if (dist > kTeleportDistE72 || std::fabs(dz) > kTeleportDzE72)
     {
-        // Хост стоит: StandStill только если прокси уже <0.5 м от позиции
-        // хоста; иначе догоняем пешком (после лага/телепорта).
-        if (dist < kArriveDistMeters)
-        {
-            if (p.lastMoveState != 0)
-            {
-                SetDesiredMoveBlend(p.handle, 0.0f);
-                StandStill(p.handle);
-                p.lastGait = 0.f;
-                p.lastGaitTick = tick;
-            }
-            p.taskActive = false;
-            p.moveTaskValid = false;
-            p.lastMoveState = 0;
-            idleStand = true;
-        }
-        else
-        {
-            targetX = p.tx;
-            targetY = p.ty;
-            gotoGait = 1.0f;
-            p.lastMoveState = 0;
-        }
+        SetCoordsNative(p.handle, p.hostX, p.hostY, p.hostZ);
+        SetHeadingNative(p.handle, p.hostHeading);
+        p.moveTaskValid = false;
+        p.taskActive = false;
+        p.issuedGoalValid = false;
+        ++p.winSnap;
+        ++g_motionSnap;
+        LogTeleportE72(p.actorId, dist);
+        return;
+    }
+
+    g_motionErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
+    p.winErr.AddUs(static_cast<unsigned long long>(dist * 1000.0f));
+
+    // E7.2: стоп/старт гистерезис (0.25-0.3 с / 0.2 с).
+    const bool hostSlow = p.hostSpeedInterp < kStopSpeedE72;
+    if (hostSlow && dist < kStopDistE72)
+    {
+        ++p.stopTicks;
+        p.moveTicks = 0;
     }
     else
     {
-        // Хост движется: цель = точка на трейле впереди прокси.
-        // L = clamp(0.5 + hostSpeed*0.45, 0.9, 3.0); медленный хост -> 0.3.
-        float L = kLookaheadBase + p.ewmaSpeed * kLookaheadPerSpeed;
-        if (L < kLookaheadMinMeters) L = kLookaheadMinMeters;
-        if (L > kLookaheadMaxMeters) L = kLookaheadMaxMeters;
-        if (p.ewmaSpeed < kSlowHostSpeed)
-        {
-            L = kSlowCatchupStep;
-            targetX = p.tx;
-            targetY = p.ty;
-        }
-        else if (!ComputeTrailTarget(p, cur.x, cur.y, L, targetX, targetY))
-        {
-            // Трейла ещё нет — по heading хоста.
-            const float rad = p.heading * kRadPerDeg;
-            targetX = p.tx - std::sin(rad) * L;
-            targetY = p.ty + std::cos(rad) * L;
-        }
-        p.lastMoveState = static_cast<int>(p.moveState);
+        p.stopTicks = 0;
+        if (p.hostSpeedInterp > kResumeSpeedE72)
+            ++p.moveTicks;
+        else
+            p.moveTicks = 0;
     }
-
-    if (!idleStand)
+    if (p.stopTicks >= kStopConfirmTicks)
     {
-        // Одна долгоживущая задача: in-place update цели; ре-issue только
-        // если задача реально завершилась (status 7 not_found / 8 finished).
-        bool needIssue = !p.taskActive;
-        const bool wasActive = p.taskActive;
-        if (!needIssue &&
-            tick - p.lastStatusTick >= kMotionStatusCheckTicks)
+        if (!p.idleHeld)
         {
-            p.lastStatusTick = tick;
-            const int st = GetScriptTaskStatus(p.handle, p.taskHash);
-            if (st == 7 || st == 8)
-            {
-                needIssue = true;
-                p.taskActive = false;
-            }
+            SetDesiredMoveBlend(p.handle, 0.0f);
+            StandStill(p.handle);
+            SetMinMoveBlend(p.handle, 0.0f);
+            p.lastMinMbr = 0.f;
+            p.taskActive = false;
+            p.moveTaskValid = false;
+            p.issuedGoalValid = false;
+            p.lastMbr = 0.f;
+            p.idleHeld = true;
         }
-        if (needIssue)
-        {
-            // heading sentinel 40000 = «не поворачивать» (как в rdr2-runtime).
-            FollowNavmesh(p.handle, targetX, targetY, p.tz, gotoGait,
-                          kFollowHeadingSentinel);
-            p.taskHash = natives::SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD;
-            p.taskActive = true;
-            p.taskIssuedTick = tick;
-            p.lastMotionUpdateTick = tick;
-            p.lastStatusTick = tick;
-            p.moveTarget = Vec3{targetX, targetY, p.tz};
-            p.moveTaskValid = true;
-            if (wasActive)
-                ++g_motionReissue; // задача завершилась и выдана заново
-            else
-                ++g_motionIssued;  // самая первая задача для прокси
-        }
-        else if (tick - p.lastMotionUpdateTick >= kMotionUpdateTicks)
-        {
-            // in-place update: не перезапускает анимацию/gait.
-            UpdateTaskGoToCoord(p.handle, targetX, targetY, p.tz, gotoGait,
-                                kFollowStoppingRange);
-            p.lastMotionUpdateTick = tick;
-            p.moveTarget = Vec3{targetX, targetY, p.tz};
-        }
-
-        // Gait: держим из кадра хоста; при изменении — сразу, иначе раз в
-        // ~10 тиков (без перезапуска задачи/анимации).
-        if (std::fabs(gotoGait - p.lastGait) > 0.01f)
-        {
-            SetDesiredMoveBlend(p.handle, gotoGait);
-            p.lastGait = gotoGait;
-            p.lastGaitTick = tick;
-            ++g_motionGaitRestart;
-        }
-        else if (tick - p.lastGaitTick >= kGaitRefreshTicks)
-        {
-            SetDesiredMoveBlend(p.handle, gotoGait);
-            p.lastGaitTick = tick;
-        }
-    }
-
-    // E2a: heading руками — только в idle (в walk/run ведёт навмеш).
-    if (p.moveState == 0 && !idleStand)
-    {
-        float norm = p.heading - GetHeading(p.handle);
+        // idle: heading — руками, по интерполированному host heading.
+        float norm = p.hostHeading - GetHeading(p.handle);
         while (norm > 180.f) norm -= 360.f;
         while (norm < -180.f) norm += 360.f;
         if (std::fabs(norm) > kHeadingDeadzone)
-            SetHeadingNative(p.handle, p.heading);
+            SetHeadingNative(p.handle, p.hostHeading);
+        return;
+    }
+    if (p.idleHeld && p.hostSpeedInterp > kResumeSpeedE72 &&
+        p.moveTicks >= kResumeConfirmTicks)
+        p.idleHeld = false;
+
+    float gx = 0.f, gy = 0.f;
+    ComputeFarGoal(p, false, cur.x, cur.y, gx, gy);
+    const float gdx = gx - cur.x;
+    const float gdy = gy - cur.y;
+    const float distGoal = std::sqrt(gdx * gdx + gdy * gdy);
+
+    // MBR: targetSpeed = hostSpeed + k*(distErr), затем точный MBR-натив.
+    float targetSpeed =
+        p.hostSpeedInterp + std::max(0.f, distGoal - kHumanLeadMin) * 0.8f;
+    if (targetSpeed > 8.f) targetSpeed = 8.f;
+    float mbr = ComputeMoveBlendForSpeed(p.handle, targetSpeed);
+    if (p.hostSpeedInterp > 0.3f && mbr < 1.f) mbr = 1.f;
+    if (!p.maxBlendSet)
+    {
+        SetMaxMoveBlend(p.handle, 3.0f);
+        p.maxBlendSet = true;
+    }
+    if (std::fabs(mbr - p.lastMbr) > kMbrHysteresis)
+    {
+        SetDesiredMoveBlend(p.handle, mbr);
+        p.lastMbr = mbr;
+        ++g_motionGaitRestart;
+        ++p.winGaitRestart;
+    }
+    // При догоне — min MBR > 0, чтобы пед реально бежал, а не «шагал».
+    const float minMbr = (distGoal > 10.f && p.hostSpeedInterp > 1.f) ? 0.5f : 0.f;
+    if (std::fabs(minMbr - p.lastMinMbr) > 0.05f)
+    {
+        SetMinMoveBlend(p.handle, minMbr);
+        p.lastMinMbr = minMbr;
+    }
+
+    const float stopping = 0.05f; // E7.2: 0.05-0.1
+    const bool markerMode = coopcfg::Get().npcMotionMarker &&
+                            (!p.updateNativeOk ||
+                             !coopcfg::Get().npcMotionUpdate);
+    if (markerMode)
+    {
+        const unsigned int marker = EnsureMarkerPed(p, gx, gy, p.hostZ);
+        if (marker)
+        {
+            bool needIssue = !p.taskActive;
+            const bool wasActive = p.taskActive;
+            if (!needIssue && tickNow - p.lastStatusTickE72 >= kStatusIntervalE72)
+            {
+                p.lastStatusTickE72 = tickNow;
+                const int st = GetScriptTaskStatus(
+                    p.handle, p.taskHash, coopcfg::Get().npcMotionStatusP2);
+                if (st >= 0 && st <= 8)
+                    ++p.winStatusHist[st];
+                if (st == 7 || st == 8)
+                {
+                    needIssue = true;
+                    p.taskActive = false;
+                }
+            }
+            if (needIssue)
+            {
+                IssueMarkerFollow(p.handle, marker, mbr, 0.1f);
+                p.taskHash = natives::SCRIPT_TASK_FOLLOW_TO_OFFSET_OF_ENTITY;
+                p.taskActive = true;
+                p.taskIssuedTick = tickNow;
+                p.lastUpdateTickE72 = tickNow;
+                p.lastStatusTickE72 = tickNow;
+                p.issuedGoalX = gx;
+                p.issuedGoalY = gy;
+                p.issuedGoalValid = true;
+                ++g_motionIssued;
+                if (wasActive)
+                {
+                    ++p.winReissue;
+                    ++g_motionReissue;
+                }
+            }
+            else if (tickNow - p.lastUpdateTickE72 >= kUpdateIntervalE72)
+            {
+                const float sx = gx - p.issuedGoalX;
+                const float sy = gy - p.issuedGoalY;
+                if (sx * sx + sy * sy >= kUpdateMinShift * kUpdateMinShift)
+                {
+                    MoveMarker(p, gx, gy, p.hostZ);
+                    p.issuedGoalX = gx;
+                    p.issuedGoalY = gy;
+                    p.lastUpdateTickE72 = tickNow;
+                    ++p.winUpdate;
+                }
+            }
+            return;
+        }
+    }
+
+    // A: одна задача на фазу; reissue только по статусу 7/8 или stuck.
+    bool needIssue = !p.taskActive;
+    const bool wasActive = p.taskActive;
+    if (!needIssue && tickNow - p.lastStatusTickE72 >= kStatusIntervalE72)
+    {
+        p.lastStatusTickE72 = tickNow;
+        const int st = GetScriptTaskStatus(p.handle, p.taskHash,
+                                           coopcfg::Get().npcMotionStatusP2);
+        if (st >= 0 && st <= 8)
+            ++p.winStatusHist[st];
+        if (st == 7 || st == 8)
+        {
+            needIssue = true;
+            p.taskActive = false;
+        }
+        else if (st == 1)
+        {
+            // stuck: задача «performing», но пед стоит при движущемся хосте.
+            const float es = GetEntitySpeedNative(p.handle);
+            if (p.hostSpeedInterp > 0.5f &&
+                es < 0.15f * p.hostSpeedInterp && distGoal > kStuckDistE72)
+            {
+                if (++p.stuckTicks >= kStuckConfirmTicks)
+                {
+                    needIssue = true;
+                    p.taskActive = false;
+                    p.stuckTicks = 0;
+                    ++g_motionStuck;
+                }
+            }
+            else
+            {
+                p.stuckTicks = 0;
+            }
+        }
+        else
+        {
+            p.stuckTicks = 0;
+        }
+    }
+    if (needIssue)
+    {
+        FollowNavmesh(p.handle, gx, gy, p.hostZ, mbr, kFollowHeadingSentinel,
+                      stopping);
+        p.taskHash = natives::SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD;
+        p.taskActive = true;
+        p.taskIssuedTick = tickNow;
+        p.lastStatusTickE72 = tickNow;
+        p.lastUpdateTickE72 = tickNow;
+        p.moveTarget = Vec3{gx, gy, p.hostZ};
+        p.moveTaskValid = true;
+        p.issuedGoalX = gx;
+        p.issuedGoalY = gy;
+        p.issuedGoalValid = true;
+        p.stuckTicks = 0;
+        ++g_motionIssued;
+        if (wasActive)
+        {
+            ++p.winReissue;
+            ++g_motionReissue;
+        }
+    }
+    else if (coopcfg::Get().npcMotionUpdate && p.updateNativeOk &&
+             tickNow - p.lastUpdateTickE72 >= kUpdateIntervalE72)
+    {
+        const float sx = gx - p.issuedGoalX;
+        const float sy = gy - p.issuedGoalY;
+        if (sx * sx + sy * sy >= kUpdateMinShift * kUpdateMinShift)
+        {
+            UpdateTaskGoToCoord(p.handle, gx, gy, p.hostZ, mbr, stopping);
+            p.issuedGoalX = gx;
+            p.issuedGoalY = gy;
+            p.moveTarget = Vec3{gx, gy, p.hostZ};
+            p.lastUpdateTickE72 = tickNow;
+            ++g_motionUpdateNative;
+            ++p.winUpdate;
+        }
     }
 }
 
@@ -4655,6 +5254,7 @@ void GuestTick(const TickContext& ctx)
         {
             frames.swap(g_inbox.frames);
             framesEpoch = g_inbox.framesEpoch;
+            g_latestFramesRecvMs = g_inbox.framesRecvMs;
             g_inbox.haveFrames = false;
             haveFrames = true;
         }
@@ -4947,6 +5547,8 @@ void GuestTick(const TickContext& ctx)
                 p.mountFailedLogged = true;
                 LogMountFailed(p.actorId, "no-model");
             }
+            PushHostSample(p, f.x, f.y, f.z, f.heading,
+                           g_latestFramesRecvMs);
             p.lastFrameTick = tick;
             p.resyncLogged = false;
             ++g_appliedFrames;
@@ -5076,9 +5678,52 @@ void GuestTick(const TickContext& ctx)
             sh_log::Write(
                 "actor: motion mounted err_p95=%.2f retargets=%u\n",
                 g_mountErr.P95Ms() / 1000.0, g_mountedRetargets);
+            // E7.2: per-actor диагностика окна 5 с.
+            const double winSec =
+                static_cast<double>(kSummaryEveryTicks) / 60.0;
+            for (auto& kv : g_proxies)
+            {
+                Proxy& p = kv.second;
+                if (!p.winReissue && !p.winSnap && !p.winUpdate &&
+                    !p.winGaitRestart && p.winErr.count == 0)
+                    continue;
+                unsigned int s1 = 0, s2 = 0, s3 = 0;
+                for (int st = 0; st <= 8; ++st)
+                {
+                    const unsigned int v = p.winStatusHist[st];
+                    if (v > p.winStatusHist[s1]) { s3 = s2; s2 = s1; s1 = st; }
+                    else if (v > p.winStatusHist[s2]) { s3 = s2; s2 = st; }
+                    else if (v > p.winStatusHist[s3]) { s3 = st; }
+                }
+                if (p.updateNativeOk && p.winUpdate > 0 &&
+                    p.winReissue >= 2 && coopcfg::Get().npcMotionUpdate)
+                {
+                    p.updateNativeOk = false;
+                    sh_log::Write(
+                        "actor: motion warn update-native A/B id=%u "
+                        "reissue=%u updates=%u -> fallback\n",
+                        p.actorId, p.winReissue, p.winUpdate);
+                }
+                sh_log::Write(
+                    "actor: motion id=%u reissue=%.2f/s snap=%.2f/s "
+                    "target_err_p95=%.2f status=%u/%u/%u gait_restart=%u\n",
+                    p.actorId, p.winReissue / winSec, p.winSnap / winSec,
+                    p.winErr.P95Ms() / 1000.0, s1, s2, s3,
+                    p.winGaitRestart);
+                p.winReissue = 0;
+                p.winSnap = 0;
+                p.winUpdate = 0;
+                p.winGaitRestart = 0;
+                p.winErr.Clear();
+                for (int st = 0; st <= 8; ++st)
+                    p.winStatusHist[st] = 0;
+            }
             g_motionIssued = 0;
             g_motionReissue = 0;
             g_motionGaitRestart = 0;
+            g_motionSnap = 0;
+            g_motionUpdateNative = 0;
+            g_motionStuck = 0;
             g_motionErr.Clear();
             g_mountErr.Clear();
             g_mountedRetargets = 0;
@@ -5324,6 +5969,7 @@ void OnActorFrames(uint32_t epoch, uint16_t seq,
     g_inbox.haveFrames = true;
     g_inbox.framesEpoch = epoch;
     g_inbox.framesSeq = seq;
+    g_inbox.framesRecvMs = GetTickCount64();
     g_inbox.frames = frames;
 }
 

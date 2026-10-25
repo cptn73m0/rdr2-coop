@@ -237,6 +237,11 @@ constexpr unsigned long long GET_PED_MAX_STAMINA           = 0xCB42AFE2B613EE55u
 // Ограничение скорости анимации педа (для шага/бега — чтобы пед-призрак
 // шёл шагом, а не бежал, при движении задачей TASK_GO_*).
 constexpr unsigned long long SET_PED_MAX_MOVE_BLEND_RATIO   = 0x433083750C5E064Aull;
+// E7.2: min move blend (догон) и точный MBR по target speed (м/с).
+constexpr unsigned long long SET_PED_MIN_MOVE_BLEND_RATIO   = 0x01A898D26E2333DDull;
+constexpr unsigned long long _COMPUTE_SPEED_FOR_PED_MOVE_BLEND_RATIO = 0xCA95924C893A0C91ull;
+// E7.2 A2 fallback: follow marker entity.
+constexpr unsigned long long TASK_FOLLOW_TO_OFFSET_OF_ENTITY = 0x304AE42E357B8C7Eull;
 // E2a.2: удержание gait без перезапуска анимации (walk 1.0 / run 2.0 / sprint 3.0).
 constexpr unsigned long long SET_PED_DESIRED_MOVE_BLEND_RATIO = 0x1E982AC8716912C5ull;
 // E2a.2: чтение фактического desired gait хоста (упаковывается в ActorFrame.pad).
@@ -255,6 +260,7 @@ constexpr unsigned long long TASK_FOLLOW_NAV_MESH_TO_COORD  = 0x15D3A79D4E44B913
 // E2a.2: хэши script-задач для GET_SCRIPT_TASK_STATUS (не нативы).
 constexpr uint32_t SCRIPT_TASK_FOLLOW_NAV_MESH_TO_COORD = 0x2A89B8A7u;
 constexpr uint32_t SCRIPT_TASK_STAND_STILL              = 0xC572E06Au;
+constexpr uint32_t SCRIPT_TASK_FOLLOW_TO_OFFSET_OF_ENTITY = 0x3EF867F4u;
 
 // Spike 1 (модель A): признак mission entity — приоритет репликации мира
 // и фильтр для прокси-сущностей на госте.

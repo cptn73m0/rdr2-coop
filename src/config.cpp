@@ -109,6 +109,12 @@ void WriteDefaultIni()
     fputs("npc_visitor_vehicles = 0\n", f);
     fputs("# E7.1: сохранять сценарных/событийных NPC (vendors/quest/events).\n", f);
     fputs("npc_visitor_preserve_events = 1\n", f);
+    fputs("# E7.2: in-place update go-to задачи (A/B; 0 = только far-target).\n", f);
+    fputs("npc_motion_update = 1\n", f);
+    fputs("# E7.2: fallback A2 marker-entity follow (default 0, после A/B).\n", f);
+    fputs("npc_motion_marker = 0\n", f);
+    fputs("# E7.2: p2 в GET_SCRIPT_TASK_STATUS (A/B, default 1).\n", f);
+    fputs("npc_motion_status_p2 = 1\n", f);
     fclose(f);
 }
 
@@ -193,6 +199,10 @@ void ApplyLine(const std::string& raw, Config& out)
         out.npcVisitorVehicles = AsBool(val);
     else if (key == "npc_visitor_preserve_events")
         out.npcVisitorPreserveEvents = AsBool(val);
+    else if (key == "npc_motion_update") out.npcMotionUpdate = AsBool(val);
+    else if (key == "npc_motion_marker") out.npcMotionMarker = AsBool(val);
+    else if (key == "npc_motion_status_p2")
+        out.npcMotionStatusP2 = AsBool(val);
     else if (key == "npc_corpse_max_sec")
     {
         char* end = nullptr;

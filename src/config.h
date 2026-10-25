@@ -75,6 +75,16 @@ struct Config {
     // Сохранять сценарных/событийных NPC (продавцы/работники/энкаунтеры).
     // 0 = агрессивное подавление (CLEAR_AREA ambient-флагом).
     bool npcVisitorPreserveEvents = true;
+    // E7.2 smooth NPC motion (A/B):
+    // npc_motion_update=1 — in-place update задачи через
+    // _UPDATE_TASK_GO_TO_COORD_WITH_OFFSET (совместимость A/B ещё не
+    // подтверждена в игре; default 0 = безопасный far-target/reissue).
+    bool npcMotionUpdate = true;
+    // npc_motion_marker=1 — fallback A2: marker-entity +
+    // TASK_FOLLOW_TO_OFFSET_OF_ENTITY (default 0, только после A/B).
+    bool npcMotionMarker = false;
+    // p2 в GET_SCRIPT_TASK_STATUS (A/B, default true).
+    bool npcMotionStatusP2 = true;
 };
 
 // Загрузить конфиг из rdr2-coop.ini (рядом с плагином). Если файла нет —
