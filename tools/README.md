@@ -1,15 +1,15 @@
 # tools/ — вспомогательные однопК-инструменты
 
-## `fake_actor_client.py` — headless-«игрок» протокола v17 для проверки NPC-репликации
+## `fake_actor_client.py` — headless-«игрок» протокола v18 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E5.1/E2c (actor-репликация NPC) на
-одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v17;
+Заменяет второй ПК при тестировании E1–E7.2/E2c (actor-репликация NPC) на
+одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v18;
 игра запускается только на одном ПК.
 
 Оба режима используют TCP-релей (`--host 127.0.0.1 --port 7777`), framing
 `[len:u32][type:u8][payload]`, JOIN с protocol_version, **автоматически
 прочитанным из `net/protocol.h` (`kProtocolVersion`, fallback 16)**; сейчас
-это v17. Лог пишется в stdout и в `tools/fake_actor_client.log` (append; файл
+это v18. Лог пишется в stdout и в `tools/fake_actor_client.log` (append; файл
 `*.log` уже игнорируется корневым `.gitignore` и не коммитится).
 
 **Позиция fake guest:** в guest-режиме инструмент принимает player FRAME
@@ -33,7 +33,7 @@ FRAME нет (fake host), через 2 с используется фиксир�
 - **Тест B** (`--mode guest`, игровой хост → fake guest, cap=12):
   получен `spawn batch n=12 unique=12`, кадры ~13 Гц (фактическая частота
   игрового хоста), `errors=0`, 12 уникальных actorId. **PASS**.
-- Инструмент проверен на реальном сервере v17 и реальной игре; заменяет
+- Инструмент проверен на реальном сервере v18 и реальной игре; заменяет
   второй ПК для wire/apply-части E1, но **не заменяет** двухПК-приёмку
   `docs/NPC_E1_TESTING.md` (метрики «неотличимости», FPS/tick, визуал).
 
@@ -41,7 +41,7 @@ FRAME нет (fake host), через 2 с используется фиксир�
 
 **Порядок важен: сначала сервер, потом fake host, потом игра-гость.**
 
-1. Запустить сервер (v17):
+1. Запустить сервер (v18):
    ```powershell
    .\build-server-ci\Release\rdr2_coop_server.exe 7777
    ```
@@ -85,7 +85,7 @@ E2a проверяет, что вместе с `ActorSpawn` уходит `metaOu
 
 **Визуальный тест: fake host → игровой гость (как ТЕСТ A)**
 ```powershell
-# сервер v17
+# сервер v18
 .\build-server-ci\Release\rdr2_coop_server.exe 7777
 
 # fake host: берём до 5 разных пар model+metaOutfit из лога игры,
@@ -132,9 +132,10 @@ E2a.2 использует два поля `ActorFrame` (размер кадра
   использует fallback по `moveState`; для чистого A/B фейковый хост всегда
   шлёт gait.
 
-Fake host: `--gait 1.0` (walk, default) или `--gait 2.0` (run). Скорость
-движения = `--speed * --gait` (default `--speed 1.0`), spawn `moveStyle`
-согласован (0 idle / 1 walk / 2 run). Стоящие акторы шлют `speed=0, pad=0`.
+Fake host: `--gait 1.0` (walk, default), `--gait 2.0` (run) или `--gait 3.0`
+(fast baseline E7.2). Скорость движения = `--speed * --gait` (default
+`--speed 1.0`), spawn `moveStyle` согласован (0 idle / 1 walk / 2 run /
+3 sprint). Стоящие акторы шлют `speed=0, pad=0`.
 
 **A/B-тест ходьбы (игра-гость):**
 ```powershell
@@ -175,7 +176,7 @@ E2b сдаёт в `ActorSpawn`:
 - `reserved` (u32) = **хэш модели лошади** (`A_C_HORSE_*` из `Peds.json`,
   fallback 3–4 известных модели);
 - `moveStyle = RideHorse (3)`; кадры несут mounted-флаг, скорость/gait —
-  как задано (`--gait 1.0` шаг / `2.0` галоп).
+  как задано (`--gait 1.0` шаг / `2.0` галоп / `3.0` fast baseline).
 
 Первые `--mounted N` акторов (из `--num`) — верхом; позиции/heading по общему
 паттерну. `--mount-model` задаёт один явный хэш для всех всадников.
@@ -381,7 +382,7 @@ fakeguest: target_frames=N
 ### E3c: животные и свободные лошади
 
 `ActorSpawn.kind` = **0 human, 1 animal, 2 horse** (поле есть с v15/v16;
-текущий E5-протокол v17 его не меняет). Host-флаги добавляют акторов сверх
+текущий v18 его не меняет). Host-флаги добавляют акторов сверх
 `--num` (людей):
 
 - `--animals N` — N наземных животных kind=1; модели берутся из
@@ -488,6 +489,34 @@ python tools\fake_actor_client.py --mode host --name TestHost `
 Игровой гость шлёт 0x1F; fake host логирует damage/killed, присылает dead;
 гость видит падение/труп. В guest-логе `actor: ... death` (human/animal).
 
+### E5.2/E5.3: трупы и сглаживание всадников
+
+- E5.2: game-гость держит corpse-прокси, пока host-труп существует;
+  `npc_corpse_max_sec=300` (0 = старое поведение); fake host после `--kill-after`
+  шлёт dead/труп, guest считает `corpses`/`dead_frames`.
+- E5.3: mounted smoothing (retarget 1.75 м, lead 0.28, stuck fallback);
+  fake host показывает `actor: motion mounted err_p95/retargets`.
+
+### E7.2: baseline плавности (fake host, gait 3.0)
+
+Быстрый baseline для проверки интерполяции/плавности: 4 NPC по кругу на
+повышенном gait (3.0 m/s), 120 с.
+
+```powershell
+python tools\fake_actor_client.py --mode host --name MotionHost `
+  --pattern circle --num 4 --gait 3 --duration 120
+```
+
+Затем запустить игру **гостем**; смотреть на прокси и в guest-логе:
+```
+actor: motion id=1 reissue=0.00/s snap=0.00/s target_err_p95=0.0 status=...
+```
+Приёмка baseline: `reissue < 0.05/s`, `snap=0`, без телепортов (лог
+`actor: teleport` — только на respawn/дальние прыжки). Флаги E7.2:
+`npc_motion_update=1`, `npc_motion_marker=0`, `npc_motion_status_p2=1`.
+E6 presence и E7.1 visitor mode — игровые (fake tool их не эмулирует):
+проверять по `docs/NPC_E1_TESTING.md` (S19/S20).
+
 ### E2c: поздние outfit-обновления (metaOutfit resolver)
 
 E2c: игровой хост подбирает `metaOutfit` для NPC, у которых он был 0, и
@@ -518,7 +547,7 @@ Exit 0/PASS — как обычно (≥1 spawn-batch и ≥10 frames).
 ### E2c-b (v16): ActorAppearance (0x1E)
 
 `ActorAppearance` (0x1E) — asset/tint внешность NPC, хост → сервер → гость;
-**реализовано и задеплоено (появилось в protocol v16, актуально в v17)**. Fake guest валидирует: header
+**реализовано и задеплоено (появилось в protocol v16, актуально в v18)**. Fake guest валидирует: header
 12 B (`epoch:u32, actorId:u32, count:u8, pad3`), `count` в 1..16, точный
 размер `12 + count*28` (max 460 B), `epoch!=0`, `actorId!=0`, `reserved==0`
 в каждой 28-байтной записи; предупреждает, если appearance пришёл раньше
@@ -538,7 +567,7 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (ARINA на v16 — нужен деплой v17) —
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (ARINA/локальный на тестовом v18, финальный ASI E8971A62) —
 pending. Для дымового теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
@@ -546,7 +575,7 @@ pending. Для дымового теста без игры fake host `--appeara
 ### E4: замеры производительности (`perf_report.py`)
 
 `tools/perf_report.py` парсит `perf: npc host ...` / `perf: npc guest ...`
-(формат E4; в v17 тот же, `npc_debug=1`) и legacy `perf: actor ...` (старые логи).
+(формат E4; в v18 тот же, `npc_debug=1`) и legacy `perf: actor ...` (старые логи).
 Считает p50/p95/max по tick/discover/capture/build/spawn/appearance/motion/
 weapons, counters (`actors/spawns/frames/despawns/bytes/s`,
 `proxies/spawns/applied/failed/timeouts`), warn/errors/timeouts, сравнивает
@@ -573,7 +602,7 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 
 **Порядок: сервер → игра-хост → fake guest.**
 
-1. Запустить сервер v17.
+1. Запустить сервер v18.
 2. Запустить RDR2 и подключиться **первым** (игра должна стать HOST);
    в INI: `npc_actor = 1`.
 3. Запустить fake guest вторым:
@@ -604,7 +633,7 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 | `--animals` | 0 | E3c: N животных kind=1 (наземные, без рыб/птиц), модели из Peds.json |
 | `--horses` | 0 | E3c: N свободных лошадей kind=2 (первые A_C_HORSE_*), двигаются |
 | `--pattern` | `circle` | `circle` / `line` (4 м назад-вперёд) / `mixed` (2 круга, 2 линии, остальные стоят) |
-| `--gait` | 1.0 | E2a.2 gait движущихся актёров: `1.0` walk, `2.0` run/галоп (уходит в `ActorFrame.pad=gait*1000`; idle=0) |
+| `--gait` | 1.0 | E2a.2/E7.2 gait движущихся актёров: `1.0` walk, `2.0` run/галоп, `3.0` fast baseline (уходит в `ActorFrame.pad=gait*1000`; idle=0) |
 | `--mounted` | 0 | E2b: сколько из `--num` акторов верхом (первые N; 0..num); flags bit0 + `ActorSpawn.reserved=mount model` |
 | `--mount-model` | — | E2b: явный хэш лошади для всех всадников (иначе `A_C_HORSE_*` из Peds.json) |
 | `--scenario` | 0 | E3a: сколько из `--num` акторов в сценарии (первые N; idle + flags bit5 + scenarioHash) |
@@ -643,7 +672,7 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 - **Первый подключившийся — HOST.** Если fake host запустить после игры, он
   получит `is_host=0` и выйдет с кодом 3 (`fakehost: ERROR: this tool is not
   HOST`). Аналогично fake guest, запущенный до игры, станет HOST — exit 3.
-- Сервер и игра должны быть **protocol v17** (`kProtocolVersion=17`, инструмент читает версию из `net/protocol.h`); при
+- Сервер и игра должны быть **protocol v18** (`kProtocolVersion=18`, инструмент читает версию из `net/protocol.h`); при
   несовпадении — `JOIN rejected: VersionMismatch`.
 - В игре-госте (`--mode host`) должен быть `npc_actor = 1`, иначе E1 не примет
   Actor-сообщения и NPC не появятся.

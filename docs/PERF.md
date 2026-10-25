@@ -1,27 +1,29 @@
 # E4 — производительность NPC-репликации: методика и приёмка
 
 Документ описывает, как снимать и проверять стоимость NPC-подсистемы
-(`src/actor_sync.cpp`) на v17. Анализ делает `tools/perf_report.py`
+(`src/actor_sync.cpp`) на v18. Анализ делает `tools/perf_report.py`
 (stdlib, без внешних зависимостей). E4 принимается по цифрам, а не «на глаз».
 
 ## 1. Что нужно
 
-- Сервер v17 (`build-server-ci\Release\rdr2_coop_server.exe`; деплой
-  ASI `35163CC2`, server `B7AAABAE`).
-- v17-клиент с E4-инструментацией (ASI `35163CC2`).
+- Сервер v18 (`build-server-ci\Release\rdr2_coop_server.exe`; тестовый
+  деплой ASI `EAEB0A4B`, server `C4DD6B1A`; финальный ASI `E8971A62`).
+- v18-клиент с E4-инструментацией (тестовый ASI `EAEB0A4B`; финальный
+  `E8971A62`).
 - `npc_debug = 1` — включает `perf: npc ...` строки (при `npc_debug=0` или
   `npc_actor=0` — **ноль** `perf:` строк, overhead ≈ 0).
 - Для городского прогона: `npc_actor = 1`, `npc_cap = 8..12`,
   `npc_radius = 60`, `npc_animal_cap = 4`, `npc_appearance = 1`,
-  `npc_damage = 1` (E5 не выключать, если проверяем урон); игра-хост +
-  fake guest (`tools/fake_actor_client.py --mode guest`, fake guest следует
-  за позицией хоста), либо два ПК.
+  `npc_damage = 1`, `npc_presence = 1`, `npc_visitor = 1`,
+  `npc_motion_update = 1` (E6/E7.1/E7.2 не выключать, если проверяем их
+  вклад); игра-хост + fake guest (`tools/fake_actor_client.py --mode guest`,
+  fake guest следует за позицией хоста), либо два ПК.
 - Логи: `scripts\rdr2-coop.log` (игровой клиент; там `perf: npc`) и при
   необходимости `server_console.log` (ошибки/таймауты сервера).
 
 ## 2. Как снимать
 
-1. Запустить сервер v17.
+1. Запустить сервер v18.
 2. **Baseline `npc_actor=0`:** игра-хост в том же городе 3–5 минут с
    `npc_actor=0`, `npc_debug=0`; скопировать `rdr2-coop.log` как
    `perf_baseline_off.log`. В этом режиме `perf: npc` строк нет — это
@@ -58,7 +60,7 @@ python tools\perf_report.py --log perf_city_npc1.log --json > perf.json
 Exit codes: **0** PASS, **1** FAIL (порог/ошибки), **2** нет `perf:` данных /
 файл не читается. `--label NAME` задаёт имя прогона в отчёте.
 
-## 4. Формат строк (v17 E4)
+## 4. Формат строк (v18 E4)
 
 `npc_debug=1`, окно ~10 с:
 
@@ -98,7 +100,7 @@ perf: npc warn host tick=3.40 > 2.0 ms
 p50 в отчёте — медиана per-window avg по логу; p95 — худший p95, который
 прислало окно (консервативно); max — худший max.
 
-## 6. Пример отчёта (synthetic, формат v17)
+## 6. Пример отчёта (synthetic, формат v18)
 
 ```text
 E4 NPC perf report: perf_city_npc1.log
@@ -154,11 +156,37 @@ E5 не добавляет отдельных `perf:` полей: обработ
 покрываются общим tick-бюджетом; при регрессии сначала смотреть
 `perf: npc warn` и host tick p95.
 
-## 9. Ограничения
+## 9. E6/E7.2 — presence и плавность
+
+E6 (`PlayerPresence` 0x20) почти не влияет на tick: 0.5 Гц heartbeat/изменение,
+rate-limit 10/с; в `perf: npc` отдельных полей нет — смотреть общий tick и
+`actor:`-логи. Проверка presence — по `ui: pause=…`/суффиксу, не по perf.
+
+E7.2 диагностируется отдельными строками; `tools/perf_report.py` их пока не
+парсит, поэтому смотреть вручную:
+
+```text
+actor: motion id=%u reissue=%.2f/s snap=%.2f/s target_err_p95=%.2f status=…
+actor: motion warn update-native A/B id=…
+actor: teleport id=… dist=…
+```
+
+Приёмка E7.2 baseline: **reissue <0.05/s, snap=0**, target_err_p95 низкий,
+`warn update-native A/B` отсутствует; телепорт только на respawn/стрим-прыжке
+(>25 м/|dz|>15/нет кадров >2 с). При `npc_motion_marker=1` — учитывать A2
+fallback отдельно.
+
+E7.1 visitor mode выполняется в coop/actor tick: cleanup ≤8/тик раз в ~10 с,
+подавление density — нативы; отдельных `perf:`-полей нет, вклад виден в общем
+tick и `actor: visitor cleanup removed=`. E5.2 corpse retention увеличивает
+число прокси (трупы) — учитывать при `npc_cap`/tick; отдельных метрик нет.
+
+## 10. Ограничения
 
 - **1 ПК:** игра может быть хостом **или** гостем, но не обоими; host и guest
   метрики снимаются отдельными прогонами (host — с fake guest; guest — со
-  вторым ПК). Двух-ПК приёмка E2c-b/E4 pending.
+  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7.2 pending; ARINA на тестовом
+  v18 (`EAEB0A4B`/`C4DD6B1A`), финальный ASI `E8971A62` — после теста.
 - Fake guest не даёт guest-`perf:` строк: это Python-инструмент, не игровой
   клиент; guest-метрики есть только у игры-гостя.
 - Baseline `npc_actor=0` не содержит `perf: npc` (нулевой overhead); для

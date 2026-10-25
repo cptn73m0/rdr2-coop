@@ -2,14 +2,17 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 17` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 18` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение
-  (`JoinRejected.VersionMismatch`); клиенты v14, v15, v16 и v17 несовместимы.
-  v16-пара для отката — ASI `63388AD3`/server `4EDAE4B6`; v15 —
-  `dist\npc-e2c-v15\`.
+  (`JoinRejected.VersionMismatch`); клиенты v14–v18 несовместимы.
+  v17-пара для отката — ASI `35163CC2`/server `B7AAABAE`; v16 — `63388AD3`/
+  `4EDAE4B6`; v15 — `dist\npc-e2c-v15\`.
+- v18 (E6): **`PlayerPresence` (0x20)** — UI-статус игрока (карта/пауза/
+  сатчель/магазин), клиент → сервер → другому клиенту без эха; суффикс имени
+  `Name - in map` и т.п. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
 - v17 (E5): **`ActorDamage` (0x1F)** — host-authoritative урон по NPC,
   гость → сервер → хост. E5.1: хедшот → `damage=250` (ваншот). Подтверждено
-  в игре; CI 31/31. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
+  в игре. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
 - v16 (E2c-b): к actor-сообщениям добавлен **`ActorAppearance` (0x1E)** —
   asset/tint внешность NPC, хост → сервер → гость. Реализованы host capture
   (компоненты/asset guids/tints) и guest apply; проверено на одном ПК
@@ -252,18 +255,21 @@ payload: TrainSnapshotHeader (16 B)
 перетирает привязанные вагоны; при удалении локомотива вагоны отцепляются.
 Это экспериментально и требует игровой проверки.
 
-## ACTOR-СООБЩЕНИЯ (v17, E1–E5.1)
+## ACTOR-СООБЩЕНИЯ (v18, E1–E7.2)
 
-v17 содержит реализованную actor-репликацию **людей, животных и свободных
+v18 содержит реализованную actor-репликацию **людей, животных и свободных
 лошадей**: E1 — discovery/lifecycle/движение; E2a — meta-outfit; E2b —
 всадники; E2c-a/b — внешность (outfit + asset/tint 0x1E); E3a — сценарии,
 смерть/возрождение; E3b — оружие/бой; E3c — животные/лошади; E5/E5.1 —
-host-authoritative урон и хедшоты (0x1F). Всё проверено на одном ПК
-(fake host/guest + реальный хост) и включается флагом `npc_actor=1`
-(default 0; при выключенном флаге не должно быть `actor:`-логов). Все
-структуры little-endian, фиксированы `static_assert` в `net/protocol.h`.
-`kMaxActors = 12`; `npc_cap` 1..12 (default 8), `npc_radius` 20..100 м
-(default 60), `npc_animal_cap` 0..12 (default 4), despawn-гистерезис +10 м.
+host-authoritative урон и хедшоты (0x1F); E5.2/E5.3 — трупы/сглаживание
+всадников; **E6 — PlayerPresence 0x20**; E7.1 visitor mode / E7.2 плавное
+движение — клиентское поведение без изменения 0x18–0x1F. Всё проверено на
+одном ПК (fake host/guest + реальный хост) и включается флагом
+`npc_actor=1` (default 0; при выключенном флаге не должно быть
+`actor:`-логов). Все структуры little-endian, фиксированы `static_assert` в
+`net/protocol.h`. `kMaxActors = 12`; `npc_cap` 1..12 (default 8),
+`npc_radius` 20..100 м (default 60), `npc_animal_cap` 0..12 (default 4),
+despawn-гистерезис +10 м.
 
 Правила сервера:
 - **0x18–0x1C и 0x1E принимаются только от хоста** (как WorldSnapshot): от
@@ -281,6 +287,9 @@ host-authoritative урон и хедшоты (0x1F). Всё проверено 
   хосту**; от хоста — drop/лог. Валидация: размер 16 B, epoch/actorId != 0,
   damage 1..1000; серверный rate-limit 32/с на клиента, лишние молча
   дропаются. Хост сам перепроверяет epoch/actorId/живой actor/дистанцию.
+- **0x20 PlayerPresence принимается от любого клиента и ретранслируется
+  ДРУГОМУ клиенту без эха**; валидация: размер 8 B, epoch != 0, flags без
+  неизвестных битов; rate-limit 10/с. При одном подключённом некому релеить.
 
 ### 0x18 ACTOR_SPAWN_BATCH (хост → сервер → гость)
 ```
@@ -401,6 +410,24 @@ payload: ActorDamagePayload (16 B)
 - Смерть естественная (движок) → dead flag + health=0 → труп у гостя;
   animals/horses тем же путём.
 
+### 0x20 PLAYER_PRESENCE (любой клиент → сервер → другому, v18 / E6)
+```
+payload: PlayerPresencePayload (8 B)
+  epoch:u32   — эпоха сессии отправителя
+  flags:u16   — bit0 in_map, bit1 in_pause_menu, bit2 in_satchel,
+                bit3 in_shop, bit4 in_cutscene, bit5 in_menu_other
+  pad:u16
+```
+- Направление: **любой клиент → сервер → другому клиенту**, без эха
+  отправителю; при одном подключённом сообщение некому релеить.
+- Валидация сервера: ровно 8 B, `epoch != 0`, неизвестные биты flags
+  (6..15) → drop; rate-limit **≤10/с** на клиента.
+- Клиент: детект UI через `IS_PAUSE_MENU_ACTIVE` + `IS_UIAPP_*`, шлёт при
+  изменении/каждые ~2 с; удалённый статус устаревает через **12 с**.
+  Суффикс имени: `in cutscene` > `in map` > `in satchel` > `in shop` >
+  `pause menu` > `in menu` (ASCII `Name - <suffix>`); `npc_presence=1`.
+  Debug: `ui: pause=… anyApp=… pause_menu=… map=… satchel=… shop=… inv=…`.
+
 ### E1–E3b (actor_sync, v15) — реализовано и проверено на одном ПК
 - База: **0x18** (`ActorSpawnBatch`: спавн + heartbeat 2.5 с), **0x19**
   (`ActorFrames` 10 Гц), **0x1A** (`ActorDespawn`: reasons 1/2/3);
@@ -432,14 +459,17 @@ payload: ActorDamagePayload (16 B)
 - При `npc_actor=0`: `actor_sync::Tick`/callbacks ничего не делают и не пишут
   `actor:`/`probe:`; сервер не получает actor-сообщений.
 - Статус: реализовано и проверено на одном ПК (fake host/guest + реальный
-  хост; E5/E5.1 подтверждены в игре). ARINA (второй ПК) осталась на v16-паре
-  (ASI `63588AD3`, server `4EDAE4B6`) — двух-ПК приёмка требует деплоя v17;
-  host migration/resync под нагрузкой — backlog. Флаги: `npc_actor`,
-  `npc_cap`, `npc_radius`, `npc_animal_cap`, `npc_appearance`,
-  `npc_damage`, `npc_debug`.
-- Ограничения: mission NPC исключены; транспорт/E3d backlog; ambient-мир
-  гостя не подавляется; лицо/волосы, точные анимации/катсцены не
-  синхронизируются.
+  хост; E5/E5.1 подтверждены в игре). ARINA и локальный — на тестовом v18
+  (ASI `EAEB0A4B`, server `C4DD6B1A`); финальный ASI `E8971A62` — после
+  теста; двух-ПК приёмка pending, host migration/resync — backlog. Флаги:
+  `npc_actor`, `npc_cap`, `npc_radius`, `npc_animal_cap`, `npc_appearance`,
+  `npc_damage`, `npc_corpse_max_sec`, `npc_presence`, `npc_visitor`,
+  `npc_visitor_vehicles`, `npc_visitor_preserve_events`, `npc_motion_update`,
+  `npc_motion_marker`, `npc_motion_status_p2`, `npc_debug`.
+- Ограничения: mission NPC исключены; транспорт/E3d-a, поезда/E3d-b,
+  водители/E3d-c — backlog; Story Mode нельзя «подселить»; RedM — другой
+  стек; `npc_visitor_vehicles=1` до E3d-a → пустые дороги; лицо/волосы,
+  точные анимации/катсцены не синхронизируются.
 
 ### E2c-b (actor_sync, v16): host capture + guest apply
 - Хост: `_GET_NUM_COMPONENTS_IN_PED` (0-based) + `GET_META_PED_ASSET_GUIDS`/
@@ -450,9 +480,9 @@ payload: ActorDamagePayload (16 B)
 - Валидация на реальном хосте: `asset capture count=8-10 valid=8-10`
   (единичные valid=0); fake guest v16: `appearance_msgs=504
   appearance_actors=8 entry_max=10 errors=0`. Визуальная двух-ПК приёмка —
-  pending (ARINA пока на v16 — нужен деплой v17, прогон не начат).
-- v15↔v16↔v17 несовместимы; откат v16 — ASI `63388AD3`/server `4EDAE4B6`,
-  v15 — `dist\npc-e2c-v15\`.
+  pending (ARINA на тестовом v18, нужен финальный ASI E8971A62).
+- v15↔v16↔v17↔v18 несовместимы; откат v17 — ASI `35163CC2`/server
+  `B7AAABAE`, v16 — `63388AD3`/`4EDAE4B6`, v15 — `dist\npc-e2c-v15\`.
 
 ### E5 (actor_sync, v17): host-authoritative damage + headshots
 - Гость: детект реального выстрела/попадания в free-aim target
@@ -466,7 +496,45 @@ payload: ActorDamagePayload (16 B)
   flag/труп как E1–E3c.
 - Проверено: host `damage id=… dmg=… hp_left=…` → `killed id=… by damage`;
   fake tool smoke (human 200/animal 100, guest `--damage-after`), игровая
-  проверка «выстрелы убивают, хэдшот ваншотит», CI 31/31.
+  проверка «выстрелы убивают, хэдшот ваншотит», CI 33/33.
+
+### E5.2/E5.3 (v18 client behavior): corpse retention + mounted smoothing
+- E5.2: гость держит corpse-прокси, пока host-труп существует;
+  `npc_corpse_max_sec=300` (0 = старое поведение); логи
+  `actor: corpse hold id=… kind=…`, `actor: corpse despawn id=… reason=dead
+  after=…`.
+- E5.3: сглаживание всадников — retarget 1.75 м, lead 0.28, stuck fallback;
+  лог `actor: motion mounted err_p95/retargets`.
+
+### E6 (v18): PlayerPresence / name-tag suffix
+- 0x20 bidirectional relay (см. выше), flags map/pause/satchel/shop/
+  cutscene/menu_other, `npc_presence=1`; суффикс `Name - in map`/и т.п.
+- Debug UIAPP `ui: pause=…`; таймаут 12 с; при `npc_presence=0` — ноль
+  presence/суффиксов.
+
+### E7.1 visitor mode
+- Гость (`!host`, `npc_actor=1`, `npc_visitor=1`) подавляет локальную
+  ambient human/ped/animal density; cinematic/vehicle population — только
+  `npc_visitor_vehicles=1` (default 0 до E3d-a).
+- Cleanup существующей толпы раз в ~10 с (≤8/тик, фейд ~0.4 с);
+  `npc_visitor_preserve_events=1` сохраняет scenario/vendor/quest/event NPC
+  (whitelist 23 моделей); логи `actor: visitor mode on/off`,
+  `actor: visitor cleanup removed=%u`.
+- Road population disable/enable парно при `npc_visitor_vehicles=1`;
+  `npc_actor=0`/`npc_visitor=0` — прежнее поведение; хост не подавляет.
+
+### E7.2 smooth NPC motion
+- 60 Гц интерполяция кадров, far goal впереди хоста (lead speed*0.7,
+  clamp 4–12 м; кони 5–20), одна задача на фазу, in-place update
+  `_UPDATE_TASK_GO_TO_COORD_WITH_OFFSET` 0x3FFCD7BBA074CC80, MBR через
+  `_COMPUTE_SPEED_FOR_PED_MOVE_BLEND_RATIO` 0xCA95924C893A0C91, status p2 A/B,
+  stop/start гистерезис.
+- Телепорт/снап: >25 м, |dz|>15, нет кадров >2 с → `actor: teleport id=…
+  dist=…`; диагностика `actor: motion id=%u reissue=%.2f/s snap=%.2f/s
+  target_err_p95=%.2f status=…`; auto-warn `warn update-native A/B` при
+  высоком reissue.
+- Флаги `npc_motion_update=1`, `npc_motion_marker=0`,
+  `npc_motion_status_p2=1`; приёмка baseline: **reissue <0.05/s, snap=0**.
 
 ### Reconnect (клиент)
 
@@ -483,7 +551,7 @@ payload: ActorDamagePayload (16 B)
 - Этот раздел описывает актуальные для стабильной сборки изменения (Spike 1/P1/P2/P3);
   базовые разделы ниже сохранены как историческая спецификация Spike 1, но
   ключевые форматы (JOIN/JOIN_OK, FRAME 88 B, OUTFIT 784 B) обновлены под
-  v14/v15/v16/v17 (v17: actor-сообщения E1–E5.1, 0x18–0x1F, см. раздел выше).
+  v14–v18 (v18: actor-сообщения E1–E7.2, 0x18–0x20, см. раздел выше).
 
 Сетевой стек поверх **сервера-релея**. Один сервер, несколько клиентов
 (ASI-плагинов). Клиент периодически шлёт свой `GhostFrame`, сервер
@@ -499,10 +567,11 @@ payload: ActorDamagePayload (16 B)
 - Клиент отправляет: JOIN, FRAME, LEAVE, OUTFIT/HORSE_OUTFIT, PING; хост
   дополнительно — WorldSnapshot, MissionEvent/MissionState/MissionBarrier,
   actor-сообщения 0x18–0x1C, 0x1E (при включённых флагах); гость —
-  ActorResync 0x1D и ActorDamage 0x1F.
+  ActorResync 0x1D, ActorDamage 0x1F; PlayerPresence 0x20 — **любой** клиент.
 - Сервер рассылает: JOIN_OK/JOIN_REJECTED, PLAYER_JOINED, PLAYER_LEFT, FRAME,
   OUTFIT/HORSE_OUTFIT, HOST_CHANGED, host-only сообщения от хоста и actor-
-  сообщения 0x18–0x1C, 0x1E; ActorResync/ActorDamage — только хосту.
+  сообщения 0x18–0x1C, 0x1E; ActorResync/ActorDamage — только хосту;
+  PlayerPresence 0x20 — другому клиенту без эха.
 
 ## Транспорт
 

@@ -5,8 +5,8 @@
 сообщения, точные размеры, WorldSnapshot, мусорные кадры, ретрансляцию
 Leave/PlayerLeft/Died/Respawned/HorseOutfit, connection cap/per-IP rate limit,
 `players.txt` persistence/recovery, graceful shutdown, а также actor-сообщения
-v17 (spawn/frames/despawn/event/outfit/resync/appearance/damage) — когда они
-есть в `net/protocol.h`.
+v18 (spawn/frames/despawn/event/outfit/resync/appearance/damage/presence) —
+когда они есть в `net/protocol.h`.
 
 ## Требования
 
@@ -27,14 +27,15 @@ v17 (spawn/frames/despawn/event/outfit/resync/appearance/damage) — когда 
 wearable[96] u32). Если размер в `net/protocol.h` изменится, тест упадёт и
 потребует осознанного обновления тестов/документации под новую версию.
 
-Для протокола v17 при наличии `Actor*`-сообщений в header также пинятся:
+Для протокола v18 при наличии `Actor*`-сообщений в header также пинятся:
 `kMaxActors=12`, `ActorSpawn=64 B`, `ActorFrame=32 B`,
 `ActorSpawnBatch≤776 B`, `ActorFrames≤392 B`, `ActorDespawn/ActorResync=12 B`,
 `ActorEvent=32 B`, `ActorOutfit=792 B`, `ActorAppearanceHeader=12 B`,
 `ActorAppearanceEntry=28 B`, `kActorAppearanceMaxComponents=16`,
 `ActorAppearance max=460 B`, `ActorDamagePayload=16 B`,
-`kMinActorDamage=1`, `kMaxActorDamage=1000`; ID 0x18–0x1F. Если header
-откатить на v14, actor-тесты скипаются с `[skip]` и не валят базовый suite.
+`kMinActorDamage=1`, `kMaxActorDamage=1000`, `PlayerPresencePayload=8 B`,
+`kPlayerPresenceKnownFlags=0x3F`; ID 0x18–0x20. Если header откатить на v14,
+actor-тесты скипаются с `[skip]` и не валят базовый suite.
 
 ## Запуск
 
@@ -50,7 +51,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 `--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
 `KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто (20 базовых сценариев + 11 actor-тестов v17)
+## Что покрыто (20 базовых сценариев + 13 actor/presence-тестов v18)
 
 | Тест | Проверка |
 |---|---|
@@ -75,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_graceful_shutdown` | сервер корректно завершается по тест-хуку и сохраняет players.txt |
 | `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта; первый игрок = HOST |
 
-### actor-тесты (v15/v16 base + v17 damage; активны при наличии `Actor*` в header)
+### actor/presence-тесты (v15–v17 base + v18 damage/presence; активны при наличии `Actor*`/`PlayerPresence` в header)
 
 | Тест | Проверка |
 |---|---|
@@ -90,16 +91,20 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_actor_appearance_validation` | 0x1E: точный размер `12+count*28`; count 0/17, epoch=0, actorId=0, reserved!=0, short/long drop; сервер жив |
 | `test_actor_damage_direction` | 0x1F: guest→host relay only; host→guest blocked; 16 B byte-identical |
 | `test_actor_damage_validation` | 0x1F: epoch=0/actorId=0/damage 0/1001/short/long drop; rate-limit 32/с; сервер жив |
+| `test_player_presence_relay` | 0x20: client→server→другому клиенту без эха; epoch/flags; 8 B byte-identical; rate-limit 10/с |
+| `test_player_presence_validation` | 0x20: epoch=0/short/long/unknown flag bits (6..15) drop; сервер жив |
 
-### NPC actor-репликация (E1–E5.1) — что проверено
+### NPC actor-репликация (E1–E7.2) — что проверено
 
-Wire/relay/валидация actor-сообщений покрыты actor-тестами выше
-(**31/31** автоматических сценариев на `build-server-ci`, protocol v17:
-appearance + ActorDamage; 16 компонентов / 460 B, damage 16 B). Клиентская
-логика NPC/E2c-b/E5 проверена на **одном ПК** с fake host/guest и реальным
-хостом (`tools/fake_actor_client.py`, см. `tools/README.md`); E5/E5.1
-подтверждены игровым гостем («выстрелы убивают, хэдшот ваншотит»); двух-ПК
-приёмка pending — ARINA на v16.
+Wire/relay/валидация actor-сообщений покрыты actor/presence-тестами выше
+(**33/33** автоматических сценариев на `build-server-ci`, protocol v18:
+appearance + ActorDamage + PlayerPresence; 16 компонентов / 460 B, damage
+16 B, presence 8 B). Клиентская логика NPC/E2c-b/E5/E6/E7 проверена на
+**одном ПК** с fake host/guest и реальным хостом
+(`tools/fake_actor_client.py`, см. `tools/README.md`); E5/E5.1 подтверждены
+игровым гостем («выстрелы убивают, хэдшот ваншотит»); двух-ПК приёмка
+pending — ARINA/локальный на тестовом v18 (`EAEB0A4B`/`C4DD6B1A`),
+финальный ASI `E8971A62` после теста.
 
 - **E1 (human-only):** discovery/roster, spawn heartbeat/frames/despawn,
   guest-прокси, resync, gating `npc_actor=0` → 0 `actor:`/`probe:` строк.
@@ -129,15 +134,31 @@ appearance + ActorDamage; 16 компонентов / 460 B, damage 16 B). Кл�
   Подтверждено игрой; fake tool `--damage-after` smoke.
 - **E5.1:** хедшот `SKEL_Head` + impact ≤0.30 м → `damage=250` (ваншот
   human 200/animal 100); `headshot=1`; подтверждено пользователем.
+- **E5.2/E5.3:** corpse retention (host-труп/`npc_corpse_max_sec`), mounted
+  smoothing (retarget/lead/stuck fallback); fake tool `--kill-after`, guest
+  `corpses`/`dead_frames`.
+- **E6 (v18):** `PlayerPresence` 0x20 — 8 B, bidirectional без эха,
+  rate-limit 10/с, unknown bits drop; flags map/pause/satchel/shop/cutscene/
+  menu_other; суффикс `Name - in map`/`pause menu`/`in satchel`/`in shop`,
+  timeout 12 с; `npc_presence=1`.
+- **E7.1:** visitor mode — подавление ambient у гостя, preserve
+  scenario/vendor/quest/event, `npc_visitor_vehicles=0` до E3d-a;
+  `npc_visitor=1`, `npc_visitor_preserve_events=1`.
+- **E7.2:** smooth motion — 60 Гц interpolation/far goal/in-place update/MBR;
+  baseline `reissue<0.05/s snap=0`; `npc_motion_update=1`,
+  `npc_motion_marker=0`, `npc_motion_status_p2=1`.
 - Используемые сообщения: **0x18** `ActorSpawnBatch` (спавн + heartbeat),
   **0x19** `ActorFrames` (10 Гц), **0x1A** `ActorDespawn` (gone/dead/evicted),
   **0x1D** `ActorResync` (guest→host; Client::SendActorResync, троттлинг ≤1/с),
   **0x1E** `ActorAppearance` (host→guest, E2c-b), **0x1F** `ActorDamage`
-  (guest→host, E5); 0x1B/0x1C зарезервированы/не применяются.
+  (guest→host, E5), **0x20** `PlayerPresence` (любой→другому, E6);
+  0x1B/0x1C зарезервированы/не применяются.
 - Флаги INI: `npc_actor=1` (default 0), `npc_cap` 1..12 (default 8),
   `npc_radius` 20..100 (default 60), `npc_animal_cap` 0..12 (default 4),
-  `npc_appearance=1` (E2a + E2c-b), `npc_damage=1` (E5),
-  `npc_debug=1` — probe/perf-логи.
+  `npc_appearance=1`, `npc_damage=1`, `npc_corpse_max_sec=300`,
+  `npc_presence=1`, `npc_visitor=1`, `npc_visitor_vehicles=0`,
+  `npc_visitor_preserve_events=1`, `npc_motion_update=1`,
+  `npc_motion_marker=0`, `npc_motion_status_p2=1`, `npc_debug=1`.
 - `test_actor_gating_no_actor_log` — **серверный** тест (mock-клиенты не шлют
   actor-сообщения), поэтому клиентский gating проверяется вручную
   (`npc_actor=0` → 0 строк `actor:`/`probe:` в `rdr2-coop.log`);

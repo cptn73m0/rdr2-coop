@@ -2081,9 +2081,10 @@ def build_parser() -> argparse.ArgumentParser:
                       default="circle",
                       help="movement pattern: circle; line (4 m back/forth); "
                            "mixed (2 circle, 2 line, rest idle)")
-    host.add_argument("--gait", type=float, choices=(1.0, 2.0), default=1.0,
-                      help="E2a.2 gait ratio for moving actors: 1.0 walk, "
-                           "2.0 run (sent as ActorFrame.pad=gait*1000; idle=0)")
+    host.add_argument("--gait", type=float, choices=(1.0, 2.0, 3.0), default=1.0,
+                      help="E2a.2/E7.2 gait ratio for moving actors: 1.0 walk, "
+                           "2.0 run, 3.0 fast baseline (sent as "
+                           "ActorFrame.pad=gait*1000; idle=0)")
     host.add_argument("--mounted", type=int, default=0,
                       help="E2b: how many of --num actors ride a horse "
                            "(first N actors; 0..num)")

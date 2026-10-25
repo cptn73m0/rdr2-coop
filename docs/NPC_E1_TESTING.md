@@ -1,32 +1,39 @@
-# NPC actor replication (E1–E5.1) — in-game test plan and acceptance metrics
+# NPC actor replication (E1–E7.2) — in-game test plan and acceptance metrics
 
-**Статус (25.10.2026):** E1–E5.1 реализованы; текущий протокол — **v17**.
+**Статус (25.10.2026):** E1–E7.2 реализованы; текущий протокол — **v18**.
 E1 human-only, E2a meta-outfit, E2b всадники, E2c-b asset/tint, E3a
 сценарии/смерть, E3b оружие/бой, E3c животные/свободные лошади, E4
-perf-инструментация, **E5 host-authoritative урон** и **E5.1 хедшоты**
-(подтверждено в игре пользователем: «выстрелы убивают, хэдшот ваншотит»).
-CI 31/31 integration + 7/7 C++; тег **npc-e5**. E2c-b/E1–E5.1 проверены
-на одном ПК + реальный хост; двух-ПК приёмка pending. **ARINA на v16-паре**
-(`63588AD3`/`4EDAE4B6`) — для 2-ПК прогона нужен деплой v17.
+perf-инструментация, E5 host-authoritative урон/E5.1 хедшоты,
+E5.2/E5.3 трупы/сглаживание всадников, E6 presence-суффиксы, E7.1 visitor
+mode, E7.2 плавное движение 60 Гц. CI **33/33** integration + 7/7 C++;
+тег **npc-e5** (E6/E7.2 пока без тега). E2c-b/E1–E5.1 проверены на одном
+ПК + реальный хост; двух-ПК приёмка pending. **ARINA и локальный — на
+тестовом v18** (ASI `EAEB0A4B`, server `C4DD6B1A`); финальный ASI
+`E8971A62` — после теста.
 
 E1 — human-only NPC; E2/E3 добавляют внешность, всадников, сценарии/смерть,
 оружие/бой, животных/лошадей. **E5** — урон применяет только хост:
 гость детектит free-aim target и шлёт `ActorDamage` 0x1F; **E5.1** —
-хедшот `SKEL_Head`/impact ≤0.30 м → `damage=250` (ваншот). Mission NPC,
-транспорт (E3d backlog) не реплицируются; 0x1B/0x1C зарезервированы;
+хедшот `SKEL_Head`/impact ≤0.30 м → `damage=250` (ваншот). **E6** —
+presence 0x20 (карта/пауза/сатчель/магазин в имени). **E7.1** — visitor mode
+подавляет ambient-толпу гостя, сохраняя продавцов/квест/события.
+**E7.2** — плавное движение 60 Гц с far goal/in-place update. Mission NPC,
+транспорт (E3d-a/b/c backlog) не реплицируются; 0x1B/0x1C зарезервированы;
 resync 0x1D реализован (≤1/с).
 
 Автоматизированная часть — wire/relay/validation:
-`tests/integration_server.py` (**31 сценарий**, protocol v17, appearance +
-ActorDamage) + 7 C++ тестов; клиентская логика проверяется в игре/fake-клиентами.
+`tests/integration_server.py` (**33 сценария**, protocol v18, appearance +
+ActorDamage + PlayerPresence) + 7 C++ тестов; клиентская логика проверяется
+в игре/fake-клиентами.
 
 ## 0. Флаги и предусловия
 
-- Оба ПК: одна и та же сборка (protocol v17: `net/protocol.h`,
-  `kProtocolVersion=17`), один `rdr2_coop_server.exe` v17. **ARINA пока
-  на v16-паре (ASI `63588AD3`, server `4EDAE4B6`) — нужен деплой v17**, после
-  чего возможен двух-ПК прогон. Откат v16 — ASI `63388AD3`/server
-  `4EDAE4B6`; v15 — `dist\npc-e2c-v15\`.
+- Оба ПК: одна и та же сборка (protocol v18: `net/protocol.h`,
+  `kProtocolVersion=18`), один `rdr2_coop_server.exe` v18. **ARINA и
+  локальный — на тестовом v18** (ASI `EAEB0A4B`, server `C4DD6B1A`);
+  финальный ASI `E8971A62` — после 2-ПК/визуального теста. Откат v17 —
+  ASI `35163CC2`/server `B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 —
+  `dist\npc-e2c-v15\`.
 - INI на обоих ПК (кроме указанных):
   - `npc_actor = 1` — включить NPC-репликацию;
   - `npc_cap = 12` — для проверки 8–12 NPC в городе (default 8; допустимо 1..12);
@@ -34,7 +41,13 @@ ActorDamage) + 7 C++ тестов; клиентская логика прове�
   - `npc_appearance = 1` — meta-outfit E2a + asset/tint E2c-b (default 1);
   - `npc_animal_cap = 4` — 0..12, животные/свободные лошади (E3c);
   - `npc_damage = 1` — рубильник E5 host-authoritative урона;
-  - `npc_debug = 1` — probe/perf-логи (только хост);
+  - `npc_corpse_max_sec = 300` — E5.2, удержание host-трупа (0 = старое);
+  - `npc_presence = 1` — E6, суффикс UI-статуса в имени;
+  - `npc_visitor = 1`, `npc_visitor_vehicles = 0`,
+    `npc_visitor_preserve_events = 1` — E7.1;
+  - `npc_motion_update = 1`, `npc_motion_marker = 0`,
+    `npc_motion_status_p2 = 1` — E7.2;
+  - `npc_debug = 1` — probe/perf/visitor/motion-логи (только хост);
     после прогона выключить;
   - остальные экспериментальные флаги — **0** (`world_sync=0`, `action_sync=0`,
     `vehicle_sync=0`, `mission_sync=0`, `world_trains=0`, `train_debug=0`,
@@ -106,7 +119,7 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 - При `npc_cap=8` (default) ожидаемые proxies 8, а не 8–12; для приёмки E1
   городского сценария используйте `npc_cap=12`.
 
-## 3. Игровой чек-лист (E1–E5.1, два ПК)
+## 3. Игровой чек-лист (E1–E7.2, два ПК)
 
 | # | Сценарий / условия | Шаги | Ожидаемо (визуал + лог) | Артефакт | Pass |
 |---|---|---|---|---|---|
@@ -128,10 +141,32 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 | **S15** | E3c животные/лошади | fake host `--num 0 --animals 3 --horses 2 --pattern mixed`; гость смотрит | Гость видит 3 животных + 2 лошади, двигаются без телепортов; `fakeguest: kinds human=0 animal=3 horse=2`; ошибок 0; при убийстве — `corpses`/труп | fake guest/host log, видео | [ ] |
 | **S16** | E5 host-authoritative урон | `npc_damage=1`; игра-гость стреляет в прокси (human и animal); fake host или реальный хост | Гость шлёт 0x1F, урон применяет только хост: `damage id=… hp_left=…` → `killed id=… by damage`; гость видит dead/труп; прокси до смерти invincible | host/guest log, видео | [ ] |
 | **S17** | E5.1 хедшот | игра-гость стреляет в голову прокси; human и animal | `damage=250`, `headshot=1` → ваншот; body-урон остаётся по классу оружия (35/60/80/30); пользователь подтвердил «хэдшот ваншотит» | host/guest log, видео | [ ] |
+| **S18** | E5.2 трупы | `npc_corpse_max_sec=300`; убить human/animal/horse на хосте, смотреть гостя | Труп-прокси живёт, пока существует host-труп; `actor: corpse hold` → `corpse despawn reason=dead after=…` при исчезновении/лимите; локальный труп гостя не пропадает раньше | host/guest log, видео | [ ] |
+| **S19** | E6 presence | гость открывает карту/паузу/сатчель/магазин, затем закрывает; смотреть имя над головой у хоста | У имени суффикс `in map`, `pause menu`, `in satchel`, `in shop` (ASCII `Name - …`); после закрытия/12 с без обновлений суффикс исчезает; `ui: pause=…` в debug | host/guest log, скрины | [ ] |
+| **S20** | E7.1 visitor mode | у гостя `npc_visitor=1`, `npc_visitor_vehicles=0`; город; сравнить до/после | Локальная ambient-толпа гостя подавлена/уменьшена (`actor: visitor mode on`, `visitor cleanup removed=N`); продавцы/квестовые/событийные NPC остаются; при `npc_visitor_vehicles=1` дороги пустые до E3d-a | guest/host log, видео | [ ] |
+| **S21** | E7.2 плавность | host fake `--pattern circle --num 4 --gait 3 --duration 120`, гость смотрит | `actor: motion id=… reissue=<0.05/s snap=0 target_err_p95` низкий; нет телепортов (кроме `>25 м/|dz|>15/нет кадров>2 с`); стоп/старт без дёргания; `warn update-native A/B` отсутствует | fake host/guest log, OBS | [ ] |
 
-Дополнительно: визуальная проверка E2c-b/E5 на **двух ПК** (после деплоя v17
-на ARINA), сценарные позы (E3a), ночь/дождь (LOD). Транспорт (E3d backlog)
-и mission NPC по-прежнему вне NPC-репликации.
+Дополнительно: визуальная проверка E2c-b/E5/E6/E7 на **двух ПК** (ARINA на
+тестовом v18, финальный ASI `E8971A62`), сценарные позы (E3a), ночь/дождь.
+Транспорт/E3d-a, поезда/E3d-b, водители/E3d-c и mission-aware visitor —
+backlog.
+
+### E5.2/E6/E7 — уточнения методики
+
+- **E5.2:** труп-прокси держится до `npc_corpse_max_sec` (300 с) или пока
+  существует host-труп; проверять `corpse hold/despawn` и визуально, что
+  труп не исчезает раньше/не висит после.
+- **E6:** presence шлётся при изменении UI и heartbeat ~2 с; host видит
+  суффикс у имени гостя. Проверять карту, pause menu, satchel, shop,
+  cutscene; таймаут 12 с и `npc_presence=0` → суффикса нет.
+- **E7.1:** подавление ambient на госте — только визуальное (другие игроки/
+  mission NPC не должны пропадать); продавцы/квестовые/событийные NPC —
+  сохраняются (`npc_visitor_preserve_events=1`); при `npc_visitor=0` —
+  прежняя толпа. `npc_visitor_vehicles=1` до E3d-a не использовать (пустые
+  дороги).
+- **E7.2:** baseline-порог плавности `reissue <0.05/s`, `snap=0`;
+  телепорт-лог ожидается только на respawn/стрим-прыжках; `npc_motion_marker`
+  включать только для A/B fallback.
 
 ### E5/E5.1 — методика урона (для приёмки)
 
@@ -180,28 +215,30 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
   valid, fake guest errors=0), но **визуальная двух-ПК приёмка pending** —
   проверять host/guest внешность по S14.
 - **Люди + животные + лошади**: E3c реплицирует животных/свободных лошадей,
-  трупы остаются до despawn; транспорт — E3d backlog; mission NPC исключены;
-  human death/revive — E3a, animal/horse death — E3c/E5 без revive.
-- **Ambient гостя не подавляется** (отдельный world_sync-пайплайн): гость
-  видит своих ambient NPC и прокси хоста; «нет дублей» = нет двух прокси
-  одного actorId, а не идентичная картинка A/B.
+  трупы остаются до despawn (E5.2); транспорт — E3d-a/b/c backlog; mission
+  NPC исключены; human death/revive — E3a, animal/horse death — E3c/E5 без
+  revive.
 - **E5/E5.1:** нет raycast — детект по free-aim target + impact; урон
   аппроксимирован по классу оружия/HP движка, хедшот-радиус 0.30 м; животные
   умирают быстро; труп до despawn; mission NPC не получают урон; прокси у
   гостя invincible до смерти (урон только через хоста).
-- **Только human/animals/horses**: животные и свободные лошади (E3c)
-  реплицируются; транспорт — E3d backlog; mission NPC исключены; трупы
-  human/животных/лошадей остаются до despawn.
-- **Ambient гостя не подавляется** (отдельный world_sync-пайплайн): гость
-  видит своих ambient NPC и прокси хоста; «нет дублей» = нет двух прокси
-  одного actorId, а не идентичная картинка A/B.
+- **E5.2/E5.3:** труп держится до host-трупа/`npc_corpse_max_sec`; mounted
+  сглаживание — retarget/lead/stuck fallback (A/B).
+- **E6:** суффикс presence — ASCII `Name - in map`/`pause menu`/`in satchel`/
+  `in shop`; таймаут 12 с; `npc_presence=0` отключает. Карта/пауза — UI
+  отправителя, второй игрок только отображает.
+- **E7.1:** visitor mode подавляет ambient **только у гостя**; продавцы/
+  квестовые/события сохраняются; `npc_visitor_vehicles=1` до E3d-a даёт
+  пустые дороги; Story Mode нельзя реально «подселить» второго игрока в один
+  мир, RedM — другой стек и несовместим.
 - **E2c-a resolver**: механически работает (890 моделей/4568 кандидатов,
   бюджет 24 натива/тик), но random ambient NPC без именованного outfit —
   `resolved=0/failed=11`; это закрывает E2c-b asset/tint, проверять
   `appearance_msgs/appearance_actors/entry_max/errors` и визуал.
-- **Двух-ПК приёмка не пройдена**: ARINA осталась на v16, нужен деплой v17;
-  текущие E1–E5.1 — однопК-проверки fake host/guest + реальный хост,
-  E5/E5.1 подтверждены игровым гостем.
+- **Двух-ПК приёмка не пройдена**: ARINA/локальный на тестовом v18
+  (`EAEB0A4B`/`C4DD6B1A`), финальный ASI `E8971A62` — после теста; текущие
+  E1–E7.2 — однопК-проверки fake host/guest + реальный хост, E5/E5.1
+  подтверждены игровым гостем. Host migration/resync под нагрузкой — backlog.
 - **Tick budget**: для E4 добавлена инструментация (`perf: npc host/guest ...`
   при `npc_debug=1`); анализ и пороги — `docs/PERF.md` +
   `tools/perf_report.py`. На старом логе (до E4-билда) `perf:` нет — это не
@@ -226,5 +263,6 @@ E4 принимается по `perf: npc host/guest` строкам (`npc_debug
 Команды и методика (baseline `npc_actor=0`, город 3–5 мин, fake guest,
 `--baseline` vs `--log`, `--json`, exit 0/1/2) — в `docs/PERF.md`.
 Ограничение 1 ПК: host и guest метрики снимаются отдельными прогонами;
-fake guest не даёт guest-`perf:` (это Python). Двух-ПК приёмка E2c-b/E4/E5 —
-pending; ARINA на v16, нужен деплой v17.
+fake guest не даёт guest-`perf:` (это Python). Двух-ПК приёмка E2c-b/E4/E5/E6/E7 —
+pending; ARINA/локальный на тестовом v18 (`EAEB0A4B`/`C4DD6B1A`), финальный
+ASI `E8971A62` — после теста.

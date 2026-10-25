@@ -5,19 +5,21 @@
 
 **Актуально на:** 25.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** **v17** (actor-репликация NPC E1–E5.1,
-0x18–0x1F). v16↔v17 несовместимы; откат v16 — ASI `63388AD3`/server
-`4EDAE4B6`, v15 — `dist\npc-e2c-v15\`.
+**Текущий протокол:** **v18** (actor-репликация NPC E1–E7.2,
+0x18–0x20: ActorDamage 0x1F + PlayerPresence 0x20). v17↔v18 несовместимы;
+откат v17 — ASI `35163CC2`/server `B7AAABAE`, v16 — `63388AD3`/`4EDAE4B6`,
+v15 — `dist\npc-e2c-v15\`.
 Рабочая база/игровой стабильный тег — **stable-v14** (пед-призрак, лошадь,
 одежда shop+wearable, выстрелы, время/погода). NPC-репликация реализована:
 E1 human-only, E2a meta-outfit, E2b всадники, E2c-a/b внешность, E3a
 сценарии/смерть, E3b оружие/бой, E3c животные/лошади, E4 перф-инструментация,
-**E5 host-authoritative урон**, **E5.1 хедшоты** (подтверждено в игре:
-«хедшот ваншотит»). CI 31/31 + 7 C++; теги `npc-e0`, `npc-e1`, `npc-e2`,
-`npc-e2b`, `npc-e2c-b`, `npc-e3`, `npc-e3b`, `npc-e4-perf`, `npc-e5`.
-`npc_actor=0` по умолчанию. **ARINA осталась на v16-паре**
-(`63588AD3`/`4EDAE4B6`) — для двух-ПК приёмки нужен деплой v17; двух-ПК
-визуальная приёмка и host migration под нагрузкой ещё pending.
+E5 host-authoritative урон, E5.1 хедшоты, E5.2/E5.3 трупы/сглаживание
+всадников, E6 presence-суффиксы, E7.1 visitor mode, E7.2 плавное движение.
+CI **33/33** + 7 C++; HEAD 0625344; теги `npc-e0`…`npc-e5`
+(E6/E7.2 пока без тега). `npc_actor=0` по умолчанию; тестовый v18 —
+ASI `EAEB0A4B`/server `C4DD6B1A`, финальный ASI `E8971A62` после теста.
+**ARINA** — на тестовом v18 (`EAEB0A4B`/`C4DD6B1A`); двух-ПК приёмка,
+host migration и mission-aware visitor — backlog.
 
 ---
 
@@ -42,8 +44,9 @@ E1 human-only, E2a meta-outfit, E2b всадники, E2c-a/b внешность
 - [x] Спавн повторного игрока на сохранённой позиции
 - [x] Обработка дисконнекта: удаление педа и метки
 - [x] Явные роли HOST/GUEST, лимит 2 игрока, `JoinRejected`
-- [x] Версия протокола в JOIN (v17), отказ при несовпадении; v16-откат
-      (ASI `63388AD3`/server `4EDAE4B6`), v15 — `dist\npc-e2c-v15\`
+- [x] Версия протокола в JOIN (v18), отказ при несовпадении; откат v17
+      (`35163CC2`/`B7AAABAE`), v16 — `63388AD3`/`4EDAE4B6`, v15 —
+      `dist\npc-e2c-v15\`
 
 ## Фаза 3 — Сеть — готово (база)
 
@@ -73,16 +76,17 @@ E1 human-only, E2a meta-outfit, E2b всадники, E2c-a/b внешность
 
 ## Фаза 5 — P1: репликация мира/NPC
 
-### NPC-репликация — E1–E5.1 реализованы; 2-ПК приёмка pending
+### NPC-репликация — E1–E7.2 реализованы; 2-ПК/визуал pending
 - [x] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (22% NPC имеют
       metaOutfit hash; сценарии/модели/лошади/оружие)
 - [x] E0: протокол actor-сообщения 0x18–0x1E, `kMaxActors=12`,
       static_assert размеров
 - [x] E0: серверный host-only relay + валидация (exact size, count≤12,
       epoch/actorId!=0, finite coords, duplicate actorId), resync guest→host
-- [x] E0: integration-тесты v17 (host-only, размеры/лимиты, epoch/actorId,
+- [x] E0: integration-тесты v18 (host-only, размеры/лимиты, epoch/actorId,
       NaN/Inf, resync-направление, gating `actor:`=0, appearance 16comp/460B,
-      ActorDamage 16B direction/validation); **31/31** на build-server-ci; C++ 7/7
+      ActorDamage 16B direction/validation, PlayerPresence 8B relay/no-echo);
+      **33/33** на build-server-ci; C++ 7/7
 - [x] E1: human-only discovery 10 Гц вокруг обоих игроков, cap 12, roster
       actorId/epoch, spawn heartbeat 2.5 с, frames 10 Гц, despawn
       gone/dead/evicted, resync 0x1D; guest-прокси spawn≤2/тик + model load,
@@ -114,7 +118,6 @@ E1 human-only, E2a meta-outfit, E2b всадники, E2c-a/b внешность
 - [x] **E3c:** животные (`kind=1`, HP 100) и свободные лошади (`kind=2`,
       HP 100) — discovery, движение, трупы/лошадиные трупы до despawn;
       подтверждено fake host/guest (`kinds`, `corpses`), fake tool animals/horses
-- [ ] **E3d backlog:** транспорт/NPC-водители — не реализовано (следующий этап)
 - [x] **E4:** perf-инструментация (`perf: npc host/guest`, tick/discover/
       capture/build/spawn/appearance/motion/weapons) + `tools/perf_report.py`
       и `docs/PERF.md`; пороги Tick p95 ≤2 мс, components ≤1.5 мс
@@ -126,13 +129,41 @@ E1 human-only, E2a meta-outfit, E2b всадники, E2c-a/b внешность
 - [x] **E5.1:** хедшоты — `SKEL_Head` + impact ≤0.30 м (fallback луч камеры),
       `damage=250` → ваншот human 200/animal 100; `headshot=1`; пользователь
       подтвердил «хэдшот ваншотит»; тег **npc-e5** (4395095)
-- [ ] Оставшаяся приёмка/backlog: **двух-ПК визуальная приёмка E2c-b/E5**
-      (ARINA на v16 — нужен деплой v17), **host migration/resync под
-      нагрузкой**, Tick p95/FPS бюджеты и игровой чек-лист «неотличимости»;
-      `npc_actor` не включать в рабочую сборку до неё
-- [ ] Известные ограничения: лицо/волосы/борода, точные анимации/катсцены,
-      ambient-мир гостя не подавляется; E5 — без raycast, урон/HP
-      аппроксимированы, headshot-радиус 0.30 м, труп до despawn
+- [x] **E5.2:** труп держится, пока host-труп существует;
+      `npc_corpse_max_sec=300` (0=старое); логи `actor: corpse hold/despawn`
+- [x] **E5.3:** сглаживание всадников (retarget 1.75 м, lead 0.28, stuck
+      fallback); лог `actor: motion mounted err_p95/retargets`
+- [x] **E6 (v18):** `PlayerPresence` 0x20 — 8 B, bidirectional без эха,
+      rate-limit 10/с, unknown bits drop; flags map/pause/satchel/shop/
+      cutscene/menu_other; суффикс `Name - in map`/`pause menu`/`in satchel`/
+      `in shop`, timeout 12 с; `npc_presence=1`; debug `ui: pause=...`;
+      integration **33/33**
+- [x] **E7.1 visitor mode:** гость подавляет ambient human/ped/animal density,
+      cleanup ~10 с (≤8/тик, фейд); транспорт только при
+      `npc_visitor_vehicles=1` (default 0 до E3d-a); preserve
+      scenario/vendor/quest/event (`npc_visitor_preserve_events=1`, whitelist
+      23 моделей); road population on/off парно; логи `actor: visitor mode
+      on/off`, `visitor cleanup removed=`
+- [x] **E7.2:** плавное движение 60 Гц — far goal (lead speed*0.7 clamp 4–12;
+      кони 5–20), одна задача на фазу, in-place update
+      `_UPDATE_TASK_GO_TO_COORD_WITH_OFFSET` 0x3FFCD7BBA074CC80, MBR
+      `_COMPUTE_SPEED_FOR_PED_MOVE_BLEND_RATIO` 0xCA95924C893A0C91, status p2
+      A/B, stop/start гистерезис, teleport >25 м/|dz|>15/нет кадров >2 с +
+      `actor: teleport`; `npc_motion_update=1`, `npc_motion_marker=0`,
+      `npc_motion_status_p2=1`; диагностика `actor: motion id=… reissue=…/s
+      snap=…/s target_err_p95=… status=…`; приёмка **reissue <0.05/s, snap=0**
+- [ ] E3d-a: транспорт (машины/дилижансы/повозки) — не реализовано
+- [ ] E3d-b: поезда — не реализовано
+- [ ] E3d-c: NPC-водители — не реализовано
+- [ ] Backlog: mission-aware visitor (не подавлять NPC активной миссии),
+      adaptive 15 Гц, **двух-ПК визуальная приёмка E2c-b/E5/E6/E7**
+      (ARINA на тестовом v18; нужен финальный ASI `E8971A62`),
+      host migration/resync под нагрузкой, Tick p95/FPS и игровой чек-лист
+      «неотличимости»; `npc_actor` не включать в рабочую сборку до неё
+- [ ] Известные ограничения: Story Mode нельзя «подселить» в один мир;
+      RedM — другой стек; `npc_visitor_vehicles=1` до E3d-a → пустые дороги;
+      лицо/волосы/борода, точные анимации/катсцены; E5 без raycast,
+      урон/HP аппроксимированы, headshot-радиус 0.30 м, труп до despawn
 
 - [x] `WorldSnapshot` (0x10), хост-авторитет
 - [x] Сканер NPC 60 м, до 64 сущностей (32 Ped + 16 Vehicle + 16 Object),
