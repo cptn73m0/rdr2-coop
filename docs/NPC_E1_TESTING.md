@@ -1,43 +1,40 @@
-# NPC actor replication (E1–E3b + E2c-b) — in-game test plan and acceptance metrics
+# NPC actor replication (E1–E5.1) — in-game test plan and acceptance metrics
 
-**Статус (23.10.2026):** E1–E3b и **E2c-b** реализованы в клиенте
-(`src/actor_sync.*`, флаг `npc_actor=0` по умолчанию); текущий протокол —
-**v16**. E1–E3b проверены на одном ПК fake host/guest: E1 human-only,
-E2a meta-outfit (5/5 applied, failed=0), E2b всадники (mount spawn ×9,
-failed=0), E3a сценарии/смерть, E3b оружие/бой (shoot=1450, reload=385,
-weapon fail=0). E2c-a resolver механически работает (resolved=0/failed=11
-для random ambient NPC); **E2c-b (ActorAppearance 0x1E)** реализован и
-провалидирован на реальном хосте (`asset capture count=8-10 valid=8-10`) и
-fake guest v16 (`appearance_msgs=504 appearance_actors=8 entry_max=10
-errors=0`). **Двух-ПК визуальная приёмка E2c-b pending:** ARINA v16
-задеплоена (ASI `63588AD3`, server `4EDAE4B6`), но пользователь пока не
-запускает второй ПК.
+**Статус (25.10.2026):** E1–E5.1 реализованы; текущий протокол — **v17**.
+E1 human-only, E2a meta-outfit, E2b всадники, E2c-b asset/tint, E3a
+сценарии/смерть, E3b оружие/бой, E3c животные/свободные лошади, E4
+perf-инструментация, **E5 host-authoritative урон** и **E5.1 хедшоты**
+(подтверждено в игре пользователем: «выстрелы убивают, хэдшот ваншотит»).
+CI 31/31 integration + 7/7 C++; тег **npc-e5**. E2c-b/E1–E5.1 проверены
+на одном ПК + реальный хост; двух-ПК приёмка pending. **ARINA на v16-паре**
+(`63588AD3`/`4EDAE4B6`) — для 2-ПК прогона нужен деплой v17.
 
-E1 — human-only NPC: хост находит до `npc_cap` (default 8, max 12) ближайших
-human NPC в радиусе `npc_radius` (default 60 м) и шлёт spawn/frames/despawn
-(0x18/0x19/0x1A) + heartbeat; гость держит прокси-педов. E2/E3 добавляют
-`metaOutfit`, всадников, сценарии/смерть и оружие через поля/флаги тех же
-сообщений; **E2c-b** передаёт asset/tint в `ActorAppearance` (0x1E,
-host-only, count 1..16, max 460 B) и применяет у гостя. Mission NPC,
-животные, транспорт и трупы (кроме human NPC) не реплицируются; 0x1B/0x1C
-зарезервированы; resync 0x1D реализован (≤1/с).
+E1 — human-only NPC; E2/E3 добавляют внешность, всадников, сценарии/смерть,
+оружие/бой, животных/лошадей. **E5** — урон применяет только хост:
+гость детектит free-aim target и шлёт `ActorDamage` 0x1F; **E5.1** —
+хедшот `SKEL_Head`/impact ≤0.30 м → `damage=250` (ваншот). Mission NPC,
+транспорт (E3d backlog) не реплицируются; 0x1B/0x1C зарезервированы;
+resync 0x1D реализован (≤1/с).
 
-Автоматизированная часть — wire/relay/validation: `tests/integration_server.py`
-(**29 сценариев**, protocol v16, appearance=on) + 7 C++ тестов; клиентская
-логика проверяется в игре/fake-клиентами.
+Автоматизированная часть — wire/relay/validation:
+`tests/integration_server.py` (**31 сценарий**, protocol v17, appearance +
+ActorDamage) + 7 C++ тестов; клиентская логика проверяется в игре/fake-клиентами.
 
 ## 0. Флаги и предусловия
 
-- Оба ПК: одна и та же сборка (protocol v16: `net/protocol.h`,
-  `kProtocolVersion=16`), один `rdr2_coop_server.exe` v16. **ARINA уже
-  задеплоена v16-парой (ASI `63588AD3`, server `4EDAE4B6`, INI ок), но
-  двух-ПК прогон пока не начат.** Откат на v15-пару — `dist\npc-e2c-v15\`.
+- Оба ПК: одна и та же сборка (protocol v17: `net/protocol.h`,
+  `kProtocolVersion=17`), один `rdr2_coop_server.exe` v17. **ARINA пока
+  на v16-паре (ASI `63588AD3`, server `4EDAE4B6`) — нужен деплой v17**, после
+  чего возможен двух-ПК прогон. Откат v16 — ASI `63388AD3`/server
+  `4EDAE4B6`; v15 — `dist\npc-e2c-v15\`.
 - INI на обоих ПК (кроме указанных):
   - `npc_actor = 1` — включить NPC-репликацию;
   - `npc_cap = 12` — для проверки 8–12 NPC в городе (default 8; допустимо 1..12);
   - `npc_radius = 60` — default; despawn-гистерезис +10 м (70 м);
   - `npc_appearance = 1` — meta-outfit E2a + asset/tint E2c-b (default 1);
-  - `npc_debug = 1` — probe-лог `probe: scan humans=...` (только хост);
+  - `npc_animal_cap = 4` — 0..12, животные/свободные лошади (E3c);
+  - `npc_damage = 1` — рубильник E5 host-authoritative урона;
+  - `npc_debug = 1` — probe/perf-логи (только хост);
     после прогона выключить;
   - остальные экспериментальные флаги — **0** (`world_sync=0`, `action_sync=0`,
     `vehicle_sync=0`, `mission_sync=0`, `world_trains=0`, `train_debug=0`,
@@ -109,7 +106,7 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 - При `npc_cap=8` (default) ожидаемые proxies 8, а не 8–12; для приёмки E1
   городского сценария используйте `npc_cap=12`.
 
-## 3. Игровой чек-лист (E1–E3b + E2c-b, два ПК)
+## 3. Игровой чек-лист (E1–E5.1, два ПК)
 
 | # | Сценарий / условия | Шаги | Ожидаемо (визуал + лог) | Артефакт | Pass |
 |---|---|---|---|---|---|
@@ -128,11 +125,27 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 | **S12** | E3a сценарии + смерть/возрождение | 2 сценарных NPC (`--scenario-names` smoking/standing), двое курят; убить NPC | Сценарии подтверждены («двое курят на разных местах»); анти-наложение: skip 8 м / warp revert 3 м; труп остаётся; revive работает | скрины/видео, лог | [ ] |
 | **S13** | E3b оружие/бой | NPC с валидным weapon hash; draw → aim → shoot → reload | Оружие достаётся, прицел без дёргания, серии выстрелов + переприцеливание, reload; weapon fail=0; state=shoot=1450/reload=385 (по логу) | видео, host/guest лог | [ ] |
 | **S14** | E2c-a/E2c-b внешность | Host с E2c-b capture; fake guest (`--mode guest --outfit-wait 60`) | `fakeguest: appearance_msgs>0 appearance_actors>0 entry_max` 8..16, `errors=0`; host log `asset capture count=8-10 valid=8-10`; для E2c-a `outfit_updates/resolved_late`; визуал на 2 ПК — pending | fake guest log, host log, скрины | [ ] |
+| **S15** | E3c животные/лошади | fake host `--num 0 --animals 3 --horses 2 --pattern mixed`; гость смотрит | Гость видит 3 животных + 2 лошади, двигаются без телепортов; `fakeguest: kinds human=0 animal=3 horse=2`; ошибок 0; при убийстве — `corpses`/труп | fake guest/host log, видео | [ ] |
+| **S16** | E5 host-authoritative урон | `npc_damage=1`; игра-гость стреляет в прокси (human и animal); fake host или реальный хост | Гость шлёт 0x1F, урон применяет только хост: `damage id=… hp_left=…` → `killed id=… by damage`; гость видит dead/труп; прокси до смерти invincible | host/guest log, видео | [ ] |
+| **S17** | E5.1 хедшот | игра-гость стреляет в голову прокси; human и animal | `damage=250`, `headshot=1` → ваншот; body-урон остаётся по классу оружия (35/60/80/30); пользователь подтвердил «хэдшот ваншотит» | host/guest log, видео | [ ] |
 
-Дополнительно: визуальная проверка E2c-b на **двух ПК** (сейчас pending),
-сценарные позы курящих/стоящих на разных точках (E3a), ночь/дождь
-(LOD/видимость). Транспорт/животные/лошадиные трупы по-прежнему вне
-NPC-репликации.
+Дополнительно: визуальная проверка E2c-b/E5 на **двух ПК** (после деплоя v17
+на ARINA), сценарные позы (E3a), ночь/дождь (LOD). Транспорт (E3d backlog)
+и mission NPC по-прежнему вне NPC-репликации.
+
+### E5/E5.1 — методика урона (для приёмки)
+
+- Гость: детект реального выстрела + free-aim target
+  (`GET_ENTITY_PLAYER_IS_FREE_AIMING_AT`); урон по оружию: пистолет/револьвер
+  35, винтовка/repeater/sniper 60, дробовик 80, иначе 30; лимиты ≤10/с и
+  100 мс/actor. Хедшот: `SKEL_Head` + impact ≤0.30 м (fallback — луч камеры),
+  `damage=250`.
+- Хост: применяет `APPLY_DAMAGE_TO_PED` (fallback `SET_ENTITY_HEALTH`),
+  лимиты ≤8/тик, ≤15/с, per-actor 100 мс, дистанция ≤150 м, только live
+  actor из roster/epoch; при hp≤0 — dead flag/health=0 → труп.
+- Ожидаемые строки: `actor: damage send … headshot=1`,
+  `actor: damage apply …`, host `fakehost: damage … hp_left=…`,
+  `fakehost: killed … by damage`; в игре — падение/труп прокси.
 
 ## 4. Откат и аварийные действия
 
@@ -166,9 +179,19 @@ NPC-репликации.
 - **E2c-b**: реализован и провалидирован по данным (host capture 8-10
   valid, fake guest errors=0), но **визуальная двух-ПК приёмка pending** —
   проверять host/guest внешность по S14.
-- **Только human NPC**: животные, транспорт и лошадиные трупы не
-  реплицируются; mission NPC исключены; мёртвые human NPC — E3a (dead flag +
-  health=0), труп/возрождение подтверждены.
+- **Люди + животные + лошади**: E3c реплицирует животных/свободных лошадей,
+  трупы остаются до despawn; транспорт — E3d backlog; mission NPC исключены;
+  human death/revive — E3a, animal/horse death — E3c/E5 без revive.
+- **Ambient гостя не подавляется** (отдельный world_sync-пайплайн): гость
+  видит своих ambient NPC и прокси хоста; «нет дублей» = нет двух прокси
+  одного actorId, а не идентичная картинка A/B.
+- **E5/E5.1:** нет raycast — детект по free-aim target + impact; урон
+  аппроксимирован по классу оружия/HP движка, хедшот-радиус 0.30 м; животные
+  умирают быстро; труп до despawn; mission NPC не получают урон; прокси у
+  гостя invincible до смерти (урон только через хоста).
+- **Только human/animals/horses**: животные и свободные лошади (E3c)
+  реплицируются; транспорт — E3d backlog; mission NPC исключены; трупы
+  human/животных/лошадей остаются до despawn.
 - **Ambient гостя не подавляется** (отдельный world_sync-пайплайн): гость
   видит своих ambient NPC и прокси хоста; «нет дублей» = нет двух прокси
   одного actorId, а не идентичная картинка A/B.
@@ -176,9 +199,9 @@ NPC-репликации.
   бюджет 24 натива/тик), но random ambient NPC без именованного outfit —
   `resolved=0/failed=11`; это закрывает E2c-b asset/tint, проверять
   `appearance_msgs/appearance_actors/entry_max/errors` и визуал.
-- **Двух-ПК приёмка не пройдена**: ARINA v16 задеплоена, но двух-ПК прогон
-  ещё не начат; текущие E1–E3b/E2c-b — однопК-проверки fake host/guest +
-  реальный хост для capture.
+- **Двух-ПК приёмка не пройдена**: ARINA осталась на v16, нужен деплой v17;
+  текущие E1–E5.1 — однопК-проверки fake host/guest + реальный хост,
+  E5/E5.1 подтверждены игровым гостем.
 - **Tick budget**: для E4 добавлена инструментация (`perf: npc host/guest ...`
   при `npc_debug=1`); анализ и пороги — `docs/PERF.md` +
   `tools/perf_report.py`. На старом логе (до E4-билда) `perf:` нет — это не
@@ -203,5 +226,5 @@ E4 принимается по `perf: npc host/guest` строкам (`npc_debug
 Команды и методика (baseline `npc_actor=0`, город 3–5 мин, fake guest,
 `--baseline` vs `--log`, `--json`, exit 0/1/2) — в `docs/PERF.md`.
 Ограничение 1 ПК: host и guest метрики снимаются отдельными прогонами;
-fake guest не даёт guest-`perf:` (это Python). Двух-ПК приёмка E2c-b/E4 —
-pending; ARINA v16 задеплоена.
+fake guest не даёт guest-`perf:` (это Python). Двух-ПК приёмка E2c-b/E4/E5 —
+pending; ARINA на v16, нужен деплой v17.

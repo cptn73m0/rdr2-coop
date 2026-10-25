@@ -1,26 +1,27 @@
 # E4 — производительность NPC-репликации: методика и приёмка
 
 Документ описывает, как снимать и проверять стоимость NPC-подсистемы
-(`src/actor_sync.cpp`) на v16. Анализ делает `tools/perf_report.py`
+(`src/actor_sync.cpp`) на v17. Анализ делает `tools/perf_report.py`
 (stdlib, без внешних зависимостей). E4 принимается по цифрам, а не «на глаз».
 
 ## 1. Что нужно
 
-- Сервер v16 (`build-server-ci\Release\rdr2_coop_server.exe`).
-- v16-клиент с E4-инструментацией: ASI
-  `5FD7AEB1D7B06FB5C71F604CFECF3280EA88256C025967C9B578A3D4A4E251F0`.
+- Сервер v17 (`build-server-ci\Release\rdr2_coop_server.exe`; деплой
+  ASI `35163CC2`, server `B7AAABAE`).
+- v17-клиент с E4-инструментацией (ASI `35163CC2`).
 - `npc_debug = 1` — включает `perf: npc ...` строки (при `npc_debug=0` или
   `npc_actor=0` — **ноль** `perf:` строк, overhead ≈ 0).
 - Для городского прогона: `npc_actor = 1`, `npc_cap = 8..12`,
-  `npc_radius = 60`, `npc_appearance = 1`; игра-хост + fake guest
-  (`tools/fake_actor_client.py --mode guest`, fake guest следует за позицией
-  хоста), либо два ПК.
+  `npc_radius = 60`, `npc_animal_cap = 4`, `npc_appearance = 1`,
+  `npc_damage = 1` (E5 не выключать, если проверяем урон); игра-хост +
+  fake guest (`tools/fake_actor_client.py --mode guest`, fake guest следует
+  за позицией хоста), либо два ПК.
 - Логи: `scripts\rdr2-coop.log` (игровой клиент; там `perf: npc`) и при
   необходимости `server_console.log` (ошибки/таймауты сервера).
 
 ## 2. Как снимать
 
-1. Запустить сервер v16.
+1. Запустить сервер v17.
 2. **Baseline `npc_actor=0`:** игра-хост в том же городе 3–5 минут с
    `npc_actor=0`, `npc_debug=0`; скопировать `rdr2-coop.log` как
    `perf_baseline_off.log`. В этом режиме `perf: npc` строк нет — это
@@ -57,7 +58,7 @@ python tools\perf_report.py --log perf_city_npc1.log --json > perf.json
 Exit codes: **0** PASS, **1** FAIL (порог/ошибки), **2** нет `perf:` данных /
 файл не читается. `--label NAME` задаёт имя прогона в отчёте.
 
-## 4. Формат строк (v16 E4)
+## 4. Формат строк (v17 E4)
 
 `npc_debug=1`, окно ~10 с:
 
@@ -97,7 +98,7 @@ perf: npc warn host tick=3.40 > 2.0 ms
 p50 в отчёте — медиана per-window avg по логу; p95 — худший p95, который
 прислало окно (консервативно); max — худший max.
 
-## 6. Пример отчёта (synthetic, формат v16)
+## 6. Пример отчёта (synthetic, формат v17)
 
 ```text
 E4 NPC perf report: perf_city_npc1.log
@@ -137,7 +138,23 @@ VERDICT: FAIL — tick_metrics_present: no host/guest tick
 E4-билд с `npc_debug=1`. Для старых логов отчёт всё равно показывает
 scan/spawn/apply и ошибки.
 
-## 8. Ограничения
+## 8. E5/E5.1 — урон в perf-бюджете
+
+E5 не добавляет отдельных `perf:` полей: обработка `ActorDamage` 0x1F идёт
+внутри `actor_sync::Tick` (хост: ≤8 применений/тик, ≤15/с; гость: детект+
+отправка ≤10/с) и уже входит в `tick`/`p95`. Для приёмки E5 вместе с E4:
+
+- `perf: npc host tick` p95 ≤2.0 мс и `perf: npc warn` = 0 при активной
+  стрельбе по прокси (гость стреляет, хост применяет урон);
+- в логе есть `headshot=1` для E5.1, `damage id=… hp_left=…` →
+  `killed id=… by damage`, dead-кадры/труп; `errors=0` в fake guest;
+- `appearance_failed`/`delete_failed`/timeouts не растут от damage-нагрузки.
+
+Ограничение: damage-метрики не разложены по отдельным p50/p95 — они
+покрываются общим tick-бюджетом; при регрессии сначала смотреть
+`perf: npc warn` и host tick p95.
+
+## 9. Ограничения
 
 - **1 ПК:** игра может быть хостом **или** гостем, но не обоими; host и guest
   метрики снимаются отдельными прогонами (host — с fake guest; guest — со

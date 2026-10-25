@@ -1,15 +1,15 @@
 # tools/ — вспомогательные однопК-инструменты
 
-## `fake_actor_client.py` — headless-«игрок» протокола v16 для проверки NPC-репликации
+## `fake_actor_client.py` — headless-«игрок» протокола v17 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E3c/E2c (actor-репликация NPC) на
-одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v16;
+Заменяет второй ПК при тестировании E1–E5.1/E2c (actor-репликация NPC) на
+одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v17;
 игра запускается только на одном ПК.
 
 Оба режима используют TCP-релей (`--host 127.0.0.1 --port 7777`), framing
 `[len:u32][type:u8][payload]`, JOIN с protocol_version, **автоматически
 прочитанным из `net/protocol.h` (`kProtocolVersion`, fallback 16)**; сейчас
-это v16. Лог пишется в stdout и в `tools/fake_actor_client.log` (append; файл
+это v17. Лог пишется в stdout и в `tools/fake_actor_client.log` (append; файл
 `*.log` уже игнорируется корневым `.gitignore` и не коммитится).
 
 **Позиция fake guest:** в guest-режиме инструмент принимает player FRAME
@@ -33,7 +33,7 @@ FRAME нет (fake host), через 2 с используется фиксир�
 - **Тест B** (`--mode guest`, игровой хост → fake guest, cap=12):
   получен `spawn batch n=12 unique=12`, кадры ~13 Гц (фактическая частота
   игрового хоста), `errors=0`, 12 уникальных actorId. **PASS**.
-- Инструмент проверен на реальном сервере v16 и реальной игре; заменяет
+- Инструмент проверен на реальном сервере v17 и реальной игре; заменяет
   второй ПК для wire/apply-части E1, но **не заменяет** двухПК-приёмку
   `docs/NPC_E1_TESTING.md` (метрики «неотличимости», FPS/tick, визуал).
 
@@ -41,7 +41,7 @@ FRAME нет (fake host), через 2 с используется фиксир�
 
 **Порядок важен: сначала сервер, потом fake host, потом игра-гость.**
 
-1. Запустить сервер (v16):
+1. Запустить сервер (v17):
    ```powershell
    .\build-server-ci\Release\rdr2_coop_server.exe 7777
    ```
@@ -85,7 +85,7 @@ E2a проверяет, что вместе с `ActorSpawn` уходит `metaOu
 
 **Визуальный тест: fake host → игровой гость (как ТЕСТ A)**
 ```powershell
-# сервер v16
+# сервер v17
 .\build-server-ci\Release\rdr2_coop_server.exe 7777
 
 # fake host: берём до 5 разных пар model+metaOutfit из лога игры,
@@ -457,6 +457,9 @@ fakehost: damage id=1 dmg=60 hp_left=0
 fakehost: killed id=1 by damage
 ```
 Некорректный 0x1F (размер/epoch/actorId/damage) игнорируется с WARN.
+**E5.1 headshot:** если игровой гость попадает в голову (`SKEL_Head`,
+impact ≤0.30 м), он шлёт `damage=250`; fake host применяет тот же урон и
+логирует `hp_left=0`/`killed`. Тело — по классу оружия (35/60/80/30).
 
 **Smoke без игры (fake host + fake guest):**
 ```powershell
@@ -515,7 +518,7 @@ Exit 0/PASS — как обычно (≥1 spawn-batch и ≥10 frames).
 ### E2c-b (v16): ActorAppearance (0x1E)
 
 `ActorAppearance` (0x1E) — asset/tint внешность NPC, хост → сервер → гость;
-**реализовано и задеплоено (protocol v16)**. Fake guest валидирует: header
+**реализовано и задеплоено (появилось в protocol v16, актуально в v17)**. Fake guest валидирует: header
 12 B (`epoch:u32, actorId:u32, count:u8, pad3`), `count` в 1..16, точный
 размер `12 + count*28` (max 460 B), `epoch!=0`, `actorId!=0`, `reserved==0`
 в каждой 28-байтной записи; предупреждает, если appearance пришёл раньше
@@ -535,7 +538,7 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (ARINA v16 задеплоена) —
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (ARINA на v16 — нужен деплой v17) —
 pending. Для дымового теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
@@ -543,7 +546,7 @@ pending. Для дымового теста без игры fake host `--appeara
 ### E4: замеры производительности (`perf_report.py`)
 
 `tools/perf_report.py` парсит `perf: npc host ...` / `perf: npc guest ...`
-(формат v16 E4, `npc_debug=1`) и legacy `perf: actor ...` (старые логи).
+(формат E4; в v17 тот же, `npc_debug=1`) и legacy `perf: actor ...` (старые логи).
 Считает p50/p95/max по tick/discover/capture/build/spawn/appearance/motion/
 weapons, counters (`actors/spawns/frames/despawns/bytes/s`,
 `proxies/spawns/applied/failed/timeouts`), warn/errors/timeouts, сравнивает
@@ -570,7 +573,7 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 
 **Порядок: сервер → игра-хост → fake guest.**
 
-1. Запустить сервер v16.
+1. Запустить сервер v17.
 2. Запустить RDR2 и подключиться **первым** (игра должна стать HOST);
    в INI: `npc_actor = 1`.
 3. Запустить fake guest вторым:
@@ -640,7 +643,7 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 - **Первый подключившийся — HOST.** Если fake host запустить после игры, он
   получит `is_host=0` и выйдет с кодом 3 (`fakehost: ERROR: this tool is not
   HOST`). Аналогично fake guest, запущенный до игры, станет HOST — exit 3.
-- Сервер и игра должны быть **protocol v16** (`kProtocolVersion=16`, инструмент читает версию из `net/protocol.h`); при
+- Сервер и игра должны быть **protocol v17** (`kProtocolVersion=17`, инструмент читает версию из `net/protocol.h`); при
   несовпадении — `JOIN rejected: VersionMismatch`.
 - В игре-госте (`--mode host`) должен быть `npc_actor = 1`, иначе E1 не примет
   Actor-сообщения и NPC не появятся.

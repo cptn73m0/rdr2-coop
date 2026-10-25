@@ -2,10 +2,14 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 16` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 17` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение
-  (`JoinRejected.VersionMismatch`); клиенты v14, v15 и v16 несовместимы.
-  v15-пара для отката — `dist\npc-e2c-v15\`.
+  (`JoinRejected.VersionMismatch`); клиенты v14, v15, v16 и v17 несовместимы.
+  v16-пара для отката — ASI `63388AD3`/server `4EDAE4B6`; v15 —
+  `dist\npc-e2c-v15\`.
+- v17 (E5): **`ActorDamage` (0x1F)** — host-authoritative урон по NPC,
+  гость → сервер → хост. E5.1: хедшот → `damage=250` (ваншот). Подтверждено
+  в игре; CI 31/31. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
 - v16 (E2c-b): к actor-сообщениям добавлен **`ActorAppearance` (0x1E)** —
   asset/tint внешность NPC, хост → сервер → гость. Реализованы host capture
   (компоненты/asset guids/tints) и guest apply; проверено на одном ПК
@@ -248,17 +252,18 @@ payload: TrainSnapshotHeader (16 B)
 перетирает привязанные вагоны; при удалении локомотива вагоны отцепляются.
 Это экспериментально и требует игровой проверки.
 
-## ACTOR-СООБЩЕНИЯ (v16, E1–E3b + E2c-b)
+## ACTOR-СООБЩЕНИЯ (v17, E1–E5.1)
 
-v16 содержит реализованную actor-репликацию **человеческих NPC**:
-E1 — discovery/lifecycle/движение; E2a — meta-outfit внешность; E2b —
-всадники; E3a — сценарии, смерть/возрождение; E3b — оружие/бой;
-E2c-a — host brute-force outfit resolver; **E2c-b — точная внешность
-asset/tint (0x1E)**. Всё проверено на одном ПК (fake host/guest + реальный
-хост) и включается флагом `npc_actor=1` (default 0; при выключенном флаге не
-должно быть `actor:`-логов). Все структуры little-endian, фиксированы
-`static_assert` в `net/protocol.h`. `kMaxActors = 12`; `npc_cap` 1..12
-(default 8), `npc_radius` 20..100 м (default 60), despawn-гистерезис +10 м.
+v17 содержит реализованную actor-репликацию **людей, животных и свободных
+лошадей**: E1 — discovery/lifecycle/движение; E2a — meta-outfit; E2b —
+всадники; E2c-a/b — внешность (outfit + asset/tint 0x1E); E3a — сценарии,
+смерть/возрождение; E3b — оружие/бой; E3c — животные/лошади; E5/E5.1 —
+host-authoritative урон и хедшоты (0x1F). Всё проверено на одном ПК
+(fake host/guest + реальный хост) и включается флагом `npc_actor=1`
+(default 0; при выключенном флаге не должно быть `actor:`-логов). Все
+структуры little-endian, фиксированы `static_assert` в `net/protocol.h`.
+`kMaxActors = 12`; `npc_cap` 1..12 (default 8), `npc_radius` 20..100 м
+(default 60), `npc_animal_cap` 0..12 (default 4), despawn-гистерезис +10 м.
 
 Правила сервера:
 - **0x18–0x1C и 0x1E принимаются только от хоста** (как WorldSnapshot): от
@@ -272,6 +277,10 @@ asset/tint (0x1E)**. Всё проверено на одном ПК (fake host/g
   `count=0` и одиночные батчи валидны.
 - **0x1D принимается только от гостя и ретранслируется только хосту**
   (не broadcast); от хоста — лог и игнор.
+- **0x1F ActorDamage принимается только от гостя и ретранслируется только
+  хосту**; от хоста — drop/лог. Валидация: размер 16 B, epoch/actorId != 0,
+  damage 1..1000; серверный rate-limit 32/с на клиента, лишние молча
+  дропаются. Хост сам перепроверяет epoch/actorId/живой actor/дистанцию.
 
 ### 0x18 ACTOR_SPAWN_BATCH (хост → сервер → гость)
 ```
@@ -281,7 +290,7 @@ header: epoch:u32  count:u16  pad:u16
 ActorSpawn (64 B):
   actorId:u32        — стабильный id в рамках epoch (не 0)
   epoch:u16
-  kind:u8            — 0 = human
+  kind:u8            — 0 = human, 1 = animal, 2 = horse
   flags:u8           — bit0 mounted, 1 dead, 2 drawn, 3 changing,
                        4 combat, 5 scenario, 6 reloading, 7 aiming
   model:u32  metaOutfit:u32  mountActorId:u32
@@ -366,6 +375,32 @@ entry (28 B):
   `valid=8-10`; fake guest v16: `appearance_msgs=504 appearance_actors=8
   entry_max=10 errors=0`.
 
+### 0x1F ACTOR_DAMAGE (гость → сервер → хост, v17 / E5)
+```
+payload: ActorDamagePayload (16 B)
+  epoch:u32       — эпоха хоста
+  actorId:u32     — id актёра, по которому попали (не 0)
+  damage:u16      — 1..kMaxActorDamage (1000)
+  pad:u16
+  weaponHash:u32  — оружие (0 = неизвестно)
+```
+- Направление: **только гость → сервер → хост**. Хост-отправитель
+  дропается; сервер валидирует 16 B, epoch/actorId != 0, damage 1..1000 и
+  релеит только текущему хосту; rate-limit **≤32 запроса/с** на клиента.
+- Хост применяет урон сам (**host-authoritative**): лимиты ≤8 применений/тик,
+  ≤15/с, per-actor 100 мс, дистанция до стрелка ≤150 м, actorId должен быть
+  live в roster/epoch; `APPLY_DAMAGE_TO_PED` (fallback
+  `SET_ENTITY_HEALTH`). Гость-прокси остаются invincible.
+- Гость-отправитель: free-aim target через
+  `GET_ENTITY_PLAYER_IS_FREE_AIMING_AT`, урон по оружию:
+  пистолет/револьвер 35, винтовка/repeater/sniper 60, дробовик 80, иначе 30;
+  лимиты ≤10/с и 100 мс/actor.
+- **E5.1:** хедшот определяется по `SKEL_Head` + точке impact ≤0.30 м
+  (fallback — луч камеры) и отправляется как `damage=250` → ваншот
+  human HP 200 / animal HP 100; в логе `headshot=1`.
+- Смерть естественная (движок) → dead flag + health=0 → труп у гостя;
+  animals/horses тем же путём.
+
 ### E1–E3b (actor_sync, v15) — реализовано и проверено на одном ПК
 - База: **0x18** (`ActorSpawnBatch`: спавн + heartbeat 2.5 с), **0x19**
   (`ActorFrames` 10 Гц), **0x1A** (`ActorDespawn`: reasons 1/2/3);
@@ -391,15 +426,20 @@ entry (28 B):
   4568 кандидатов, `_IS_META_PED_OUTFIT_EQUIPPED`, бюджет 24 натива/тик,
   heartbeat-пересылка, guest reapply) — механически работает; для random
   ambient NPC resolved=0/failed=11 (нет именованного outfit).
+- **E3c:** kind=1 animals / kind=2 loose horses; HP animal/horse 100,
+  движение/трупы до despawn. **E5/E5.1:** 0x1F damage, host apply,
+  свободные животные/лошади получают урон тем же путём; headshot=250.
 - При `npc_actor=0`: `actor_sync::Tick`/callbacks ничего не делают и не пишут
   `actor:`/`probe:`; сервер не получает actor-сообщений.
-- Статус: реализовано и проверено fake-клиентами на одном ПК; ARINA (второй
-  ПК) с v16-парой задеплоена (ASI `63588AD3`, server `4EDAE4B6`), но
-  двух-ПК визуальная приёмка ещё pending. Флаги: `npc_actor`, `npc_cap`,
-  `npc_radius`, `npc_appearance`, `npc_debug`.
-- Ограничения: human-only, mission NPC исключены; животные/лошадиные трупы/
-  транспорт не реплицируются; ambient-мир гостя не подавляется; лицо/волосы,
-  точные анимации/катсцены не синхронизируются.
+- Статус: реализовано и проверено на одном ПК (fake host/guest + реальный
+  хост; E5/E5.1 подтверждены в игре). ARINA (второй ПК) осталась на v16-паре
+  (ASI `63588AD3`, server `4EDAE4B6`) — двух-ПК приёмка требует деплоя v17;
+  host migration/resync под нагрузкой — backlog. Флаги: `npc_actor`,
+  `npc_cap`, `npc_radius`, `npc_animal_cap`, `npc_appearance`,
+  `npc_damage`, `npc_debug`.
+- Ограничения: mission NPC исключены; транспорт/E3d backlog; ambient-мир
+  гостя не подавляется; лицо/волосы, точные анимации/катсцены не
+  синхронизируются.
 
 ### E2c-b (actor_sync, v16): host capture + guest apply
 - Хост: `_GET_NUM_COMPONENTS_IN_PED` (0-based) + `GET_META_PED_ASSET_GUIDS`/
@@ -410,8 +450,23 @@ entry (28 B):
 - Валидация на реальном хосте: `asset capture count=8-10 valid=8-10`
   (единичные valid=0); fake guest v16: `appearance_msgs=504
   appearance_actors=8 entry_max=10 errors=0`. Визуальная двух-ПК приёмка —
-  pending (ARINA деплой выполнен, прогон не начат).
-- v15↔v16 несовместимы; откат на v15-пару — `dist\npc-e2c-v15\`.
+  pending (ARINA пока на v16 — нужен деплой v17, прогон не начат).
+- v15↔v16↔v17 несовместимы; откат v16 — ASI `63388AD3`/server `4EDAE4B6`,
+  v15 — `dist\npc-e2c-v15\`.
+
+### E5 (actor_sync, v17): host-authoritative damage + headshots
+- Гость: детект реального выстрела/попадания в free-aim target
+  (`GET_ENTITY_PLAYER_IS_FREE_AIMING_AT`), урон по классу оружия, лимиты
+  ≤10/с и 100 мс/actor; отправляет 0x1F только если `npc_damage=1` и есть
+  живой прокси. Хедшот — `SKEL_Head` + impact ≤0.30 м (fallback луч камеры),
+  `damage=250`.
+- Хост: очередь damage, `APPLY_DAMAGE_TO_PED` + fallback
+  `SET_ENTITY_HEALTH`; лимиты ≤8/тик, ≤15/с, per-actor 100 мс, ≤150 м;
+  проверяет epoch/actorId/live/roster. Смерть — естественная, далее dead
+  flag/труп как E1–E3c.
+- Проверено: host `damage id=… dmg=… hp_left=…` → `killed id=… by damage`;
+  fake tool smoke (human 200/animal 100, guest `--damage-after`), игровая
+  проверка «выстрелы убивают, хэдшот ваншотит», CI 31/31.
 
 ### Reconnect (клиент)
 
@@ -428,7 +483,7 @@ entry (28 B):
 - Этот раздел описывает актуальные для стабильной сборки изменения (Spike 1/P1/P2/P3);
   базовые разделы ниже сохранены как историческая спецификация Spike 1, но
   ключевые форматы (JOIN/JOIN_OK, FRAME 88 B, OUTFIT 784 B) обновлены под
-  v14/v15/v16 (v16: actor-сообщения E1–E3b + E2c-b 0x1E, см. раздел выше).
+  v14/v15/v16/v17 (v17: actor-сообщения E1–E5.1, 0x18–0x1F, см. раздел выше).
 
 Сетевой стек поверх **сервера-релея**. Один сервер, несколько клиентов
 (ASI-плагинов). Клиент периодически шлёт свой `GhostFrame`, сервер
@@ -443,10 +498,11 @@ entry (28 B):
 
 - Клиент отправляет: JOIN, FRAME, LEAVE, OUTFIT/HORSE_OUTFIT, PING; хост
   дополнительно — WorldSnapshot, MissionEvent/MissionState/MissionBarrier,
-  actor-сообщения 0x18–0x1C (при включённых флагах); гость — ActorResync 0x1D.
+  actor-сообщения 0x18–0x1C, 0x1E (при включённых флагах); гость —
+  ActorResync 0x1D и ActorDamage 0x1F.
 - Сервер рассылает: JOIN_OK/JOIN_REJECTED, PLAYER_JOINED, PLAYER_LEFT, FRAME,
   OUTFIT/HORSE_OUTFIT, HOST_CHANGED, host-only сообщения от хоста и actor-
-  сообщения 0x18–0x1C; ActorResync — только хосту.
+  сообщения 0x18–0x1C, 0x1E; ActorResync/ActorDamage — только хосту.
 
 ## Транспорт
 
