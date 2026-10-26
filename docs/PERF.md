@@ -1,22 +1,25 @@
 # E4 — производительность NPC-репликации: методика и приёмка
 
 Документ описывает, как снимать и проверять стоимость NPC-подсистемы
-(`src/actor_sync.cpp`) на v19. Анализ делает `tools/perf_report.py`
+(`src/actor_sync.cpp`) на v19/npc-e12. Анализ делает `tools/perf_report.py`
 (stdlib, без внешних зависимостей). E4 принимается по цифрам, а не «на глаз».
+С npc-e12 добавлены **`perf: frame`** (полный кадр), клиентский **`perf: net`**
+и серверный **`net: bytes_in/out`**; старые `perf: npc` сохранены.
 
 ## 1. Что нужно
 
 - Сервер v19 (`build-server-ci\Release\rdr2_coop_server.exe`; локальная пара
-  npc-e9 — ASI `DC0C4AB7`, server `E26C715A`; ARINA offline).
-- v19-клиент с E4-инструментацией (ASI `DC0C4AB7`, локальная пара npc-e9).
-- `npc_debug = 1` — включает `perf: npc ...` строки (при `npc_debug=0` или
-  `npc_actor=0` — **ноль** `perf:` строк, overhead ≈ 0).
+  npc-e12 — ASI `D47B91A5`, server `F3EBD6D1`; ARINA offline).
+- v19-клиент npc-e12 (ASI `D47B91A5`, локальная пара npc-e12).
+- `npc_debug = 1` — включает `perf: npc`/`perf: frame`/`perf: net` строки (при
+  `npc_debug=0` или `npc_actor=0` — **ноль** `perf:` строк, overhead ≈ 0).
 - Для городского прогона: `npc_actor = 1`, `npc_cap = 8..12`,
   `npc_radius = 60`, `npc_animal_cap = 4`, `npc_appearance = 1`,
   `npc_damage = 1`, `npc_presence = 1`, `npc_visitor = 1`,
   `npc_visitor_pause_scenes = 1`, `world_vehicles = 1`,
   `npc_vehicle_radius = 80`, `npc_occupants = 1`, `world_trains = 0`,
-  `npc_animal_appearance = 0`, `npc_motion_update = 1` (E6/E7/E9/E3d не
+  `npc_animal_appearance = 0`, `npc_motion_update = 1`,
+  `player_frame_hz = 20`, `player_frame_change_only = 1` (E6/E7/E9/E3d не
   выключать, если проверяем их вклад); игра-хост + fake guest
   (`tools/fake_actor_client.py --mode guest`, fake guest следует за позицией
   хоста), либо два ПК.
@@ -62,9 +65,21 @@ python tools\perf_report.py --log perf_city_npc1.log --json > perf.json
 Exit codes: **0** PASS, **1** FAIL (порог/ошибки), **2** нет `perf:` данных /
 файл не читается. `--label NAME` задаёт имя прогона в отчёте.
 
-## 4. Формат строк (v19 E4)
+## 4. Формат строк (v19 E4 / npc-e12)
 
-`npc_debug=1`, окно ~10 с:
+`npc_debug=1`. **Новый полный кадр (главная метрика G2), окно ~5 с:**
+
+```text
+perf: frame host tick=0.42 p95=0.55 max=1.10 | world=0.10 p95=0.15 | actor=0.30 p95=0.40 | coop=0.02 p95=0.03 frames_hz=20.0
+perf: frame guest tick=0.35 p95=0.48 max=0.90 | world=0.00 p95=0.00 | actor=0.28 p95=0.35 | coop=0.02 p95=0.03 frames_hz=20.0
+```
+
+`tick` — полный кадр (мс), `world` — WorldSnapshot/vehicle-scan,
+`actor` — actor_sync (NPC), `coop` — остальная coop-логика; `frames_hz` —
+фактическая частота Player Frame за окно (target ≤`player_frame_hz`, покой
+heartbeat 5 Гц при `player_frame_change_only=1`).
+
+Старые строки `perf: npc` сохранены для детализации actor/world:
 
 ```text
 perf: npc host tick=0.42 p95=0.55 max=1.10 | discover=0.20 p95=0.30 | capture=0.05 p95=0.08 | build=0.10 p95=0.15
@@ -85,15 +100,35 @@ perf: npc warn host tick=3.40 > 2.0 ms
 - Legacy `perf: actor scan/spawn/apply` (старые логи/старые сборки) парсится
   отдельной веткой; в новом E4-билде он **не пишется**.
 
+**Реальный трафик (npc-e12):**
+
+```text
+# server_console.log / видимое окно сервера, heartbeat ~10 с
+net: bytes_in=123456 bytes_out=234567 | frame=... actor=... world=... outfit=... presence=... damage=... trains=... occupants=... other=...
+# rdr2-coop.log, клиент, ≥10 с
+perf: net tx=1.2 KB/s rx=1.4 KB/s msgs_tx=24 msgs_rx=28
+```
+
+`bytes_in/out` — накопленные байты на сервере; для КБ/с снимать **приращение**
+между двумя heartbeat и делить на интервал. Per-type суммы — те же байты по
+категориям (frame/actor/world/outfit/presence/damage/trains/occupants/other).
+Клиентский `perf: net` — tx/rx KB/s за 10-секундное окно, msgs_tx/rx — число
+сообщений.
+
 ## 5. Пороги приёмки
 
 | Метрика | Порог |
 |---|---|
-| Tick p95, хост | ≤ **2.0 мс** (с baseline — добавленный p95 ≤2.0 мс) |
-| Tick p95, гость | ≤ **2.0 мс** |
+| `perf: frame host` p95 / max | **≤4.0 мс / ≤10.0 мс** полного кадра (рекомендуемый бюджет, согласовать с Lead) |
+| `perf: frame guest` p95 / max | **≤4.0 мс / ≤10.0 мс** |
+| `perf: frame ... actor` p95 | **≤2.0 мс** (actor_sync остаётся ключевым) |
+| `perf: frame ... world`/`coop` p95 | информационно; аномалии разбирать отдельно |
+| `perf: npc` host/guest tick p95 | ≤ **2.0 мс** (старый actor-бюджет, сохранён) |
 | discover/capture/apply p95 | ≤ **1.5 мс** |
 | Guest spawn/appearance/motion/weapons p95 | ≤ **1.5 мс** (в отчёте проверяются) |
 | `perf: npc warn` | **0** строк |
+| Traffic, типично | **≤10–12 КБ/с** на клиента (tx+rx) |
+| Traffic, worst | **≤15 КБ/с** на клиента; выше — FAIL G3 |
 | timeouts | ≤ **0.5%** (timeouts / (guest spawns+timeouts); для legacy — appliedFrames) |
 | appearance failed | ≤ **1%** (failed / (applied+failed)) |
 | delete failed | **0** |
@@ -227,13 +262,34 @@ horse tack (kind=2) — `ActorOutfit` 0x1C **792 B** on change (бюджет
 `actor: animal appearance apply … ok=`, `actor: horse tack apply … ok=`,
 `actor: animal appearance probe …` (1/модель ≤1/10 с) и 5-сек счётчики.
 
+## 10c. npc-e12 — P0/P1 перф-фиксы и traffic counters
+
+Что изменилось (сборка npc-e12, ASI `D47B91A5`, server `F3EBD6D1`):
+
+- **Player Frame throttle:** `player_frame_hz=20` (clamp 10..60),
+  `player_frame_change_only=1` — Frame 88 B не каждый тик: покой heartbeat
+  ~5 Гц (~0.44 КБ/с), движение до 20 Гц (~1.76 КБ/с) вместо 5.3/12.7 КБ/с
+  при 60/144 FPS. `perf: frame ... frames_hz` показывает фактическую частоту.
+- **P0/P1:** `CollectLocalOutfit` игрока/лошади ≤10 Гц (было каждый тик
+  ~47–96 нативов); единый appearance-capture бюджет 2 захвата/тик
+  (animal/horse/mount период ~5–5.75 с); общий vehicle-скан
+  (`SendHostSnapshot`+`TickHostTrains`, TTL 6 тиков), occupants 1/с;
+  TTL host-кэшей occupants >300 тиков; resync сбрасывает
+  `animalAppearanceSent`/`horseTackSent`/`mountOutfitSent`; `world_scan`
+  только при `npc_debug=1` или раз в 5 с.
+- **Метрики:** `perf: frame host/guest` (полный кадр и world/actor/coop),
+  `perf: npc` (детализация), server `net: bytes_in/out` + per-type,
+  client `perf: net tx/rx`. Старые `perf: npc` не удалены;
+  `tools/perf_report.py` пока разбирает `perf: npc`, полный кадр/трафик —
+  вручную по grep (см. `tools/README.md`).
+
 ## 11. Ограничения
 
 - **1 ПК:** игра может быть хостом **или** гостем, но не обоими; host и guest
   метрики снимаются отдельными прогонами (host — с fake guest; guest — со
-  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a/E3d-b/E3d-c/E9 pending;
-  локальная пара npc-e9 — ASI `DC0C4AB7`/server `E26C715A`, ARINA offline
-  (деплой pending).
+  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10/E11
+  pending; локальная пара npc-e12 — ASI `D47B91A5`/server `F3EBD6D1`, ARINA
+  offline (деплой pending).
 - Fake guest не даёт guest-`perf:` строк: это Python-инструмент, не игровой
   клиент; guest-метрики есть только у игры-гостя.
 - Baseline `npc_actor=0` не содержит `perf: npc` (нулевой overhead); для

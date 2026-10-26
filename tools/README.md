@@ -2,7 +2,7 @@
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E9/E2c (actor-репликация NPC) на
+Заменяет второй ПК при тестировании E1–E12/E2c (actor-репликация NPC) на
 одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v19;
 игра запускается только на одном ПК.
 
@@ -595,8 +595,35 @@ npc_debug = 1
   ```
 - `npc_animal_appearance=0` → животные/лошади снова random (не залипают);
   при расхождении INI host/guest поведение несимметрично — не допускается.
-- Локальная пара npc-e9/v19: ASI `DC0C4AB7`, server `E26C715A` (PID 10276);
+- Локальная пара npc-e12/v19: ASI `D47B91A5`, server `F3EBD6D1`;
   ARINA offline. Чек-лист — `docs/NPC_E1_TESTING.md` S27.
+
+### npc-e12: перф/трафик (grep-команды)
+
+Fake tool не эмулирует полный кадр/трафик — это снимается с игры и сервера.
+Включить `npc_debug=1`, `player_frame_hz=20`, `player_frame_change_only=1`.
+
+```powershell
+# клиент: полный кадр, net-трафик, старые actor-метрики
+Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
+  -Pattern "perf: frame|perf: net|perf: npc"
+
+# сервер: реальные байты + per-type (в server_console.log или окне)
+Select-String -Path server_console.log -Pattern "net: bytes_in="
+
+# только последние строки для быстрой проверки
+Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
+  -Pattern "perf: frame|perf: net" | Select-Object -Last 20
+```
+
+- `perf: frame host|guest tick=… p95=… max=… | world=… | actor=… | coop=…
+  frames_hz=…` — каждые ~5 с; G2: p95 ≤4 мс, max ≤10 мс, actor p95 ≤2 мс.
+- server `net: bytes_in=… bytes_out=… | frame=… actor=… world=…` каждые
+  ~10 с; G3: приращение `bytes_out` / 1024 / секунды = КБ/с.
+- client `perf: net tx=… KB/s rx=… KB/s msgs_tx=… msgs_rx=…` ≥10 с;
+  типично ≤10–12 КБ/с, worst ≤15 КБ/с.
+- P2 (config validator/wall-clock) не сделаны; `player_frame_hz` можно
+  поднять до 60, если ghost слишком сглажен.
 
 ### E2c: поздние outfit-обновления (metaOutfit resolver)
 
@@ -648,7 +675,7 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e9 ASI `DC0C4AB7`/server `E26C715A`, ARINA offline) —
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e12 ASI `D47B91A5`/server `F3EBD6D1`, ARINA offline) —
 pending. Для дымового теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
@@ -657,6 +684,9 @@ pending. Для дымового теста без игры fake host `--appeara
 
 `tools/perf_report.py` парсит `perf: npc host ...` / `perf: npc guest ...`
 (формат E4; в v19 тот же, `npc_debug=1`) и legacy `perf: actor ...` (старые логи).
+Новый `perf: frame`/`perf: net`/server `net:` пока **не парсится** — снимать
+grep-командами из раздела «npc-e12: перф/трафик» и сверять с порогами
+`docs/PERF.md`/`docs/ACCEPTANCE_2PC.md`.
 Считает p50/p95/max по tick/discover/capture/build/spawn/appearance/motion/
 weapons, counters (`actors/spawns/frames/despawns/bytes/s`,
 `proxies/spawns/applied/failed/timeouts`), warn/errors/timeouts, сравнивает
@@ -787,8 +817,8 @@ Windows PowerShell / PS 5.1 (скрипт сохранён с UTF-8 BOM):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\snapshot_build.ps1 `
-  -Label npc-e9 -Features "E9 animal/horse appearance; E3d-c occupants" `
-  -Tag npc-e9
+  -Label npc-e12 -Features "E12 perf/traffic + P0/P1" `
+  -Tag npc-e12
 ```
 
 - `-Label` — имя папки `dist\<label>` (обязательно).
@@ -844,6 +874,9 @@ INI — по разделу INI снапшота.
 | `npc-e8` | v19 | `9E3E8D7A` | `E26C715A` | `ce897b5` / npc-e8 |
 | `npc-e8.1` | v19 | `1EB0A633` | `E26C715A` | `1324d00` / npc-e8.1 |
 | `npc-e9` | v19 | `DC0C4AB7` | `E26C715A` | `1543622` / npc-e9 |
+| `npc-e10` | v19 | `B8BA1B93` | `E26C715A` | `ff7cfc4` / npc-e10 |
+| `npc-e11` | v19 | `785B2D05` | `E26C715A` | `b2e5525` / npc-e11 |
+| `npc-e12` | v19 | `D47B91A5` | `F3EBD6D1` | `c22dbcc` / npc-e12 |
 
 Актуальные hashes/фичи/INI — в `dist\<label>\README.md`; корневой
 README содержит краткую таблицу и ссылки.

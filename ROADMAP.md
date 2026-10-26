@@ -5,7 +5,7 @@
 
 **Актуально на:** 26.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** **v19** (actor-репликация NPC E1–E9,
+**Текущий протокол:** **v19** (actor-репликация NPC E1–E12,
 0x18–0x22: ActorDamage 0x1F + PlayerPresence 0x20 + VehicleOccupants 0x21 +
 TrainSnapshotV2 0x22). v18↔v19 несовместимы; откат v18 — ASI
 `C9BFA565`/server `BEC3428B`, v17 — `35163CC2`/`B7AAABAE`, v16 —
@@ -16,10 +16,13 @@ E1 human-only, E2a meta-outfit, E2b всадники, E2c-a/b внешность
 сценарии/смерть, E3b оружие/бой, E3c животные/лошади, E4 перф-инструментация,
 E5 урон/E5.1 хедшоты/E5.2-E5.3 трупы/mounted, E6 presence, E7.1 visitor,
 E7.2 плавное движение, E7.3 E3d-a/migration, E8 — E3d-c occupants/draft +
-E3d-b mission-train, **E9 — animal/horse appearance (0x1E assets + 0x1C tack)**.
-CI **41/41** + 7 C++; HEAD 1543622; тег **npc-e9**; теги `npc-e0`…`npc-e9`.
-`npc_actor=0` по умолчанию; локальная пара v19 — ASI `DC0C4AB7`/server
-`E26C715A` (PID 10276), ARINA offline. Двух-ПК приёмка и S27 — backlog.
+E3d-b mission-train, E9 — animal/horse appearance, E10 — mounted NPC-horse
+appearance, E11 — точные пассажиры поездов, **E12 — `perf: frame`/`perf: net`,
+Player Frame throttle, P0/P1 перф-фиксы**.
+CI **41/41** + 7 C++; HEAD c22dbcc; тег **npc-e12**; теги `npc-e0`…`npc-e12`.
+`npc_actor=0` по умолчанию; локальная пара v19 — ASI `D47B91A5`/server
+`F3EBD6D1`, снапшот `dist\npc-e12`, ARINA offline. Двух-ПК приёмка/
+S27/S28/S29 — backlog.
 
 ---
 
@@ -76,7 +79,7 @@ CI **41/41** + 7 C++; HEAD 1543622; тег **npc-e9**; теги `npc-e0`…`npc-
 
 ## Фаза 5 — P1: репликация мира/NPC
 
-### NPC-репликация — E1–E9 реализованы; 2-ПК/визуал pending
+### NPC-репликация — E1–E12 реализованы; 2-ПК/визуал pending
 - [x] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (22% NPC имеют
       metaOutfit hash; сценарии/модели/лошади/оружие)
 - [x] E0: протокол actor-сообщения 0x18–0x1E, `kMaxActors=12`,
@@ -189,20 +192,34 @@ CI **41/41** + 7 C++; HEAD 1543622; тег **npc-e9**; теги `npc-e0`…`npc-
       (kind2) → ActorOutfit 0x1C 792 B on change; guest staged apply/readback,
       fallback random, horse tack apply; `npc_animal_appearance=0` → random;
       probe `actor: animal appearance probe …`; tests 41/41
-- [ ] Backlog: S27 animal appearance 2-ПК (ARINA offline), mounted-horse
-      appearance, точные пассажиры поездов (P1), ambient-trains cleanup,
-      mission-aware visitor расширить на NPC активной миссии, adaptive 15 Гц,
-      **двух-ПК визуальная приёмка E2c-b/E5/E6/E7/E3d-a/E3d-b/E3d-c**,
+- [x] **E10 (npc-e10, v19):** mounted NPC-horse appearance — `ActorOutfit`
+      0x1C с actorId всадника, `npc_mount_appearance=1` (host+guest), retry
+      после reseat/позднего mount, fallback random; логи `mount outfit send/
+      apply`, `guest mount outfit applied/failed`; S28
+- [x] **E11 (v19):** точные пассажиры поездов через `VehicleOccupants` 0x21
+      `carIndex` (driver/passenger на вагонах состава); S26/D3
+- [x] **E12 (npc-e12, v19):** `perf: frame host/guest` (полный кадр +
+      world/actor/coop p95/max), server `net: bytes_in/out` + per-type,
+      client `perf: net`; Player Frame throttle (`player_frame_hz=20`,
+      `player_frame_change_only=1`); P0/P1: outfit ≤10 Гц, capture budget
+      2/тик, общий vehicle-скан+TTL, occupants 1/с, resync appearance,
+      world_scan debug; tests 41/41
+- [ ] Backlog: S27/S28/S29 2-ПК (ARINA offline), P2 config validator/
+      wall-clock нормализация, ambient-trains cleanup, mission-aware visitor
+      расширить на NPC активной миссии, adaptive 15 Гц,
+      **двух-ПК визуальная приёмка E2c-b/E5/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10**,
       host migration/resync под нагрузкой, Tick p95/FPS; `npc_actor` не
       включать в рабочую сборку до неё
 - [ ] Известные ограничения: E9 cap16/RESET на животных не проверен/
-      horse tack model-specific/mounted-horse не покрыт/MPT_ANIMAL coverage
-      fallback random/MetaPedOutfit только probe; Story Mode нельзя
-      «подселить»; RedM — другой стек; при `world_vehicles=0` пустые дороги;
-      E3d-b opt-in и direction/reversing приближённые; seat=-1/driver —
-      in-game; при миграции мир не переносится; лицо/волосы/борода,
-      точные анимации/катсцены; E5 без raycast, урон/HP аппроксимированы,
-      headshot-радиус 0.30 м, труп до despawn
+      horse tack model-specific/MPT_ANIMAL coverage fallback random/
+      MetaPedOutfit только probe; E10 mounted horse late mount; E12
+      player_frame_hz=20 может сглаживать ghost (поднять до 60); P2 не
+      сделаны; Story Mode нельзя «подселить»; RedM — другой стек; при
+      `world_vehicles=0` пустые дороги; E3d-b opt-in и direction/reversing
+      приближённые; seat=-1/driver — in-game; при миграции мир не
+      переносится; лицо/волосы/борода, точные анимации/катсцены; E5 без
+      raycast, урон/HP аппроксимированы, headshot-радиус 0.30 м, труп до
+      despawn
 
 - [x] `WorldSnapshot` (0x10), хост-авторитет
 - [x] Сканер NPC 60 м, до 64 сущностей (32 Ped + 16 Vehicle + 16 Object),

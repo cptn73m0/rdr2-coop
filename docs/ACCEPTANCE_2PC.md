@@ -1,19 +1,20 @@
-# Финальная приёмка 2-ПК — RDR2 CO-OP v19 / npc-e10
+# Финальная приёмка 2-ПК — RDR2 CO-OP v19 / npc-e12
 
 **Назначение:** пошаговый приёмочный сценарий для пользователя + ARINA (второй
 ПК) после деплоя v19. Проверяем не отдельные unit-тесты, а связку
 «игра-хост + игра-гость» в реальном мире: NPC, visitor, транспорт, поезда,
 внешность, миграцию хоста и 30–40 минут стабильной игры.
 
-**Версия:** protocol **v19**, сборка **npc-e10**: ASI
-`B8BA1B93C5F6B68BFFE612F4408C9626E8E669294446E385D27C880081D1C88B`,
-server `E26C715A...`; оба ПК — **одна и та же** сборка/снапшот
-`dist\npc-e10`. **E11** (точные пассажиры поездов) в работе и в приёмку
-v19/npc-e10 не входит; S26 проверяет текущий mission-train без E11.
+**Версия:** protocol **v19**, сборка **npc-e12**: ASI
+`D47B91A5DF0AC5C5AE472D1190AF76E95F5F0B25EEB0E7F13ED61E3B970763BA`,
+server `F3EBD6D151E346935C5E35A8017E40655D0EBBB4B9B8D9B3C01C4E0196E37206`;
+оба ПК — **одна и та же** сборка/снапшот `dist\npc-e12`. E11 (точные
+пассажиры поездов через 0x21 carIndex) входит в базу npc-e12 и проверяется в
+D3.
 
 **Текущий статус:** ARINA offline — сначала задеплоить на неё
-`dist\npc-e10` и сверить хеши. Локальная пара ASI `B8BA1B93` + server
-`E26C715A`. Без одинаковой пары на обоих ПК приёмка не начинается.
+`dist\npc-e12` и сверить хеши. Локальная пара ASI `D47B91A5` + server
+`F3EBD6D1`. Без одинаковой пары на обоих ПК приёмка не начинается.
 
 ---
 
@@ -32,17 +33,17 @@ Get-FileHash "E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe" -Algorithm
 
 | Компонент | Версия/хеш | Где |
 |---|---|---|
-| ASI | npc-e10, `B8BA1B93…` (SHA256 как в `dist\npc-e10\README.md`) | оба ПК: `...\scripts\rdr2_coop.asi` |
-| Server | v19, `E26C715A39E2CA4F590DE625C561D8B025A905A215FBC44E4F713348D2EB3551` | ПК-хост: `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` |
+| ASI | npc-e12, `D47B91A5…` (SHA256 как в `dist\npc-e12\README.md`) | оба ПК: `...\scripts\rdr2_coop.asi` |
+| Server | v19, `F3EBD6D1…` (traffic counters) | ПК-хост: `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` |
 | Protocol | **v19** (`kProtocolVersion=19`) | `net/protocol.h` / JOIN в логе |
-| INI | `dist\npc-e10\rdr2-coop.ini.local` как эталон | оба ПК |
+| INI | `dist\npc-e12\rdr2-coop.ini.local` как эталон | оба ПК |
 
-Если хеш/протокол не совпал — **стоп**, откатиться на `dist\npc-e10`
+Если хеш/протокол не совпал — **стоп**, откатиться на `dist\npc-e12`
 (см. блок H, §8) и не начинать прогон.
 
-### 0.2. INI: 25 ключей приёмки
+### 0.2. INI: 27 ключей приёмки
 
-Ключи подключения/идентичности (задаются отдельно, **не входят** в 25
+Ключи подключения/идентичности (задаются отдельно, **не входят** в 27
 игровых):
 
 ```ini
@@ -52,7 +53,7 @@ player_name = Player1         ; на втором ПК — Player2 (ники р�
 ped_model   = 0xCF7E73BE
 ```
 
-**25 ключей игровых настроек — выставить на обоих ПК одинаково:**
+**27 ключей игровых настроек — выставить на обоих ПК одинаково:**
 
 | # | Ключ | Значение | Зачем |
 |---|---|---|---|
@@ -81,8 +82,10 @@ ped_model   = 0xCF7E73BE
 | 23 | `npc_frame_adaptive` | `1` | 10 Гц покой / 15 Гц движение |
 | 24 | `npc_motion_update` | `1` | E7.2 in-place update |
 | 25 | `npc_motion_marker` | `0` | E7.2 marker fallback (A2) |
+| 26 | `player_frame_hz` | `20` | P0: Player Frame 10..60 Гц |
+| 27 | `player_frame_change_only` | `1` | P0: покой heartbeat 5 Гц |
 
-Дополнительно (не входят в 25): `action_sync=0`, `vehicle_sync=0`,
+Дополнительно (не входят в 27): `action_sync=0`, `vehicle_sync=0`,
 `mission_sync=0`, `mission_credit=0`, `save_backup=1`,
 `mission_reward_log=1` — как в снапшоте.
 
@@ -172,7 +175,7 @@ ped_model   = 0xCF7E73BE
 |---|---|---|---|---|
 | D1 | Хост у станции/на поезде; гость смотрит | Гость видит **один** mission-train на рельсах; вагоны в правильном порядке, локального второго поезда нет | `world: train send config=… cars=…`, guest `world: train spawn … ok=1` | оба лога, видео |
 | D2 | Хост едет, останавливается у станции, разворачивается | Совпадают скорость/направление/station/reversing; нет скачков >25 м/|dz|>15 | `world: train send … speed=… state=…` | guest/host log, видео |
-| D3 | E11 (позже) — точные пассажиры поезда | Не входит в v19/npc-e10; отметить «E11 not yet», не fail | — | — |
+| D3 | E11 (в базе npc-e12): точные пассажиры поезда через 0x21 carIndex | Пассажиры поезда (driver/passenger в carIndex) видны seated в тех же вагонах/местах, без T-pose/дублей; если пассажиров нет — проверить, что их действительно нет (лог skip/пустой occupant list), молчаливый пропуск — fail | `world: occupants vehicle=…`, `actor: seat attach … ok=`, `world: train send … cars=…` | оба лога, видео |
 | D4 | Выключить `world_trains=0` / выйти / role change | Mission-train удаляется; `SET_RANDOM_TRAINS(true)` восстанавливает random trains; второй поезд не остаётся | `world: train despawn reason=…`; в логе нет повторного spawn | guest log, видео |
 
 ---
@@ -215,13 +218,43 @@ ped_model   = 0xCF7E73BE
 
 | # | Действие | Ожидаемый результат | Логи/проверка | При fail прислать |
 |---|---|---|---|---|
-| G1 | 30–40 мин игры без рестарта | FPS host/guest стабилен относительно baseline; без длинных фризов/утечек | FPS-скрины/лог; `perf: npc host tick=… p95=… max=…`; `perf: npc guest tick=… p95=…` | FPS-замеры, оба лога |
-| G2 | Проверить бюджет | host/guest tick p95 **≤ 2.0 мс**, `perf: npc warn` = 0; guest timeouts ≤0.5%, appearance failed ≤1% | `perf: npc` строки, `perf: npc warn` | host/guest `perf:` выдержки |
-| G3 | Проверить трафик/прокси | Суммарный трафик ~≤15 КБ/с на клиента (штатно), `bytes=` не растёт бесконечно; `proxies`/`actors` в пределах cap | `perf: npc host actors=… bytes=…/s`, guest `proxies=… timeouts=…` | 2–3 `perf:` строки, FPS |
-| G4 | Ошибки/десинк | Нет `ERROR`, `warn`, `VersionMismatch`, «вечных» `ok=0`; трупы/прокси не копятся | grep `actor:|world:|coop:` | проблемные строки + видео |
+| G1 | 30–40 мин игры без рестарта | FPS host/guest стабилен относительно baseline; без длинных фризов/утечек | FPS-скрины/лог; `perf: frame host tick=… p95=… max=…`; `perf: frame guest …` каждые ~5 с | FPS-замеры, оба лога |
+| G2 | Проверить бюджет полного кадра | `perf: frame host` p95 **≤4.0 мс**, max **≤10.0 мс**; guest p95/max — те же; `actor` p95 ≤**2.0 мс**; `perf: npc warn` = 0; guest timeouts ≤0.5%, appearance failed ≤1% | grep `perf: frame`, `perf: npc`; снять 5–10 строк за 30–40 мин | host/guest `perf: frame` выдержки, `perf: npc warn` |
+| G3 | Проверить трафик (server + client) | Типично **≤10–12 КБ/с** на клиента, worst **≤15 КБ/с**; нет роста `bytes_in/out` вне нормы; `bytes=`/`proxies` не копятся | server `net: bytes_in=… bytes_out=… | frame=… actor=… world=…` каждые ~10 с; client `perf: net tx=… KB/s rx=… KB/s msgs_tx=…` | 2–3 heartbeat server, 2–3 `perf: net`, FPS |
+| G4 | Ошибки/десинк | Нет `ERROR`, `warn`, `VersionMismatch`, «вечных» `ok=0`; трупы/прокси не копятся | grep `actor:|world:|coop:|perf: net` | проблемные строки + видео |
 
-Ориентир: `perf: npc host tick=0.42 p95=0.55…` — норма; warning вида
-`perf: npc warn host tick=3.40 > 2.0 ms` — FAIL по G.
+**Как снимать G2/G3:**
+
+1. Включить `npc_debug=1` на обоих ПК и `player_frame_hz=20`,
+   `player_frame_change_only=1`; прогреть 1–2 минуты.
+2. G2: собрать `perf: frame host/guest` строки за 5–10 минут активной игры;
+   взять **худшие p95/max** из выдачи (консервативно). `perf: npc` — для
+   детализации actor; порог actor p95 остаётся 2 мс.
+3. G3 server: запустить `Select-String` по `server_console.log` (или снять
+   из видимого окна) две строки `net: bytes_in=… bytes_out=…` с разницей
+   ~10 с; `(bytes_out2-bytes_out1)/1024/10` = КБ/с; проверить per-type
+   `frame/actor/world/...`.
+4. G3 client: в `rdr2-coop.log` взять 2–3 строки
+   `perf: net tx=… rx=… msgs_tx=… msgs_rx=…`; сложить tx+rx как трафик
+   клиента; сверить с server bytes_out.
+5. FAIL, если устойчиво >15 КБ/с, `perf: npc warn` >0 или
+   `perf: frame` p95/max выше бюджета; приложить все выдержки и участок лога.
+
+```powershell
+# G2: полный кадр + actor-детализация (оба ПК)
+Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
+  -Pattern "perf: frame|perf: npc" | Select-Object -Last 20
+
+# G3: клиентский tx/rx
+Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
+  -Pattern "perf: net" | Select-Object -Last 5
+
+# G3: серверные накопленные байты (взять две строки с разницей ~10 с)
+Select-String -Path server_console.log -Pattern "net: bytes_in=" | Select-Object -Last 5
+```
+
+Ориентир: `perf: frame host tick=0.42 p95=0.55 max=1.10 …` — норма;
+`perf: npc warn host tick=3.40 > 2.0 ms` — FAIL по G2.
 
 ---
 
@@ -230,10 +263,10 @@ ped_model   = 0xCF7E73BE
 Если блок A–G даёт FAIL, не «лечить» на ходу:
 
 1. Закрыть игры на обоих ПК и остановить сервер.
-2. Открыть `dist\npc-e10\README.md` (или `dist\npc-e9\README.md`, если
+2. Открыть `dist\npc-e12\README.md` (или `dist\npc-e11\README.md`, если
    откат на предыдущую) — там SHA256, INI и порядок восстановления.
-3. ASI: `dist\npc-e10\rdr2_coop.asi` → `E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi`.
-4. Server: `dist\npc-e10\rdr2_coop_server.exe` → `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe`.
+3. ASI: `dist\npc-e12\rdr2_coop.asi` → `E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi`.
+4. Server: `dist\npc-e12\rdr2_coop_server.exe` → `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe`.
 5. INI: привести к разделу INI снапшота; протокол должен быть v19 на обоих
    ПК; v18↔v19 несовместимы (`VersionMismatch`).
 6. Запустить сервер в видимом окне, проверить `Host game-timeout: 4 s`, затем
@@ -252,7 +285,8 @@ ped_model   = 0xCF7E73BE
 - `Get-FileHash` ASI/server на обоих ПК и `git rev-parse HEAD`;
 - FPS/скриншоты или OBS-видео 20–30 с (что именно видно);
 - точное время, локация, блок/пункт (A1…H), ожидаемое/фактическое;
-- `Select-String` выдержки: `actor:`, `world:`, `perf: npc`, `coop:`;
+- `Select-String` выдержки: `actor:`, `world:`, `perf: frame`, `perf: net`,
+  `perf: npc`, `coop:`; для server — строки `net: bytes_in=`;
 - если откатывались — `dist\<label>` и хеши восстановленной пары.
 
 ---
@@ -271,8 +305,8 @@ ped_model   = 0xCF7E73BE
 | H — откат (если был) | — |  |  |
 
 **Критерий общего PASS:** все блоки PASS, нет FAIL по G2/G3 и F; E11
-точные пассажиры поездов отмечены как «deferred» (не FAIL для npc-e10).
-Если ARINA offline — приёмка не начата, таблица не заполняется.
+точные пассажиры поездов проверяются в D3 (входит в npc-e12). Если ARINA
+offline — приёмка не начата, таблица не заполняется.
 
 ---
 
