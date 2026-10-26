@@ -174,6 +174,22 @@ public:
     bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
     uint32_t RttMs() const { return rttMs_.load(); }
+    // P0 (task-155): фактические байты/сообщения на сокете (включая framing
+    // 5 B). Счётчики атомарные: пишет сетевой поток, читает игровой.
+    struct TrafficStats
+    {
+        uint64_t txBytes = 0; // всего отправлено с момента старта
+        uint64_t rxBytes = 0; // всего принято
+        uint32_t txMsgs = 0;
+        uint32_t rxMsgs = 0;
+        double txKbPerSec = 0.0; // последнее окно 10 с (KiB/s)
+        double rxKbPerSec = 0.0;
+    };
+    TrafficStats GetTrafficStats() const;
+    // Строка `perf: net tx=... rx=... msgs_tx/rx` раз в 10 с: если колбэк не
+    // задан — пишется в stderr. Колбэк позволяет завернуть в sh_log (src).
+    using OnTrafficLog = std::function<void(const std::string&)>;
+    void SetTrafficLog(OnTrafficLog cb);
 
     void SetFrame(OnFrame cb);
     void SetJoinOk(OnJoinOk cb);
@@ -217,6 +233,11 @@ private:
     // держим, даже если сетевой поток уже заменил/закрыл соединение.
     std::shared_ptr<Socket> CurrentSocket();
     bool SendRaw(const std::vector<uint8_t>& frame);
+    // P0 (task-155): отправка с учётом фактического трафика (Ok/WouldBlock —
+    // кадр ушёл или стоит в очереди Socket и будет дослан Flush'ем).
+    bool SendFrameTracked(const std::shared_ptr<Socket>& sock,
+                          const std::vector<uint8_t>& frame);
+    void EmitTrafficLog(const std::string& line);
     void SendPing();
     uint64_t NowMs() const;
 
@@ -270,6 +291,15 @@ private:
     std::atomic<bool> joined_{false};
     std::atomic<bool> isHost_{false};
     std::atomic<uint32_t> rttMs_{0};
+    // P0 (task-155): реальный трафик (факт, не оценка по actor-сообщениям).
+    std::atomic<uint64_t> txBytes_{0};
+    std::atomic<uint64_t> rxBytes_{0};
+    std::atomic<uint32_t> txMsgs_{0};
+    std::atomic<uint32_t> rxMsgs_{0};
+    std::atomic<uint64_t> lastWinTxKbX10_{0}; // KiB/s * 10 (без float в atomic)
+    std::atomic<uint64_t> lastWinRxKbX10_{0};
+    std::mutex trafficLogMtx_;
+    OnTrafficLog trafficLog_;
 };
 
 } // namespace netio

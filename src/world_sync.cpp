@@ -339,6 +339,7 @@ std::map<uint32_t, unsigned int> g_lastOccupantsSendTick;
 // Сервер релеит <=20/с: держим общий лимит отправок 0x21.
 unsigned int g_occupantsSendWindowTick = 0;
 unsigned int g_occupantsSendWindowCount = 0;
+unsigned int g_lastOccupantsCollectTick = 0; // P1-5: 1 Гц
 
 bool FindHostHandleByNetId(uint32_t netId, unsigned int& handle)
 {
@@ -755,14 +756,39 @@ uint32_t ResolveTrainConfig(unsigned int engine, unsigned int tickCount,
     return 0; // ещё перебираем (следующие тики)
 }
 
-bool FindNearestTrain(unsigned int localPlayerPed, float partnerX,
-                      float partnerY, bool partnerValid,
-                      unsigned int& outEngine, float& outDist)
+// P1-5 (task-156): единый кэш worldGetAllVehicles (TTL 6 тиков) для
+// SendHostSnapshot и TickHostTrains; спасает от двух полных сканов на цикл.
+std::vector<unsigned int> g_vehicleScanHandles;
+unsigned int g_vehicleScanTick = 0;
+
+void EnsureHostVehicleScan(unsigned int tickCount)
 {
+    if (g_vehicleScanTick != 0 &&
+        tickCount - g_vehicleScanTick < kSendEveryTicks)
+        return;
+    g_vehicleScanTick = tickCount;
     static int handles[1024];
     int count = sh::worldGetAllVehicles(handles, 1024);
     if (count < 0) count = 0;
     if (count > 1024) count = 1024;
+    g_vehicleScanHandles.clear();
+    g_vehicleScanHandles.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i)
+    {
+        const unsigned int h = static_cast<unsigned int>(handles[i]);
+        if (h)
+            g_vehicleScanHandles.push_back(h);
+    }
+}
+
+bool FindNearestTrain(unsigned int localPlayerPed, float partnerX,
+                      float partnerY, bool partnerValid,
+                      unsigned int tickCount,
+                      unsigned int& outEngine, float& outDist)
+{
+    EnsureHostVehicleScan(tickCount);
+    const std::vector<unsigned int>& handles = g_vehicleScanHandles;
+    const int count = static_cast<int>(handles.size());
     const Vec3 origin = GetCoords(localPlayerPed);
     float best = kTrainSearchRadius2;
     int bestTrailers = -1;
@@ -950,7 +976,7 @@ void TickHostTrains(unsigned int localPlayerPed, unsigned int tickCount,
     else
     {
         if (!FindNearestTrain(localPlayerPed, partnerX, partnerY, partnerValid,
-                              engine, dist))
+                              tickCount, engine, dist))
         {
             g_trainEngine = 0;
             g_trainEngineExpiry = 0;
@@ -1740,8 +1766,9 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
     unsigned int trainsSkipped = 0;
     unsigned int trainsIncluded = 0;
     {
-        static int vehicleHandles[1024];
-        int vehicleCount = sh::worldGetAllVehicles(vehicleHandles, 1024);
+        EnsureHostVehicleScan(tickCount);
+        const std::vector<unsigned int>& vehicleHandles = g_vehicleScanHandles;
+        int vehicleCount = static_cast<int>(vehicleHandles.size());
         if (vehicleCount < 0) vehicleCount = 0;
         if (vehicleCount > 1024) vehicleCount = 1024;
 
@@ -2069,8 +2096,13 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
     // E3d-c (v19): occupants транспорта + draft-лошади. Собираем handles для
     // actor discovery (mission-occupants разрешены), шлём 0x21 при изменении и
     // heartbeat 1/с; count=0 очищает occupants у гостя.
-    if (coopcfg::Get().npcActor && coopcfg::Get().npcOccupants)
+    // P1-5 (task-156): occupants собираем 1/с (было 10/с на каждом скане);
+    // handles остаются прошлыми между сборами, heartbeats/изменения — 1 Гц.
+    if (coopcfg::Get().npcActor && coopcfg::Get().npcOccupants &&
+        (g_lastOccupantsCollectTick == 0 ||
+         tickCount - g_lastOccupantsCollectTick >= 60))
     {
+        g_lastOccupantsCollectTick = tickCount;
         std::vector<unsigned int> occupantHandles;
         int sendBudget = 6; // не флудим 0x21 в одном скане
         for (const Candidate& c : candidates)
@@ -2158,6 +2190,28 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         {
             if (tickCount - it->second.lastSeenTick > kHostIdTtlTicks)
                 it = g_hostIds.erase(it);
+            else
+                ++it;
+        }
+        // P1-6 (task-156): TTL host-кэшей occupants (despawn netId не чистился
+        // в host-путях).
+        for (auto it = g_lastOccupantsSent.begin();
+             it != g_lastOccupantsSent.end();)
+        {
+            auto st = g_lastOccupantsSendTick.find(it->first);
+            const unsigned int last =
+                st == g_lastOccupantsSendTick.end() ? 0 : st->second;
+            if (last == 0 || tickCount - last > 300)
+                it = g_lastOccupantsSent.erase(it);
+            else
+                ++it;
+        }
+        for (auto it = g_lastOccupantsSendTick.begin();
+             it != g_lastOccupantsSendTick.end();)
+        {
+            if (g_lastOccupantsSent.count(it->first) == 0 ||
+                tickCount - it->second > 300)
+                it = g_lastOccupantsSendTick.erase(it);
             else
                 ++it;
         }
@@ -3314,6 +3368,9 @@ void Reset()
     }
     g_trainScans.clear();
     g_hostOccHandles.clear();
+    g_vehicleScanHandles.clear();
+    g_vehicleScanTick = 0;
+    g_lastOccupantsCollectTick = 0;
     g_lastTrainOccupants.clear();
     g_lastTrainOccupantsTick.clear();
     g_trainConfigs.clear();

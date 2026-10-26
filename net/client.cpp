@@ -3,8 +3,10 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <thread>
+#include <mutex>
 
 #ifndef _WIN32
 #  include <sys/select.h>
@@ -99,11 +101,8 @@ std::vector<uint8_t> BuildJoinFrame(const std::string& name, unsigned long long 
     return MakeFrame((uint8_t)net::Msg::Join, pay.data(), (uint32_t)pay.size());
 }
 
-bool SendOn(const std::shared_ptr<Socket>& sock, const std::vector<uint8_t>& frame)
-{
-    if (!sock) return false;
-    return sock->Send(frame.data(), static_cast<int>(frame.size())) == Result::Ok;
-}
+// P0 (task-155): SendOn() заменён на Client::SendFrameTracked — он же
+// учитывает фактический tx-трафик (байты/сообщения).
 
 // Разбор строки "name_len:u8 + name[]" из сообщений сервера. Раньше клиент
 // читал p.data()+1 без проверки длины (heap OOB при битом/враждебном сервере).
@@ -397,7 +396,56 @@ bool Client::SendRaw(const std::vector<uint8_t>& frame)
     // До JOIN_OK игровой поток не должен слать ничего, кроме самого JOIN:
     // сервер закрывает соединение за сообщение до регистрации.
     if (!joined_.load()) return false;
-    return SendOn(CurrentSocket(), frame);
+    return SendFrameTracked(CurrentSocket(), frame);
+}
+
+bool Client::SendFrameTracked(const std::shared_ptr<Socket>& sock,
+                              const std::vector<uint8_t>& frame)
+{
+    if (!sock) return false;
+    const Result r = sock->Send(frame.data(), static_cast<int>(frame.size()));
+    // Ok — кадр уже ушёл в сокет; WouldBlock — стоит в очереди Socket и будет
+    // дослан во Flush() (считаем фактическим трафиком). Closed/Error — нет.
+    if (r == Result::Ok || r == Result::WouldBlock)
+    {
+        txBytes_.fetch_add(frame.size(), std::memory_order_relaxed);
+        txMsgs_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return r == Result::Ok;
+}
+
+void Client::EmitTrafficLog(const std::string& line)
+{
+    std::lock_guard<std::mutex> lk(trafficLogMtx_);
+    if (trafficLog_)
+    {
+        trafficLog_(line);
+        return;
+    }
+    // По умолчанию — stderr (ASI может не иметь консоли; для G3 основной
+    // источник — серверный heartbeat, либо src завернёт колбэк в sh_log).
+    std::fprintf(stderr, "%s\n", line.c_str());
+    std::fflush(stderr);
+}
+
+Client::TrafficStats Client::GetTrafficStats() const
+{
+    TrafficStats s;
+    s.txBytes = txBytes_.load(std::memory_order_relaxed);
+    s.rxBytes = rxBytes_.load(std::memory_order_relaxed);
+    s.txMsgs = txMsgs_.load(std::memory_order_relaxed);
+    s.rxMsgs = rxMsgs_.load(std::memory_order_relaxed);
+    s.txKbPerSec = static_cast<double>(
+        lastWinTxKbX10_.load(std::memory_order_relaxed)) / 10.0;
+    s.rxKbPerSec = static_cast<double>(
+        lastWinRxKbX10_.load(std::memory_order_relaxed)) / 10.0;
+    return s;
+}
+
+void Client::SetTrafficLog(OnTrafficLog cb)
+{
+    std::lock_guard<std::mutex> lk(trafficLogMtx_);
+    trafficLog_ = std::move(cb);
 }
 
 void Client::SendPing()
@@ -410,7 +458,7 @@ void Client::SendPing()
     uint8_t pay[8];
     for (int i = 0; i < 8; ++i)
         pay[i] = static_cast<uint8_t>((ts >> (8 * i)) & 0xFF);
-    SendOn(sock, MakeFrame((uint8_t)net::Msg::Ping, pay, sizeof(pay)));
+    SendFrameTracked(sock, MakeFrame((uint8_t)net::Msg::Ping, pay, sizeof(pay)));
 }
 
 void Client::SetFrame(OnFrame cb)          { onFrame_ = std::move(cb); }
@@ -934,12 +982,19 @@ bool Client::RunOnce()
     state_.store(ClientState::Connecting); // соединено; JOIN шлём дальше
 
     // Отправить JOIN (напрямую, минуя gated SendRaw).
-    SendOn(sock, BuildJoinFrame(name_, pedModel_));
+    SendFrameTracked(sock, BuildJoinFrame(name_, pedModel_));
 
     const uint64_t joinSentMs = NowMs();
     uint64_t lastPingMs = joinSentMs;
     uint64_t lastPongMs = joinSentMs;
     bool reconnectRequested = false;
+
+    // P0 (task-155): окно реального сетевого трафика 10 с (сеть + framing).
+    uint64_t trafficWindowMs = NowMs();
+    uint64_t trafficTxBytes = txBytes_.load(std::memory_order_relaxed);
+    uint64_t trafficRxBytes = rxBytes_.load(std::memory_order_relaxed);
+    uint32_t trafficTxMsgs = txMsgs_.load(std::memory_order_relaxed);
+    uint32_t trafficRxMsgs = rxMsgs_.load(std::memory_order_relaxed);
 
     uint8_t buf[4096];
     while (running_.load())
@@ -971,12 +1026,18 @@ bool Client::RunOnce()
         // обрыв). Раньше этот результат крутил бы цикл без reconnect.
         if (r == Result::NoData || r == Result::Error || r == Result::Closed)
             break;
-        if (r == Result::Ok) reader_.Feed(buf, n);
+        if (r == Result::Ok)
+        {
+            reader_.Feed(buf, n);
+            rxBytes_.fetch_add(static_cast<uint64_t>(n),
+                               std::memory_order_relaxed);
+        }
         else std::this_thread::sleep_for(std::chrono::milliseconds(1)); // не крутим CPU
 
         uint8_t type; std::vector<uint8_t> p;
         while (reader_.Poll(type, p))
         {
+            rxMsgs_.fetch_add(1, std::memory_order_relaxed);
             switch (static_cast<net::Msg>(type))
             {
             case net::Msg::JoinOk:
@@ -1344,6 +1405,39 @@ bool Client::RunOnce()
             }
 
             if (!running_.load() || reconnectRequested) break;
+        }
+
+        // P0 (task-155): раз в 10 с — факт tx/rx по сокету, включая framing
+        // 5 B на сообщение. Строка идёт через SetTrafficLog (или stderr).
+        if ((nowMs - trafficWindowMs) >= 10000)
+        {
+            const uint64_t tx = txBytes_.load(std::memory_order_relaxed);
+            const uint64_t rx = rxBytes_.load(std::memory_order_relaxed);
+            const uint32_t txm = txMsgs_.load(std::memory_order_relaxed);
+            const uint32_t rxm = rxMsgs_.load(std::memory_order_relaxed);
+            const uint64_t dtMs = nowMs - trafficWindowMs;
+            const double txKb = static_cast<double>(tx - trafficTxBytes) *
+                1000.0 / static_cast<double>(dtMs) / 1024.0;
+            const double rxKb = static_cast<double>(rx - trafficRxBytes) *
+                1000.0 / static_cast<double>(dtMs) / 1024.0;
+            lastWinTxKbX10_.store(
+                static_cast<uint64_t>(std::llround(txKb * 10.0)),
+                std::memory_order_relaxed);
+            lastWinRxKbX10_.store(
+                static_cast<uint64_t>(std::llround(rxKb * 10.0)),
+                std::memory_order_relaxed);
+            char line[256];
+            std::snprintf(line, sizeof(line),
+                          "perf: net tx=%.1f KB/s rx=%.1f KB/s "
+                          "msgs_tx=%u msgs_rx=%u",
+                          txKb, rxKb,
+                          txm - trafficTxMsgs, rxm - trafficRxMsgs);
+            EmitTrafficLog(line);
+            trafficWindowMs = nowMs;
+            trafficTxBytes = tx;
+            trafficRxBytes = rx;
+            trafficTxMsgs = txm;
+            trafficRxMsgs = rxm;
         }
         if (!running_.load() || reconnectRequested) break;
     }

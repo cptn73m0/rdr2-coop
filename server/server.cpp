@@ -91,6 +91,75 @@ std::atomic<uint64_t> g_rejectedCap{0};
 std::atomic<uint64_t> g_rejectedPreJoin{0};
 std::atomic<uint64_t> g_warnCounter{0};
 
+// P0 (task-155): фактический сетевой трафик — ТОЛЬКО метрики, wire v19 не
+// меняется. bytes_in/out считаются на уровне кадров протокола, включая
+// framing 5 B (len u32 + type u8), чтобы G3 был сопоставим с клиентом.
+std::atomic<uint64_t> g_netBytesIn{0};
+std::atomic<uint64_t> g_netBytesOut{0};
+enum class TrafficBucket : int
+{
+    Frame = 0,
+    Actor,
+    World,
+    Outfit,
+    Presence,
+    Damage,
+    Trains,
+    Occupants,
+    Other,
+    Count
+};
+std::atomic<uint64_t> g_netTypeCounts[static_cast<int>(TrafficBucket::Count)];
+
+TrafficBucket TrafficBucketFor(net::Msg m)
+{
+    switch (m)
+    {
+    case net::Msg::Frame: return TrafficBucket::Frame;
+    case net::Msg::ActorSpawnBatch:
+    case net::Msg::ActorFrames:
+    case net::Msg::ActorDespawn:
+    case net::Msg::ActorEvent:
+    case net::Msg::ActorAppearance:
+    case net::Msg::ActorResync: return TrafficBucket::Actor;
+    case net::Msg::WorldState:
+    case net::Msg::WorldSnapshot:
+    case net::Msg::ActionState:
+    case net::Msg::PlayerVehicle:
+    case net::Msg::Shot:
+    case net::Msg::MissionEvent:
+    case net::Msg::MissionState:
+    case net::Msg::MissionBarrier: return TrafficBucket::World;
+    case net::Msg::Outfit:
+    case net::Msg::HorseOutfit:
+    case net::Msg::ActorOutfit: return TrafficBucket::Outfit;
+    case net::Msg::PlayerPresence: return TrafficBucket::Presence;
+    case net::Msg::ActorDamage: return TrafficBucket::Damage;
+    case net::Msg::TrainSnapshot:
+    case net::Msg::TrainSnapshotV2: return TrafficBucket::Trains;
+    case net::Msg::VehicleOccupants: return TrafficBucket::Occupants;
+    default: return TrafficBucket::Other;
+    }
+}
+
+void CountInboundTraffic(net::Msg m, std::size_t payloadSize)
+{
+    g_netBytesIn.fetch_add(net::kHeaderSize + payloadSize,
+                           std::memory_order_relaxed);
+    g_netTypeCounts[static_cast<int>(TrafficBucketFor(m))].fetch_add(
+        1, std::memory_order_relaxed);
+}
+
+// Единая точка отправки: без неё g_netBytesOut будет неполным.
+void SendTracked(netio::Socket* sock, const uint8_t* data, int len)
+{
+    if (!sock || !data || len <= 0)
+        return;
+    sock->Send(data, len);
+    g_netBytesOut.fetch_add(static_cast<uint64_t>(len),
+                            std::memory_order_relaxed);
+}
+
 // Защита от thread/socket flood: больше этого числа TCP-соединений сервер
 // не держит. Легитимных участников максимум двое; остальное — probe/rogue.
 constexpr int kMaxActiveConnections = 32;
@@ -826,7 +895,7 @@ void SendJoinRejectedAndClose(netio::Socket* sock, net::JoinRejectReason reason)
 {
     const uint8_t r = static_cast<uint8_t>(reason);
     std::vector<uint8_t> msg = MakeMsg((uint8_t)net::Msg::JoinRejected, &r, 1);
-    sock->Send(msg.data(), static_cast<int>(msg.size()));
+    SendTracked(sock, msg.data(), static_cast<int>(msg.size()));
 
     const uint64_t deadlineMs = NowMs() + kRejectFlushTimeoutMs;
     while (sock->HasPending() && NowMs() < deadlineMs)
@@ -847,7 +916,7 @@ void BroadcastToOthers(netio::Socket* except, const std::vector<uint8_t>& frame)
     {
         netio::Socket* s = kv.second.sock;
         if (s && s != except)
-            s->Send(frame.data(), static_cast<int>(frame.size()));
+            SendTracked(s, frame.data(), static_cast<int>(frame.size()));
     }
 }
 
@@ -857,7 +926,7 @@ void BroadcastToAll(const std::vector<uint8_t>& frame)
     for (auto& kv : g_online)
     {
         netio::Socket* s = kv.second.sock;
-        if (s) s->Send(frame.data(), static_cast<int>(frame.size()));
+        if (s) SendTracked(s, frame.data(), static_cast<int>(frame.size()));
     }
 }
 
@@ -921,6 +990,25 @@ void PrintStatus()
         }
     }
     os << " ===\n";
+    // P0 (task-155): реальный трафик сервера + гистограмма входящих по типам
+    // (frame/actor/world/outfit/presence/damage/trains/occupants/other).
+    {
+        auto tc = [](TrafficBucket b) -> unsigned long long {
+            return static_cast<unsigned long long>(
+                g_netTypeCounts[static_cast<int>(b)].load());
+        };
+        os << "  net: bytes_in=" << g_netBytesIn.load()
+           << " bytes_out=" << g_netBytesOut.load()
+           << " | frame=" << tc(TrafficBucket::Frame)
+           << " actor=" << tc(TrafficBucket::Actor)
+           << " world=" << tc(TrafficBucket::World)
+           << " outfit=" << tc(TrafficBucket::Outfit)
+           << " presence=" << tc(TrafficBucket::Presence)
+           << " damage=" << tc(TrafficBucket::Damage)
+           << " trains=" << tc(TrafficBucket::Trains)
+           << " occupants=" << tc(TrafficBucket::Occupants)
+           << " other=" << tc(TrafficBucket::Other) << "\n";
+    }
     if (copy.empty())
     {
         os << "  (нет подключённых игроков)";
@@ -1020,6 +1108,8 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
         while (reader.Poll(type, pay))
         {
             const net::Msg msg = static_cast<net::Msg>(type);
+            // P0 (task-155): фактический входящий трафик (включая framing).
+            CountInboundTraffic(msg, pay.size());
 
             // До JOIN разрешаем только JOIN и Ping. Остальное — закрываем:
             // клиент, не прошедший регистрацию, не должен ретранслировать мир.
@@ -1166,7 +1256,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                         resp.push_back(isHost ? 1 : 0);
                         const std::vector<uint8_t> ok = MakeMsg(
                             (uint8_t)net::Msg::JoinOk, resp.data(), (uint32_t)resp.size());
-                        sock->Send(ok.data(), (int)ok.size());
+                        SendTracked(sock, ok.data(), (int)ok.size());
 
                         // 2) Существующие игроки — новичку (уже после JOIN_OK).
                         for (auto& kv : g_online)
@@ -1177,7 +1267,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                                 kv.second.name, kv.second.pedModel,
                                 kv.second.hasLoc, kv.second.x, kv.second.y,
                                 kv.second.z, kv.second.heading);
-                            sock->Send(info.data(), (int)info.size());
+                            SendTracked(sock, info.data(), (int)info.size());
                         }
 
                         // 3) Остальным — что подключился новый (с его позицией).
@@ -1187,7 +1277,8 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                         for (auto& kv : g_online)
                         {
                             if (kv.first == name || !kv.second.sock) continue;
-                            kv.second.sock->Send(joinedMsg.data(), (int)joinedMsg.size());
+                            SendTracked(kv.second.sock, joinedMsg.data(),
+                                        (int)joinedMsg.size());
                         }
                     }
                 }
@@ -1509,8 +1600,8 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                                 {
                                     if (kv.second.isHost && kv.second.sock)
                                     {
-                                        kv.second.sock->Send(msg.data(),
-                                                             (int)msg.size());
+                                        SendTracked(kv.second.sock, msg.data(),
+                                                    (int)msg.size());
                                         break;
                                     }
                                 }
@@ -1549,7 +1640,8 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                 for (auto& kv : g_online)
                 {
                     if (kv.second.sock && kv.second.sock != sock)
-                        kv.second.sock->Send(msg.data(), (int)msg.size());
+                        SendTracked(kv.second.sock, msg.data(),
+                                    (int)msg.size());
                 }
                 break;
             }
@@ -1654,7 +1746,8 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                         {
                             if (kv.second.isHost && kv.second.sock)
                             {
-                                kv.second.sock->Send(msg.data(), (int)msg.size());
+                                SendTracked(kv.second.sock, msg.data(),
+                                            (int)msg.size());
                                 break;
                             }
                         }
@@ -1698,7 +1791,7 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                 {
                     std::vector<uint8_t> pong = MakeMsg((uint8_t)net::Msg::Pong,
                                                         pay.data(), (uint32_t)pay.size());
-                    sock->Send(pong.data(), (int)pong.size());
+                    SendTracked(sock, pong.data(), (int)pong.size());
                 }
                 break;
             }
@@ -1772,7 +1865,8 @@ done:
                 for (auto& kv : g_online)
                 {
                     if (kv.second.sock)
-                        kv.second.sock->Send(left.data(), (int)left.size());
+                        SendTracked(kv.second.sock, left.data(),
+                                    (int)left.size());
                 }
                 // Host migration: если ушёл хост и кто-то остался — повышаем
                 // первого оставшегося и сообщаем каждому его роль (1 = хост).
@@ -1793,7 +1887,8 @@ done:
                                            reinterpret_cast<const uint8_t*>(&h),
                                            (uint32_t)sizeof(h));
                         if (kv.second.sock)
-                            kv.second.sock->Send(msg.data(), (int)msg.size());
+                            SendTracked(kv.second.sock, msg.data(),
+                                        (int)msg.size());
                     }
                 }
             }

@@ -39,6 +39,65 @@ constexpr unsigned long long GHOST_PED_MODEL = 0xCF7E73BEull; // a_m_m_armtownfo
 constexpr float SPAWN_DISTANCE               = 3.0f;
 constexpr int   JOIN_DELAY_TICKS             = 60 * 60; // ~60s at 60 ticks/s
 
+// P0-1 (task-156): полный замер кадра (QPC), p95/max по окну ~5 c.
+unsigned long long QpcNow()
+{
+    static long long freq = 0;
+    if (!freq)
+    {
+        LARGE_INTEGER f{};
+        QueryPerformanceFrequency(&f);
+        freq = f.QuadPart > 0 ? f.QuadPart : 1;
+    }
+    LARGE_INTEGER c{};
+    QueryPerformanceCounter(&c);
+    return static_cast<unsigned long long>(
+        static_cast<double>(c.QuadPart) * 1000000.0 / freq);
+}
+unsigned long long QpcDeltaUs(unsigned long long start)
+{
+    const unsigned long long now = QpcNow();
+    return now > start ? now - start : 0;
+}
+struct PerfRing
+{
+    double v[512] = {};
+    int pos = 0;
+    int count = 0;
+    void Add(double us)
+    {
+        v[pos] = us;
+        pos = (pos + 1) % 512;
+        if (count < 512) ++count;
+    }
+    double Avg() const
+    {
+        if (!count) return 0.0;
+        double sum = 0.0;
+        for (int i = 0; i < count; ++i) sum += v[i];
+        return sum / count;
+    }
+    double P95()
+    {
+        if (!count) return 0.0;
+        double tmp[512];
+        for (int i = 0; i < count; ++i) tmp[i] = v[i];
+        const int idx = (count * 95) / 100;
+        std::nth_element(tmp, tmp + idx, tmp + count);
+        return tmp[idx];
+    }
+    double Max() const
+    {
+        double m = 0.0;
+        for (int i = 0; i < count; ++i) m = std::max(m, v[i]);
+        return m;
+    }
+    void Reset() { pos = 0; count = 0; }
+};
+PerfRing g_framePerf, g_worldPerf, g_actorPerf, g_coopPerf;
+unsigned int g_perfWindowTicks = 0;
+unsigned int g_frameSentWindow = 0;
+
 unsigned int s_ghost = 0;
 unsigned int s_blip = 0;
 bool s_ghostDead = false;
@@ -763,6 +822,22 @@ float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0;
 // начале Tick()).
 net::FramePayload s_lastFrame{};
 bool s_haveFrame = false;
+// P0-2 (task-156): компоновка/сентинел последнего отправленного Player Frame.
+struct PlayerFrameSig
+{
+    float x = 0.f, y = 0.f, z = 0.f, heading = 0.f;
+    float aimX = 0.f, aimY = 0.f, aimZ = 0.f;
+    float health = 0.f;
+    uint8_t move = 0, state = 0, flags = 0, action = 0;
+    uint32_t weapon = 0, mountModel = 0;
+    unsigned long long pedModel = 0;
+    unsigned long long metaOutfit = 0;
+};
+PlayerFrameSig s_lastPlayerFrameSig{};
+bool s_lastPlayerFrameSigValid = false;
+unsigned int s_lastPlayerFrameSendTick = 0;
+unsigned int s_lastPlayerOutfitCollectTick = 0;
+unsigned int s_lastHorseOutfitCollectTick = 0;
 // Последняя известная позиция удалённого игрока — используется респавном,
 // если в этом тике нет свежего кадра (частая причина телепорта: // Respawn
 // раньше брал nullptr и спавнил труп на позиции входа в сессию).
@@ -5807,6 +5882,11 @@ void InitNetworkClient()
 {
     if (g_netStarted) return;
     g_netStarted = true;
+    // task-157: клиентский traffic-счётчик (perf: net tx/rx) — в rdr2-coop.log,
+    // а не в stderr. Колбэк вызывается сетевым потоком; sh_log потокобезопасен.
+    g_netClient.SetTrafficLog([](const std::string& s) {
+        sh_log::Write("%s\n", s.c_str());
+    });
     // E6 (v18): локальная эпоха presence (nonzero; используется как маркер).
     s_presenceEpoch = (static_cast<uint32_t>(GetTickCount64()) &
                        0x7FFFFFFFu) | 1u;
@@ -6132,6 +6212,10 @@ void SendActorResync(uint32_t epoch, uint32_t lastSeq, uint8_t reason)
 void Tick()
 {
     ++s_tickCount;
+    // P0-1 (task-156): полный кадр coop::Tick (world+actor+coop) с p95/max.
+    const unsigned long long perfFrameStart = QpcNow();
+    unsigned long long perfWorldUs = 0;
+    unsigned long long perfActorUs = 0;
     // P1.1: hold выстрела уменьшаем каждый тик, а не только при приходе кадра
     // (иначе при паузе/лаге сети очередь выстрелов «замерзает»).
     if (s_shootHoldTicks > 0)
@@ -6177,7 +6261,10 @@ void Tick()
 
     // Spike 1 (модель A): диагностика мира — пулы сущностей, NPC/транспорт
     // рядом, mission-entity, FPS. Только чтение, геймплей не меняет.
-    world_scan::Tick(playerPed, s_tickCount);
+    // P1-8 (task-156): world_scan (pools 2048) — только диагностика npc_debug
+    // либо раз в 5 с, чтобы не давать спайк вне метрик.
+    if (coopcfg::Get().npcDebug || (s_tickCount % 300) == 0)
+        world_scan::Tick(playerPed, s_tickCount);
 
     // Start the network client on first tick (replaces the old offline
     // emulation as the source of join events).
@@ -6215,12 +6302,16 @@ void Tick()
             partnerZ = gp.z;
             partnerValid = true;
         }
-        world_sync::Tick(playerPed, s_tickCount, s_amHost.load(),
-                         worldSyncEnabled,
-                         coopcfg::Get().worldTrains && !worldVehiclesMode,
-                         worldVehiclesMode,
-                         coopcfg::Get().npcVehicleRadius,
-                         partnerX, partnerY, partnerZ, partnerValid);
+        {
+            const unsigned long long start = QpcNow();
+            world_sync::Tick(playerPed, s_tickCount, s_amHost.load(),
+                             worldSyncEnabled,
+                             coopcfg::Get().worldTrains && !worldVehiclesMode,
+                             worldVehiclesMode,
+                             coopcfg::Get().npcVehicleRadius,
+                             partnerX, partnerY, partnerZ, partnerValid);
+            perfWorldUs = QpcDeltaUs(start);
+        }
 
         // P2: Action v2 — сценарии/сидение/курение/укрытие.
         if (coopcfg::Get().actionSync)
@@ -7360,7 +7451,11 @@ void Tick()
         actx.partnerZ = s_lastKnownPos.z;
         actx.partnerGhost = s_ghost;
         actx.partnerMount = s_mount;
-        actor_sync::Tick(actx);
+        {
+            const unsigned long long start = QpcNow();
+            actor_sync::Tick(actx);
+            perfActorUs = QpcDeltaUs(start);
+        }
     }
 
     // Persist the ped's position regularly so a returning player spawns on
@@ -7377,81 +7472,171 @@ void Tick()
     // Отправка собственного GhostFrame на сервер (каждые ~4 тика, чтобы
     // сервер видел координаты игрока в таблице состояния и ретранслировал
     // их другим игрокам). В кадре передаём move/state/flags/health игрока.
+    // P0-2 (task-156): Player Frame throttle. Раньше 88B слались каждый тик
+    // (5.6 КБ/с @60, 13.4 @144). Теперь: не чаще player_frame_hz (10..60);
+    // change_only=1 -> при изменении сразу (в пределах cap), в покое heartbeat 5 Гц.
     if (g_netStarted)
     {
         Vec3 pc = GetEntityCoords(playerPed);
-        net::FramePayload fp{};
-        fp.x = pc.x; fp.y = pc.y; fp.z = pc.z;
-        fp.heading = GetEntityHeading(playerPed);
-        fp.move = DetectLocalMoveState(playerPed);
-        fp.state = DetectLocalPedState(playerPed);
-        fp.flags = DetectLocalFlags(playerPed);
-        fp.action = s_localActionStable;
-        fp.health = GetLocalHealth01(playerPed);
-        // Точка прицела (куда целится/стреляет игрок) — для точной наводки.
+        const float heading = GetEntityHeading(playerPed);
+        const uint8_t move = DetectLocalMoveState(playerPed);
+        const uint8_t state = DetectLocalPedState(playerPed);
+        const uint8_t flags = DetectLocalFlags(playerPed);
+        const float health = GetLocalHealth01(playerPed);
+        const uint32_t weapon = GetLocalSelectedWeaponHash(playerPed);
+        float aimX = 0.f, aimY = 0.f, aimZ = 0.f;
         if (s_localAimValid)
         {
-            fp.aimX = s_localAimX;
-            fp.aimY = s_localAimY;
-            fp.aimZ = s_localAimZ;
-            float dx = fp.aimX - fp.x, dy = fp.aimY - fp.y, dz = fp.aimZ - fp.z;
-            fp.aimDist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            aimX = s_localAimX;
+            aimY = s_localAimY;
+            aimZ = s_localAimZ;
         }
-        fp.weaponHash = GetLocalSelectedWeaponHash(playerPed);
-        // Мета-наряд игрока (для синхронизации внешнего вида у партнёра).
+        uint32_t mountModel = 0;
+        if (move == static_cast<uint8_t>(coop::MoveState::RideHorse))
         {
             using namespace natives_api;
-            Init(natives::GET_PED_META_OUTFIT_HASH);
+            Init(natives::GET_MOUNT);
             Push(playerPed);
-            fp.reserved[1] = Call();
-            // Модель персонажа (Артур/Джон) — чтобы пед был копией, а не
-            // подставной моделью из конфига.
+            const unsigned int m = static_cast<unsigned int>(Call());
+            if (m)
+            {
+                Init(natives::GET_ENTITY_MODEL);
+                Push(m);
+                mountModel = static_cast<uint32_t>(Call());
+            }
+        }
+        unsigned long long pedModel = 0;
+        unsigned long long metaOutfit = 0;
+        {
+            using namespace natives_api;
             Init(natives::GET_ENTITY_MODEL);
             Push(playerPed);
-            fp.reserved[2] = Call();
-            // Диагностика: что реально уходит в кадре (редко).
+            pedModel = Call();
+            Init(natives::GET_PED_META_OUTFIT_HASH);
+            Push(playerPed);
+            metaOutfit = Call();
+        }
+
+        PlayerFrameSig sig{};
+        sig.x = pc.x; sig.y = pc.y; sig.z = pc.z;
+        sig.heading = heading;
+        sig.aimX = aimX; sig.aimY = aimY; sig.aimZ = aimZ;
+        sig.health = health;
+        sig.move = move; sig.state = state; sig.flags = flags;
+        sig.action = s_localActionStable;
+        sig.weapon = weapon; sig.mountModel = mountModel;
+        sig.pedModel = pedModel; sig.metaOutfit = metaOutfit;
+
+        bool changed = !s_lastPlayerFrameSigValid;
+        if (!changed)
+        {
+            const PlayerFrameSig& o = s_lastPlayerFrameSig;
+            const float dx = pc.x - o.x, dy = pc.y - o.y, dz = pc.z - o.z;
+            if (dx * dx + dy * dy + dz * dz > 0.0025f) changed = true; // >5 см
+            float dh = heading - o.heading;
+            while (dh > 180.f) dh -= 360.f;
+            while (dh < -180.f) dh += 360.f;
+            if (std::fabs(dh) > 1.0f) changed = true; // >1°
+            if (std::fabs(health - o.health) > 0.01f) changed = true;
+            if (move != o.move || state != o.state || flags != o.flags ||
+                s_localActionStable != o.action || weapon != o.weapon ||
+                mountModel != o.mountModel || pedModel != o.pedModel ||
+                metaOutfit != o.metaOutfit)
+                changed = true;
+            if (s_localAimValid)
+            {
+                const float ax = aimX - o.aimX, ay = aimY - o.aimY,
+                            az = aimZ - o.aimZ;
+                if (ax * ax + ay * ay + az * az > 0.0025f) changed = true;
+            }
+        }
+
+        int hz = coopcfg::Get().playerFrameHz;
+        if (hz < 10) hz = 10;
+        if (hz > 60) hz = 60;
+        const unsigned int minTicks =
+            static_cast<unsigned int>((60 + hz - 1) / hz);
+        const unsigned int since =
+            s_lastPlayerFrameSendTick == 0
+                ? 9999u
+                : s_tickCount - s_lastPlayerFrameSendTick;
+        const bool heartbeat = since >= 12; // ~5 Гц в покое
+        bool want = false;
+        if (!s_lastPlayerFrameSigValid || s_lastPlayerFrameSendTick == 0)
+            want = true;
+        else if (!coopcfg::Get().playerFrameChangeOnly)
+            want = since >= minTicks;
+        else
+            want = heartbeat || (changed && since >= minTicks);
+
+        if (want)
+        {
+            net::FramePayload fp{};
+            fp.x = pc.x; fp.y = pc.y; fp.z = pc.z;
+            fp.heading = heading;
+            fp.move = move;
+            fp.state = state;
+            fp.flags = flags;
+            fp.action = s_localActionStable;
+            fp.health = health;
+            if (s_localAimValid)
+            {
+                fp.aimX = aimX;
+                fp.aimY = aimY;
+                fp.aimZ = aimZ;
+                const float ax = fp.aimX - fp.x, ay = fp.aimY - fp.y,
+                            az = fp.aimZ - fp.z;
+                fp.aimDist = std::sqrt(ax * ax + ay * ay + az * az);
+            }
+            fp.weaponHash = weapon;
+            fp.reserved[1] = metaOutfit;
+            fp.reserved[2] = pedModel;
             if (s_tickCount % (5 * 60) == 1)
                 sh_log::Write("coop: send pedLook, outfit=0x%llX model=0x%llX "
                               "move=%u state=%u\n",
                               fp.reserved[1], fp.reserved[2], fp.move, fp.state);
-        }
-        // Если игрок верхом — передаём модель его лошади и её снаряжение.
-        if (fp.move == static_cast<uint8_t>(coop::MoveState::RideHorse))
-        {
-            using namespace natives_api;
-            Init(natives::GET_MOUNT); Push(playerPed);
-            unsigned int m = static_cast<unsigned int>(Call());
-            if (m)
+            // Лошадь игрока: outfit собираем не чаще 10 Гц (P1-3), не каждый тик.
+            if (fp.move == static_cast<uint8_t>(coop::MoveState::RideHorse))
             {
-                Init(natives::GET_ENTITY_MODEL); Push(m);
-                fp.reserved[0] = Call();
-                // Снаряжение: shop-предметы лошади (мета-наряд у лошадей
-                // всегда 0, поэтому собираем компоненты как у педа).
-                net::OutfitState ho{};
-                CollectLocalOutfit(m, ho);
-                // Сравнение order-insensitive + heartbeat (после реконнекта
-                // получатель мог не получить снаряжение вовсе).
-                const bool changed = !s_sentHorseOutfitValid ||
-                                     !OutfitsEqual(ho, s_sentHorseOutfit);
-                const bool heartbeat =
-                    (s_tickCount - s_lastHorseOutfitSendTick) >= kOutfitHeartbeatTicks;
-                if (ho.count > 0 && (changed || heartbeat))
+                using namespace natives_api;
+                Init(natives::GET_MOUNT); Push(playerPed);
+                const unsigned int m = static_cast<unsigned int>(Call());
+                if (m)
                 {
-                    s_sentHorseOutfit = ho;
-                    s_sentHorseOutfitValid = true;
-                    s_lastHorseOutfitSendTick = s_tickCount;
-                    g_netClient.SendHorseOutfit(ho);
-                    sh_log::Write("coop: send horse outfit (%u comp)%s\n",
-                                  ho.count, changed ? "" : " [heartbeat]");
+                    fp.reserved[0] = mountModel;
+                    if ((s_tickCount - s_lastHorseOutfitCollectTick) >= 6)
+                    {
+                        s_lastHorseOutfitCollectTick = s_tickCount;
+                        net::OutfitState ho{};
+                        CollectLocalOutfit(m, ho);
+                        const bool ch = !s_sentHorseOutfitValid ||
+                                        !OutfitsEqual(ho, s_sentHorseOutfit);
+                        const bool hb =
+                            (s_tickCount - s_lastHorseOutfitSendTick) >=
+                            kOutfitHeartbeatTicks;
+                        if (ho.count > 0 && (ch || hb))
+                        {
+                            s_sentHorseOutfit = ho;
+                            s_sentHorseOutfitValid = true;
+                            s_lastHorseOutfitSendTick = s_tickCount;
+                            g_netClient.SendHorseOutfit(ho);
+                            sh_log::Write("coop: send horse outfit (%u comp)%s\n",
+                                          ho.count, ch ? "" : " [heartbeat]");
+                        }
+                    }
+                }
+                else if (s_tickCount % (3 * 60) == 1)
+                {
+                    sh_log::Write("coop: send RideHorse but GET_MOUNT=0\n");
                 }
             }
-            else if (s_tickCount % (3 * 60) == 1)
-            {
-                sh_log::Write("coop: send RideHorse but GET_MOUNT=0\n");
-            }
+            fp.seq = s_tickCount;
+            g_netClient.SendFrame(fp);
+            s_lastPlayerFrameSig = sig;
+            s_lastPlayerFrameSigValid = true;
+            s_lastPlayerFrameSendTick = s_tickCount;
+            ++g_frameSentWindow;
         }
-        fp.seq = s_tickCount;
-        g_netClient.SendFrame(fp);
     }
 
     // Синхронизация одежды: собираем компоненты наряда локального игрока и
@@ -7461,8 +7646,10 @@ void Tick()
     // оружия (кобуры/патронташи) дёргает список и вызывает лишние применения.
     // Сравнение — order-insensitive (порядок категорий от движка нестабилен),
     // плюс heartbeat раз в ~5 с: иначе после реконнекта одежда не пересылается.
-    if (g_netStarted)
+    if (g_netStarted &&
+        (s_tickCount - s_lastPlayerOutfitCollectTick) >= 6)
     {
+        s_lastPlayerOutfitCollectTick = s_tickCount;
         net::OutfitState os{};
         CollectLocalOutfit(playerPed, os);
         const bool changed = !s_sentOutfitValid || !OutfitsEqual(os, s_sentOutfit);
@@ -7670,6 +7857,42 @@ void Tick()
         // вызываем каждый тик с уже сформированным текстом (иначе моргает).
         if (s_rttHud[0])
             DrawHudLine(s_rttHud);
+    }
+
+    // P0-1 (task-156): полный кадр coop::Tick = world + actor + coop.
+    {
+        const unsigned long long frameUs = QpcDeltaUs(perfFrameStart);
+        const unsigned long long coopUs =
+            frameUs > perfWorldUs + perfActorUs
+                ? frameUs - perfWorldUs - perfActorUs
+                : 0;
+        g_framePerf.Add(static_cast<double>(frameUs));
+        g_worldPerf.Add(static_cast<double>(perfWorldUs));
+        g_actorPerf.Add(static_cast<double>(perfActorUs));
+        g_coopPerf.Add(static_cast<double>(coopUs));
+        if (++g_perfWindowTicks >= 300)
+        {
+            if (coopcfg::Get().npcDebug)
+            {
+                sh_log::Write(
+                    "perf: frame %s tick=%.2f p95=%.2f max=%.2f | "
+                    "world=%.2f p95=%.2f | actor=%.2f p95=%.2f | "
+                    "coop=%.2f p95=%.2f frames_hz=%.1f\n",
+                    s_amHost.load() ? "host" : "guest",
+                    g_framePerf.Avg() / 1000.0, g_framePerf.P95() / 1000.0,
+                    g_framePerf.Max() / 1000.0,
+                    g_worldPerf.Avg() / 1000.0, g_worldPerf.P95() / 1000.0,
+                    g_actorPerf.Avg() / 1000.0, g_actorPerf.P95() / 1000.0,
+                    g_coopPerf.Avg() / 1000.0, g_coopPerf.P95() / 1000.0,
+                    g_frameSentWindow / 5.0);
+            }
+            g_framePerf.Reset();
+            g_worldPerf.Reset();
+            g_actorPerf.Reset();
+            g_coopPerf.Reset();
+            g_perfWindowTicks = 0;
+            g_frameSentWindow = 0;
+        }
     }
 }
 

@@ -697,6 +697,23 @@ int GetAmmoInClipEntity(unsigned int ped, uint32_t weaponHash)
 constexpr std::size_t kMaxAppearanceComponents =
     net::kActorAppearanceMaxComponents; // v16: 16 (не хардкодим 12)
 constexpr unsigned int kAppearanceCapturePeriodTicks = 120; // ~2 c на актора
+// P1-4 (task-156): животные/сбруя — реже (5 c + stagger), общий бюджет 2 захвата/тик.
+constexpr unsigned int kAnimalAppearancePeriodTicks = 300;
+unsigned int g_captureBudgetTick = 0;
+unsigned int g_captureBudgetUsed = 0;
+
+bool TakeCaptureBudget(unsigned int tick)
+{
+    if (g_captureBudgetTick != tick)
+    {
+        g_captureBudgetTick = tick;
+        g_captureBudgetUsed = 0;
+    }
+    if (g_captureBudgetUsed >= 2)
+        return false;
+    ++g_captureBudgetUsed;
+    return true;
+}
 
 int GetPedComponentCountEntity(unsigned int ped)
 {
@@ -2352,8 +2369,18 @@ void HostDiscovery(const TickContext& ctx)
                                          kv.second.kind));
             }
             // E2c-b: heartbeat/join/resync — переслать asset/tint всем.
+            // P1-7 (task-156): и animal/horse/mount appearance (после resync
+            // иначе животные/сбруя остаются random до смены).
             for (auto& kv : g_roster)
+            {
                 kv.second.appearanceSent = false;
+                kv.second.animalAppearanceSent = false;
+                kv.second.horseTackSent = false;
+                kv.second.mountOutfitSent = false;
+                kv.second.lastAnimalAppearanceCaptureTick = 0;
+                kv.second.lastHorseTackTick = 0;
+                kv.second.lastMountOutfitTick = 0;
+            }
         }
         else
         {
@@ -2649,11 +2676,14 @@ void ProcessHostAnimalAppearanceCapture(unsigned int tick)
         RosterEntry& e = it->second;
         if (e.kind == net::kActorKindHuman)
             continue;
+        const unsigned int period =
+            kAnimalAppearancePeriodTicks + (e.actorId % 5) * 15;
         const bool due = e.lastAnimalAppearanceCaptureTick == 0 ||
-                         (tick - e.lastAnimalAppearanceCaptureTick) >=
-                             kAppearanceCapturePeriodTicks;
+                         (tick - e.lastAnimalAppearanceCaptureTick) >= period;
         if (!due)
             continue;
+        if (!TakeCaptureBudget(tick))
+            break;
         e.lastAnimalAppearanceCaptureTick = tick;
         if (!DoesExist(handle) || IsDeadPed(handle))
             continue;
@@ -2806,11 +2836,14 @@ void ProcessHostHorseTackCapture(unsigned int tick)
         RosterEntry& e = it->second;
         if (e.kind != 2u)
             continue;
+        const unsigned int period =
+            kAnimalAppearancePeriodTicks + (e.actorId % 5) * 15;
         const bool due = e.lastHorseTackTick == 0 ||
-                         (tick - e.lastHorseTackTick) >=
-                             kAppearanceCapturePeriodTicks;
+                         (tick - e.lastHorseTackTick) >= period;
         if (!due)
             continue;
+        if (!TakeCaptureBudget(tick))
+            break;
         e.lastHorseTackTick = tick;
         if (!DoesExist(handle) || IsDeadPed(handle))
             continue;
@@ -2871,11 +2904,14 @@ void ProcessHostMountOutfitCapture(unsigned int tick)
         RosterEntry& e = it->second;
         if (e.kind != net::kActorKindHuman)
             continue;
+        const unsigned int period =
+            kAnimalAppearancePeriodTicks + (e.actorId % 5) * 15;
         const bool due = e.lastMountOutfitTick == 0 ||
-                         (tick - e.lastMountOutfitTick) >=
-                             kAppearanceCapturePeriodTicks;
+                         (tick - e.lastMountOutfitTick) >= period;
         if (!due)
             continue;
+        if (!TakeCaptureBudget(tick))
+            break;
         e.lastMountOutfitTick = tick;
         if (!DoesExist(handle) || IsDeadPed(handle))
             continue;
@@ -2935,6 +2971,8 @@ void ProcessHostAppearanceCapture(unsigned int tick)
                 kAppearanceCapturePeriodTicks;
         if (!due)
             continue;
+        if (!TakeCaptureBudget(tick))
+            break;
         e.lastAppearanceCaptureTick = tick;
         if (!DoesExist(handle) || IsDeadPed(handle))
             continue;

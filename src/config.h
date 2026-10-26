@@ -96,6 +96,9 @@ struct Config {
     int npcFrameHz = 15;
     // Адаптивность: все стоят — 10 Гц, есть движущиеся — npc_frame_hz.
     bool npcFrameAdaptive = true;
+    // P0-2 (task-156): Player Frame throttle (88B каждый тик -> 20 Гц/change).
+    int playerFrameHz = 20;          // clamp 10..60
+    bool playerFrameChangeOnly = true; // change -> сразу (cap player_frame_hz), idle heartbeat 5 Гц
     // E7.2 smooth NPC motion (A/B):
     // npc_motion_update=1 — in-place update задачи через
     // _UPDATE_TASK_GO_TO_COORD_WITH_OFFSET (совместимость A/B ещё не

@@ -125,6 +125,9 @@ void WriteDefaultIni()
     fputs("npc_frame_hz = 15\n", f);
     fputs("# P2: adaptive — стоя 10 Гц, при движении npc_frame_hz (default 1).\n", f);
     fputs("npc_frame_adaptive = 1\n", f);
+    fputs("# P0: Player Frame throttle (10..60 Гц); change_only=1 -> 5 Гц в покое.\n", f);
+    fputs("player_frame_hz = 20\n", f);
+    fputs("player_frame_change_only = 1\n", f);
     fputs("# E7.2: in-place update go-to задачи (A/B; 0 = только far-target).\n", f);
     fputs("npc_motion_update = 1\n", f);
     fputs("# E7.2: fallback A2 marker-entity follow (default 0, после A/B).\n", f);
@@ -239,6 +242,19 @@ void ApplyLine(const std::string& raw, Config& out)
     }
     else if (key == "npc_frame_adaptive")
         out.npcFrameAdaptive = AsBool(val);
+    else if (key == "player_frame_hz")
+    {
+        char* end = nullptr;
+        const long hz = std::strtol(val.c_str(), &end, 10);
+        if (end != val.c_str() && *end == '\0')
+        {
+            if (hz < 10) out.playerFrameHz = 10;
+            else if (hz > 60) out.playerFrameHz = 60;
+            else out.playerFrameHz = static_cast<int>(hz);
+        }
+    }
+    else if (key == "player_frame_change_only")
+        out.playerFrameChangeOnly = AsBool(val);
     else if (key == "npc_motion_update") out.npcMotionUpdate = AsBool(val);
     else if (key == "npc_motion_marker") out.npcMotionMarker = AsBool(val);
     else if (key == "npc_motion_status_p2")
