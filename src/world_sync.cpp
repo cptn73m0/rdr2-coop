@@ -613,6 +613,11 @@ uint32_t g_nextTrainId = 1;
 uint32_t g_trainEpoch = 0;
 std::map<uint32_t, net::TrainSnapshotV2Payload> g_lastTrainSnapshot;
 std::map<uint32_t, unsigned int> g_lastTrainSendTick;
+// E11 (task-149): occupant handles для actor discovery (vehicle + train).
+std::vector<unsigned int> g_hostOccHandles;
+// E11: последние отправленные train-occupants по trainId и heartbeat.
+std::map<uint32_t, std::vector<net::VehicleOccupantEntry>> g_lastTrainOccupants;
+std::map<uint32_t, unsigned int> g_lastTrainOccupantsTick;
 
 uint32_t EnsureTrainId(unsigned int engine)
 {
@@ -813,6 +818,115 @@ bool SameTrainSnapshot(const net::TrainSnapshotV2Payload& a,
            a.heading == b.heading && a.trackIndex == b.trackIndex;
 }
 
+// E11 (task-149): точные пассажиры/машинист поезда через 0x21.
+// vehicleNetId = trainId; entries carIndex = индекс вагона; cap 8 на сообщение
+// (несколько чанков на поезд).
+void SendTrainOccupants(unsigned int engine, uint32_t trainId, int cars,
+                        unsigned int tickCount)
+{
+    if (!coopcfg::Get().npcActor || !coopcfg::Get().npcOccupants)
+        return;
+    if (!trainId || cars <= 0)
+        return;
+    std::vector<net::VehicleOccupantEntry> all;
+    all.reserve(32);
+    using namespace natives_api;
+    for (int car = 0; car < cars; ++car)
+    {
+        Init(natives::GET_TRAIN_CARRIAGE);
+        Push(engine);
+        Push(static_cast<unsigned long long>(car));
+        const unsigned int wagon = static_cast<unsigned int>(Call());
+        if (!wagon || !DoesExist(wagon))
+            continue;
+        auto addPed = [&](unsigned int ped, int seat, uint8_t flags) {
+            if (!ped || ped == 0xFFFFFFFFu || !DoesExist(ped))
+                return;
+            g_hostOccHandles.push_back(ped);
+            uint32_t aid = 0;
+            if (!actor_sync::GetHostActorIdForHandle(ped, aid))
+                return; // roster ещё не содержит — повторим heartbeat
+            net::VehicleOccupantEntry e{};
+            e.actorId = aid;
+            e.seat = static_cast<int8_t>(seat);
+            e.flags = flags;
+            e.carIndex = static_cast<uint8_t>(car);
+            e.harness = 0;
+            all.push_back(e);
+        };
+        Init(natives::GET_DRIVER_OF_VEHICLE);
+        Push(wagon);
+        addPed(static_cast<unsigned int>(Call()), -1,
+               net::kOccupantFlagDriver);
+        Init(natives::GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS);
+        Push(wagon);
+        int maxPass = static_cast<int>(Call());
+        if (maxPass < 0) maxPass = 0;
+        if (maxPass > net::kMaxVehicleSeat + 1)
+            maxPass = net::kMaxVehicleSeat + 1;
+        for (int seat = 0; seat < maxPass; ++seat)
+        {
+            Init(natives::GET_PED_IN_VEHICLE_SEAT);
+            Push(wagon);
+            Push(static_cast<unsigned long long>(seat));
+            addPed(static_cast<unsigned int>(Call()), seat,
+                   net::kOccupantFlagPassenger);
+        }
+    }
+    auto sameEntries = [](const std::vector<net::VehicleOccupantEntry>& a,
+                          const std::vector<net::VehicleOccupantEntry>& b) {
+        if (a.size() != b.size())
+            return false;
+        for (std::size_t i = 0; i < a.size(); ++i)
+        {
+            if (a[i].actorId != b[i].actorId || a[i].seat != b[i].seat ||
+                a[i].flags != b[i].flags || a[i].carIndex != b[i].carIndex ||
+                a[i].harness != b[i].harness)
+                return false;
+        }
+        return true;
+    };
+    auto last = g_lastTrainOccupants.find(trainId);
+    const bool changed = last == g_lastTrainOccupants.end() ||
+                         !sameEntries(last->second, all);
+    const unsigned int lastTick = g_lastTrainOccupantsTick[trainId];
+    if (!changed && lastTick != 0 && tickCount - lastTick < 60)
+        return;
+    if (all.empty())
+    {
+        g_lastTrainOccupants[trainId] = all;
+        g_lastTrainOccupantsTick[trainId] = tickCount;
+        return;
+    }
+    // Chunks <=8; сервер rate 20/с + общий throttle.
+    for (std::size_t off = 0; off < all.size();
+         off += net::kMaxVehicleOccupants)
+    {
+        if (g_occupantsSendWindowTick == 0 ||
+            tickCount - g_occupantsSendWindowTick >= 60)
+        {
+            g_occupantsSendWindowTick = tickCount;
+            g_occupantsSendWindowCount = 0;
+        }
+        if (g_occupantsSendWindowCount >= 18)
+            break;
+        ++g_occupantsSendWindowCount;
+        const std::size_t n = std::min<std::size_t>(
+            net::kMaxVehicleOccupants, all.size() - off);
+        std::vector<net::VehicleOccupantEntry> chunk(all.begin() + off,
+                                                     all.begin() + off + n);
+        coop::SendVehicleOccupants(trainId, chunk);
+    }
+    g_lastTrainOccupants[trainId] = all;
+    g_lastTrainOccupantsTick[trainId] = tickCount;
+    if (coopcfg::Get().npcDebug)
+        sh_log::Write("world: train occupants train=%u cars=%d n=%u chunks=%u\n",
+                      trainId, cars, static_cast<unsigned int>(all.size()),
+                      static_cast<unsigned int>((all.size() +
+                          net::kMaxVehicleOccupants - 1) /
+                          net::kMaxVehicleOccupants));
+}
+
 void TickHostTrains(unsigned int localPlayerPed, unsigned int tickCount,
                     float partnerX, float partnerY, bool partnerValid)
 {
@@ -918,6 +1032,8 @@ void TickHostTrains(unsigned int localPlayerPed, unsigned int tickCount,
         return; // пересоберём конфиг на следующем скане
     }
     snap.carCount = static_cast<uint8_t>(cars);
+    // E11: точные пассажиры/машинист (0x21, carIndex).
+    SendTrainOccupants(engine, EnsureTrainId(engine), cars, tickCount);
     snap.speed = GetSpeed(engine);
     if (snap.speed < net::kMinTrainSpeed) snap.speed = net::kMinTrainSpeed;
     if (snap.speed > net::kMaxTrainSpeed) snap.speed = net::kMaxTrainSpeed;
@@ -999,8 +1115,260 @@ unsigned int g_guestTrainLastSpawnTick = 0;
 uint32_t g_guestTrainRetryConfig = 0;
 uint32_t g_guestTrainRetryTrainId = 0;
 
+// E11 (task-149): exact train occupants (0x21 carIndex) для mission-train гостя.
+std::atomic<uint32_t> g_guestTrainNetId{0}; // trainId для callback routing
+std::mutex g_trainOccMutex;
+std::vector<net::VehicleOccupantEntry> g_trainOccInbox;
+struct TrainSeatState
+{
+    uint32_t actorId = 0;
+    int8_t seat = -1;
+    uint8_t flags = 0;
+    uint8_t carIndex = 0;
+    unsigned int attempts = 0;
+    unsigned int firstTick = 0;
+    unsigned int nextRetryTick = 0;
+    bool applied = false;
+};
+std::vector<TrainSeatState> g_trainSeats;
+unsigned int g_trainSeatsTrainHandle = 0;
+unsigned int g_perfGuestTrainSeatsApplied = 0;
+unsigned int g_perfGuestTrainSeatsFailed = 0;
+bool g_guestTrainAutoPopulationOff = false;
+
+void RouteTrainOccupants(const std::vector<net::VehicleOccupantEntry>& entries)
+{
+    std::lock_guard<std::mutex> lk(g_trainOccMutex);
+    g_trainOccInbox.insert(g_trainOccInbox.end(), entries.begin(),
+                           entries.end());
+    if (g_trainOccInbox.size() > 128)
+        g_trainOccInbox.erase(g_trainOccInbox.begin(),
+                              g_trainOccInbox.begin() +
+                                  (g_trainOccInbox.size() - 128));
+}
+
+bool IsPedInVehicleForTrain(unsigned int ped, unsigned int veh)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_IN_VEHICLE);
+    Push(ped);
+    Push(veh);
+    Push(false);
+    return Call() != 0;
+}
+
+void SetTrainEntityVisible(unsigned int handle, bool visible)
+{
+    if (!handle || !DoesExist(handle))
+        return;
+    using namespace natives_api;
+    Init(natives::SET_ENTITY_VISIBLE);
+    Push(handle);
+    Push(visible ? static_cast<unsigned long long>(1)
+                 : static_cast<unsigned long long>(0));
+    Call();
+}
+
+// Снять seated-флаги у точных пассажиров (despawn/role change/recreate).
+void ClearGuestTrainOccupants(bool clearPending)
+{
+    for (TrainSeatState& st : g_trainSeats)
+    {
+        if (st.applied)
+            actor_sync::ClearActorSeated(st.actorId);
+        st.applied = false;
+        st.attempts = 0;
+        st.nextRetryTick = 0;
+    }
+    g_trainSeatsTrainHandle = 0;
+    g_guestTrainAutoPopulationOff = false;
+    if (clearPending)
+    {
+        g_trainSeats.clear();
+        std::lock_guard<std::mutex> lk(g_trainOccMutex);
+        g_trainOccInbox.clear();
+        g_guestTrainNetId.store(0);
+    }
+}
+
+void ProcessTrainOccupants(unsigned int tickCount)
+{
+    if (!coopcfg::Get().npcActor || !coopcfg::Get().npcOccupants)
+        return;
+    std::vector<net::VehicleOccupantEntry> inbox;
+    {
+        std::lock_guard<std::mutex> lk(g_trainOccMutex);
+        inbox.swap(g_trainOccInbox);
+    }
+    for (const net::VehicleOccupantEntry& e : inbox)
+    {
+        if (!e.actorId)
+            continue;
+        bool found = false;
+        for (TrainSeatState& st : g_trainSeats)
+        {
+            if (st.actorId == e.actorId)
+            {
+                st.seat = e.seat;
+                st.flags = e.flags;
+                st.carIndex = e.carIndex;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            TrainSeatState st;
+            st.actorId = e.actorId;
+            st.seat = e.seat;
+            st.flags = e.flags;
+            st.carIndex = e.carIndex;
+            st.firstTick = tickCount;
+            g_trainSeats.push_back(st);
+        }
+    }
+    if (g_trainSeats.empty())
+        return;
+    if (!g_guestTrain)
+        return; // ждём mission-train; heartbeat хоста повторит
+    if (g_trainSeatsTrainHandle != g_guestTrain)
+    {
+        // Train пересоздан (config/carCount/role) — переприменить.
+        for (TrainSeatState& st : g_trainSeats)
+            st.applied = false;
+        g_trainSeatsTrainHandle = g_guestTrain;
+    }
+
+    int budget = 2; // нативов/attach операций на тик
+    for (std::size_t idx = 0; idx < g_trainSeats.size(); ++idx)
+    {
+        TrainSeatState& st = g_trainSeats[idx];
+        if (st.applied || budget <= 0)
+        {
+            if (st.applied && (tickCount % 10) == 0)
+            {
+                unsigned int wagon = 0;
+                using namespace natives_api;
+                Init(natives::GET_TRAIN_CARRIAGE);
+                Push(g_guestTrain);
+                Push(static_cast<unsigned long long>(st.carIndex));
+                wagon = static_cast<unsigned int>(Call());
+                unsigned int actor = 0;
+                if (wagon && DoesExist(wagon) &&
+                    actor_sync::GetHandleForActorId(st.actorId, actor) &&
+                    !IsPedInVehicleForTrain(actor, wagon))
+                {
+                    st.applied = false;
+                    st.attempts = 0;
+                }
+            }
+            continue;
+        }
+        if (st.nextRetryTick != 0 && tickCount < st.nextRetryTick)
+            continue;
+        unsigned int actor = 0;
+        if (!actor_sync::GetHandleForActorId(st.actorId, actor) ||
+            !DoesExist(actor))
+        {
+            if (tickCount - st.firstTick > 180)
+            {
+                ++g_perfGuestTrainSeatsFailed;
+                if (coopcfg::Get().npcDebug)
+                    sh_log::Write(
+                        "actor: train seat attach actor=%u car=%u seat=%d "
+                        "ok=0 (no actor)\n",
+                        st.actorId, st.carIndex, st.seat);
+                g_trainSeats.erase(g_trainSeats.begin() +
+                                   static_cast<std::ptrdiff_t>(idx));
+                --idx;
+            }
+            continue;
+        }
+        unsigned int wagon = 0;
+        using namespace natives_api;
+        Init(natives::GET_TRAIN_CARRIAGE);
+        Push(g_guestTrain);
+        Push(static_cast<unsigned long long>(st.carIndex));
+        wagon = static_cast<unsigned int>(Call());
+        if (!wagon || !DoesExist(wagon))
+        {
+            if (tickCount - st.firstTick > 120)
+            {
+                ++g_perfGuestTrainSeatsFailed;
+                if (coopcfg::Get().npcDebug)
+                    sh_log::Write(
+                        "actor: train seat attach actor=%u car=%u seat=%d "
+                        "ok=0 (no wagon)\n",
+                        st.actorId, st.carIndex, st.seat);
+                g_trainSeats.erase(g_trainSeats.begin() +
+                                   static_cast<std::ptrdiff_t>(idx));
+                --idx;
+            }
+            continue;
+        }
+        // Точные пассажиры пришли — авто-население вагонов больше не нужно.
+        if (!g_guestTrainAutoPopulationOff)
+        {
+            g_guestTrainAutoPopulationOff = true;
+            Init(natives::_GET_TRAIN_CARRIAGE_TRAILER_NUMBER);
+            Push(g_guestTrain);
+            const int trailers = static_cast<int>(Call());
+            for (int car = 0; car <= trailers; ++car)
+            {
+                Init(natives::GET_TRAIN_CARRIAGE);
+                Push(g_guestTrain);
+                Push(static_cast<unsigned long long>(car));
+                const unsigned int w = static_cast<unsigned int>(Call());
+                if (w && DoesExist(w))
+                {
+                    Init(natives::_FORCE_TRAIN_WAGON_POPULATION);
+                    Push(w); Push(false); Call();
+                }
+            }
+        }
+        SetTrainEntityVisible(actor, false);
+        Init(natives::SET_PED_INTO_VEHICLE);
+        Push(actor);
+        Push(wagon);
+        Push(static_cast<unsigned long long>(static_cast<long long>(st.seat)));
+        Call();
+        if (IsPedInVehicleForTrain(actor, wagon))
+        {
+            SetTrainEntityVisible(actor, true);
+            actor_sync::SetActorSeated(st.actorId, wagon, st.seat, st.flags);
+            st.applied = true;
+            st.attempts = 0;
+            ++g_perfGuestTrainSeatsApplied;
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write(
+                    "actor: train seat attach actor=%u car=%u seat=%d ok=1\n",
+                    st.actorId, st.carIndex, st.seat);
+        }
+        else
+        {
+            ++st.attempts;
+            st.nextRetryTick = tickCount + 30; // ~0.5 с
+            if (st.attempts >= 3)
+            {
+                SetTrainEntityVisible(actor, true); // не оставляем invisible
+                ++g_perfGuestTrainSeatsFailed;
+                if (coopcfg::Get().npcDebug)
+                    sh_log::Write(
+                        "actor: train seat attach actor=%u car=%u seat=%d "
+                        "ok=0\n",
+                        st.actorId, st.carIndex, st.seat);
+                g_trainSeats.erase(g_trainSeats.begin() +
+                                   static_cast<std::ptrdiff_t>(idx));
+                --idx;
+            }
+        }
+        --budget;
+    }
+}
+
 void DeleteGuestMissionTrain(unsigned int reason)
 {
+    ClearGuestTrainOccupants(false);
     if (g_guestTrain)
     {
         unsigned int train = g_guestTrain;
@@ -1022,6 +1390,7 @@ void DeleteGuestMissionTrain(unsigned int reason)
     g_guestTrainCars = 0;
     g_guestTrainWaiting = false;
     g_guestTrainReverse = false;
+    g_guestTrainAutoPopulationOff = false;
 }
 
 void CreateGuestTrain(unsigned int tickCount)
@@ -1161,6 +1530,7 @@ void TickGuestTrains(unsigned int tickCount)
             g_guestTrainSnapValid = true;
             g_hasPendingTrainV2 = false;
             g_guestTrainLastSnapTick = tickCount;
+            g_guestTrainNetId.store(g_pendingTrainV2.trainId);
         }
     }
 
@@ -1746,7 +2116,8 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                     c.entity.netId, static_cast<unsigned int>(entries.size()),
                     driverActorId);
         }
-        actor_sync::SetOccupantHandles(occupantHandles);
+        // E11: handles нужны и для train-passengers (TickHostTrains добавит).
+        g_hostOccHandles = std::move(occupantHandles);
     }
 
     if (vehiclesOnly && coopcfg::Get().npcDebug &&
@@ -1845,6 +2216,7 @@ struct SeatAttempt
     int8_t seat = -1;
     uint8_t flags = 0;
     uint8_t harness = 0;
+    uint8_t carIndex = 0; // E11: для train occupants
     unsigned int attempts = 0;
     unsigned int nextRetryTick = 0; // task-143 P2.7: backoff 2-5 c
     bool applied = false;
@@ -2239,10 +2611,12 @@ void ApplyPendingOccupants(unsigned int tickCount)
             a.seat = ne.seat;
             a.flags = ne.flags;
             a.harness = ne.harness;
+            a.carIndex = ne.carIndex;
             for (const SeatAttempt& o : old)
             {
                 if (o.actorId == a.actorId && o.flags == a.flags &&
-                    o.seat == a.seat && o.harness == a.harness)
+                    o.seat == a.seat && o.harness == a.harness &&
+                    o.carIndex == a.carIndex)
                 {
                     a.attempts = o.attempts;
                     a.applied = o.applied;
@@ -2276,6 +2650,25 @@ void ApplyPendingOccupants(unsigned int tickCount)
     {
         const uint32_t netId = it->first;
         VehicleOccupantsState& st = it->second;
+        // E11: 0x21 train-occupants могли прийти раньше 0x22; как только
+        // trainId известен — перекладываем в train-очередь, не ждём timeout.
+        if (g_guestTrainSnapValid && netId == g_guestTrainSnap.trainId)
+        {
+            std::vector<net::VehicleOccupantEntry> converted;
+            for (const SeatAttempt& e : st.entries)
+            {
+                net::VehicleOccupantEntry ne{};
+                ne.actorId = e.actorId;
+                ne.seat = e.seat;
+                ne.flags = e.flags;
+                ne.carIndex = e.carIndex;
+                ne.harness = e.harness;
+                converted.push_back(ne);
+            }
+            RouteTrainOccupants(converted);
+            it = g_occupantVehicles.erase(it);
+            continue;
+        }
         unsigned int veh = 0;
         if (!GetHandleForNetId(static_cast<uint64_t>(netId), veh) ||
             !DoesExist(veh))
@@ -2611,6 +3004,14 @@ void ApplyPendingSnapshot(unsigned int tickCount, bool vehiclesOnly)
             sh_log::Write("actor: occupants errors=%u\n", g_occupantsErrors);
             g_occupantsErrors = 0;
         }
+        if (g_perfGuestTrainSeatsApplied || g_perfGuestTrainSeatsFailed)
+        {
+            sh_log::Write("actor: guest train seats applied=%u failed=%u\n",
+                          g_perfGuestTrainSeatsApplied,
+                          g_perfGuestTrainSeatsFailed);
+            g_perfGuestTrainSeatsApplied = 0;
+            g_perfGuestTrainSeatsFailed = 0;
+        }
     }
 }
 
@@ -2749,6 +3150,14 @@ void OnVehicleOccupants(
     uint32_t vehicleNetId,
     const std::vector<net::VehicleOccupantEntry>& entries)
 {
+    // E11: 0x21 с vehicleNetId == trainId — это вагонные пассажиры поезда
+    // (carIndex в entry); не путать с world vehicle-прокси.
+    if (g_guestTrainNetId.load() != 0 &&
+        vehicleNetId == g_guestTrainNetId.load())
+    {
+        RouteTrainOccupants(entries);
+        return;
+    }
     std::lock_guard<std::mutex> lk(g_occupantsMutex);
     OccupantsInboxMsg msg;
     msg.vehicleNetId = vehicleNetId;
@@ -2904,6 +3313,9 @@ void Reset()
         g_hasPendingTrainV2 = false;
     }
     g_trainScans.clear();
+    g_hostOccHandles.clear();
+    g_lastTrainOccupants.clear();
+    g_lastTrainOccupantsTick.clear();
     g_trainConfigs.clear();
     g_trainConfigCars.clear();
     g_trainConfigModel0.clear();
@@ -2915,6 +3327,9 @@ void Reset()
     g_trainEngineExpiry = 0;
     g_guestTrainSpawnAttempts = 0;
     g_guestTrainLastSpawnTick = 0;
+    ClearGuestTrainOccupants(true);
+    g_perfGuestTrainSeatsApplied = 0;
+    g_perfGuestTrainSeatsFailed = 0;
     g_lastTrainSnapshot.clear();
     g_lastTrainSendTick.clear();
     g_snapshotSeq = 0;
@@ -2959,6 +3374,10 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
         // E3d-b: mission-train (0x22) отдельно от vehicle-бюджета.
         TickHostTrains(localPlayerPed, tickCount, partnerX, partnerY,
                        partnerValid);
+        // E11: vehicle + train occupant handles одним SetOccupantHandles
+        // (actor discovery идёт после world_sync::Tick).
+        if (coopcfg::Get().npcActor && coopcfg::Get().npcOccupants)
+            actor_sync::SetOccupantHandles(g_hostOccHandles);
         return;
     }
 
@@ -2970,6 +3389,7 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
     InterpolateVehicleProxies();
     ApplyPendingOccupants(tickCount);
     TickGuestTrains(tickCount);
+    ProcessTrainOccupants(tickCount);
 
     const unsigned long long last = g_lastSnapshotMs.load();
     if (last == 0)

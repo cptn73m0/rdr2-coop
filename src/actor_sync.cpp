@@ -2523,7 +2523,8 @@ void ProcessHostOutfitResolution(unsigned int tick)
 // компонентов — тогда лог `asset capture ... valid=0 state=failed` и fallback
 // на E2a metaOutfit.
 // E9 (task-142): количество shop-компонентов (для probe), generic для животных.
-int CountShopItemsEntity(unsigned int ped)
+// P4-7: probe не должен делать до 96 нативов в одном тике — бюджет вызовов.
+int CountShopItemsEntity(unsigned int ped, int maxCalls)
 {
     using namespace natives_api;
     Init(natives::GET_NUM_COMPONENT_CATEGORIES_IN_PED);
@@ -2533,6 +2534,8 @@ int CountShopItemsEntity(unsigned int ped)
         return 0;
     if (categories > 96)
         categories = 96;
+    if (maxCalls > 0 && categories > maxCalls)
+        categories = maxCalls;
     static unsigned long long inA[4] = {0, 0, 0, 0};
     static unsigned long long inB[4] = {0, 0, 0, 0};
     int n = 0;
@@ -2550,6 +2553,64 @@ int CountShopItemsEntity(unsigned int ped)
             ++n;
     }
     return n;
+}
+
+// P3-1: FNV по полям OutfitState (без padding 784-780 и без uninit bytes).
+uint32_t HashOutfitState(const net::OutfitState& os)
+{
+    uint32_t fp = 2166136261u;
+    auto mix = [&fp](uint32_t v) {
+        for (int b = 0; b < 4; ++b)
+        {
+            fp ^= (v >> (b * 8)) & 0xFFu;
+            fp *= 16777619u;
+        }
+    };
+    mix(static_cast<uint32_t>(os.model & 0xFFFFFFFFull));
+    mix(static_cast<uint32_t>(os.model >> 32));
+    mix(os.count);
+    const uint32_t n = os.count < static_cast<uint32_t>(net::kMaxOutfitComponents)
+                           ? os.count
+                           : static_cast<uint32_t>(net::kMaxOutfitComponents);
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        mix(os.components[i]);
+        mix(os.wearable[i]);
+    }
+    return fp;
+}
+
+// P4-5: dedupe двойного apply (E9 horse tack / E10 mount outfit) на один
+// native handle в пределах 1 c.
+std::unordered_map<unsigned int, unsigned long long> g_outfitAppliedHandleMs;
+
+bool OutfitAppliedRecently(unsigned int handle)
+{
+    if (!handle)
+        return false;
+    auto it = g_outfitAppliedHandleMs.find(handle);
+    if (it == g_outfitAppliedHandleMs.end())
+        return false;
+    return GetTickCount64() - it->second < 1000ull;
+}
+
+void MarkOutfitApplied(unsigned int handle)
+{
+    if (!handle)
+        return;
+    g_outfitAppliedHandleMs[handle] = GetTickCount64();
+    if (g_outfitAppliedHandleMs.size() > 64)
+    {
+        const unsigned long long now = GetTickCount64();
+        for (auto it = g_outfitAppliedHandleMs.begin();
+             it != g_outfitAppliedHandleMs.end();)
+        {
+            if (now - it->second > 5000ull)
+                it = g_outfitAppliedHandleMs.erase(it);
+            else
+                ++it;
+        }
+    }
 }
 
 int GetNumComponentCategoriesEntity(unsigned int ped)
@@ -2660,7 +2721,27 @@ void ProcessHostAnimalAppearanceCapture(unsigned int tick)
                     "comps=%d cats=%d valid=%d metaOutfit=0x%X shop=%d\n",
                     model, metaType, count, cats,
                     entries.empty() ? 0 : 1,
-                    GetMetaOutfit(handle), CountShopItemsEntity(handle));
+                    GetMetaOutfit(handle), CountShopItemsEntity(handle, 16));
+            }
+        }
+
+        // P3-6: если модель не MPT_ANIMAL (type!=3) — фича молча random;
+        // логируем reason, чтобы было видно в npc_debug (<=1/10 c на модель).
+        if (metaType != 3)
+        {
+            static std::unordered_map<uint32_t, unsigned long long>
+                s_metaSkipMs;
+            const unsigned long long nowMs = GetTickCount64();
+            auto pit = s_metaSkipMs.find(model);
+            if (coopcfg::Get().npcDebug &&
+                (pit == s_metaSkipMs.end() ||
+                 nowMs - pit->second >= 10000ull))
+            {
+                s_metaSkipMs[model] = nowMs;
+                sh_log::Write(
+                    "actor: animal appearance skip reason=metatype id=%u "
+                    "model=0x%X type=%d\n",
+                    e.actorId, model, metaType);
             }
         }
 
@@ -2733,19 +2814,11 @@ void ProcessHostHorseTackCapture(unsigned int tick)
         e.lastHorseTackTick = tick;
         if (!DoesExist(handle) || IsDeadPed(handle))
             continue;
-        net::OutfitState os;
+        net::OutfitState os{};
         coop::CollectLocalOutfitForActor(handle, os);
         if (os.model == 0 || os.count == 0)
             break; // E9 budget: 1 horse/tick
-        uint32_t fp = 2166136261u;
-        const uint8_t* bytes =
-            reinterpret_cast<const uint8_t*>(&os);
-        const std::size_t nbytes = sizeof(os);
-        for (std::size_t b = 0; b < nbytes; ++b)
-        {
-            fp ^= bytes[b];
-            fp *= 16777619u;
-        }
+        const uint32_t fp = HashOutfitState(os);
         if (!e.horseTackSent || fp != e.horseTackFingerprint)
         {
             coop::SendActorOutfit(g_hostEpoch, e.actorId, os);
@@ -2809,17 +2882,11 @@ void ProcessHostMountOutfitCapture(unsigned int tick)
         const unsigned int mount = GetMountOf(handle);
         if (!mount || !DoesExist(mount))
             continue;
-        net::OutfitState os;
+        net::OutfitState os{};
         coop::CollectLocalOutfitForActor(mount, os);
         if (os.model == 0 || os.count == 0)
             continue;
-        uint32_t fp = 2166136261u;
-        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&os);
-        for (std::size_t b = 0; b < sizeof(os); ++b)
-        {
-            fp ^= bytes[b];
-            fp *= 16777619u;
-        }
+        const uint32_t fp = HashOutfitState(os);
         // Шлём при изменении и как heartbeat каждые ~2 с (guest re-apply
         // после reseat/пересоздания mount-прокси).
         coop::SendActorOutfit(g_hostEpoch, e.actorId, os);
@@ -2827,8 +2894,9 @@ void ProcessHostMountOutfitCapture(unsigned int tick)
         e.mountOutfitSent = true;
         if (coopcfg::Get().npcDebug)
             sh_log::Write(
-                "actor: mount outfit send actor=%u model=0x%X items=%u\n",
-                e.actorId, os.model, os.count);
+                "actor: mount outfit send actor=%u model=0x%X items=%u "
+                "fp=0x%X\n",
+                e.actorId, os.model, os.count, fp);
         break; // 1 mounted horse/tick
     }
 }
@@ -3766,6 +3834,14 @@ void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
             return false; // model mismatch — skip
         if (p.appearanceAssetsApplyNeeded)
             return false; // ждём assets
+        if (OutfitAppliedRecently(p.handle))
+        {
+            p.pendingHorseTackValid = false;
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write("actor: outfit dedupe horse handle=%u\n",
+                              p.handle);
+            return true;
+        }
         const bool assetsApplied =
             !p.appearanceAssets.empty() && !p.appearanceAssetsApplyNeeded;
         if (!assetsApplied && !p.horseTackApplied)
@@ -3786,6 +3862,7 @@ void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
         p.horseTack = os;
         p.horseTackApplied = true;
         p.pendingHorseTackValid = false;
+        MarkOutfitApplied(p.handle);
         ++g_perfGuestHorseTackApplied;
         if (coopcfg::Get().npcDebug)
             sh_log::Write("actor: horse tack apply id=%u items=%u ok=1\n",
@@ -3809,7 +3886,20 @@ void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
             os.count == p.mountOutfit.count &&
             std::memcmp(os.components, p.mountOutfit.components,
                         sizeof(uint32_t) * net::kMaxOutfitComponents) == 0)
-            return true; // уже применено, heartbeat повторять не надо
+        {
+            p.pendingMountOutfitValid = false; // P3-2: не тратить pending-тик
+            return true;
+        }
+        // P4-5: не дублировать apply, если этот mountHandle только что
+        // обработан E9 horse-tack путём (и наоборот).
+        if (OutfitAppliedRecently(p.mountHandle))
+        {
+            p.pendingMountOutfitValid = false;
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write("actor: outfit dedupe mount handle=%u\n",
+                              p.mountHandle);
+            return true;
+        }
         using namespace natives_api;
         for (uint32_t i = 0; i < os.count; ++i)
         {
@@ -3827,6 +3917,7 @@ void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
         p.mountOutfitApplied = true;
         p.mountOutfitHandle = p.mountHandle;
         p.pendingMountOutfitValid = false;
+        MarkOutfitApplied(p.mountHandle);
         ++g_perfGuestMountOutfitApplied;
         if (coopcfg::Get().npcDebug)
             sh_log::Write(
@@ -6885,6 +6976,17 @@ void OnActorEvent(const net::ActorEventPayload& ev)
     (void)ev;
 }
 
+// E9/E10 (P3-4): семантика ActorOutfit 0x1C различается ТОЛЬКО по kind
+// прокси-актора (на сети нет явного тега mount/horse):
+//   kind=2 (horse)                     -> E9 horse tack (внешность самой
+//                                          loose/draft лошади);
+//   kind=0 (human) + mounted + flag    -> E10 mount outfit (внешность лошади
+//                                          под NPC-всадником; actorId —
+//                                          всадник, OutfitState.model —
+//                                          модель лошади);
+//   kind=0 не-mounted                  -> ignore (human outfit сюда не шлём;
+//                                          игрок идёт отдельным 0x0E).
+// Новых отправителей 0x1C нет; при появлении — добавить явный тег в v20.
 void OnActorOutfit(uint32_t epoch, uint32_t actorId,
                    const net::OutfitState& outfit)
 {
