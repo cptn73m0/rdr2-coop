@@ -1747,6 +1747,10 @@ struct RosterEntry
 };
 
 std::map<unsigned int, RosterEntry> g_roster;
+// E3d-c (v19): handles педов/лошадей, реально сидящих в реплицируемом
+// транспорте. Их разрешаем в discovery даже если mission; остальных mission
+// NPC по-прежнему не реплицируем.
+std::unordered_set<unsigned int> g_occupantHandles;
 uint32_t g_nextActorId = 1;
 uint32_t g_hostEpoch = 0;
 uint32_t g_sessionCounter = 0;
@@ -1973,13 +1977,15 @@ void HostDiscovery(const TickContext& ctx)
             continue;
         if (!IsHumanPed(handle))
             continue;
-        if (IsMissionEntity(handle))
-            continue; // MVP: mission NPC не реплицируем
+        const bool isOccupant = g_occupantHandles.count(handle) != 0;
+        if (IsMissionEntity(handle) && !isOccupant)
+            continue; // mission NPC — только occupants реплицируем
         if (IsDeadPed(handle))
             continue;
-        if (coopcfg::Get().worldVehicles &&
+        // npc_occupants=0: старое E3d-a поведение — водителей не дублируем.
+        if (!coopcfg::Get().npcOccupants && coopcfg::Get().worldVehicles &&
             IsPedInVehicleForDiscovery(handle))
-            continue; // E3d-a: водителя реплицирует vehicle-прокси
+            continue;
 
         Cand c;
         c.handle = handle;
@@ -2019,7 +2025,8 @@ void HostDiscovery(const TickContext& ctx)
             continue;
         if (IsHumanPed(handle))
             continue;
-        if (IsMissionEntity(handle))
+        const bool isOccupant = g_occupantHandles.count(handle) != 0;
+        if (IsMissionEntity(handle) && !isOccupant)
             continue;
         if (IsDeadPed(handle))
             continue;
@@ -2027,7 +2034,7 @@ void HostDiscovery(const TickContext& ctx)
         // игроков не дублируем (rider идёт как human mounted-пара).
         if (HasRider(handle))
             continue;
-        if (IsAnimalControlledByPlayer(handle))
+        if (!isOccupant && IsAnimalControlledByPlayer(handle))
             continue;
         const uint32_t model = GetModelOf(handle);
         if (IsBirdEntity(handle) || IsFishEntity(handle))
@@ -2056,6 +2063,18 @@ void HostDiscovery(const TickContext& ctx)
               [](const Cand& a, const Cand& b) {
                   return a.distance2 < b.distance2;
               });
+
+    // E3d-c: occupants (реальные водители/пассажиры/draft-лошади) получают
+    // слоты в первую очередь — иначе cap вытеснит их дальними NPC.
+    auto occupantFirst = [](const Cand& a, const Cand& b) {
+        const bool oa = g_occupantHandles.count(a.handle) != 0;
+        const bool ob = g_occupantHandles.count(b.handle) != 0;
+        if (oa != ob)
+            return oa;
+        return a.distance2 < b.distance2;
+    };
+    std::sort(candidates.begin(), candidates.end(), occupantFirst);
+    std::sort(animalCandidates.begin(), animalCandidates.end(), occupantFirst);
 
     // Стабильный roster: старые акторы сохраняют actorId, новые получают
     // следующий монотонный id. cap ограничивает число активных акторов.
@@ -2125,14 +2144,8 @@ void HostDiscovery(const TickContext& ctx)
             animalCandidates.push_back(c);
         present.insert(handle);
     }
-    std::sort(candidates.begin(), candidates.end(),
-              [](const Cand& a, const Cand& b) {
-                  return a.distance2 < b.distance2;
-              });
-    std::sort(animalCandidates.begin(), animalCandidates.end(),
-              [](const Cand& a, const Cand& b) {
-                  return a.distance2 < b.distance2;
-              });
+    std::sort(candidates.begin(), candidates.end(), occupantFirst);
+    std::sort(animalCandidates.begin(), animalCandidates.end(), occupantFirst);
 
     // E3c: люди занимают слоты первыми, животные — свободные ПОСЛЕ них
     // (общий roster <= kMaxActors 12; npc_animal_cap=0 выключает животных).
@@ -2314,6 +2327,7 @@ void HostDiscovery(const TickContext& ctx)
 
 void HostResetState()
 {
+    g_occupantHandles.clear();
     g_roster.clear();
     g_despawnQueue.clear();
     g_hostEpoch = 0;
@@ -2733,6 +2747,15 @@ struct Proxy
     unsigned int lastReseatTick = 0;
     int mountSeatAttempts = 0;
     unsigned int mountStuckCount = 0; // E5.3: 2 завершённые задачи -> fallback
+    // E3d-c (v19): occupant attach state. Пока seated/draftAttached —
+    // MoveProxy не двигает прокси (позицию ведёт vehicle/attachment).
+    bool seatedInVehicle = false;
+    unsigned int seatedVehicle = 0;
+    int seatedSeat = -1;
+    uint8_t occupantFlags = 0;
+    bool draftAttached = false;
+    unsigned int draftVehicle = 0;
+    unsigned int draftHarness = 0;
     // Долгоживущая go-to задача для ЛОШАДИ (rider не двигаем).
     uint32_t mountTaskHash = 0;
     bool mountTaskActive = false;
@@ -4109,6 +4132,10 @@ void MoveProxy(Proxy& p)
         }
     }
 
+    // E3d-c (v19): occupant сидит в vehicle / draft-лошадь прицеплена —
+    // позицию/анимацию ведёт vehicle/attachment, MoveProxy не вмешивается.
+    if (p.seatedInVehicle || p.draftAttached)
+        return;
     // E3a: сценарий-поза — движение не выдаём.
     if (p.scenarioFlag)
         return;
@@ -5223,6 +5250,7 @@ void HandleGuestEpochChange(uint32_t newEpoch)
 
 void GuestResetState()
 {
+    g_occupantHandles.clear();
     g_guestEpoch = 0;
     g_pendingSpawns.clear();
     g_pendingSpawnIds.clear();
@@ -5904,6 +5932,81 @@ bool GetHandleForActorId(uint32_t actorId, unsigned int& handle)
     }
     handle = it->second.handle;
     return true;
+}
+
+// E3d-c (v19): host — actorId для handle из roster (0/false если ещё не в
+// roster; world_sync повторит на следующем 0x21).
+bool GetHostActorIdForHandle(unsigned int handle, uint32_t& actorId)
+{
+    actorId = 0;
+    auto it = g_roster.find(handle);
+    if (it == g_roster.end())
+        return false;
+    actorId = it->second.actorId;
+    return actorId != 0;
+}
+
+// E3d-c (v19): occupant-handles от world_sync (только реально сидящие в
+// реплицируемом vehicle педы/лошади); действует до следующего обновления.
+void SetOccupantHandles(const std::vector<unsigned int>& handles)
+{
+    g_occupantHandles.clear();
+    for (unsigned int h : handles)
+    {
+        if (h)
+            g_occupantHandles.insert(h);
+    }
+}
+
+// E3d-c (v19): guest — пометить actor_as_seated (skip MoveProxy) или снять.
+void SetActorSeated(uint32_t actorId, unsigned int vehicleHandle, int seat,
+                    uint8_t flags)
+{
+    auto it = g_proxies.find(actorId);
+    if (it == g_proxies.end())
+        return;
+    it->second.seatedInVehicle = true;
+    it->second.seatedVehicle = vehicleHandle;
+    it->second.seatedSeat = seat;
+    it->second.occupantFlags = flags;
+    it->second.draftAttached = false;
+    it->second.taskActive = false;
+    it->second.moveTaskValid = false;
+}
+
+void ClearActorSeated(uint32_t actorId)
+{
+    auto it = g_proxies.find(actorId);
+    if (it == g_proxies.end())
+        return;
+    it->second.seatedInVehicle = false;
+    it->second.seatedVehicle = 0;
+    it->second.seatedSeat = -1;
+    it->second.occupantFlags = 0;
+}
+
+void SetActorDraftAttached(uint32_t actorId, unsigned int vehicleHandle,
+                           unsigned int harness)
+{
+    auto it = g_proxies.find(actorId);
+    if (it == g_proxies.end())
+        return;
+    it->second.draftAttached = true;
+    it->second.draftVehicle = vehicleHandle;
+    it->second.draftHarness = harness;
+    it->second.seatedInVehicle = false;
+    it->second.taskActive = false;
+    it->second.moveTaskValid = false;
+}
+
+void ClearActorDraftAttached(uint32_t actorId)
+{
+    auto it = g_proxies.find(actorId);
+    if (it == g_proxies.end())
+        return;
+    it->second.draftAttached = false;
+    it->second.draftVehicle = 0;
+    it->second.draftHarness = 0;
 }
 
 // E5 (v17): гость — handle прокси -> actorId; false для не-прокси/мёртвых.

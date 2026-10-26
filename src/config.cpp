@@ -115,6 +115,8 @@ void WriteDefaultIni()
     fputs("npc_visitor_preserve_events = 1\n", f);
     fputs("# E7.1: паузить cleanup толпы на время миссии/катсцены (default 1).\n", f);
     fputs("npc_visitor_pause_scenes = 1\n", f);
+    fputs("# E3d-c: пассажиры/водители/тягловые лошади (0 = выкл).\n", f);
+    fputs("npc_occupants = 1\n", f);
     fputs("# E7.2: in-place update go-to задачи (A/B; 0 = только far-target).\n", f);
     fputs("npc_motion_update = 1\n", f);
     fputs("# E7.2: fallback A2 marker-entity follow (default 0, после A/B).\n", f);
@@ -215,6 +217,7 @@ void ApplyLine(const std::string& raw, Config& out)
         out.npcVisitorPreserveEvents = AsBool(val);
     else if (key == "npc_visitor_pause_scenes")
         out.npcVisitorPauseScenes = AsBool(val);
+    else if (key == "npc_occupants") out.npcOccupants = AsBool(val);
     else if (key == "npc_motion_update") out.npcMotionUpdate = AsBool(val);
     else if (key == "npc_motion_marker") out.npcMotionMarker = AsBool(val);
     else if (key == "npc_motion_status_p2")

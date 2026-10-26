@@ -56,6 +56,18 @@ void RequestImmediateResync();
 // Реестр гостя: actorId -> локальный handle (для target/маппинга).
 bool GetHandleForActorId(uint32_t actorId, unsigned int& handle);
 
+// E3d-c (v19): host — actorId для handle из roster (ложь — ещё не в roster).
+bool GetHostActorIdForHandle(unsigned int handle, uint32_t& actorId);
+// E3d-c (v19): occupant-handles из world_sync (mission-occupants разрешены).
+void SetOccupantHandles(const std::vector<unsigned int>& handles);
+// E3d-c (v19): guest — seated/draft состояние (MoveProxy пропускает движение).
+void SetActorSeated(uint32_t actorId, unsigned int vehicleHandle, int seat,
+                    uint8_t flags);
+void ClearActorSeated(uint32_t actorId);
+void SetActorDraftAttached(uint32_t actorId, unsigned int vehicleHandle,
+                           unsigned int harness);
+void ClearActorDraftAttached(uint32_t actorId);
+
 // ---------------- callbacks net/client (сетевой поток) ----------------
 // Только копируют данные в inbox под mutex; нативы/логи не вызывают.
 void OnActorSpawnBatch(uint32_t epoch,

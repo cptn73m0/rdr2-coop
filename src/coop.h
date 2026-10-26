@@ -41,6 +41,12 @@ bool SendActorDamage(uint32_t epoch, uint32_t actorId, uint16_t damage,
                      uint32_t weaponHash);
 // E6 (v18): сообщить свой UI-статус (карта/пауза/сатчель/магазин) другому.
 bool SendPlayerPresence(uint32_t epoch, uint16_t flags);
+// E3d-c (v19): occupants транспорта (хост -> сервер -> гость).
+void SendVehicleOccupants(
+    uint32_t vehicleNetId,
+    const std::vector<net::VehicleOccupantEntry>& entries);
+// E3d-b (v19): снапшот поезда/состава (хост -> сервер -> гость).
+void SendTrainSnapshotV2(const net::TrainSnapshotV2Payload& payload);
 // E1: запрос resync от гостя. ВАЖНО: в net/client пока есть только приём
 // ActorResync, но НЕ отправка (Client::SendActorResync отсутствует) — заглушка
 // до правки net-слоя (net-review), игровой слой вызывает безопасно.

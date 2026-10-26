@@ -84,6 +84,8 @@ struct Config {
     // E7.1: mission-aware visitor — на время миссии/катсцены паузить ТОЛЬКО
     // cleanup ambient-толпы (density-подавление остаётся), default 1.
     bool npcVisitorPauseScenes = true;
+    // E3d-c (v19): пассажиры/водители и тягловые лошади у vehicle-прокси.
+    bool npcOccupants = true;
     // E7.2 smooth NPC motion (A/B):
     // npc_motion_update=1 — in-place update задачи через
     // _UPDATE_TASK_GO_TO_COORD_WITH_OFFSET (совместимость A/B ещё не

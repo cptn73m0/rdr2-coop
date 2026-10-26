@@ -331,6 +331,40 @@ constexpr unsigned long long GET_VEHICLE_PED_IS_IN            = 0x9A9112A0FE9A47
 constexpr unsigned long long GET_PED_IN_VEHICLE_SEAT          = 0xBB40DD2270B65366ull;
 constexpr unsigned long long IS_PED_IN_VEHICLE                = 0xA3EE4A07279BB9DBull;
 constexpr unsigned long long SET_PED_INTO_VEHICLE             = 0xF75B0D629E1C063Dull;
+// E3d-c (v19): occupants транспорта + draft-лошади.
+constexpr unsigned long long GET_DRIVER_OF_VEHICLE            = 0x2963B5C1637E8A27ull;
+constexpr unsigned long long GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS = 0xA9C55F1C15E62E06ull;
+constexpr unsigned long long IS_DRAFT_VEHICLE                 = 0xEA44E97849E9F3DDull;
+constexpr unsigned long long _GET_PED_IN_DRAFT_HARNESS        = 0xA8BA0BAE0173457Bull;
+constexpr unsigned long long _ATTACH_DRAFT_VEHICLE_HARNESS_PED = 0x316CDB5B6E8F4110ull;
+constexpr unsigned long long _DETACH_DRAFT_VEHICLE_HARNESS_PED = 0xB36D3EC70963BE60ull;
+constexpr unsigned long long _SET_DRAFT_VEHICLE_ALLOW_DRAFT_ANIMAL_AUTO_CREATION = 0x87344305778E5415ull;
+constexpr unsigned long long _SET_DRAFT_VEHICLE_ANIMALS_CAN_DETACH = 0x6090A031C69F384Eull;
+constexpr unsigned long long _SET_DRAFT_VEHICLE_YOKE_CAN_BREAK = 0x226C6A4E3346D288ull;
+// E3d-b (v19): mission-train у гостя.
+constexpr unsigned long long SET_RANDOM_TRAINS               = 0x1156C6EE7E82A98Aull;
+constexpr unsigned long long _IS_POSITION_VALID_FOR_TRAIN     = 0xF05DFAF1ADFEF2CDull;
+constexpr unsigned long long _GET_NEAREST_TRAIN_TRACK_POSITION = 0x6DE03BCC15E81710ull;
+constexpr unsigned long long _CREATE_MISSION_TRAIN            = 0xC239DBD9A57D2A71ull;
+constexpr unsigned long long _SET_TRAIN_MAX_SPEED             = 0x9F29999DFDF2AEB8ull;
+constexpr unsigned long long _SET_TRAIN_COLLISION_AVOIDANCE_ENABLED = 0xE6BD7DD3FD474415ull;
+constexpr unsigned long long _SET_TRAIN_STOPS_FOR_STATIONS    = 0x4182C037AA1F0091ull;
+constexpr unsigned long long _SET_TRAIN_DESTRUCTION_ENABLED   = 0x07E2E21E799080A0ull;
+constexpr unsigned long long SET_TRAIN_SPEED                  = 0xDFBA6BBFF7CCAFBBull;
+constexpr unsigned long long SET_TRAIN_CRUISE_SPEED           = 0x01021EB2E96B793Cull;
+constexpr unsigned long long SET_MISSION_TRAIN_COORDS         = 0x7632755962AB9922ull;
+constexpr unsigned long long _SET_MISSION_TRAIN_WARP_TO_COORDS = 0xC9EA26893C9E4024ull;
+constexpr unsigned long long _SET_TRAIN_HALT                  = 0x3660BCAB3A6BB734ull;
+constexpr unsigned long long _SET_TRAIN_LEAVE_STATION         = 0x787E43477746876Full;
+constexpr unsigned long long _SET_TRAIN_REVERSE_ENABLED       = 0x06A09A6E0C6D2A84ull;
+constexpr unsigned long long _FORCE_TRAIN_WAGON_POPULATION    = 0x119A5714578F4E05ull;
+constexpr unsigned long long SET_MISSION_TRAIN_AS_NO_LONGER_NEEDED = 0xBBE7648349B49BE8ull;
+constexpr unsigned long long DELETE_MISSION_TRAIN             = 0x0D3630FB07E8B570ull;
+constexpr unsigned long long _GET_NUM_CARS_FROM_TRAIN_CONFIG  = 0x635423D55CA84FC8ull;
+constexpr unsigned long long _GET_TRAIN_MODEL_FROM_TRAIN_CONFIG_BY_CAR_INDEX = 0x8DF5F6A19F99F0D5ull;
+constexpr unsigned long long _GET_CURRENT_TRACK_FOR_TRAIN     = 0xAF787E081AC4A8EEull;
+constexpr unsigned long long IS_TRAIN_WAITING_AT_STATION      = 0xE887BD31D97793F6ull;
+constexpr unsigned long long GET_CURRENT_STATION_FOR_TRAIN    = 0x86FA6D8B48667D75ull;
 
 // P3: MissionData (только чтение/запись зачёта; никаких копий сейва).
 constexpr unsigned long long MISSIONDATA_IS_VALID             = 0xE54DC27571D5EDC5ull;

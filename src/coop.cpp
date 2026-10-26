@@ -5998,6 +5998,18 @@ void InitNetworkClient()
     // E5 (v17): запрос урона от гостя (0x1F) — в inbox actor_sync.
     g_netClient.SetActorDamageRequest(actor_sync::OnActorDamageRequest);
 
+    // E3d-c (v19): occupants транспорта от хоста -> world_sync (копия).
+    g_netClient.SetVehicleOccupants(
+        [](uint32_t vehicleNetId,
+           const std::vector<net::VehicleOccupantEntry>& entries) {
+            world_sync::OnVehicleOccupants(vehicleNetId, entries);
+        });
+    // E3d-b (v19): поезд/состав от хоста -> world_sync (копия под mutex).
+    g_netClient.SetTrainSnapshotV2(
+        [](const net::TrainSnapshotV2Payload& payload) {
+            world_sync::OnTrainSnapshotV2(payload);
+        });
+
     // E6 (v18): UI-статус другого игрока (карта/пауза/сатчель/магазин).
     g_netClient.SetPlayerPresence([](uint32_t epoch, uint16_t flags) {
         std::lock_guard<std::mutex> lk(s_inboxMtx);
@@ -6022,6 +6034,20 @@ void InitNetworkClient()
 void SendWorldSnapshot(const std::vector<uint8_t>& payload)
 {
     g_netClient.SendWorldSnapshot(payload);
+}
+
+// E3d-c (v19): occupants транспорта от хоста (0x21).
+void SendVehicleOccupants(
+    uint32_t vehicleNetId,
+    const std::vector<net::VehicleOccupantEntry>& entries)
+{
+    g_netClient.SendVehicleOccupants(vehicleNetId, entries);
+}
+
+// E3d-b (v19): снапшот поезда/состава (0x22).
+void SendTrainSnapshotV2(const net::TrainSnapshotV2Payload& payload)
+{
+    g_netClient.SendTrainSnapshotV2(payload);
 }
 
 // R&D: TrainSnapshot от хоста. Гость пока только логирует.
@@ -6610,6 +6636,7 @@ void Tick()
         s_sentHorseOutfitValid = false;
         // E1: связь потеряна — удалить прокси/roster акторов.
         actor_sync::Reset();
+        world_sync::Reset(); // E3d-b: снять mission-train + restore random trains
     }
     if (ev.leave)
     {
@@ -6622,6 +6649,7 @@ void Tick()
         s_presenceSentValid = false;
         // E1: игрок вышел — акторы устарели.
         actor_sync::Reset();
+        world_sync::Reset(); // E3d-b: снять mission-train + restore random trains
     }
     if (ev.playerJoined)
     {
