@@ -10,14 +10,14 @@
 
 Кооператив **не является полноценным совместным прохождением**: сюжетные
 миссии и транспорт мира по-прежнему не реплицируются; NPC-репликация
-(люди + животные + свободные лошади, E1–E12) реализована как экспериментальная
+(люди + животные + свободные лошади, E1–E13) реализована как экспериментальная
 ветка и требует `npc_actor=1` (см. «Известные ограничения»).
 
 ## Статус
 
 Проверено в игре двумя игроками на билде **1.0.1491.50**; последний игровой
 стабильный тег — **stable-v14** (`OutfitState` 784 B, wearable states одежды).
-**Текущий протокол — v19** (actor-репликация NPC E1–E12:
+**Текущий протокол — v19** (actor-репликация NPC E1–E13:
 `ActorDamage` 0x1F + `PlayerPresence` 0x20 + `VehicleOccupants` 0x21 +
 `TrainSnapshotV2` 0x22). E5.2/E5.3 (трупы/сглаживание всадников), **E6**
 (presence-суффиксы), **E7.1** (visitor mode), **E7.2** (плавное движение
@@ -26,13 +26,15 @@ mission-aware visitor), **E8** (E3d-c водители/пассажиры/draft,
 mission-train), **E9** (внешность животных/лошадей: assets 0x1E + horse
 tack 0x1C), **E10** (внешность лошади под NPC-всадником через 0x1C),
 **E11** (точные пассажиры поездов через 0x21 carIndex), **E12**
-(полный `perf: frame`/`perf: net`, Player Frame throttle, P0/P1 перф-фиксы)
-реализованы. E5/E5.1 подтверждены в игре. CI **41/41** integration + 7/7 C++
-(HEAD c22dbcc, тег **npc-e12**). Локальная пара v19: ASI `D47B91A5`, server
-`F3EBD6D1`; **ARINA offline** — pending. Флаг `npc_actor` по умолчанию **0**;
-для теста включать на обоих ПК. Клиенты v14–v19 несовместимы (сервер
-отклоняет JOIN с `VersionMismatch`). Теги этапов NPC: `npc-e0`…`npc-e12`.
-Финальный чек-лист 2-ПК: [docs/ACCEPTANCE_2PC.md](docs/ACCEPTANCE_2PC.md).
+(полный `perf: frame`/`perf: net`, Player Frame throttle, P0/P1 перф-фиксы),
+**E13** (wall-clock нормализация интервалов, FPS-independent, `tick_hz` и
+`config: warn` для опасных комбинаций) реализованы. E5/E5.1 подтверждены в
+игре. CI **41/41** integration + 7/7 C++ (HEAD e3accaa, тег **npc-e13**).
+Локальная пара v19: ASI `B43B7EE0`, server `F3EBD6D1`; **ARINA offline** —
+pending. Флаг `npc_actor` по умолчанию **0**; для теста включать на обоих ПК.
+Клиенты v14–v19 несовместимы (сервер отклоняет JOIN с `VersionMismatch`).
+Теги этапов NPC: `npc-e0`…`npc-e13`. Финальная сборка перед 2-ПК приёмкой.
+Чек-лист: [docs/ACCEPTANCE_2PC.md](docs/ACCEPTANCE_2PC.md).
 
 ### Что работает
 
@@ -56,7 +58,7 @@ tack 0x1C), **E10** (внешность лошади под NPC-всаднико
   протокол v14, `OutfitState` 784 B).
   Базовая внешность (лицо, волосы, борода, дефолтные слои модели) не
   синхронизируется — в публичном RDR2 SDK нет getter'а этих компонентов.
-- **NPC-репликация (E1–E12, `npc_actor=1` на обоих ПК).** Хост реплицирует
+- **NPC-репликация (E1–E13, `npc_actor=1` на обоих ПК).** Хост реплицирует
   human-NPC до `npc_cap` (1..12, default 8) в радиусе `npc_radius` (20..100 м,
   default 60) и животные/лошади до `npc_animal_cap`: discovery 10 Гц, roster
   actorId/epoch, spawn-heartbeat 2.5 с, кадры 10 Гц, despawn (ушёл/умер/
@@ -161,6 +163,13 @@ tack 0x1C), **E10** (внешность лошади под NPC-всаднико
     `player_frame_change_only=1`: покой 5 Гц, движение до 20 Гц) и P0/P1
     перф-фиксы (outfit ≤10 Гц, capture budget 2/тик, общий vehicle-скан,
     occupants 1/с, TTL, resync, world_scan debug).
+  - **E13 (v19 без bump):** wall-clock нормализация (`GetTickCount64`) —
+    интервалы actor frames/discovery/appearance/heartbeats/trains/occupants/
+    presence/player frame/world_scan/outfit в **ms**, не зависят от FPS
+    (при 144 FPS больше нет ускорения ×2.4); `perf: frame` дополнен
+    `tick_hz=` (реальный FPS); `config: warn …` для опасных комбинаций
+    (`world_sync+npc_actor`, `world_sync+world_trains`, `!world_vehicles+
+    occupants/visitor`, `!npc_actor+vehicles/visitor`), без падения.
   - **Host migration hardening:** серверный host game-timeout 4 с (не Ping —
     только игровые сообщения; 4-й argv 2..15 с, idle 30 с отдельно) →
     close → PlayerLeft + promote + HostChanged. Клиент при HostChanged
@@ -171,7 +180,7 @@ tack 0x1C), **E10** (внешность лошади под NPC-всаднико
   train-тестов v19**; integration **41/41**), C++ 7/7, CI-workflow (артефакты,
   кеш) и локальный `scripts\ci.ps1`.
 
-**INI-флаги NPC:** `npc_actor = 1` (включает E1–E12), `npc_cap = 8`
+**INI-флаги NPC:** `npc_actor = 1` (включает E1–E13), `npc_cap = 8`
 (1..12), `npc_radius = 60` (20..100), `npc_appearance = 1` (meta-outfit E2a
 и asset/tint E2c-b), `npc_animal_cap = 4` (0..12), `npc_damage = 1`
 (E5-урон), `npc_corpse_max_sec = 300`, `npc_presence = 1` (E6),
@@ -203,7 +212,7 @@ tack 0x1C), **E10** (внешность лошади под NPC-всаднико
 - `world_trains` / `train_debug` — mission-train v19 (E3d-b) реализован, но
   по умолчанию **0** (тестовый opt-in); старый proxy-attach устарел, см.
   [docs/TRAINS.md](docs/TRAINS.md).
-- NPC-репликация (E1–E12) — экспериментальная и **не включена по
+- NPC-репликация (E1–E13) — экспериментальная и **не включена по
   умолчанию**: `npc_actor=0`; mission-NPC не входят; E3d-c occupants/draft и
   E3d-b mission-train — тестовые (train default0); двух-ПК визуальная приёмка
   pending (ARINA offline). Прошлая ветка v14 (NpcSpawn/NpcFrame) в рабочую
@@ -213,15 +222,15 @@ tack 0x1C), **E10** (внешность лошади под NPC-всаднико
 
 - Сюжетные миссии не проходятся совместно в одном инстансе; общего прогресса
   и барьера старта в стабильной сборке нет.
-- NPC-репликация — **экспериментальная (E1–E12: люди, животные, свободные
+- NPC-репликация — **экспериментальная (E1–E13: люди, животные, свободные
   лошади, транспорт)**: cap 12 + `npc_animal_cap`; mission-NPC исключены;
   транспорт E3d-a vehicles-only, E3d-c водители/пассажиры/draft; поезда
   E3d-b mission-train (opt-in `world_trains=1`); E9/E10 animal/horse
   appearance (flags `npc_animal_appearance=0`/`npc_mount_appearance=0`); E11
   точные пассажиры поездов; E12 `perf: frame`/`perf: net` и Player Frame
-  throttle; ambient у гостя подавляется visitor mode; двух-ПК приёмка
-  pending; лицо/волосы, точные анимации/сценарии и катсцены не
-  синхронизируются.
+  throttle; E13 wall-clock/FPS-independent и `config: warn`; ambient у гостя
+  подавляется visitor mode; двух-ПК приёмка pending; лицо/волосы, точные
+  анимации/сценарии и катсцены не синхронизируются.
 - **E9:** cap 16 компонентов; RESET_PED_COMPONENTS на животных не проверен
   в игре; horse tack model-specific (старые shop items не снимаются);
   assets coverage MPT_ANIMAL может быть неполным → random fallback;
@@ -231,10 +240,12 @@ tack 0x1C), **E10** (внешность лошади под NPC-всаднико
   не примениться при позднем mount (heartbeat/retry повторит); horse tack
   model-specific (старые shop items не снимаются); in-game S28 pending;
   `npc_mount_appearance` host+guest синхронно.
-- **E11/E12:** E11-пассажиры поездов — по 0x21 `carIndex` (проверять D3);
+- **E11/E12/E13:** E11-пассажиры поездов — по 0x21 `carIndex` (проверять D3);
   `player_frame_hz=20` может слегка сглаживать ghost в движении на 2-ПК
-  (поднять до 60 при необходимости); P2 (config validator/wall-clock
-  нормализация) не сделаны; трафик — по серверным bytes и клиентскому
+  (поднять до 60 при необходимости); P2 config validator/wall-clock — сделаны
+  в E13, но часть таймеров осталась тиковой (corpse hold, action/presence poll,
+  motion/scenario, attach/dead windows, vehicle-scan TTL, train engine cache) —
+  при 144 FPS их реальные окна короче; трафик — по серверным bytes и клиентскому
   `perf: net` (типично ≤10–12, worst ≤15 КБ/с).
 - **Story Mode:** нельзя реально «подселить» второго игрока в один мир —
   каждый проходит сюжет у себя, реплицируются только NPC/животные/транспорт;
@@ -252,8 +263,8 @@ tack 0x1C), **E10** (внешность лошади под NPC-всаднико
   аппроксимирован по классу оружия/HP движка; животные умирают быстро; труп
   до despawn; mission NPC не получают урон; host migration hardening (4 с
   game-timeout) реализован, resync под нагрузкой — backlog.
-- **ARINA (второй ПК) offline** — деплой v19/npc-e12 pending; локальная
-  пара: ASI `D47B91A5`, server `F3EBD6D1`. Текущие E5–E12/E3d-
+- **ARINA (второй ПК) offline** — деплой v19/npc-e13 pending; локальная
+  пара: ASI `B43B7EE0`, server `F3EBD6D1`. Текущие E5–E13/E3d-
   подтверждения — одиночный ПК + fake host/гость.
 - Базовая внешность персонажа (лицо/волосы/борода, дефолтные слои одежды) не
   переносится; синхронизируются только shop-предметы.
@@ -337,7 +348,7 @@ NPC-флаги включаются только для однопК/двух-П
 | `mission_reward_log` | 1 | dry-run лог плана наград (нативы не вызываются) |
 | `world_trains` | 0 | E3d-b mission-train v19 (тестовый opt-in; старый proxy-attach deprecated) |
 | `train_debug` | 0 | диагностика mission-train |
-| `npc_actor` | 0 | E1–E12 NPC-репликация (экспериментально, только для теста) |
+| `npc_actor` | 0 | E1–E13 NPC-репликация (экспериментально, только для теста) |
 | `npc_cap` | 8 | 1..12, максимум human NPC-прокси |
 | `npc_radius` | 60 | 20..100 м, радиус discovery (keep +10 м) |
 | `npc_appearance` | 1 | meta-outfit E2a + asset/tint E2c-b (asset приоритетнее) |
@@ -369,6 +380,7 @@ NPC-флаги включаются только для однопК/двух-П
 
 | label | protocol | ASI | server | README |
 |---|---|---|---|---|
+| `npc-e13` | v19 | `B43B7EE0` | `F3EBD6D1` | [dist\npc-e13\README.md](dist/npc-e13/README.md) |
 | `npc-e12` | v19 | `D47B91A5` | `F3EBD6D1` | [dist\npc-e12\README.md](dist/npc-e12/README.md) |
 | `npc-e11` | v19 | `785B2D05` | `E26C715A` | [dist\npc-e11\README.md](dist/npc-e11/README.md) |
 | `npc-e10` | v19 | `B8BA1B93` | `E26C715A` | [dist\npc-e10\README.md](dist/npc-e10/README.md) |
@@ -386,7 +398,7 @@ NPC-флаги включаются только для однопК/двух-П
 (`VersionMismatch`). Полная процедура, структура `dist\<label>` и команда
 создания снапшота — в [tools/README.md](tools/README.md).
 
-Текущий локальный деплой **npc-e12 / v19**: ASI `D47B91A5`, server
+Текущий локальный деплой **npc-e13 / v19**: ASI `B43B7EE0`, server
 `F3EBD6D1`; **ARINA offline** — pending. v18-пара:
 ASI `C9BFA565` / server `BEC3428B`; v17: ASI `35163CC2` / server
 `B7AAABAE`; v16: ASI `63388AD3` / server `4EDAE4B6`; v15:
@@ -414,7 +426,7 @@ rdr2_coop_server.exe 7777
 
 ## Протокол
 
-Все сообщения: `u32 length | u8 type | payload`. **Актуальная версия — v19** (actor-репликация NPC E1–E12: ActorAppearance 0x1E + ActorDamage 0x1F + PlayerPresence 0x20 + VehicleOccupants 0x21 + TrainSnapshotV2 0x22; E9/E10/E11/E12 используют существующие 0x1E/0x1C/0x21 без новых сообщений). Клиенты v14–v19 несовместимы: сервер отклоняет JOIN с `VersionMismatch`. v18-пара: ASI `C9BFA565`/server `BEC3428B`; v17 — `35163CC2`/`B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 — `dist\npc-e2c-v15\`.
+Все сообщения: `u32 length | u8 type | payload`. **Актуальная версия — v19** (actor-репликация NPC E1–E13: ActorAppearance 0x1E + ActorDamage 0x1F + PlayerPresence 0x20 + VehicleOccupants 0x21 + TrainSnapshotV2 0x22; E9–E13 используют существующие 0x1E/0x1C/0x21 без новых сообщений). Клиенты v14–v19 несовместимы: сервер отклоняет JOIN с `VersionMismatch`. v18-пара: ASI `C9BFA565`/server `BEC3428B`; v17 — `35163CC2`/`B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 — `dist\npc-e2c-v15\`.
 
 | type | сообщение      | направление            | payload |
 |------|----------------|------------------------|---------|
@@ -441,7 +453,7 @@ rdr2_coop_server.exe 7777
 | 0x15 | MissionBarrier | host ↔ guest           | P3, флаг выключен |
 | 0x16 | HostChanged    | сервер → клиент        | смена роли (host migration hardening: 4 с game-timeout, role-change reset) |
 | 0x17 | TrainSnapshot  | хост → сервер → гость  | устаревший R&D proxy-attach; заменён v19 TrainSnapshotV2 0x22 |
-| 0x18 | ActorSpawnBatch | хост → сервер → гость | v15–v19 E1–E12: до 12×`ActorSpawn` (64 B), max 776 B; host-only |
+| 0x18 | ActorSpawnBatch | хост → сервер → гость | v15–v19 E1–E13: до 12×`ActorSpawn` (64 B), max 776 B; host-only |
 | 0x19 | ActorFrames   | хост → сервер → гость  | v15–v19: до 12×`ActorFrame` (32 B), max 392 B; движение/флаги боя |
 | 0x1A | ActorDespawn  | хост → сервер → гость  | v15–v19: epoch/actorId/reason, 12 B; host-only |
 | 0x1B | ActorEvent    | хост → сервер → гость  | v15–v19: событие актора, 32 B; host-only (в текущем клиенте не применяется) |
@@ -536,7 +548,7 @@ byte-identical только гостю.
 - `src/coop.cpp` — игровая логика: спавн/рендер педа, движение, одежда, оружие,
   лошадь, смерть/возрождение, время/погода, кадры 60 Гц; E6 presence
   (UIAPP-детект, суффикс ника), E7.1 visitor/mission-aware, role-change reset.
-- `src/actor_sync.cpp/h` — NPC-репликация E1–E12: discovery/roster, guest
+- `src/actor_sync.cpp/h` — NPC-репликация E1–E13: discovery/roster, guest
   proxies, сценарии/смерть, всадники/животные, оружие/бой, appearance,
   host-authoritative damage (E5), corpse retention (E5.2), smooth motion
   (E7.2), occupants/draft (E3d-c), mission-aware/role reset.

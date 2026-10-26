@@ -5,7 +5,7 @@
 
 **Актуально на:** 26.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** **v19** (actor-репликация NPC E1–E12,
+**Текущий протокол:** **v19** (actor-репликация NPC E1–E13,
 0x18–0x22: ActorDamage 0x1F + PlayerPresence 0x20 + VehicleOccupants 0x21 +
 TrainSnapshotV2 0x22). v18↔v19 несовместимы; откат v18 — ASI
 `C9BFA565`/server `BEC3428B`, v17 — `35163CC2`/`B7AAABAE`, v16 —
@@ -17,12 +17,13 @@ E1 human-only, E2a meta-outfit, E2b всадники, E2c-a/b внешность
 E5 урон/E5.1 хедшоты/E5.2-E5.3 трупы/mounted, E6 presence, E7.1 visitor,
 E7.2 плавное движение, E7.3 E3d-a/migration, E8 — E3d-c occupants/draft +
 E3d-b mission-train, E9 — animal/horse appearance, E10 — mounted NPC-horse
-appearance, E11 — точные пассажиры поездов, **E12 — `perf: frame`/`perf: net`,
-Player Frame throttle, P0/P1 перф-фиксы**.
-CI **41/41** + 7 C++; HEAD c22dbcc; тег **npc-e12**; теги `npc-e0`…`npc-e12`.
-`npc_actor=0` по умолчанию; локальная пара v19 — ASI `D47B91A5`/server
-`F3EBD6D1`, снапшот `dist\npc-e12`, ARINA offline. Двух-ПК приёмка/
-S27/S28/S29 — backlog.
+appearance, E11 — точные пассажиры поездов, E12 — `perf: frame`/`perf: net`,
+Player Frame throttle/P0/P1, **E13 — wall-clock нормализация (FPS-independent),
+`tick_hz`, config warnings**.
+CI **41/41** + 7 C++; HEAD e3accaa; тег **npc-e13**; теги `npc-e0`…`npc-e13`.
+`npc_actor=0` по умолчанию; локальная пара v19 — ASI `B43B7EE0`/server
+`F3EBD6D1`, снапшот `dist\npc-e13`, ARINA offline. Двух-ПК приёмка/
+S27/S28/S29/S30 — backlog; это финальная сборка перед приёмкой.
 
 ---
 
@@ -79,7 +80,7 @@ S27/S28/S29 — backlog.
 
 ## Фаза 5 — P1: репликация мира/NPC
 
-### NPC-репликация — E1–E12 реализованы; 2-ПК/визуал pending
+### NPC-репликация — E1–E13 реализованы; 2-ПК/визуал pending
 - [x] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (22% NPC имеют
       metaOutfit hash; сценарии/модели/лошади/оружие)
 - [x] E0: протокол actor-сообщения 0x18–0x1E, `kMaxActors=12`,
@@ -204,17 +205,25 @@ S27/S28/S29 — backlog.
       `player_frame_change_only=1`); P0/P1: outfit ≤10 Гц, capture budget
       2/тик, общий vehicle-скан+TTL, occupants 1/с, resync appearance,
       world_scan debug; tests 41/41
-- [ ] Backlog: S27/S28/S29 2-ПК (ARINA offline), P2 config validator/
-      wall-clock нормализация, ambient-trains cleanup, mission-aware visitor
-      расширить на NPC активной миссии, adaptive 15 Гц,
-      **двух-ПК визуальная приёмка E2c-b/E5/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10**,
-      host migration/resync под нагрузкой, Tick p95/FPS; `npc_actor` не
-      включать в рабочую сборку до неё
+- [x] **E13 (npc-e13, v19):** wall-clock нормализация интервалов
+      (`GetTickCount64`, ms) — FPS-independent (при 144 FPS больше нет
+      ускорения ×2.4), `perf: frame += tick_hz`; `config: warn …` для
+      опасных комбинаций (world_sync+npc_actor/world_trains,
+      !world_vehicles+occupants/visitor, !npc_actor+vehicles/visitor);
+      ASI `B43B7EE0`, server `F3EBD6D1`; snapshot `dist\npc-e13`; tests 41/41
+- [ ] Backlog: **2-ПК приёмка S27/S28/S29/S30** (ARINA offline),
+      ambient-trains cleanup, mission-aware visitor на NPC активной миссии,
+      adaptive 15 Гц, **двух-ПК визуальная приёмка E2c-b/E5/E6/E7/E3d-a/
+      E3d-b/E3d-c/E9/E10**, host migration/resync под нагрузкой, Tick p95/FPS;
+      `npc_actor` не включать в рабочую сборку до неё
 - [ ] Известные ограничения: E9 cap16/RESET на животных не проверен/
       horse tack model-specific/MPT_ANIMAL coverage fallback random/
       MetaPedOutfit только probe; E10 mounted horse late mount; E12
-      player_frame_hz=20 может сглаживать ghost (поднять до 60); P2 не
-      сделаны; Story Mode нельзя «подселить»; RedM — другой стек; при
+      player_frame_hz=20 может сглаживать ghost (поднять до 60); E13
+      часть таймеров осталась тиковой (corpse hold, action/presence poll,
+      motion/scenario, attach/dead windows, vehicle-scan TTL, train engine
+      cache) — при 144 FPS их окна короче; config-асимметрия host/guest не
+      проверяется; Story Mode нельзя «подселить»; RedM — другой стек; при
       `world_vehicles=0` пустые дороги; E3d-b opt-in и direction/reversing
       приближённые; seat=-1/driver — in-game; при миграции мир не
       переносится; лицо/волосы/борода, точные анимации/катсцены; E5 без

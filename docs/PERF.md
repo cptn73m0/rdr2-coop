@@ -1,16 +1,17 @@
 # E4 — производительность NPC-репликации: методика и приёмка
 
 Документ описывает, как снимать и проверять стоимость NPC-подсистемы
-(`src/actor_sync.cpp`) на v19/npc-e12. Анализ делает `tools/perf_report.py`
+(`src/actor_sync.cpp`) на v19/npc-e13. Анализ делает `tools/perf_report.py`
 (stdlib, без внешних зависимостей). E4 принимается по цифрам, а не «на глаз».
 С npc-e12 добавлены **`perf: frame`** (полный кадр), клиентский **`perf: net`**
-и серверный **`net: bytes_in/out`**; старые `perf: npc` сохранены.
+и серверный **`net: bytes_in/out`**; с npc-e13 добавлен **`tick_hz`** и
+wall-clock интервалы (FPS-independent).
 
 ## 1. Что нужно
 
 - Сервер v19 (`build-server-ci\Release\rdr2_coop_server.exe`; локальная пара
-  npc-e12 — ASI `D47B91A5`, server `F3EBD6D1`; ARINA offline).
-- v19-клиент npc-e12 (ASI `D47B91A5`, локальная пара npc-e12).
+  npc-e13 — ASI `B43B7EE0`, server `F3EBD6D1`; ARINA offline).
+- v19-клиент npc-e13 (ASI `B43B7EE0`, локальная пара npc-e13).
 - `npc_debug = 1` — включает `perf: npc`/`perf: frame`/`perf: net` строки (при
   `npc_debug=0` или `npc_actor=0` — **ноль** `perf:` строк, overhead ≈ 0).
 - Для городского прогона: `npc_actor = 1`, `npc_cap = 8..12`,
@@ -65,19 +66,21 @@ python tools\perf_report.py --log perf_city_npc1.log --json > perf.json
 Exit codes: **0** PASS, **1** FAIL (порог/ошибки), **2** нет `perf:` данных /
 файл не читается. `--label NAME` задаёт имя прогона в отчёте.
 
-## 4. Формат строк (v19 E4 / npc-e12)
+## 4. Формат строк (v19 E4 / npc-e12/e13)
 
 `npc_debug=1`. **Новый полный кадр (главная метрика G2), окно ~5 с:**
 
 ```text
-perf: frame host tick=0.42 p95=0.55 max=1.10 | world=0.10 p95=0.15 | actor=0.30 p95=0.40 | coop=0.02 p95=0.03 frames_hz=20.0
-perf: frame guest tick=0.35 p95=0.48 max=0.90 | world=0.00 p95=0.00 | actor=0.28 p95=0.35 | coop=0.02 p95=0.03 frames_hz=20.0
+perf: frame host tick=0.42 p95=0.55 max=1.10 | world=0.10 p95=0.15 | actor=0.30 p95=0.40 | coop=0.02 p95=0.03 frames_hz=20.0 tick_hz=144.0
+perf: frame guest tick=0.35 p95=0.48 max=0.90 | world=0.00 p95=0.00 | actor=0.28 p95=0.35 | coop=0.02 p95=0.03 frames_hz=20.0 tick_hz=60.0
 ```
 
 `tick` — полный кадр (мс), `world` — WorldSnapshot/vehicle-scan,
 `actor` — actor_sync (NPC), `coop` — остальная coop-логика; `frames_hz` —
 фактическая частота Player Frame за окно (target ≤`player_frame_hz`, покой
-heartbeat 5 Гц при `player_frame_change_only=1`).
+heartbeat 5 Гц при `player_frame_change_only=1`); `tick_hz` — реальный FPS
+игры за окно (npc-e13), нужен для проверки FPS-independence: при 60 и 144 FPS
+`tick`/p95/трафик не должны масштабироваться с FPS.
 
 Старые строки `perf: npc` сохранены для детализации actor/world:
 
@@ -100,7 +103,7 @@ perf: npc warn host tick=3.40 > 2.0 ms
 - Legacy `perf: actor scan/spawn/apply` (старые логи/старые сборки) парсится
   отдельной веткой; в новом E4-билде он **не пишется**.
 
-**Реальный трафик (npc-e12):**
+**Реальный трафик (npc-e12/e13):**
 
 ```text
 # server_console.log / видимое окно сервера, heartbeat ~10 с
@@ -110,8 +113,9 @@ perf: net tx=1.2 KB/s rx=1.4 KB/s msgs_tx=24 msgs_rx=28
 ```
 
 `bytes_in/out` — накопленные байты на сервере; для КБ/с снимать **приращение**
-между двумя heartbeat и делить на интервал. Per-type суммы — те же байты по
-категориям (frame/actor/world/outfit/presence/damage/trains/occupants/other).
+между двумя heartbeat и делить на интервал. Per-type поля — **счётчики
+сообщений** по категориям (frame/actor/world/outfit/presence/damage/trains/
+occupants/other), не байты; их доля — в % от сообщений.
 Клиентский `perf: net` — tx/rx KB/s за 10-секундное окно, msgs_tx/rx — число
 сообщений.
 
@@ -279,16 +283,41 @@ horse tack (kind=2) — `ActorOutfit` 0x1C **792 B** on change (бюджет
   только при `npc_debug=1` или раз в 5 с.
 - **Метрики:** `perf: frame host/guest` (полный кадр и world/actor/coop),
   `perf: npc` (детализация), server `net: bytes_in/out` + per-type,
-  client `perf: net tx/rx`. Старые `perf: npc` не удалены;
-  `tools/perf_report.py` пока разбирает `perf: npc`, полный кадр/трафик —
-  вручную по grep (см. `tools/README.md`).
+  client `perf: net tx/rx`. Старые `perf: npc` не удалены.
+  `tools/perf_report.py` (обновлён под npc-e12) разбирает `perf: frame`,
+  `perf: net` и server `net:`; см. `tools/README.md`.
+
+## 10d. npc-e13 — wall-clock нормализация (FPS-independent)
+
+E13 (ASI `B43B7EE0`, server без изменений `F3EBD6D1`) переводит интервалы с
+тиков на `GetTickCount64()` (ms), поэтому при высоком FPS больше нет
+ускорения: раньше `npc_frame_hz=15` при 144 FPS давал фактически ~36 Гц и
+трафик ×2.4. Основные окна:
+
+- actor frame send — `1000/npc_frame_hz` мс (adaptive 10/15 Гц);
+  discovery — 100 мс; human appearance capture — 2 с, animal/horse/mount —
+  5 с + stagger по actorId;
+- horse tack/mount heartbeat — 5–6 с; spawn heartbeat — 2.5 с;
+  train snapshot — ≤4/с (250 мс); train occupants heartbeat — 1 с;
+  vehicle occupants сбор/heartbeat — 1 с + окно rate-limit 1 с;
+  presence — 2 с; player frame — `1000/player_frame_hz` + heartbeat 200 мс;
+  `world_scan` — 5 с; outfit collect — 10 Гц.
+- В `perf: frame` добавлен `tick_hz` (реальный FPS). Проверка FPS-independence:
+  сравнить run при 60 и 144 FPS (или limit FPS) — `frames_hz`/`tick_hz`
+  меняются, а `tick/p95/max` и KB/s остаются в тех же пределах; пороги G2/G3
+  не меняются.
+- **Остаточные тиковые таймеры (известное ограничение):** corpse hold,
+  action/presence poll (5 тиков), motion/scenario task timers, attach/dead
+  timeout windows, stop-hysteresis 0.25 с, vehicle-scan TTL 6 тиков, train
+  engine cache/scan TTL; при 144 FPS их реальные окна короче. Это не влияет
+  на основные интервалы E13, но учитывать при сравнении логов на разном FPS.
 
 ## 11. Ограничения
 
 - **1 ПК:** игра может быть хостом **или** гостем, но не обоими; host и guest
   метрики снимаются отдельными прогонами (host — с fake guest; guest — со
   вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10/E11
-  pending; локальная пара npc-e12 — ASI `D47B91A5`/server `F3EBD6D1`, ARINA
+  pending; локальная пара npc-e13 — ASI `B43B7EE0`/server `F3EBD6D1`, ARINA
   offline (деплой pending).
 - Fake guest не даёт guest-`perf:` строк: это Python-инструмент, не игровой
   клиент; guest-метрики есть только у игры-гостя.
