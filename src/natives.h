@@ -340,6 +340,9 @@ constexpr unsigned long long MISSIONDATA_GET_RATING           = 0x57E798B54C45EE
 constexpr unsigned long long _MISSIONDATA_SET_MISSION_RATING  = 0xE824CE7D13FCB300ull;
 constexpr unsigned long long _UILOG_MARK_MISSION_COMPLETED    = 0xDE31D66D1E54C471ull;
 constexpr unsigned long long GET_MISSION_FLAG                 = 0xB15CD1CF58771DE1ull;
+// E7.1: mission-aware visitor (пауза cleanup на миссии/катсцене).
+constexpr unsigned long long PLAYER_ID                         = 0x217E9DC48139933Dull;
+constexpr unsigned long long IS_PLAYER_READY_FOR_CUTSCENE      = 0xAA67BCB0097F2FA3ull;
 constexpr unsigned long long GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH =
     0x2C83A9DA6BFFC4F9ull;
 

@@ -63,6 +63,11 @@ struct OnlinePlayer {
     // E6 (v18): окно rate-limit для PlayerPresence (0x20), защищено g_mutex.
     uint64_t presenceWindowMs = 0;
     int presenceCount = 0;
+    // Host migration hardening: время последнего игрового (не Ping) сообщения
+    // от этого клиента (мс). Если isHost и с этого момента прошло больше
+    // g_hostGameTimeoutMs — хост считается зависшим и мигрирует.
+    uint64_t lastGameMs = 0;
+    bool hostGraceDone = false;
 };
 
 std::mutex g_mutex;                       // защищает g_online и g_lastPos
@@ -167,8 +172,47 @@ void PosixSignalHandler(int)
 std::atomic<uint64_t> g_nextSession{1};
 // Таймаут молчащего клиента (мс). Настраивается вторым аргументом (сек).
 uint64_t g_idleTimeoutMs = 30000;
+// Host migration hardening: хост обязан присылать ИГРОВЫЕ сообщения
+// (Frame/WorldState/actor и т.п.), а не только Ping от сетевого потока.
+// Если игровой поток хоста завис, сессия должна мигрировать на гостя.
+// Настраивается 4-м аргументом (мс), clamp 2..15 с; отдельно от idle timeout.
+uint64_t g_hostGameTimeoutMs = 4000;
 // Test-only: если >0, сервер сам инициирует корректную остановку через N мс.
 uint64_t g_testExitAfterMs = 0;
+
+// Сообщения, которые приходят из ИГРОВОГО потока клиента (Frame идёт каждый
+// tick coop::Tick; WorldState/actor — при изменениях). Ping/Pong, JOIN/LEAVE
+// и серверные сообщения сюда не входят: они не доказывают живость игрового
+// потока (Ping шлёт сетевой поток клиента раз в секунду).
+bool IsGameThreadMessage(net::Msg m)
+{
+    switch (m)
+    {
+    case net::Msg::Frame:
+    case net::Msg::Died:
+    case net::Msg::Respawned:
+    case net::Msg::WorldState:
+    case net::Msg::Outfit:
+    case net::Msg::Shot:
+    case net::Msg::HorseOutfit:
+    case net::Msg::WorldSnapshot:
+    case net::Msg::ActionState:
+    case net::Msg::PlayerVehicle:
+    case net::Msg::MissionEvent:
+    case net::Msg::MissionState:
+    case net::Msg::MissionBarrier:
+    case net::Msg::TrainSnapshot:
+    case net::Msg::ActorSpawnBatch:
+    case net::Msg::ActorFrames:
+    case net::Msg::ActorDespawn:
+    case net::Msg::ActorEvent:
+    case net::Msg::ActorOutfit:
+    case net::Msg::ActorAppearance:
+        return true;
+    default:
+        return false;
+    }
+}
 
 uint64_t NowMs()
 {
@@ -795,6 +839,17 @@ void PrintStatus()
         std::lock_guard<std::mutex> lk(g_rateMutex);
         os << " uniqueIPs=" << g_ipRates.size();
     }
+    // Host liveness диагностика: сколько мс прошло с последнего ИГРОВОГО
+    // сообщения хоста (Ping не учитывается; см. g_hostGameTimeoutMs).
+    for (auto& p : copy)
+    {
+        if (p.isHost)
+        {
+            const uint64_t last = p.lastGameMs ? (NowMs() - p.lastGameMs) : 0;
+            os << " host_game_last=" << last << "ms";
+            break;
+        }
+    }
     os << " ===\n";
     if (copy.empty())
     {
@@ -906,6 +961,16 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                 goto done;
             }
 
+            // Host liveness: игровые сообщения (не Ping!) продлевают жизнь
+            // хоста — по ним определяется, жив ли его игровой поток.
+            if (registered && IsGameThreadMessage(msg))
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto git = g_online.find(name);
+                if (git != g_online.end() && git->second.sock == sock)
+                    git->second.lastGameMs = nowMs;
+            }
+
             switch (msg)
             {
             case net::Msg::Join:
@@ -994,6 +1059,8 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                         p.sock = sock;
                         p.isHost = isHost;
                         p.sessionId = g_nextSession.fetch_add(1);
+                        p.lastGameMs = NowMs();
+                        p.hostGraceDone = false;
                         if (has)
                         {
                             p.x = sx; p.y = sy; p.z = sz; p.heading = shd;
@@ -1487,6 +1554,45 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                 break;
             }
         }
+
+        // Host migration hardening: хост, который шлёт только Ping (или иной
+        // служебный трафик) и не присылает игровых сообщений дольше
+        // g_hostGameTimeoutMs, считается зависшим. Закрываем его сокет —
+        // обычный cleanup удалит игрока, разошлёт PlayerLeft и повысит
+        // оставшегося гостя (HostChanged 0x16). Ping не продлевает таймаут.
+        if (registered && !name.empty())
+        {
+            bool hostTimedOut = false;
+            uint64_t hostIdleMs = 0;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto it = g_online.find(name);
+                if (it != g_online.end() && it->second.sock == sock &&
+                    it->second.isHost)
+                {
+                    if (!it->second.hostGraceDone)
+                    {
+                        // Грейс после JOIN/промоушена (промоушен выставляется
+                        // в cleanup'е другого потока).
+                        it->second.hostGraceDone = true;
+                        it->second.lastGameMs = nowMs;
+                    }
+                    else if (nowMs - it->second.lastGameMs >
+                             g_hostGameTimeoutMs)
+                    {
+                        hostTimedOut = true;
+                        hostIdleMs = nowMs - it->second.lastGameMs;
+                    }
+                }
+            }
+            if (hostTimedOut)
+            {
+                LogLine("[!] host game-timeout (" + std::to_string(hostIdleMs) +
+                        " ms), promoting remaining");
+                sock->Close();
+                break;
+            }
+        }
     }
 done:
     if (registered && !name.empty())
@@ -1523,6 +1629,10 @@ done:
                     auto nit = g_online.begin();
                     newHost = nit->first;
                     nit->second.isHost = true;
+                    // Новому хосту — грейс-период: первый игровой пакет после
+                    // промоушена может прийти не сразу.
+                    nit->second.hostGraceDone = false;
+                    nit->second.lastGameMs = NowMs();
                     for (auto& kv : g_online)
                     {
                         net::HostChangedPayload h{};
@@ -1587,6 +1697,15 @@ int main(int argc, char** argv)
         if (exitMs > 0)
             g_testExitAfterMs = static_cast<uint64_t>(exitMs);
     }
+    if (argc > 4)
+    {
+        // 4-й аргумент: host game-thread timeout в мс (clamp 2..15 с).
+        long long v = std::atoll(argv[4]);
+        if (v <= 0) v = 4000;
+        if (v < 2000) v = 2000;
+        if (v > 15000) v = 15000;
+        g_hostGameTimeoutMs = static_cast<uint64_t>(v);
+    }
 
 #ifdef _WIN32
     SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -1619,6 +1738,9 @@ int main(int argc, char** argv)
 
     std::cout << "RDR2 CO-OP — сервер-релей" << std::endl;
     std::cout << "Порт: " << port << ". Ожидание игроков..." << std::endl;
+    std::cout << "Host game-timeout: " << (g_hostGameTimeoutMs / 1000) << " s"
+              << " (idle timeout: " << (g_idleTimeoutMs / 1000) << " s)"
+              << std::endl;
     std::cout << "(таблица состояния выводится каждые ~10 секунд)" << std::endl;
     std::cout << "(Ctrl+C — корректная остановка, players.txt сохраняется)" << std::endl;
 

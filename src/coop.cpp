@@ -606,6 +606,7 @@ unsigned int s_visitorCleanupRemoved = 0;
 unsigned int s_lastVisitorCleanupLogTick = 0;
 bool s_visitorCleanupRanOnce = false;
 bool s_visitorRoadPopDisabled = false;
+bool s_visitorScenePaused = false; // E7.1: пауза cleanup на миссии/катсцене
 char s_presenceNameBuf[96] = "";
 
 bool UiAppActiveHash(unsigned long long appHash)
@@ -1123,8 +1124,37 @@ void UpdateVisitorMode()
             s_visitorRoadPopDisabled = true;
         }
 
+        // E7.1: mission-aware visitor — на время миссии/катсцены паузим
+        // ТОЛЬКО cleanup толпы; density-подавление выше уже выполнено.
+        bool sceneMission = false;
+        bool sceneCutscene = false;
+        bool scenePaused = false;
+        if (coopcfg::Get().npcVisitorPauseScenes)
+        {
+            using namespace natives_api;
+            Init(natives::GET_MISSION_FLAG);
+            sceneMission = Call() != 0;
+            Init(natives::PLAYER_ID);
+            const unsigned int player = static_cast<unsigned int>(Call());
+            Init(natives::IS_PLAYER_READY_FOR_CUTSCENE);
+            Push(player);
+            sceneCutscene = Call() != 0;
+            scenePaused = sceneMission || sceneCutscene;
+        }
+        if (scenePaused != s_visitorScenePaused)
+        {
+            s_visitorScenePaused = scenePaused;
+            if (scenePaused)
+                s_visitorCleanupRanOnce = false; // после сцены — сразу cleanup
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write("actor: visitor scene pause %s mission=%d "
+                              "cutscene=%d\n",
+                              scenePaused ? "on" : "off",
+                              sceneMission ? 1 : 0, sceneCutscene ? 1 : 0);
+        }
+
         const unsigned int localPed = GetPlayerPedFor(0);
-        if (localPed)
+        if (localPed && !scenePaused)
         {
             const bool due = !s_visitorCleanupRanOnce ||
                 (s_tickCount - s_lastVisitorCleanupTick >=
@@ -1174,6 +1204,7 @@ void UpdateVisitorMode()
         }
         s_visitorCleanupCount = 0;
         s_visitorCleanupRanOnce = false;
+        s_visitorScenePaused = false;
         if (s_visitorModeActive)
         {
             s_visitorModeActive = false;
@@ -6129,9 +6160,29 @@ void Tick()
         // P1: репликация мира/NPC. Хост шлёт снапшоты, гость применяет их
         // и подавляет собственную ambient-популяцию. По умолчанию выключено
         // в ini (world_sync = 1 на ОБОИХ ПК для теста).
+        // E3d-a: world_sync=0 + npc_actor=1 + world_vehicles=1 — включаем
+        // vehicle-only режим (полный world_sync, если включён, приоритетнее).
+        const bool worldVehiclesMode =
+            !coopcfg::Get().worldSync && coopcfg::Get().npcActor &&
+            coopcfg::Get().worldVehicles;
+        const bool worldSyncEnabled =
+            coopcfg::Get().worldSync || worldVehiclesMode;
+        float partnerX = 0.f, partnerY = 0.f, partnerZ = 0.f;
+        bool partnerValid = false;
+        if (s_ghost && DoesEntityExist(s_ghost))
+        {
+            const Vec3 gp = GetEntityCoords(s_ghost);
+            partnerX = gp.x;
+            partnerY = gp.y;
+            partnerZ = gp.z;
+            partnerValid = true;
+        }
         world_sync::Tick(playerPed, s_tickCount, s_amHost.load(),
-                         coopcfg::Get().worldSync,
-                         coopcfg::Get().worldTrains);
+                         worldSyncEnabled,
+                         coopcfg::Get().worldTrains && !worldVehiclesMode,
+                         worldVehiclesMode,
+                         coopcfg::Get().npcVehicleRadius,
+                         partnerX, partnerY, partnerZ, partnerValid);
 
         // P2: Action v2 — сценарии/сидение/курение/укрытие.
         if (coopcfg::Get().actionSync)
@@ -6448,11 +6499,92 @@ void Tick()
     }
     if (ev.hostChanged)
     {
-        s_amHost.store(ev.hostChangedIsHost);
+        const bool nowHost = ev.hostChangedIsHost;
+        s_amHost.store(nowHost);
         std::snprintf(s_joinedName, sizeof(s_joinedName),
-                      ev.hostChangedIsHost ? "You are now HOST" : "You are now GUEST");
-        // E1: смена роли/хоста — сбросить roster/прокси и epoch.
+                      nowHost ? "You are now HOST" : "You are now GUEST");
+
+        // E7.1-hardening (task-131): полный клиентский сброс при HostChanged.
+        // world_sync: все world/vehicle-прокси и snapshots старого хоста.
+        world_sync::Reset();
+        // Visitor cleanup: очередь удаления старого мира/сцены не тащим.
+        s_visitorCleanupCount = 0;
+        s_visitorCleanupRanOnce = false;
+        s_visitorScenePaused = false;
+
+        // Mission barrier: не тащим offer/ready/window/start старого хоста.
+        s_hostBarrier = HostMissionBarrier{};
+        s_guestBarrier = GuestMissionBarrier{};
+        {
+            std::lock_guard<std::mutex> lk(s_barrierMtx);
+            s_barrierEvents.clear();
+        }
+        s_lastHostBarrierOfferTick = 0;
+        s_lastGuestBarrierPollTick = 0;
+
+        // E6 presence: новая эпоха/флаги; удалённый статус сбрасываем.
+        s_presenceEpoch = (s_presenceEpoch + 1u) | 1u;
+        s_presenceSentValid = false;
+        s_localPresenceFlags = 0;
+        s_lastSentPresenceFlags = 0;
+        s_lastPresenceDetectTick = 0;
+        s_lastPresenceSendTick = 0;
+        s_presenceWindowTick = 0;
+        s_presenceWindowCount = 0;
+        s_lastUiPresenceLogTick = 0;
+        s_remotePresenceValid = false;
+        s_remotePresenceFlags = 0;
+        s_lastRemotePresenceTick = 0;
+
+        // P2 Action/aim/shoot: очередь и состояния удалённого игрока.
+        {
+            std::lock_guard<std::mutex> lk(s_actionMtx);
+            s_actionIn = net::ActionStatePayload{};
+            s_haveActionIn = false;
+        }
+        s_lastSentAction = net::ActionStatePayload{};
+        s_lastSentActionValid = false;
+        s_lastActionSendTick = 0;
+        s_appliedActionMode = 0;
+        s_appliedScenario = 0;
+        s_appliedTargetNetId = 0;
+        s_lastLoggedTargetNetId = 0;
+        s_lastCoverTaskTick = 0;
+        s_remoteActionRaw = 0;
+        s_remoteAim = Vec3{0.f, 0.f, 0.f};
+        s_remoteAimValid = false;
+        {
+            std::lock_guard<std::mutex> lk(s_shotMtx);
+            s_shotQCount = 0;
+            s_shotEventsPending.store(false);
+        }
+        s_shotReplayPhase = ShotReplayPhase::Idle;
+        s_shotReplayPhaseTick = 0;
+        s_shotReplayRetried = false;
+        s_shotReplayPoint = Vec3{0.f, 0.f, 0.f};
+        s_lastShotEventTaskTick = 0;
+        s_lastShotTick = 0;
+
+        // Remote player vehicle (старый хост/гость мог быть в транспорте).
+        {
+            std::lock_guard<std::mutex> lk(s_pvMtx);
+            s_pvIn = net::PlayerVehicleState{};
+            s_havePvIn = false;
+        }
+        s_lastSentPvValid = false;
+        s_remoteInVehicle = false;
+        DeleteRemotePlayerVehicle();
+
+        // Actor_sync::Reset чистит roster (corpse-удержания) и прокси-состояние
+        // (motion-кольца/интерполяцию) — затем forced resend/resync по роли.
         actor_sync::Reset();
+        if (nowHost)
+            actor_sync::ForceFullSpawnBatch();   // новый хост: полный batch сразу
+        else
+            actor_sync::RequestImmediateResync(); // новый гость: сразу resync
+
+        sh_log::Write("coop: role change -> %s reset complete\n",
+                      nowHost ? "HOST" : "GUEST");
         s_subtitleTicksLeft = 10 * 60;
     }
     // E6 (v18): UI-статус удалённого игрока (для суффикса имени).

@@ -46,6 +46,13 @@ void Tick(const TickContext& ctx);
 // Вызывается при leave/reconnect/смене роли/disable.
 void Reset();
 
+// E7.1-hardening (task-131): после HostChanged новый хост должен немедленно
+// прислать полный ActorSpawnBatch (не ждать heartbeat), новый гость —
+// немедленно попросить ActorResync. Вызываются из coop::Tick сразу после
+// actor_sync::Reset().
+void ForceFullSpawnBatch();
+void RequestImmediateResync();
+
 // Реестр гостя: actorId -> локальный handle (для target/маппинга).
 bool GetHandleForActorId(uint32_t actorId, unsigned int& handle);
 

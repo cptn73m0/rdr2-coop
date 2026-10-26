@@ -1889,6 +1889,17 @@ void QueueDespawn(uint32_t actorId, uint8_t reason)
         g_despawnQueue.push_back(d);
 }
 
+// E3d-a: ped за рулём/в транспорте — его vehicle реплицирует world_sync;
+// human-прокси водителя дал бы дубль (P1 attach пассажиров позже).
+bool IsPedInVehicleForDiscovery(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_IN_ANY_VEHICLE);
+    Push(ped);
+    Push(false);
+    return Call() != 0;
+}
+
 void HostDiscovery(const TickContext& ctx)
 {
     const unsigned int tick = ctx.tickCount;
@@ -1966,6 +1977,9 @@ void HostDiscovery(const TickContext& ctx)
             continue; // MVP: mission NPC не реплицируем
         if (IsDeadPed(handle))
             continue;
+        if (coopcfg::Get().worldVehicles &&
+            IsPedInVehicleForDiscovery(handle))
+            continue; // E3d-a: водителя реплицирует vehicle-прокси
 
         Cand c;
         c.handle = handle;
@@ -6025,6 +6039,26 @@ void OnActorDamageRequest(uint32_t epoch, uint32_t actorId, uint16_t damage,
     d.damage = damage;
     d.weaponHash = weaponHash;
     g_inbox.damage.push_back(d);
+}
+
+// E7.1-hardening: forced full spawn batch для нового хоста (heartbeat now).
+void ForceFullSpawnBatch()
+{
+    if (!coopcfg::Get().npcActor)
+        return;
+    g_resendAllSpawns = true;
+    g_lastHeartbeatTick = 0; // следующий HostTick пошлёт всех
+}
+
+// E7.1-hardening: новый гость сразу просит resync у нового хоста.
+void RequestImmediateResync()
+{
+    if (!coopcfg::Get().npcActor)
+        return;
+    // Эпоха после Reset неизвестна (0) — шлём ненулевой маркер; хост
+    // OnActorResyncRequest эпоху не валидирует, только форсирует resend.
+    const uint32_t epoch = g_guestEpoch ? g_guestEpoch : 1u;
+    coop::SendActorResync(epoch, 0, 1);
 }
 
 void OnActorResyncRequest(const net::ActorResyncPayload& req)

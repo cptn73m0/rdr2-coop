@@ -807,12 +807,19 @@ def wait_file_contains(path, needle, timeout=3.0):
 # --------------------------------------------------------------------------
 
 class Server:
-    def __init__(self, exe, workdir, port=None, extra_args=None):
+    def __init__(self, exe, workdir, port=None, extra_args=None,
+                 host_game_ms=15000):
         self.exe = str(exe)
         self.workdir = Path(workdir)
         self._explicit_port = port is not None
         self.port = port or 0
         self.extra_args = list(extra_args or [])
+        # 4-й argv сервера — host game-thread timeout (мс). Легаси-тестам с
+        # искусственными mock-клиентами (без Frame-тиков, как у реального
+        # игрового потока) нужен запас, иначе ранний JOIN-тест может быть
+        # дольше 4 с production-default. Тесты, проверяющие сам таймаут,
+        # передают host_game_ms явно.
+        self.host_game_ms = host_game_ms
         self.proc = None
         self._out = None
 
@@ -857,9 +864,16 @@ class Server:
         creationflags = 0
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        # argv: port, idleSec, exitMs, hostGameTimeoutMs. extra_args задаёт
+        # первые позиции (idle/exit); 4-й argv всегда host-game таймаут.
+        args = list(self.extra_args)[:3]
+        while len(args) < 3:
+            args.append("0")
+        if self.host_game_ms is not None:
+            args[2] = str(self.host_game_ms)
         self._out = open(self.workdir / "server_stdout.log", "ab")
         self.proc = subprocess.Popen(
-            [self.exe, str(self.port)] + self.extra_args,
+            [self.exe, str(self.port)] + args,
             cwd=str(self.workdir),
             stdout=self._out,
             stderr=subprocess.STDOUT,
@@ -1309,6 +1323,23 @@ def _actor_pair(srv):
     require(recv_type(guest, TYPE_JOIN_OK) is not None, "guest JOIN_OK missing")
     recv_msgs(host, 0.3)
     recv_msgs(guest, 0.3)
+    return host, guest
+
+
+def _fast_pair(srv):
+    """Детерминированный join-pair для host-game-timeout тестов.
+
+    В отличие от _actor_pair не тратит ~2 с на фиксированные recv-паузы:
+    JOIN_OK — строго первый кадр клиенту (P0-инвариант), поэтому читаем его
+    сразу через read_one_frame(). Это убирает гонку «timeout во время setup»:
+    хост не должен успеть умереть до того, как гость подключится.
+    """
+    host = connect(srv.port)
+    join(host, "Alice")
+    require(read_one_frame(host, 2.0) is not None, "host JOIN_OK missing")
+    guest = connect(srv.port)
+    join(guest, "Bob")
+    require(read_one_frame(guest, 2.0) is not None, "guest JOIN_OK missing")
     return host, guest
 
 
@@ -1857,6 +1888,83 @@ def test_host_migration(exe, tmp):
 
         guest.close()
         charlie.close()
+
+
+def test_host_game_timeout_ping_only(exe, tmp):
+    log("[test] host game-timeout: Ping-only host removed, guest promoted")
+    # Быстрый join-pair + короткий host_game timeout (2 с): хост гарантированно
+    # живёт после setup, а Ping (сетевой поток) его НЕ продлевает.
+    with Server(exe, tmp / "host_game_timeout", host_game_ms=2000) as srv:
+        host, guest = _fast_pair(srv)
+
+        got_left = False
+        promoted = None
+        host_closed = False
+        deadline = time.time() + 6.0
+        while time.time() < deadline and not got_left:
+            if not host_closed:
+                try:
+                    host.sendall(frame_bytes(TYPE_PING, struct.pack("<Q", 123)))
+                except OSError:
+                    host_closed = True
+            for t, p in recv_msgs(guest, 0.2):
+                if t == TYPE_PLAYER_LEFT:
+                    got_left = True
+                elif t == TYPE_HOST_CHANGED:
+                    promoted = p
+        if promoted is None:
+            for t, p in recv_msgs(guest, 1.0):
+                if t == TYPE_PLAYER_LEFT:
+                    got_left = True
+                elif t == TYPE_HOST_CHANGED:
+                    promoted = p
+        require(got_left,
+                "Ping-only host must be removed by host game-timeout "
+                "(guest must get PlayerLeft)")
+        require(promoted is not None and promoted[0] == 1,
+                f"guest must be promoted after host game-timeout, got {promoted}")
+        text = srv.wait_log_contains("host game-timeout", 3.0)
+        require("host game-timeout" in text,
+                "server log must contain 'host game-timeout'")
+        # Сервер должен закрыть сокет зависшего хоста. В буфере могут быть
+        # невычитанные Pong-ответы — дочитываем до EOF/ошибки.
+        closed = False
+        try:
+            host.settimeout(0.5)
+            drain_end = time.time() + 2.0
+            while time.time() < drain_end:
+                try:
+                    if host.recv(4096) == b"":
+                        closed = True
+                        break
+                except socket.timeout:
+                    continue
+        except OSError:
+            closed = True
+        require(closed, "timed-out host socket must be closed by the server")
+        host.close()
+        guest.close()
+
+
+def test_host_game_timeout_frame_activity(exe, tmp):
+    log("[test] host game-timeout: Frame activity keeps host alive")
+    # host_game timeout 2500 мс; Frame каждые ~0.2 с продлевает хоста.
+    with Server(exe, tmp / "host_game_keepalive", host_game_ms=2500) as srv:
+        host, guest = _fast_pair(srv)
+
+        end = time.time() + 2.0
+        while time.time() < end:
+            # Frame приходит из игрового потока каждый tick — продлевает хоста.
+            host.sendall(frame_bytes(TYPE_FRAME, make_frame_payload()))
+            msgs = recv_msgs(guest, 0.2)
+            require(not any(t == TYPE_PLAYER_LEFT for t, _ in msgs),
+                    "active host must NOT be removed by host game-timeout")
+            require(not any(t == TYPE_HOST_CHANGED for t, _ in msgs),
+                    "guest must NOT be promoted while host sends Frames")
+        require("host game-timeout" not in srv.log_text(),
+                "server must not log host game-timeout for an active host")
+        host.close()
+        guest.close()
 
 
 def _join_race_round(srv, index):
@@ -2519,6 +2627,8 @@ def main():
         test_actor_gating_no_actor_log,
         test_oversized_and_truncated,
         test_host_migration,
+        test_host_game_timeout_ping_only,
+        test_host_game_timeout_frame_activity,
         test_join_race,
         test_idle_timeout,
         test_fuzz_frames,

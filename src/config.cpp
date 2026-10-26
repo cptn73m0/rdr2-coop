@@ -67,6 +67,10 @@ void WriteDefaultIni()
     fputs("# P1: репликация мира/NPC (хост -> гость).\n", f);
     fputs("# 0 = выключено (по умолчанию), 1 = включено на ОБОИХ ПК.\n", f);
     fputs("world_sync = 0\n\n", f);
+    fputs("# E3d-a: репликация транспорта хоста (vehicle-only, без world_sync).\n", f);
+    fputs("world_vehicles = 1\n", f);
+    fputs("# E3d-a: радиус сканирования транспорта у хоста, м (20..200).\n", f);
+    fputs("npc_vehicle_radius = 80\n\n", f);
     fputs("# P2: Action v2 — сценарии/сидение/курение/укрытие.\n", f);
     fputs("# 0 = выключено (по умолчанию), 1 = включено на ОБОИХ ПК.\n", f);
     fputs("action_sync = 0\n", f);
@@ -106,9 +110,11 @@ void WriteDefaultIni()
     fputs("# E7.1: гость подавляет свою ambient-популяцию (0 = выключено).\n", f);
     fputs("npc_visitor = 1\n", f);
     fputs("# E7.1: подавлять локальный трафик у гостя (default 0: E3d-a ещё нет).\n", f);
-    fputs("npc_visitor_vehicles = 0\n", f);
+    fputs("npc_visitor_vehicles = 1\n", f);
     fputs("# E7.1: сохранять сценарных/событийных NPC (vendors/quest/events).\n", f);
     fputs("npc_visitor_preserve_events = 1\n", f);
+    fputs("# E7.1: паузить cleanup толпы на время миссии/катсцены (default 1).\n", f);
+    fputs("npc_visitor_pause_scenes = 1\n", f);
     fputs("# E7.2: in-place update go-to задачи (A/B; 0 = только far-target).\n", f);
     fputs("npc_motion_update = 1\n", f);
     fputs("# E7.2: fallback A2 marker-entity follow (default 0, после A/B).\n", f);
@@ -160,6 +166,14 @@ void ApplyLine(const std::string& raw, Config& out)
     }
     else if (key == "player_name") out.playerName = val;
     else if (key == "world_sync") out.worldSync = AsBool(val);
+    else if (key == "world_vehicles") out.worldVehicles = AsBool(val);
+    else if (key == "npc_vehicle_radius")
+    {
+        char* end = nullptr;
+        const long r = std::strtol(val.c_str(), &end, 10);
+        if (end != val.c_str() && *end == '\0' && r >= 20 && r <= 200)
+            out.npcVehicleRadius = static_cast<int>(r);
+    }
     else if (key == "action_sync") out.actionSync = AsBool(val);
     else if (key == "vehicle_sync") out.vehicleSync = AsBool(val);
     else if (key == "mission_sync") out.missionSync = AsBool(val);
@@ -199,6 +213,8 @@ void ApplyLine(const std::string& raw, Config& out)
         out.npcVisitorVehicles = AsBool(val);
     else if (key == "npc_visitor_preserve_events")
         out.npcVisitorPreserveEvents = AsBool(val);
+    else if (key == "npc_visitor_pause_scenes")
+        out.npcVisitorPauseScenes = AsBool(val);
     else if (key == "npc_motion_update") out.npcMotionUpdate = AsBool(val);
     else if (key == "npc_motion_marker") out.npcMotionMarker = AsBool(val);
     else if (key == "npc_motion_status_p2")

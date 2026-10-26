@@ -21,6 +21,11 @@ struct Config {
     // P1: репликация мира/NPC (хост -> гость). По умолчанию выключена,
     // пока функция не проверена на двух ПК.
     bool worldSync = false;
+    // E3d-a: репликация транспорта хоста (vehicle-only) без полного world_sync.
+    // Включается при world_sync=0 && npc_actor=1 && world_vehicles=1.
+    bool worldVehicles = true;
+    // E3d-a: радиус сканирования транспорта у хоста, м (default 80).
+    int npcVehicleRadius = 80;
     // P2: Action v2 — сценарии/сидение/курение/укрытие и др. действий.
     // По умолчанию выключена до теста на двух ПК.
     bool actionSync = false;
@@ -71,10 +76,14 @@ struct Config {
     // реплицированный мир хоста). npc_visitor_vehicles=0 — оставить трафик.
     bool npcVisitor = true;
     // default 0: транспорт ещё не реплицируется (E3d-a) — оставляем трафик.
-    bool npcVisitorVehicles = false;
+    bool npcVisitorVehicles = true; // E3d-a: локальный трафик гостя подавляем
+                                     // (машины едут из реплик хоста).
     // Сохранять сценарных/событийных NPC (продавцы/работники/энкаунтеры).
     // 0 = агрессивное подавление (CLEAR_AREA ambient-флагом).
     bool npcVisitorPreserveEvents = true;
+    // E7.1: mission-aware visitor — на время миссии/катсцены паузить ТОЛЬКО
+    // cleanup ambient-толпы (density-подавление остаётся), default 1.
+    bool npcVisitorPauseScenes = true;
     // E7.2 smooth NPC motion (A/B):
     // npc_motion_update=1 — in-place update задачи через
     // _UPDATE_TASK_GO_TO_COORD_WITH_OFFSET (совместимость A/B ещё не

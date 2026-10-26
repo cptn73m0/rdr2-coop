@@ -303,19 +303,50 @@ unsigned int g_hostSnapshotCount = 0;
 bool g_missingWorldQueriesLogged = false;
 
 void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
-                      bool includeTrains)
+                      bool includeTrains, bool vehiclesOnly,
+                      int vehicleRadius, float partnerX, float partnerY,
+                      float partnerZ, bool partnerValid)
 {
     if (tickCount - g_lastHostScanTick < kSendEveryTicks)
         return;
     g_lastHostScanTick = tickCount;
 
+    // E3d-a: в vehicle-only режиме радиус отдельный (npc_vehicle_radius).
+    float radius = kRadius;
+    if (vehiclesOnly)
+    {
+        radius = static_cast<float>(vehicleRadius);
+        if (radius < 20.f) radius = 20.f;
+        if (radius > 200.f) radius = 200.f;
+    }
+    const float radius2 = radius * radius;
+
     static int handles[2048];
-    int count = sh::worldGetAllPeds(handles, 2048);
-    if (count < 0) count = 0;
-    if (count > 2048) count = 2048;
+    int count = 0;
+    if (!vehiclesOnly)
+    {
+        count = sh::worldGetAllPeds(handles, 2048);
+        if (count < 0) count = 0;
+        if (count > 2048) count = 2048;
+    }
 
     const Vec3 origin = GetCoords(localPlayerPed);
     const unsigned int localMount = GetMountOf(localPlayerPed);
+    // E3d-a: в vehicle-only режиме сканируем вокруг обоих игроков.
+    const bool usePartner = vehiclesOnly && partnerValid;
+    auto dist2ToPlayers = [&](float x, float y) -> float {
+        const float dx = x - origin.x;
+        const float dy = y - origin.y;
+        float d2 = dx * dx + dy * dy;
+        if (usePartner)
+        {
+            const float px = x - partnerX;
+            const float py = y - partnerY;
+            const float p2 = px * px + py * py;
+            if (p2 < d2) d2 = p2;
+        }
+        return d2;
+    };
 
     static std::vector<Candidate> candidates;
     candidates.clear();
@@ -335,7 +366,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         const float dx = p.x - origin.x;
         const float dy = p.y - origin.y;
         const float d2 = dx * dx + dy * dy;
-        if (d2 > kRadius2)
+        if (d2 > radius2)
             continue;
 
         const unsigned int model = GetModel(handle);
@@ -391,6 +422,11 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             Push(localPlayerPed);
             localVehicle = static_cast<unsigned int>(Call());
         }
+        // E3d-a: в vehicle-only режиме транспорт хоста нужен гостю (везёт
+        // игрока/экипаж). Исключаем только если им уже занимается
+        // PlayerVehicleState (vehicle_sync=1) — иначе был бы дубль.
+        const bool excludeLocalVehicle =
+            !vehiclesOnly || coopcfg::Get().vehicleSync;
 
         std::unordered_set<unsigned int> seenVehicles;
         std::vector<unsigned int> trainEngines;
@@ -400,15 +436,13 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         auto addVehicleCandidate = [&](unsigned int handle,
                                        net::WorldEntity* outEntity = nullptr) -> bool
         {
-            if (!handle || handle == localVehicle)
+            if (!handle || (handle == localVehicle && excludeLocalVehicle))
                 return false;
             if (coop::IsWorldSyncExcluded(handle) || !DoesExist(handle))
                 return false;
             const Vec3 p = GetCoords(handle);
-            const float dx = p.x - origin.x;
-            const float dy = p.y - origin.y;
-            const float d2 = dx * dx + dy * dy;
-            if (d2 > kRadius2)
+            const float d2 = dist2ToPlayers(p.x, p.y);
+            if (d2 > radius2)
                 return false;
             const unsigned int model = GetModel(handle);
             if (!model)
@@ -453,7 +487,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         {
             const unsigned int handle =
                 static_cast<unsigned int>(vehicleHandles[i]);
-            if (!handle || handle == localVehicle)
+            if (!handle || (handle == localVehicle && excludeLocalVehicle))
                 continue;
             if (coop::IsWorldSyncExcluded(handle))
                 continue;
@@ -462,10 +496,8 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             seenVehicles.insert(handle);
 
             const Vec3 p = GetCoords(handle);
-            const float dx = p.x - origin.x;
-            const float dy = p.y - origin.y;
-            const float d2 = dx * dx + dy * dy;
-            if (d2 > kRadius2)
+            const float d2 = dist2ToPlayers(p.x, p.y);
+            if (d2 > radius2)
                 continue;
 
             const unsigned int model = GetModel(handle);
@@ -602,6 +634,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
 
     // Объекты: ТОЛЬКО mission-object. Амбиентные пропсы уже есть в мире
     // гостя (та же карта) — их дублирование дало бы двойные объекты/z-fighting.
+    if (!vehiclesOnly)
     {
         static int objectHandles[2048];
         int objectCount = sh::worldGetAllObjects(objectHandles, 2048);
@@ -625,7 +658,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             const float dx = p.x - origin.x;
             const float dy = p.y - origin.y;
             const float d2 = dx * dx + dy * dy;
-            if (d2 > kRadius2)
+            if (d2 > radius2)
                 continue;
 
             const unsigned int model = GetModel(handle);
@@ -698,7 +731,17 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
     coop::SendWorldSnapshot(payload);
     ++g_hostSnapshotCount;
 
-    if ((tickCount % kLogEveryTicks) == 1)
+    if (vehiclesOnly && coopcfg::Get().npcDebug &&
+        (tickCount % kLogEveryTicks) == 1)
+    {
+        unsigned int veh = 0;
+        for (const Candidate& c : candidates)
+            if (c.entity.kind == net::kEntityKindVehicle) ++veh;
+        sh_log::Write("world: vehicles send n=%u bytes=%u\n", veh,
+                      static_cast<unsigned int>(payload.size()));
+    }
+
+    if (!vehiclesOnly && (tickCount % kLogEveryTicks) == 1)
     {
         unsigned int missionCount = 0;
         unsigned int pedCount = 0;
@@ -993,7 +1036,7 @@ void DeleteProxy(Proxy& proxy)
     proxy.handle = 0;
 }
 
-void ApplyPendingSnapshot(unsigned int tickCount)
+void ApplyPendingSnapshot(unsigned int tickCount, bool vehiclesOnly)
 {
     std::vector<uint8_t> payload;
     {
@@ -1013,9 +1056,15 @@ void ApplyPendingSnapshot(unsigned int tickCount)
 
     for (const net::WorldEntity& e : snapshot.entities)
     {
+        if (vehiclesOnly && e.kind != net::kEntityKindVehicle)
+            continue; // E3d-a: в vehicle-only режиме peds/objects не применяем
         auto it = g_proxies.find(e.netId);
         if (it != g_proxies.end() && !DoesExist(it->second.handle))
         {
+            if (it->second.kind == net::kEntityKindVehicle &&
+                coopcfg::Get().npcDebug)
+                sh_log::Write("world: vehicle despawn netId=%llu reason=3\n",
+                              static_cast<unsigned long long>(it->first));
             DeleteProxy(it->second);
             it = g_proxies.erase(it);
         }
@@ -1040,6 +1089,10 @@ void ApplyPendingSnapshot(unsigned int tickCount)
             proxy.lastSeenSnapshot = g_snapshotSeq;
             auto inserted = g_proxies.emplace(e.netId, proxy);
             UpdateProxy(inserted.first->second, e);
+            if (e.kind == net::kEntityKindVehicle && coopcfg::Get().npcDebug)
+                sh_log::Write("world: vehicle spawn netId=%llu model=0x%X\n",
+                              static_cast<unsigned long long>(e.netId),
+                              e.model);
             ++spawned;
         }
         else
@@ -1055,6 +1108,10 @@ void ApplyPendingSnapshot(unsigned int tickCount)
     {
         if (g_snapshotSeq - it->second.lastSeenSnapshot > kProxyGraceSnapshots)
         {
+            if (it->second.kind == net::kEntityKindVehicle &&
+                coopcfg::Get().npcDebug)
+                sh_log::Write("world: vehicle despawn netId=%llu reason=1\n",
+                              static_cast<unsigned long long>(it->first));
             DeleteProxy(it->second);
             it = g_proxies.erase(it);
         }
@@ -1257,7 +1314,13 @@ bool GetHandleForNetId(uint64_t netId, unsigned int& handle)
 void Reset()
 {
     for (auto& kv : g_proxies)
+    {
+        if (kv.second.kind == net::kEntityKindVehicle &&
+            coopcfg::Get().npcDebug)
+            sh_log::Write("world: vehicle despawn netId=%llu reason=2\n",
+                          static_cast<unsigned long long>(kv.first));
         DeleteProxy(kv.second);
+    }
     const std::size_t removed = g_proxies.size();
     g_proxies.clear();
 
@@ -1282,7 +1345,9 @@ void Reset()
 }
 
 void Tick(unsigned int localPlayerPed, unsigned int tickCount,
-          bool amHost, bool enabled, bool includeTrains)
+          bool amHost, bool enabled, bool includeTrains, bool vehiclesOnly,
+          int vehicleRadius, float partnerX, float partnerY,
+          float partnerZ, bool partnerValid)
 {
     if (!enabled)
     {
@@ -1306,13 +1371,16 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
     {
         if (!g_proxies.empty())
             Reset(); // смена роли: прокси больше не нужны
-        SendHostSnapshot(localPlayerPed, tickCount, includeTrains);
+        SendHostSnapshot(localPlayerPed, tickCount, includeTrains,
+                         vehiclesOnly, vehicleRadius, partnerX, partnerY,
+                         partnerZ, partnerValid);
         return;
     }
 
     // Гость.
-    ApplyPendingSnapshot(tickCount);
-    ApplyPendingTrainSnapshot(tickCount);
+    ApplyPendingSnapshot(tickCount, vehiclesOnly);
+    if (!vehiclesOnly)
+        ApplyPendingTrainSnapshot(tickCount);
 
     const unsigned long long last = g_lastSnapshotMs.load();
     if (last == 0)
@@ -1327,7 +1395,8 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
         return;
     }
 
-    SuppressLocalWorld();
+    if (!vehiclesOnly)
+        SuppressLocalWorld();
 }
 
 } // namespace world_sync
