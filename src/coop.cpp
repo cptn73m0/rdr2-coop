@@ -637,8 +637,10 @@ uint16_t s_lastSentPresenceFlags = 0;
 bool s_presenceSentValid = false;
 unsigned int s_lastPresenceDetectTick = 0;
 unsigned int s_lastPresenceSendTick = 0;
+unsigned long long s_lastPresenceSendMs = 0;
 unsigned int s_presenceWindowTick = 0;
 unsigned int s_presenceWindowCount = 0;
+unsigned long long s_presenceWindowMs = 0;
 unsigned int s_lastUiPresenceLogTick = 0;
 bool s_remotePresenceValid = false;
 uint16_t s_remotePresenceFlags = 0;
@@ -753,15 +755,17 @@ void UpdateLocalPresence()
     s_localPresenceFlags = flags;
     const bool changed = !s_presenceSentValid ||
                          flags != s_lastSentPresenceFlags;
+    const unsigned long long presenceNowMs = GetTickCount64();
     const bool heartbeat =
         s_presenceSentValid &&
-        (s_tickCount - s_lastPresenceSendTick) >= kPresenceHeartbeatTicks;
+        (presenceNowMs - s_lastPresenceSendMs) >= 2000ull; // 2 c wall-clock
     if (!changed && !heartbeat)
         return;
 
-    if (s_presenceWindowTick == 0 || s_tickCount - s_presenceWindowTick >= 60)
+    if (s_presenceWindowMs == 0 ||
+        presenceNowMs - s_presenceWindowMs >= 1000ull)
     {
-        s_presenceWindowTick = s_tickCount;
+        s_presenceWindowMs = presenceNowMs;
         s_presenceWindowCount = 0;
     }
     if (s_presenceWindowCount >= kPresenceMaxPerSecond)
@@ -771,6 +775,7 @@ void UpdateLocalPresence()
         return;
     ++s_presenceWindowCount;
     s_lastPresenceSendTick = s_tickCount;
+    s_lastPresenceSendMs = presenceNowMs;
     s_lastSentPresenceFlags = flags;
     s_presenceSentValid = true;
 }
@@ -838,6 +843,12 @@ bool s_lastPlayerFrameSigValid = false;
 unsigned int s_lastPlayerFrameSendTick = 0;
 unsigned int s_lastPlayerOutfitCollectTick = 0;
 unsigned int s_lastHorseOutfitCollectTick = 0;
+// task-160: wall-clock ms базы (не зависят от FPS).
+unsigned long long s_lastPlayerFrameSendMs = 0;
+unsigned long long s_lastPlayerOutfitCollectMs = 0;
+unsigned long long s_lastHorseOutfitCollectMs = 0;
+unsigned long long s_lastWorldScanMs = 0;
+unsigned long long s_perfWindowStartMs = 0;
 // Последняя известная позиция удалённого игрока — используется респавном,
 // если в этом тике нет свежего кадра (частая причина телепорта: // Respawn
 // раньше брал nullptr и спавнил труп на позиции входа в сессию).
@@ -5887,6 +5898,8 @@ void InitNetworkClient()
     g_netClient.SetTrafficLog([](const std::string& s) {
         sh_log::Write("%s\n", s.c_str());
     });
+    // task-160: один раз предупредить об опасных комбинациях INI.
+    coopcfg::WarnDangerousCombos();
     // E6 (v18): локальная эпоха presence (nonzero; используется как маркер).
     s_presenceEpoch = (static_cast<uint32_t>(GetTickCount64()) &
                        0x7FFFFFFFu) | 1u;
@@ -6263,8 +6276,16 @@ void Tick()
     // рядом, mission-entity, FPS. Только чтение, геймплей не меняет.
     // P1-8 (task-156): world_scan (pools 2048) — только диагностика npc_debug
     // либо раз в 5 с, чтобы не давать спайк вне метрик.
-    if (coopcfg::Get().npcDebug || (s_tickCount % 300) == 0)
-        world_scan::Tick(playerPed, s_tickCount);
+    {
+        const unsigned long long scanNowMs = GetTickCount64();
+        if (coopcfg::Get().npcDebug ||
+            s_lastWorldScanMs == 0 ||
+            scanNowMs - s_lastWorldScanMs >= 5000ull)
+        {
+            s_lastWorldScanMs = scanNowMs;
+            world_scan::Tick(playerPed, s_tickCount);
+        }
+    }
 
     // Start the network client on first tick (replaces the old offline
     // emulation as the source of join events).
@@ -7554,20 +7575,21 @@ void Tick()
         int hz = coopcfg::Get().playerFrameHz;
         if (hz < 10) hz = 10;
         if (hz > 60) hz = 60;
-        const unsigned int minTicks =
-            static_cast<unsigned int>((60 + hz - 1) / hz);
-        const unsigned int since =
-            s_lastPlayerFrameSendTick == 0
-                ? 9999u
-                : s_tickCount - s_lastPlayerFrameSendTick;
-        const bool heartbeat = since >= 12; // ~5 Гц в покое
+        const unsigned long long frameNowMs = GetTickCount64();
+        const unsigned long long minIntervalMs =
+            static_cast<unsigned long long>(1000 / hz);
+        const unsigned long long sinceMs =
+            s_lastPlayerFrameSendMs == 0
+                ? 999999ull
+                : frameNowMs - s_lastPlayerFrameSendMs;
+        const bool heartbeat = sinceMs >= 200ull; // 5 Гц wall-clock
         bool want = false;
-        if (!s_lastPlayerFrameSigValid || s_lastPlayerFrameSendTick == 0)
+        if (!s_lastPlayerFrameSigValid || s_lastPlayerFrameSendMs == 0)
             want = true;
         else if (!coopcfg::Get().playerFrameChangeOnly)
-            want = since >= minTicks;
+            want = sinceMs >= minIntervalMs;
         else
-            want = heartbeat || (changed && since >= minTicks);
+            want = heartbeat || (changed && sinceMs >= minIntervalMs);
 
         if (want)
         {
@@ -7604,8 +7626,10 @@ void Tick()
                 if (m)
                 {
                     fp.reserved[0] = mountModel;
-                    if ((s_tickCount - s_lastHorseOutfitCollectTick) >= 6)
+                    if (s_lastHorseOutfitCollectMs == 0 ||
+                        frameNowMs - s_lastHorseOutfitCollectMs >= 100ull)
                     {
+                        s_lastHorseOutfitCollectMs = frameNowMs;
                         s_lastHorseOutfitCollectTick = s_tickCount;
                         net::OutfitState ho{};
                         CollectLocalOutfit(m, ho);
@@ -7635,6 +7659,7 @@ void Tick()
             s_lastPlayerFrameSig = sig;
             s_lastPlayerFrameSigValid = true;
             s_lastPlayerFrameSendTick = s_tickCount;
+            s_lastPlayerFrameSendMs = frameNowMs;
             ++g_frameSentWindow;
         }
     }
@@ -7646,9 +7671,12 @@ void Tick()
     // оружия (кобуры/патронташи) дёргает список и вызывает лишние применения.
     // Сравнение — order-insensitive (порядок категорий от движка нестабилен),
     // плюс heartbeat раз в ~5 с: иначе после реконнекта одежда не пересылается.
+    const unsigned long long outfitNowMs = GetTickCount64();
     if (g_netStarted &&
-        (s_tickCount - s_lastPlayerOutfitCollectTick) >= 6)
+        (s_lastPlayerOutfitCollectMs == 0 ||
+         outfitNowMs - s_lastPlayerOutfitCollectMs >= 100ull))
     {
+        s_lastPlayerOutfitCollectMs = outfitNowMs;
         s_lastPlayerOutfitCollectTick = s_tickCount;
         net::OutfitState os{};
         CollectLocalOutfit(playerPed, os);
@@ -7870,21 +7898,32 @@ void Tick()
         g_worldPerf.Add(static_cast<double>(perfWorldUs));
         g_actorPerf.Add(static_cast<double>(perfActorUs));
         g_coopPerf.Add(static_cast<double>(coopUs));
+        if (s_perfWindowStartMs == 0)
+            s_perfWindowStartMs = GetTickCount64();
         if (++g_perfWindowTicks >= 300)
         {
             if (coopcfg::Get().npcDebug)
             {
+                const unsigned long long nowMs = GetTickCount64();
+                const unsigned long long elapsedMs =
+                    nowMs > s_perfWindowStartMs
+                        ? nowMs - s_perfWindowStartMs
+                        : 5000ull;
+                const double tickHz =
+                    elapsedMs > 0
+                        ? 300.0 * 1000.0 / static_cast<double>(elapsedMs)
+                        : 60.0;
                 sh_log::Write(
                     "perf: frame %s tick=%.2f p95=%.2f max=%.2f | "
                     "world=%.2f p95=%.2f | actor=%.2f p95=%.2f | "
-                    "coop=%.2f p95=%.2f frames_hz=%.1f\n",
+                    "coop=%.2f p95=%.2f frames_hz=%.1f tick_hz=%.1f\n",
                     s_amHost.load() ? "host" : "guest",
                     g_framePerf.Avg() / 1000.0, g_framePerf.P95() / 1000.0,
                     g_framePerf.Max() / 1000.0,
                     g_worldPerf.Avg() / 1000.0, g_worldPerf.P95() / 1000.0,
                     g_actorPerf.Avg() / 1000.0, g_actorPerf.P95() / 1000.0,
                     g_coopPerf.Avg() / 1000.0, g_coopPerf.P95() / 1000.0,
-                    g_frameSentWindow / 5.0);
+                    g_frameSentWindow / (elapsedMs / 1000.0), tickHz);
             }
             g_framePerf.Reset();
             g_worldPerf.Reset();
@@ -7892,6 +7931,7 @@ void Tick()
             g_coopPerf.Reset();
             g_perfWindowTicks = 0;
             g_frameSentWindow = 0;
+            s_perfWindowStartMs = GetTickCount64();
         }
     }
 }

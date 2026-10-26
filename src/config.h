@@ -122,4 +122,7 @@ bool LoadFromFile(const std::string& path, Config& out);
 // Текущий конфиг (после Load()).
 Config& Get();
 
+// task-160: стартовые warning'и для опасных комбинаций (не падать).
+void WarnDangerousCombos();
+
 } // namespace coopcfg

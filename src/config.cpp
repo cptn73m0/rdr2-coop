@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #include "config.h"
+#include "log.h"
 
 #include <windows.h>
 
@@ -314,6 +315,23 @@ bool LoadFromFile(const std::string& path, Config& out)
 Config& Get()
 {
     return g_cfg;
+}
+
+void WarnDangerousCombos()
+{
+    const Config& c = g_cfg;
+    if (c.worldSync && c.npcActor)
+        sh_log::Write("config: warn world_sync=1 && npc_actor=1: "
+                      "возможны дубли world-snapshot/NPC (world_sync старше).\n");
+    if (c.worldSync && c.worldTrains)
+        sh_log::Write("config: warn world_sync=1 && world_trains=1: "
+                      "старый train R&D (0x17) вместо mission-train 0x22.\n");
+    if (!c.worldVehicles && (c.npcOccupants || c.npcVisitorVehicles))
+        sh_log::Write("config: warn world_vehicles=0 with npc_occupants/"
+                      "npc_visitor_vehicles=1: транспорт/occupants не появятся.\n");
+    if (!c.npcActor && (c.worldVehicles || c.npcVisitor))
+        sh_log::Write("config: warn npc_actor=0 with world_vehicles/npc_visitor=1: "
+                      "vehicle/visitor-режим не активируется.\n");
 }
 
 } // namespace coopcfg

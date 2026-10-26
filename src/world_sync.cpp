@@ -340,6 +340,9 @@ std::map<uint32_t, unsigned int> g_lastOccupantsSendTick;
 unsigned int g_occupantsSendWindowTick = 0;
 unsigned int g_occupantsSendWindowCount = 0;
 unsigned int g_lastOccupantsCollectTick = 0; // P1-5: 1 Гц
+unsigned long long g_lastOccupantsCollectMs = 0; // task-160 wall-clock 1 c
+std::map<uint32_t, unsigned long long> g_lastOccupantsSendMs; // task-160
+unsigned long long g_occupantsSendWindowMs = 0; // task-160: 1 c window
 
 bool FindHostHandleByNetId(uint32_t netId, unsigned int& handle)
 {
@@ -613,12 +616,12 @@ unsigned int g_trainEngineExpiry = 0;
 uint32_t g_nextTrainId = 1;
 uint32_t g_trainEpoch = 0;
 std::map<uint32_t, net::TrainSnapshotV2Payload> g_lastTrainSnapshot;
-std::map<uint32_t, unsigned int> g_lastTrainSendTick;
+std::map<uint32_t, unsigned long long> g_lastTrainSendMs; // task-160
 // E11 (task-149): occupant handles для actor discovery (vehicle + train).
 std::vector<unsigned int> g_hostOccHandles;
 // E11: последние отправленные train-occupants по trainId и heartbeat.
 std::map<uint32_t, std::vector<net::VehicleOccupantEntry>> g_lastTrainOccupants;
-std::map<uint32_t, unsigned int> g_lastTrainOccupantsTick;
+std::map<uint32_t, unsigned long long> g_lastTrainOccupantsMs; // task-160
 
 uint32_t EnsureTrainId(unsigned int engine)
 {
@@ -915,23 +918,24 @@ void SendTrainOccupants(unsigned int engine, uint32_t trainId, int cars,
     auto last = g_lastTrainOccupants.find(trainId);
     const bool changed = last == g_lastTrainOccupants.end() ||
                          !sameEntries(last->second, all);
-    const unsigned int lastTick = g_lastTrainOccupantsTick[trainId];
-    if (!changed && lastTick != 0 && tickCount - lastTick < 60)
+    const unsigned long long occNowMs = GetTickCount64();
+    const unsigned long long lastMs = g_lastTrainOccupantsMs[trainId];
+    if (!changed && lastMs != 0 && occNowMs - lastMs < 1000ull)
         return;
     if (all.empty())
     {
         g_lastTrainOccupants[trainId] = all;
-        g_lastTrainOccupantsTick[trainId] = tickCount;
+        g_lastTrainOccupantsMs[trainId] = occNowMs;
         return;
     }
     // Chunks <=8; сервер rate 20/с + общий throttle.
     for (std::size_t off = 0; off < all.size();
          off += net::kMaxVehicleOccupants)
     {
-        if (g_occupantsSendWindowTick == 0 ||
-            tickCount - g_occupantsSendWindowTick >= 60)
+        if (g_occupantsSendWindowMs == 0 ||
+            occNowMs - g_occupantsSendWindowMs >= 1000ull)
         {
-            g_occupantsSendWindowTick = tickCount;
+            g_occupantsSendWindowMs = occNowMs;
             g_occupantsSendWindowCount = 0;
         }
         if (g_occupantsSendWindowCount >= 18)
@@ -944,7 +948,7 @@ void SendTrainOccupants(unsigned int engine, uint32_t trainId, int cars,
         coop::SendVehicleOccupants(trainId, chunk);
     }
     g_lastTrainOccupants[trainId] = all;
-    g_lastTrainOccupantsTick[trainId] = tickCount;
+    g_lastTrainOccupantsMs[trainId] = occNowMs;
     if (coopcfg::Get().npcDebug)
         sh_log::Write("world: train occupants train=%u cars=%d n=%u chunks=%u\n",
                       trainId, cars, static_cast<unsigned int>(all.size()),
@@ -999,7 +1003,7 @@ void TickHostTrains(unsigned int localPlayerPed, unsigned int tickCount,
                 if (idIt != g_trainIds.end())
                 {
                     g_lastTrainSnapshot.erase(idIt->second);
-                    g_lastTrainSendTick.erase(idIt->second);
+                    g_lastTrainSendMs.erase(idIt->second);
                 }
                 g_trainConfigs.erase(h);
                 g_trainConfigCars.erase(h);
@@ -1013,14 +1017,15 @@ void TickHostTrains(unsigned int localPlayerPed, unsigned int tickCount,
                 ++it;
             }
         }
-        for (auto it = g_lastTrainSendTick.begin();
-             it != g_lastTrainSendTick.end();)
+        const unsigned long long ttlNowMs = GetTickCount64();
+        for (auto it = g_lastTrainSendMs.begin();
+             it != g_lastTrainSendMs.end();)
         {
             bool alive = false;
             for (const auto& kv : g_trainIds)
                 if (kv.second == it->first) { alive = true; break; }
-            if (!alive || tickCount - it->second > 900)
-                it = g_lastTrainSendTick.erase(it);
+            if (!alive || ttlNowMs - it->second > 900000ull)
+                it = g_lastTrainSendMs.erase(it);
             else
                 ++it;
         }
@@ -1105,14 +1110,15 @@ void TickHostTrains(unsigned int localPlayerPed, unsigned int tickCount,
     const auto last = g_lastTrainSnapshot.find(snap.trainId);
     const bool changed = last == g_lastTrainSnapshot.end() ||
                          !SameTrainSnapshot(last->second, snap);
-    const unsigned int lastTick = g_lastTrainSendTick[snap.trainId];
-    // 0x22 <=4/с: не чаще kTrainSendEveryTicks (даже при changed).
-    if (lastTick != 0 && tickCount - lastTick < kTrainSendEveryTicks)
+    const unsigned long long trainNowMs = GetTickCount64();
+    const unsigned long long lastMs = g_lastTrainSendMs[snap.trainId];
+    // 0x22 <=4/с wall-clock (250 мс), независимо от FPS.
+    if (lastMs != 0 && trainNowMs - lastMs < 250ull)
         return;
     (void)changed;
     coop::SendTrainSnapshotV2(snap);
     g_lastTrainSnapshot[snap.trainId] = snap;
-    g_lastTrainSendTick[snap.trainId] = tickCount;
+    g_lastTrainSendMs[snap.trainId] = trainNowMs;
     if (coopcfg::Get().npcDebug)
         sh_log::Write(
             "world: train send config=0x%X cars=%u speed=%.1f state=%X\n",
@@ -2098,10 +2104,12 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
     // heartbeat 1/с; count=0 очищает occupants у гостя.
     // P1-5 (task-156): occupants собираем 1/с (было 10/с на каждом скане);
     // handles остаются прошлыми между сборами, heartbeats/изменения — 1 Гц.
+    const unsigned long long occScanNowMs = GetTickCount64();
     if (coopcfg::Get().npcActor && coopcfg::Get().npcOccupants &&
-        (g_lastOccupantsCollectTick == 0 ||
-         tickCount - g_lastOccupantsCollectTick >= 60))
+        (g_lastOccupantsCollectMs == 0 ||
+         occScanNowMs - g_lastOccupantsCollectMs >= 1000ull))
     {
+        g_lastOccupantsCollectMs = occScanNowMs;
         g_lastOccupantsCollectTick = tickCount;
         std::vector<unsigned int> occupantHandles;
         int sendBudget = 6; // не флудим 0x21 в одном скане
@@ -2122,17 +2130,17 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             const bool changed = (sent == g_lastOccupantsSent.end())
                                      ? !entries.empty()
                                      : !OccupantsEqual(sent->second, entries);
-            const unsigned int lastTick =
-                g_lastOccupantsSendTick[c.entity.netId];
+            const unsigned long long lastMs =
+                g_lastOccupantsSendMs[c.entity.netId];
             const bool heartbeat =
                 !entries.empty() &&
-                (tickCount - lastTick) >= 60; // ~1 c
+                (occScanNowMs - lastMs) >= 1000ull; // ~1 c wall-clock
             if ((!changed && !heartbeat) || sendBudget <= 0)
                 continue;
-            if (g_occupantsSendWindowTick == 0 ||
-                tickCount - g_occupantsSendWindowTick >= 60)
+            if (g_occupantsSendWindowMs == 0 ||
+                occScanNowMs - g_occupantsSendWindowMs >= 1000ull)
             {
-                g_occupantsSendWindowTick = tickCount;
+                g_occupantsSendWindowMs = occScanNowMs;
                 g_occupantsSendWindowCount = 0;
             }
             if (g_occupantsSendWindowCount >= 18)
@@ -2140,6 +2148,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             ++g_occupantsSendWindowCount;
             coop::SendVehicleOccupants(c.entity.netId, entries);
             g_lastOccupantsSent[c.entity.netId] = entries;
+            g_lastOccupantsSendMs[c.entity.netId] = occScanNowMs;
             g_lastOccupantsSendTick[c.entity.netId] = tickCount;
             --sendBudget;
             if (coopcfg::Get().npcDebug)
@@ -3371,8 +3380,11 @@ void Reset()
     g_vehicleScanHandles.clear();
     g_vehicleScanTick = 0;
     g_lastOccupantsCollectTick = 0;
+    g_lastOccupantsCollectMs = 0;
+    g_lastOccupantsSendMs.clear();
+    g_occupantsSendWindowMs = 0;
     g_lastTrainOccupants.clear();
-    g_lastTrainOccupantsTick.clear();
+    g_lastTrainOccupantsMs.clear();
     g_trainConfigs.clear();
     g_trainConfigCars.clear();
     g_trainConfigModel0.clear();
@@ -3388,7 +3400,7 @@ void Reset()
     g_perfGuestTrainSeatsApplied = 0;
     g_perfGuestTrainSeatsFailed = 0;
     g_lastTrainSnapshot.clear();
-    g_lastTrainSendTick.clear();
+    g_lastTrainSendMs.clear();
     g_snapshotSeq = 0;
     g_hostIds.clear();
     g_lastHostScanTick = 0;

@@ -1784,6 +1784,10 @@ struct RosterEntry
     unsigned int lastAppearanceCaptureTick = 0;
     // E9 (task-142): animal asset appearance + horse tack.
     unsigned int lastAnimalAppearanceCaptureTick = 0;
+    unsigned long long lastAppearanceCaptureMs = 0;
+    unsigned long long lastAnimalAppearanceCaptureMs = 0;
+    unsigned long long lastHorseTackMs = 0;
+    unsigned long long lastMountOutfitMs = 0;
     uint32_t animalAppearanceFingerprint = 0;
     uint32_t animalAppearanceSentFingerprint = 0;
     bool animalAppearanceSent = false;
@@ -1811,6 +1815,11 @@ uint32_t g_hostEpoch = 0;
 uint32_t g_sessionCounter = 0;
 unsigned int g_lastDiscoveryTick = 0;
 unsigned int g_lastHeartbeatTick = 0;
+// task-160: wall-clock базы (ms), не зависят от FPS/тик-рейта.
+unsigned long long g_lastDiscoveryMs = 0;
+unsigned long long g_lastHeartbeatMs = 0;
+unsigned long long g_lastFrameSendMs = 0;
+unsigned long long g_hostMotionProbeMs = 0;
 uint16_t g_frameSeq = 0;
 // P2 (task-139): отдельный frame-период от discovery (discovery = 6 тиков).
 unsigned int g_lastFrameSendTick = 0;
@@ -1970,9 +1979,10 @@ void HostDiscovery(const TickContext& ctx)
     const unsigned int tick = ctx.tickCount;
     if (g_hostEpoch == 0)
         g_hostEpoch = MakeEpoch(tick);
-    if (tick - g_lastDiscoveryTick < kDiscoveryPeriodTicks)
-        return;
-    g_lastDiscoveryTick = tick;
+    const unsigned long long nowMs = GetTickCount64();
+    if (g_lastDiscoveryMs != 0 && nowMs - g_lastDiscoveryMs < 100ull)
+        return; // ~10 Гц wall-clock (было 6 тиков)
+    g_lastDiscoveryMs = nowMs;
     const bool perfOn = coopcfg::Get().npcDebug;
     const unsigned long long perfDiscoverStart = perfOn ? QpcNow() : 0;
     unsigned long long perfBuildStart = 0;
@@ -2354,7 +2364,7 @@ void HostDiscovery(const TickContext& ctx)
 
     // 5) спавн-батч: новые акторы ИЛИ heartbeat (join/resync/20-).
     const bool heartbeat =
-        (tick - g_lastHeartbeatTick) >= kSpawnHeartbeatTicks || g_resendAllSpawns;
+        (nowMs - g_lastHeartbeatMs) >= 2500ull || g_resendAllSpawns;
     if (!newSpawns.empty() || heartbeat)
     {
         std::vector<net::ActorSpawn> out;
@@ -2378,6 +2388,10 @@ void HostDiscovery(const TickContext& ctx)
                 kv.second.horseTackSent = false;
                 kv.second.mountOutfitSent = false;
                 kv.second.lastAnimalAppearanceCaptureTick = 0;
+                kv.second.lastAppearanceCaptureMs = 0;
+                kv.second.lastAnimalAppearanceCaptureMs = 0;
+                kv.second.lastHorseTackMs = 0;
+                kv.second.lastMountOutfitMs = 0;
                 kv.second.lastHorseTackTick = 0;
                 kv.second.lastMountOutfitTick = 0;
             }
@@ -2394,7 +2408,7 @@ void HostDiscovery(const TickContext& ctx)
                                sizeof(net::ActorSpawn);
             LogSpawn(out[0].actorId, out[0].model,
                      static_cast<unsigned int>(out.size()));
-            g_lastHeartbeatTick = tick;
+            g_lastHeartbeatMs = nowMs;
         }
         g_resendAllSpawns = false;
     }
@@ -2406,9 +2420,10 @@ void HostDiscovery(const TickContext& ctx)
     int baseHz = coopcfg::Get().npcFrameHz;
     if (baseHz < 10) baseHz = 10;
     if (baseHz > 20) baseHz = 20;
-    if (tick - g_hostMotionProbeTick >= kDiscoveryPeriodTicks)
+    if (g_hostMotionProbeMs == 0 ||
+        nowMs - g_hostMotionProbeMs >= 100ull)
     {
-        g_hostMotionProbeTick = tick;
+        g_hostMotionProbeMs = nowMs;
         bool moving = false;
         for (const auto& kv : g_roster)
         {
@@ -2420,11 +2435,12 @@ void HostDiscovery(const TickContext& ctx)
     int targetHz = baseHz;
     if (coopcfg::Get().npcFrameAdaptive && !g_hostActorsMoving)
         targetHz = 10;
-    unsigned int periodTicks = static_cast<unsigned int>((60 + targetHz / 2) / targetHz);
-    if (periodTicks < 1) periodTicks = 1;
-    g_framePeriodTicks = periodTicks;
-    g_actualFrameHz = 60.0f / static_cast<float>(periodTicks);
-    if (tick - g_lastFrameSendTick >= periodTicks)
+    const unsigned long long frameIntervalMs =
+        static_cast<unsigned long long>(1000 / targetHz);
+    g_framePeriodTicks = static_cast<unsigned int>(frameIntervalMs);
+    g_actualFrameHz = static_cast<float>(targetHz);
+    if (g_lastFrameSendMs == 0 ||
+        nowMs - g_lastFrameSendMs >= frameIntervalMs)
     {
         std::vector<net::ActorFrame> frames;
         frames.reserve(g_roster.size());
@@ -2440,7 +2456,7 @@ void HostDiscovery(const TickContext& ctx)
             g_perfHostBytes += static_cast<unsigned long long>(frames.size()) *
                                sizeof(net::ActorFrame);
         }
-        g_lastFrameSendTick = tick;
+        g_lastFrameSendMs = nowMs;
     }
 
     if (perfOn && perfBuildStart)
@@ -2460,6 +2476,10 @@ void HostResetState()
     g_lastHeartbeatTick = 0;
     g_lastFrameSendTick = 0;
     g_hostMotionProbeTick = 0;
+    g_lastDiscoveryMs = 0;
+    g_lastHeartbeatMs = 0;
+    g_lastFrameSendMs = 0;
+    g_hostMotionProbeMs = 0;
     g_hostActorsMoving = false;
     g_actualFrameHz = 10.f;
     g_framePeriodTicks = 6;
@@ -2676,15 +2696,16 @@ void ProcessHostAnimalAppearanceCapture(unsigned int tick)
         RosterEntry& e = it->second;
         if (e.kind == net::kActorKindHuman)
             continue;
-        const unsigned int period =
-            kAnimalAppearancePeriodTicks + (e.actorId % 5) * 15;
-        const bool due = e.lastAnimalAppearanceCaptureTick == 0 ||
-                         (tick - e.lastAnimalAppearanceCaptureTick) >= period;
+        const unsigned long long periodMs =
+            5000ull + (e.actorId % 5) * 250ull;
+        const unsigned long long capNowMs = GetTickCount64();
+        const bool due = e.lastAnimalAppearanceCaptureMs == 0 ||
+                         capNowMs - e.lastAnimalAppearanceCaptureMs >= periodMs;
         if (!due)
             continue;
         if (!TakeCaptureBudget(tick))
             break;
-        e.lastAnimalAppearanceCaptureTick = tick;
+        e.lastAnimalAppearanceCaptureMs = capNowMs;
         if (!DoesExist(handle) || IsDeadPed(handle))
             continue;
 
@@ -2836,15 +2857,16 @@ void ProcessHostHorseTackCapture(unsigned int tick)
         RosterEntry& e = it->second;
         if (e.kind != 2u)
             continue;
-        const unsigned int period =
-            kAnimalAppearancePeriodTicks + (e.actorId % 5) * 15;
-        const bool due = e.lastHorseTackTick == 0 ||
-                         (tick - e.lastHorseTackTick) >= period;
+        const unsigned long long periodMs =
+            5000ull + (e.actorId % 5) * 250ull;
+        const unsigned long long capNowMs = GetTickCount64();
+        const bool due = e.lastHorseTackMs == 0 ||
+                         capNowMs - e.lastHorseTackMs >= periodMs;
         if (!due)
             continue;
         if (!TakeCaptureBudget(tick))
             break;
-        e.lastHorseTackTick = tick;
+        e.lastHorseTackMs = capNowMs;
         if (!DoesExist(handle) || IsDeadPed(handle))
             continue;
         net::OutfitState os{};
@@ -2874,11 +2896,12 @@ void ProcessHostMountOutfitCapture(unsigned int tick)
     if (!coopcfg::Get().npcMountAppearance || g_roster.empty())
         return;
     // GetMountOf — натив на каждого human; обновляем кандидатов не чаще 1/6.
-    static unsigned int s_lastCandidateTick = 0;
-    if (s_lastCandidateTick != 0 &&
-        tick - s_lastCandidateTick < kDiscoveryPeriodTicks)
+    static unsigned long long s_lastCandidateMs = 0;
+    const unsigned long long candidateNowMs = GetTickCount64();
+    if (s_lastCandidateMs != 0 &&
+        candidateNowMs - s_lastCandidateMs < 100ull)
         return;
-    s_lastCandidateTick = tick;
+    s_lastCandidateMs = candidateNowMs;
     static unsigned int s_rotate = 0;
     std::vector<unsigned int> order;
     order.reserve(g_roster.size());
@@ -2904,15 +2927,16 @@ void ProcessHostMountOutfitCapture(unsigned int tick)
         RosterEntry& e = it->second;
         if (e.kind != net::kActorKindHuman)
             continue;
-        const unsigned int period =
-            kAnimalAppearancePeriodTicks + (e.actorId % 5) * 15;
-        const bool due = e.lastMountOutfitTick == 0 ||
-                         (tick - e.lastMountOutfitTick) >= period;
+        const unsigned long long periodMs =
+            5000ull + (e.actorId % 5) * 250ull;
+        const unsigned long long capNowMs = GetTickCount64();
+        const bool due = e.lastMountOutfitMs == 0 ||
+                         capNowMs - e.lastMountOutfitMs >= periodMs;
         if (!due)
             continue;
         if (!TakeCaptureBudget(tick))
             break;
-        e.lastMountOutfitTick = tick;
+        e.lastMountOutfitMs = capNowMs;
         if (!DoesExist(handle) || IsDeadPed(handle))
             continue;
         const unsigned int mount = GetMountOf(handle);
@@ -2965,14 +2989,15 @@ void ProcessHostAppearanceCapture(unsigned int tick)
         RosterEntry& e = it->second;
         if (e.kind != net::kActorKindHuman)
             continue; // E3c: asset capture только для людей
+        const unsigned long long capNowMs = GetTickCount64();
         const bool due =
-            e.lastAppearanceCaptureTick == 0 ||
-            (tick - e.lastAppearanceCaptureTick) >=
-                kAppearanceCapturePeriodTicks;
+            e.lastAppearanceCaptureMs == 0 ||
+            capNowMs - e.lastAppearanceCaptureMs >= 2000ull;
         if (!due)
             continue;
         if (!TakeCaptureBudget(tick))
             break;
+        e.lastAppearanceCaptureMs = capNowMs;
         e.lastAppearanceCaptureTick = tick;
         if (!DoesExist(handle) || IsDeadPed(handle))
             continue;
@@ -7079,7 +7104,8 @@ void ForceFullSpawnBatch()
     if (!coopcfg::Get().npcActor)
         return;
     g_resendAllSpawns = true;
-    g_lastHeartbeatTick = 0; // следующий HostTick пошлёт всех
+    g_lastHeartbeatTick = 0;
+    g_lastHeartbeatMs = 0; // следующий HostTick пошлёт всех
 }
 
 // E7.1-hardening: новый гость сразу просит resync у нового хоста.
