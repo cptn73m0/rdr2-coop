@@ -1,15 +1,15 @@
 # tools/ — вспомогательные однопК-инструменты
 
-## `fake_actor_client.py` — headless-«игрок» протокола v18 для проверки NPC-репликации
+## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E7.3/E2c (actor-репликация NPC) на
-одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v18;
+Заменяет второй ПК при тестировании E1–E8/E2c (actor-репликация NPC) на
+одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v19;
 игра запускается только на одном ПК.
 
 Оба режима используют TCP-релей (`--host 127.0.0.1 --port 7777`), framing
 `[len:u32][type:u8][payload]`, JOIN с protocol_version, **автоматически
 прочитанным из `net/protocol.h` (`kProtocolVersion`, fallback 16)**; сейчас
-это v18. Лог пишется в stdout и в `tools/fake_actor_client.log` (append; файл
+это v19. Лог пишется в stdout и в `tools/fake_actor_client.log` (append; файл
 `*.log` уже игнорируется корневым `.gitignore` и не коммитится).
 
 **Позиция fake guest:** в guest-режиме инструмент принимает player FRAME
@@ -33,7 +33,7 @@ FRAME нет (fake host), через 2 с используется фиксир�
 - **Тест B** (`--mode guest`, игровой хост → fake guest, cap=12):
   получен `spawn batch n=12 unique=12`, кадры ~13 Гц (фактическая частота
   игрового хоста), `errors=0`, 12 уникальных actorId. **PASS**.
-- Инструмент проверен на реальном сервере v18 и реальной игре; заменяет
+- Инструмент проверен на реальном сервере v19 и реальной игре; заменяет
   второй ПК для wire/apply-части E1, но **не заменяет** двухПК-приёмку
   `docs/NPC_E1_TESTING.md` (метрики «неотличимости», FPS/tick, визуал).
 
@@ -41,7 +41,7 @@ FRAME нет (fake host), через 2 с используется фиксир�
 
 **Порядок важен: сначала сервер, потом fake host, потом игра-гость.**
 
-1. Запустить сервер (v18):
+1. Запустить сервер (v19):
    ```powershell
    .\build-server-ci\Release\rdr2_coop_server.exe 7777
    ```
@@ -85,7 +85,7 @@ E2a проверяет, что вместе с `ActorSpawn` уходит `metaOu
 
 **Визуальный тест: fake host → игровой гость (как ТЕСТ A)**
 ```powershell
-# сервер v18
+# сервер v19
 .\build-server-ci\Release\rdr2_coop_server.exe 7777
 
 # fake host: берём до 5 разных пар model+metaOutfit из лога игры,
@@ -382,7 +382,7 @@ fakeguest: target_frames=N
 ### E3c: животные и свободные лошади
 
 `ActorSpawn.kind` = **0 human, 1 animal, 2 horse** (поле есть с v15/v16;
-текущий v18 его не меняет). Host-флаги добавляют акторов сверх
+текущий v19 его не меняет). Host-флаги добавляют акторов сверх
 `--num` (людей):
 
 - `--animals N` — N наземных животных kind=1; модели берутся из
@@ -534,16 +534,41 @@ npc_visitor_pause_scenes = 1
 - **E3d-a:** игра-хост садится в машину/повозку и едет; гость видит
   vehicle-прокси в радиусе 80 м; host log `world: vehicles send n=`,
   guest `world: vehicle spawn/despawn`; локального трафика гостя нет.
-  Машины без водителей/пассажиров до E3d-c, до 16 машин; empty snapshot
-  удаляет прокси.
+  До 16 машин; empty snapshot удаляет прокси. Occupants/draft — E3d-c (0x21).
 - **Host migration:** игра-хост Alt+F4/quit или зависание только с Ping;
   второй игрок становится HOST, в логах `coop: role change -> HOST reset
   complete`/`[!] host game-timeout … promoting remaining`; старый хост
   rejoin — как гость. Проверять по S23 в `docs/NPC_E1_TESTING.md`.
 - **Mission-aware:** в миссии/катсцене толпа гостя не удаляется
   (`actor: visitor scene pause on`), после выхода cleanup продолжается.
-- Локальная пара npc-e7.3: ASI `C9BFA565`, server `BEC3428B` (PID 3532);
-  ARINA offline — двух-ПК прогон pending.
+- Локальная пара v19/npc-e8: ASI `9E3E8D7A`, server `E26C715A` (деплой
+  task-137); ARINA offline — двух-ПК прогон pending.
+
+### E8: occupants и mission-train (игровые)
+
+Fake tool **не эмулирует** `VehicleOccupants` 0x21 и mission-train 0x22 —
+E3d-c/E3d-b проверяются только игрой (S25/S26). INI на обоих:
+
+```ini
+npc_actor = 1
+world_vehicles = 1
+npc_vehicle_radius = 80
+npc_occupants = 1
+world_trains = 0   # для S26 временно 1
+npc_visitor_vehicles = 1
+```
+
+- **E3d-c:** хост за рулём/пассажиром/повозка с draft-лошадью; гость видит
+  водителя/пассажиров seated без дублей/T-pose, draft прицеплен; логи
+  `world: occupants vehicle=`, `actor: seat attach … ok=`,
+  `actor: draft attach … ok=`, `actor: occupants errors=0`.
+- **E3d-b:** `world_trains=1` (при `npc_actor=1 && world_vehicles=1 &&
+  world_sync=0`); хост у станции/едет/разворачивается; гость видит один
+  mission-train на рельсах, локального второго поезда нет; cleanup и
+  `SET_RANDOM_TRAINS(true)` при выключении; логи `world: train send/spawn/
+  despawn`; риски — 87 config-хэшей, direction/reversing.
+- Флаги: `npc_occupants=1` (0 = старое E3d-a), `world_trains=0` (opt-in);
+  тесты/чек-листы — `docs/NPC_E1_TESTING.md` S25/S26.
 
 ### E2c: поздние outfit-обновления (metaOutfit resolver)
 
@@ -575,7 +600,7 @@ Exit 0/PASS — как обычно (≥1 spawn-batch и ≥10 frames).
 ### E2c-b (v16): ActorAppearance (0x1E)
 
 `ActorAppearance` (0x1E) — asset/tint внешность NPC, хост → сервер → гость;
-**реализовано и задеплоено (появилось в protocol v16, актуально в v18)**. Fake guest валидирует: header
+**реализовано и задеплоено (появилось в protocol v16, актуально в v19)**. Fake guest валидирует: header
 12 B (`epoch:u32, actorId:u32, count:u8, pad3`), `count` в 1..16, точный
 размер `12 + count*28` (max 460 B), `epoch!=0`, `actorId!=0`, `reserved==0`
 в каждой 28-байтной записи; предупреждает, если appearance пришёл раньше
@@ -595,7 +620,7 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e7.3 ASI `C9BFA565`/server `BEC3428B`, ARINA offline) —
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e8 ASI `9E3E8D7A`/server `E26C715A`, ARINA offline) —
 pending. Для дымового теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
@@ -603,7 +628,7 @@ pending. Для дымового теста без игры fake host `--appeara
 ### E4: замеры производительности (`perf_report.py`)
 
 `tools/perf_report.py` парсит `perf: npc host ...` / `perf: npc guest ...`
-(формат E4; в v18 тот же, `npc_debug=1`) и legacy `perf: actor ...` (старые логи).
+(формат E4; в v19 тот же, `npc_debug=1`) и legacy `perf: actor ...` (старые логи).
 Считает p50/p95/max по tick/discover/capture/build/spawn/appearance/motion/
 weapons, counters (`actors/spawns/frames/despawns/bytes/s`,
 `proxies/spawns/applied/failed/timeouts`), warn/errors/timeouts, сравнивает
@@ -630,7 +655,7 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 
 **Порядок: сервер → игра-хост → fake guest.**
 
-1. Запустить сервер v18.
+1. Запустить сервер v19.
 2. Запустить RDR2 и подключиться **первым** (игра должна стать HOST);
    в INI: `npc_actor = 1`.
 3. Запустить fake guest вторым:
@@ -700,7 +725,7 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 - **Первый подключившийся — HOST.** Если fake host запустить после игры, он
   получит `is_host=0` и выйдет с кодом 3 (`fakehost: ERROR: this tool is not
   HOST`). Аналогично fake guest, запущенный до игры, станет HOST — exit 3.
-- Сервер и игра должны быть **protocol v18** (`kProtocolVersion=18`, инструмент читает версию из `net/protocol.h`); при
+- Сервер и игра должны быть **protocol v19** (`kProtocolVersion=19`, инструмент читает версию из `net/protocol.h`); при
   несовпадении — `JOIN rejected: VersionMismatch`.
 - В игре-госте (`--mode host`) должен быть `npc_actor = 1`, иначе E1 не примет
   Actor-сообщения и NPC не появятся.

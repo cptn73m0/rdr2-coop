@@ -5,8 +5,8 @@
 сообщения, точные размеры, WorldSnapshot, мусорные кадры, ретрансляцию
 Leave/PlayerLeft/Died/Respawned/HorseOutfit, connection cap/per-IP rate limit,
 `players.txt` persistence/recovery, graceful shutdown, а также actor-сообщения
-v18 (spawn/frames/despawn/event/outfit/resync/appearance/damage/presence) —
-когда они есть в `net/protocol.h`.
+v19 (spawn/frames/despawn/event/outfit/resync/appearance/damage/presence/
+occupants/train-v2) — когда они есть в `net/protocol.h`.
 
 ## Требования
 
@@ -27,15 +27,19 @@ v18 (spawn/frames/despawn/event/outfit/resync/appearance/damage/presence) —
 wearable[96] u32). Если размер в `net/protocol.h` изменится, тест упадёт и
 потребует осознанного обновления тестов/документации под новую версию.
 
-Для протокола v18 при наличии `Actor*`-сообщений в header также пинятся:
+Для протокола v19 при наличии `Actor*`-сообщений в header также пинятся:
 `kMaxActors=12`, `ActorSpawn=64 B`, `ActorFrame=32 B`,
 `ActorSpawnBatch≤776 B`, `ActorFrames≤392 B`, `ActorDespawn/ActorResync=12 B`,
 `ActorEvent=32 B`, `ActorOutfit=792 B`, `ActorAppearanceHeader=12 B`,
 `ActorAppearanceEntry=28 B`, `kActorAppearanceMaxComponents=16`,
 `ActorAppearance max=460 B`, `ActorDamagePayload=16 B`,
 `kMinActorDamage=1`, `kMaxActorDamage=1000`, `PlayerPresencePayload=8 B`,
-`kPlayerPresenceKnownFlags=0x3F`; ID 0x18–0x20. Если header откатить на v14,
-actor-тесты скипаются с `[skip]` и не валят базовый suite.
+`kPlayerPresenceKnownFlags=0x3F`, `VehicleOccupantsHeader=8 B`,
+`VehicleOccupantEntry=8 B`, `kMaxVehicleOccupants=8`,
+`VehicleOccupants max=72 B`, `TrainSnapshotV2Payload=48 B`,
+`kTrainSnapshotV2KnownFlags=0x0F`, `carCount 1..16`, `speed ±40`;
+ID 0x18–0x22. Если header откатить на v14, actor-тесты скипаются с `[skip]`
+и не валят базовый suite.
 
 ## Запуск
 
@@ -51,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 `--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
 `KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто (22 базовых сценария + 13 actor/presence-тестов v18)
+## Что покрыто (26 базовых сценариев + 13 actor/presence-тестов v19)
 
 | Тест | Проверка |
 |---|---|
@@ -77,6 +81,10 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_per_ip_rate_limit` | 30 быстрых подключений: проверяются записи `per-IP rate limit`, реально закрытые сервером сокеты; после окна вход работает |
 | `test_graceful_shutdown` | сервер корректно завершается по тест-хуку и сохраняет players.txt |
 | `test_persistence` | координаты сохраняются в `players.txt` и восстанавливаются после рестарта; первый игрок = HOST |
+| `test_vehicle_occupants_host_only` | 0x21: host→guest byte-identical; count 0/1/8 (max 72 B) relay; guest→host blocked; count=0 clear |
+| `test_vehicle_occupants_validation` | 0x21: точный размер `8+8*count`; vehicleNetId/actorId=0, count>8, unknown flags, seat/carIndex/harness вне диапазона, short/long drop; rate-limit 20/с; сервер жив |
+| `test_train_v2_host_only` | 0x22: host→guest byte-identical 48 B; flags waiting/halted/reversing/playerAboard; guest→host blocked; rate-limit ≤4/с |
+| `test_train_v2_validation` | 0x22: epoch/trainId=0, carCount 0/17, speed ±40+, unknown flags, short/long drop; сервер жив |
 
 ### actor/presence-тесты (v15–v17 base + v18 damage/presence; активны при наличии `Actor*`/`PlayerPresence` в header)
 
@@ -96,17 +104,18 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_player_presence_relay` | 0x20: client→server→другому клиенту без эха; epoch/flags; 8 B byte-identical; rate-limit 10/с |
 | `test_player_presence_validation` | 0x20: epoch=0/short/long/unknown flag bits (6..15) drop; сервер жив |
 
-### NPC actor-репликация (E1–E7.3) — что проверено
+### NPC actor-репликация (E1–E8) — что проверено
 
 Wire/relay/валидация actor-сообщений покрыты actor/presence-тестами выше
-(**35/35** автоматических сценариев на `build-server-ci`, protocol v18:
-appearance + ActorDamage + PlayerPresence + host migration/game-timeout;
-16 компонентов / 460 B, damage 16 B, presence 8 B, 22 базовых). Клиентская
-логика NPC/E2c-b/E5/E6/E7/E3d-a проверена на **одном ПК** с fake host/guest
-и реальным хостом (`tools/fake_actor_client.py`, см. `tools/README.md`);
-E5/E5.1 подтверждены игровым гостем («выстрелы убивают, хэдшот ваншотит»);
-двух-ПК приёмка pending — ARINA offline. Локальная пара npc-e7.3 — ASI
-`C9BFA565`/server `BEC3428B` (PID 3532).
+(**39/39** автоматических сценариев на `build-server-ci`, protocol v19:
+appearance + ActorDamage + PlayerPresence + VehicleOccupants +
+TrainSnapshotV2 + host migration/game-timeout; 16 компонентов / 460 B,
+damage 16 B, presence 8 B, occupants ≤72 B, train 48 B, 26 базовых).
+Клиентская логика NPC/E2c-b/E5/E6/E7/E3d проверена на **одном ПК** с fake
+host/guest и реальным хостом (`tools/fake_actor_client.py`, см.
+`tools/README.md`); E5/E5.1 подтверждены игровым гостем («выстрелы убивают,
+хэдшот ваншотит»); двух-ПК приёмка pending — ARINA offline. Локальная пара
+npc-e8/v19 — ASI `9E3E8D7A`/server `E26C715A` (деплой task-137).
 
 - **E1 (human-only):** discovery/roster, spawn heartbeat/frames/despawn,
   guest-прокси, resync, gating `npc_actor=0` → 0 `actor:`/`probe:` строк.
@@ -154,20 +163,27 @@ E5/E5.1 подтверждены игровым гостем («выстрелы
   vehicles-only `WorldSnapshot` (≤16×32 B/6 тиков, пустой snapshot удаляет
   прокси); host migration hardening (game-timeout 4 с, Ping не считается,
   role-change reset, 2 теста); mission-aware visitor.
+- **E8 (v19):** E3d-c `VehicleOccupants` 0x21 — driver/passenger/draft
+  (invisible→warp→visible, draft attach, skip MoveProxy); E3d-b
+  `TrainSnapshotV2` 0x22 — mission-train у гостя, `SET_RANDOM_TRAINS(false)`
+  + restore, speed/coords/warp/halt/leave/reverse; `npc_occupants=1`,
+  `world_trains=0` (opt-in); 39/39.
 - Используемые сообщения: **0x18** `ActorSpawnBatch` (спавн + heartbeat),
   **0x19** `ActorFrames` (10 Гц), **0x1A** `ActorDespawn` (gone/dead/evicted),
   **0x1D** `ActorResync` (guest→host; Client::SendActorResync, троттлинг ≤1/с),
   **0x1E** `ActorAppearance` (host→guest, E2c-b), **0x1F** `ActorDamage`
   (guest→host, E5), **0x20** `PlayerPresence` (любой→другому, E6),
-  **0x10** `WorldSnapshot` vehicles-only (E3d-a); 0x1B/0x1C
-  зарезервированы/не применяются.
+  **0x21** `VehicleOccupants` (host→guest, E3d-c), **0x22**
+  `TrainSnapshotV2` (host→guest, E3d-b), **0x10** `WorldSnapshot`
+  vehicles-only (E3d-a); 0x1B/0x1C зарезервированы/не применяются.
 - Флаги INI: `npc_actor=1` (default 0), `npc_cap` 1..12 (default 8),
   `npc_radius` 20..100 (default 60), `npc_animal_cap` 0..12 (default 4),
   `npc_appearance=1`, `npc_damage=1`, `npc_corpse_max_sec=300`,
   `npc_presence=1`, `npc_visitor=1`, `npc_visitor_vehicles=1`,
   `npc_visitor_preserve_events=1`, `npc_visitor_pause_scenes=1`,
   `npc_motion_update=1`, `npc_motion_marker=0`, `npc_motion_status_p2=1`,
-  `world_vehicles=1`, `npc_vehicle_radius=80`, `npc_debug=1`.
+  `world_vehicles=1`, `npc_vehicle_radius=80`, `npc_occupants=1`,
+  `world_trains=0` (E3d-b opt-in), `npc_debug=1`.
 - `test_actor_gating_no_actor_log` — **серверный** тест (mock-клиенты не шлют
   actor-сообщения), поэтому клиентский gating проверяется вручную
   (`npc_actor=0` → 0 строк `actor:`/`probe:` в `rdr2-coop.log`);

@@ -1,30 +1,30 @@
 # E4 — производительность NPC-репликации: методика и приёмка
 
 Документ описывает, как снимать и проверять стоимость NPC-подсистемы
-(`src/actor_sync.cpp`) на v18. Анализ делает `tools/perf_report.py`
+(`src/actor_sync.cpp`) на v19. Анализ делает `tools/perf_report.py`
 (stdlib, без внешних зависимостей). E4 принимается по цифрам, а не «на глаз».
 
 ## 1. Что нужно
 
-- Сервер v18 (`build-server-ci\Release\rdr2_coop_server.exe`; локальная пара
-  npc-e7.3 — ASI `C9BFA565`, server `BEC3428B`; ARINA offline).
-- v18-клиент с E4-инструментацией (ASI `C9BFA565`, локальная пара npc-e7.3).
+- Сервер v19 (`build-server-ci\Release\rdr2_coop_server.exe`; локальная пара
+  npc-e8 — ASI `9E3E8D7A`, server `E26C715A`; ARINA offline).
+- v19-клиент с E4-инструментацией (ASI `9E3E8D7A`, локальная пара npc-e8).
 - `npc_debug = 1` — включает `perf: npc ...` строки (при `npc_debug=0` или
   `npc_actor=0` — **ноль** `perf:` строк, overhead ≈ 0).
 - Для городского прогона: `npc_actor = 1`, `npc_cap = 8..12`,
   `npc_radius = 60`, `npc_animal_cap = 4`, `npc_appearance = 1`,
   `npc_damage = 1`, `npc_presence = 1`, `npc_visitor = 1`,
   `npc_visitor_pause_scenes = 1`, `world_vehicles = 1`,
-  `npc_vehicle_radius = 80`, `npc_motion_update = 1` (E6/E7/E3d-a не
-  выключать, если проверяем их вклад); игра-хост + fake guest
-  (`tools/fake_actor_client.py --mode guest`, fake guest следует за позицией
-  хоста), либо два ПК.
+  `npc_vehicle_radius = 80`, `npc_occupants = 1`, `world_trains = 0`,
+  `npc_motion_update = 1` (E6/E7/E3d не выключать, если проверяем их вклад);
+  игра-хост + fake guest (`tools/fake_actor_client.py --mode guest`, fake
+  guest следует за позицией хоста), либо два ПК.
 - Логи: `scripts\rdr2-coop.log` (игровой клиент; там `perf: npc`) и при
   необходимости `server_console.log` (ошибки/таймауты сервера).
 
 ## 2. Как снимать
 
-1. Запустить сервер v18.
+1. Запустить сервер v19.
 2. **Baseline `npc_actor=0`:** игра-хост в том же городе 3–5 минут с
    `npc_actor=0`, `npc_debug=0`; скопировать `rdr2-coop.log` как
    `perf_baseline_off.log`. В этом режиме `perf: npc` строк нет — это
@@ -61,7 +61,7 @@ python tools\perf_report.py --log perf_city_npc1.log --json > perf.json
 Exit codes: **0** PASS, **1** FAIL (порог/ошибки), **2** нет `perf:` данных /
 файл не читается. `--label NAME` задаёт имя прогона в отчёте.
 
-## 4. Формат строк (v18 E4)
+## 4. Формат строк (v19 E4)
 
 `npc_debug=1`, окно ~10 с:
 
@@ -101,7 +101,7 @@ perf: npc warn host tick=3.40 > 2.0 ms
 p50 в отчёте — медиана per-window avg по логу; p95 — худший p95, который
 прислало окно (консервативно); max — худший max.
 
-## 6. Пример отчёта (synthetic, формат v18)
+## 6. Пример отчёта (synthetic, формат v19)
 
 ```text
 E4 NPC perf report: perf_city_npc1.log
@@ -199,12 +199,29 @@ role-change reset (world_sync/visitor/presence/actor/боевые) — разо�
 80 м и 16 машинах вклад в трафик детерминирован; в пустой локации
 `world: vehicles send n=0` (header 4 B) — норма.
 
+## 10a. v19 — трафик occupants/train
+
+E3d-c (`npc_occupants=1`) не добавляет `perf:`-полей: `VehicleOccupants` 0x21
+шлётся при изменении occupants + heartbeat **1/с**, payload ≤ **72 B**
+(8+8×8), серверный rate-limit **20/с**, host throttle ≤18/с; при нескольких
+машинах трафик ≤72 B/c на vehicle с occupants. `count=0` — 8 B clear.
+Проверять host tick p95/warn, `world: occupants vehicle=`, `actor: seat/draft
+attach … ok=`, `actor: occupants errors=`.
+
+E3d-b (`world_trains=1`, opt-in) — `TrainSnapshotV2` 0x22 фиксированные
+**48 B**, ≤**4/с** → ≤192 B/с; поезда исключены из vehicle-бюджета;
+host только при `npc_actor=1 && world_vehicles=1 && world_trains=1` и
+`npc_debug=1` логирует `world: train send`. Отдельных perf-метрик нет;
+смотреть tick p95/warn и время создания mission-train на госте (cleanup
+timeout 2 с). При `world_trains=0` трафик 0x22 отсутствует.
+
 ## 11. Ограничения
 
 - **1 ПК:** игра может быть хостом **или** гостем, но не обоими; host и guest
   метрики снимаются отдельными прогонами (host — с fake guest; guest — со
-  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a pending; локальная пара
-  npc-e7.3 — ASI `C9BFA565`/server `BEC3428B`, ARINA offline (деплой pending).
+  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a/E3d-b/E3d-c pending;
+  локальная пара npc-e8 — ASI `9E3E8D7A`/server `E26C715A`, ARINA offline
+  (деплой pending).
 - Fake guest не даёт guest-`perf:` строк: это Python-инструмент, не игровой
   клиент; guest-метрики есть только у игры-гостя.
 - Baseline `npc_actor=0` не содержит `perf: npc` (нулевой overhead); для

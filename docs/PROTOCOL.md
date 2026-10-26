@@ -2,19 +2,22 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 18` (см. `net/protocol.h`). Версия передаётся в JOIN,
+- `net::kProtocolVersion = 19` (см. `net/protocol.h`). Версия передаётся в JOIN,
   сервер сверяет её и при несовпадении отклоняет подключение
-  (`JoinRejected.VersionMismatch`); клиенты v14–v18 несовместимы.
-  v17-пара для отката — ASI `35163CC2`/server `B7AAABAE`; v16 — `63388AD3`/
-  `4EDAE4B6`; v15 — `dist\npc-e2c-v15\`.
+  (`JoinRejected.VersionMismatch`); клиенты v14–v19 несовместимы.
+  v18-пара для отката — ASI `C9BFA565`/server `BEC3428B`; v17 —
+  `35163CC2`/`B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 —
+  `dist\npc-e2c-v15\`.
+- v19 (E3d-b/E3d-c): **`VehicleOccupants` (0x21)** — водители/пассажиры/
+  draft-лошади, host → сервер → гость; **`TrainSnapshotV2` (0x22)** —
+  mission-train/состав, host → сервер → гость. Спецификация — раздел
+  «ACTOR-СООБЩЕНИЯ».
 - v18 (E6): **`PlayerPresence` (0x20)** — UI-статус игрока (карта/пауза/
   сатчель/магазин), клиент → сервер → другому клиенту без эха; суффикс имени
   `Name - in map` и т.п. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
 - v18 (E7.3, без bump): **E3d-a vehicles-only WorldSnapshot** (0x10),
   host migration hardening (game-timeout 4 с, Ping не считается), client
   role-change reset и mission-aware visitor (`npc_visitor_pause_scenes`).
-  Новых сообщений нет; v19 (`VehicleOccupants 0x21`, `TrainSnapshotV2
-  0x22`) — в работе.
 - v17 (E5): **`ActorDamage` (0x1F)** — host-authoritative урон по NPC,
   гость → сервер → хост. E5.1: хедшот → `damage=250` (ваншот). Подтверждено
   в игре. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
@@ -255,7 +258,7 @@ payload: isHost:u8 pad[3]   // 4 байта
   сервер валидирует host-only сообщения по новому хосту. Мир при миграции
   **не переносится** — новый хост отдаёт свой.
 
-### 0x17 TRAIN_SNAPSHOT (устаревший R&D proxy-attach; план v19 TrainSnapshotV2 0x22)
+### 0x17 TRAIN_SNAPSHOT (устаревший R&D proxy-attach; заменён v19 0x22)
 
 ```
 payload: TrainSnapshotHeader (16 B)
@@ -266,26 +269,24 @@ payload: TrainSnapshotHeader (16 B)
 
 - `carCount ≤ 16`; сервер проверяет точный размер и host-only.
 - **Статус: устаревший R&D** — proxy-attach `world_trains=1` не развивается,
-  не включать. План mission-train: **v19 `TrainSnapshotV2` 0x22** +
-  `VehicleOccupants` 0x21, состав/рельсы/станции вместо отдельных
-  вагонов-прокси; см. `docs/TRAINS.md`.
+  не включать. Mission-train реализован в **v19 `TrainSnapshotV2` 0x22**
+  (+ `VehicleOccupants` 0x21); см. `docs/TRAINS.md`.
 - Старое поведение (только для истории): хост при `world_trains=1` дополнял
   состав через `_GET_TRAIN_CARRIAGE_TRAILER_NUMBER`/`GET_TRAIN_CARRIAGE`,
   гость логировал `train: snapshot`, вагоны привязывались через
   `ATTACH_ENTITY_TO_ENTITY`; сцепка/рельсы/скорость не моделировались.
 
-## ACTOR-СООБЩЕНИЯ (v18, E1–E7.3)
+## ACTOR-СООБЩЕНИЯ (v19, E1–E8)
 
-v18 содержит реализованную actor-репликацию **людей, животных и свободных
-лошадей**: E1 — discovery/lifecycle/движение; E2a — meta-outfit; E2b —
-всадники; E2c-a/b — внешность (outfit + asset/tint 0x1E); E3a — сценарии,
-смерть/возрождение; E3b — оружие/бой; E3c — животные/лошади; E5/E5.1 —
-host-authoritative урон и хедшоты (0x1F); E5.2/E5.3 — трупы/сглаживание
-всадников; **E6 — PlayerPresence 0x20**; E7.1 visitor mode / E7.2 плавное
-движение / E7.3 mission-aware visitor + role-change reset — клиентское
-поведение без изменения 0x18–0x20. Всё проверено на
-одном ПК (fake host/guest + реальный хост) и включается флагом
-`npc_actor=1` (default 0; при выключенном флаге не должно быть
+v19 содержит реализованную actor-репликацию **людей, животных и свободных
+лошадей + транспорт**: E1 — discovery/lifecycle/движение; E2a — meta-outfit;
+E2b — всадники; E2c-a/b — внешность (outfit + asset/tint 0x1E); E3a —
+сценарии, смерть/возрождение; E3b — оружие/бой; E3c — животные/лошади;
+E5/E5.1/E5.2/E5.3 — урон/трупы/mounted; **E6 — PlayerPresence 0x20**;
+E7.1/E7.2/E7.3 — visitor/motion/vehicles+host-migration reset;
+**E3d-c — VehicleOccupants 0x21**; **E3d-b — TrainSnapshotV2 0x22**.
+Всё проверено на одном ПК (fake host/guest + реальный хост) и включается
+флагом `npc_actor=1` (default 0; при выключенном флаге не должно быть
 `actor:`-логов). Все структуры little-endian, фиксированы `static_assert` в
 `net/protocol.h`. `kMaxActors = 12`; `npc_cap` 1..12 (default 8),
 `npc_radius` 20..100 м (default 60), `npc_animal_cap` 0..12 (default 4),
@@ -448,6 +449,51 @@ payload: PlayerPresencePayload (8 B)
   `pause menu` > `in menu` (ASCII `Name - <suffix>`); `npc_presence=1`.
   Debug: `ui: pause=… anyApp=… pause_menu=… map=… satchel=… shop=… inv=…`.
 
+### 0x21 VEHICLE_OCCUPANTS (хост → сервер → гость, v19 / E3d-c)
+```
+payload: VehicleOccupantsHeader (8 B) + count * VehicleOccupantEntry (8 B)
+         count 0..8, max = 8 + 8*8 = 72 B
+header: vehicleNetId:u32  count:u8  pad[3]
+entry (8 B):
+  actorId:u32
+  seat:i8         — -1..8 (-1 = нет места/неизвестно)
+  flags:u8        — 1 driver, 2 passenger, 4 draftHorse
+  carIndex:u8     — 0..16 (поезда)
+  harness:u8      — 0..5 (draft)
+```
+- Направление: **только хост → сервер → гость**; `count=0` — очистить
+  occupants у vehicle-прокси. Сервер валидирует точный размер
+  `8+8*count`, `count≤8`, `vehicleNetId/actorId != 0`, известные flags,
+  диапазоны seat/carIndex/harness и релеит byte-identical только гостю;
+  rate-limit **20/с** (host throttle ≤18/с).
+- Хост шлёт при изменении occupants + heartbeat **1/с**; гость ждёт
+  vehicle+actor прокси (до 3 попыток), `invisible → SET_PED_INTO_VEHICLE
+  warp → IS_PED_IN_VEHICLE → visible`; draft —
+  `_ATTACH_DRAFT_VEHICLE_HARNESS_PED`; seated/draft пропускают `MoveProxy`;
+  cleanup при despawn/grace/role change.
+
+### 0x22 TRAIN_SNAPSHOT_V2 (хост → сервер → гость, v19 / E3d-b)
+```
+payload: TrainSnapshotV2Payload (48 B)
+  epoch:u32  trainId:u32  configHash:u32
+  flags:u8   — 1 waitingAtStation, 2 halted, 4 reversing, 8 playerAboard
+  stationIndex:u8  carCount:u8  pad:u8
+  speed:f32        — -40..40
+  x,y,z,heading:f32
+  trackIndex:u32
+  pad2[8]
+```
+- Направление: **только хост → сервер → гость**; сервер валидирует ровно
+  48 B, `epoch/trainId != 0`, известные flags, `carCount 1..16`,
+  `speed` в ±40 и конечные coords/heading; релеит byte-identical, лимит
+  **≤4/с**.
+- Хост: config-хэши TrainConfigs (87), forward/reverse match, кэш; при
+  flags waiting/halted/reversing/playerAboard, speed/coords/heading/
+  trackIndex/station; поезда не входят в vehicle-бюджет.
+  Гость: `SET_RANDOM_TRAINS(false)` + `_CREATE_MISSION_TRAIN`, sync speed
+  (Δ>0.5)/coords (>5 м soft ≤1/0.5 с)/warp (>25 м/|dz|>15)/halt/leave/
+  reverse, cleanup timeout 2 с и restore random trains (`world_trains=1`).
+
 ### E1–E3b (actor_sync, v15) — реализовано и проверено на одном ПК
 - База: **0x18** (`ActorSpawnBatch`: спавн + heartbeat 2.5 с), **0x19**
   (`ActorFrames` 10 Гц), **0x1A** (`ActorDespawn`: reasons 1/2/3);
@@ -479,18 +525,20 @@ payload: PlayerPresencePayload (8 B)
 - При `npc_actor=0`: `actor_sync::Tick`/callbacks ничего не делают и не пишут
   `actor:`/`probe:`; сервер не получает actor-сообщений.
 - Статус: реализовано и проверено на одном ПК (fake host/guest + реальный
-  хост; E5/E5.1 подтверждены в игре). Локальная пара npc-e7.3 — ASI
-  `C9BFA565`, server `BEC3428B` (PID 3532); ARINA offline — деплой pending.
+  хост; E5/E5.1 подтверждены в игре). Локальная пара npc-e8/v19 — ASI
+  `9E3E8D7A`, server `E26C715A` (деплой task-137); ARINA offline — pending.
   Двух-ПК приёмка pending, host migration/resync — backlog. Флаги:
   `npc_actor`, `npc_cap`, `npc_radius`, `npc_animal_cap`, `npc_appearance`,
   `npc_damage`, `npc_corpse_max_sec`, `npc_presence`, `npc_visitor`,
   `npc_visitor_vehicles` (default 1), `npc_visitor_preserve_events`,
   `npc_visitor_pause_scenes`, `npc_motion_update`, `npc_motion_marker`,
-  `npc_motion_status_p2`, `world_vehicles`, `npc_vehicle_radius`, `npc_debug`.
-- Ограничения: mission NPC исключены; транспорт E3d-a vehicles-only,
-  поезда/E3d-b (v19), водители/E3d-c — backlog; Story Mode нельзя
-  «подселить»; RedM — другой стек; при `world_vehicles=0` пустые дороги;
-  до E3d-c машины без водителей; при миграции мир не переносится; лицо/
+  `npc_motion_status_p2`, `world_vehicles`, `npc_vehicle_radius`,
+  `npc_occupants`, `world_trains`, `npc_debug`.
+- Ограничения: mission NPC исключены; E3d-a/c транспорт и occupants;
+  E3d-b mission-train opt-in (`world_trains=0`), ambient-поезда не чистим v1,
+  точные пассажиры поездов P1, seat=-1/driver и direction/reversing требуют
+  in-game проверки; Story Mode нельзя «подселить»; RedM — другой стек; при
+  `world_vehicles=0` пустые дороги; при миграции мир не переносится; лицо/
   волосы, точные анимации/катсцены не синхронизируются.
 
 ### E2c-b (actor_sync, v16): host capture + guest apply
@@ -502,7 +550,7 @@ payload: PlayerPresencePayload (8 B)
 - Валидация на реальном хосте: `asset capture count=8-10 valid=8-10`
   (единичные valid=0); fake guest v16: `appearance_msgs=504
   appearance_actors=8 entry_max=10 errors=0`. Визуальная двух-ПК приёмка —
-  pending (ARINA offline, деплой npc-e7.3 pending).
+  pending (ARINA offline, деплой npc-e8/v19 pending).
 - v15↔v16↔v17↔v18 несовместимы; откат v17 — ASI `35163CC2`/server
   `B7AAABAE`, v16 — `63388AD3`/`4EDAE4B6`, v15 — `dist\npc-e2c-v15\`.
 
@@ -518,7 +566,7 @@ payload: PlayerPresencePayload (8 B)
   flag/труп как E1–E3c.
 - Проверено: host `damage id=… dmg=… hp_left=…` → `killed id=… by damage`;
   fake tool smoke (human 200/animal 100, guest `--damage-after`), игровая
-  проверка «выстрелы убивают, хэдшот ваншотит», CI 35/35.
+  проверка «выстрелы убивают, хэдшот ваншотит», CI 39/39.
 
 ### E5.2/E5.3 (v18 client behavior): corpse retention + mounted smoothing
 - E5.2: гость держит corpse-прокси, пока host-труп существует;
@@ -574,6 +622,30 @@ payload: PlayerPresencePayload (8 B)
   `ForceFullSpawnBatch`/`RequestImmediateResync`; мир не переносится.
 - **Mission-aware visitor:** см. E7.1; новых сообщений нет (v18 без bump).
 
+### E3d-c (v19): vehicles occupants + draft
+- Хост: actor discovery снова включает педов в транспорте (mission-occupants
+  через occupant-handles, приоритет в selection; draft-лошади — animal pass);
+  `CollectVehicleOccupants` (driver/passengers seats 0..max-1/draft harness
+  0..5) → 0x21 при изменении + heartbeat 1/с, throttle ≤18/с.
+- Гость `ApplyPendingOccupants` (ждёт vehicle+actor прокси, до 3 попыток),
+  seat attach/видимость, draft attach; seated/draft skip MoveProxy;
+  vehicle-прокси 60 Гц interpolation, snap>8 м warp+пересадка; cleanup.
+- `npc_occupants=1` (0 = старое E3d-a поведение); логи `world: occupants
+  vehicle=`, `actor: seat attach … ok=`, `actor: draft attach … ok=`,
+  `actor: occupants errors=`.
+
+### E3d-b (v19): mission-train
+- 87 TrainConfigs, ResolveTrainConfig бюджет 5/тик+80 model-вызовов,
+  forward/reverse match, кэш, ambiguity/unknown skip+лог; FindNearestTrain
+  radius 250.
+- Host TrainSnapshotV2 ≤4/с; trains excluded from vehicle budget.
+- Guest `SET_RANDOM_TRAINS(false)`, `_IS_POSITION_VALID_FOR_TRAIN` →
+  fallback `_GET_NEAREST_TRAIN_TRACK_POSITION` → `_CREATE_MISSION_TRAIN`,
+  maxSpeed/avoidance/stops/destruction, `_FORCE_TRAIN_WAGON_POPULATION`,
+  sync/cleanup/restore random trains; `world_trains=0` opt-in (active при
+  `npc_actor=1 && world_vehicles=1 && world_trains=1`, not `world_sync=1`).
+  Логи `world: train send/spawn/despawn`.
+
 ### Reconnect (клиент)
 
 - При разрыве TCP клиент автоматически переподключается с backoff
@@ -589,7 +661,7 @@ payload: PlayerPresencePayload (8 B)
 - Этот раздел описывает актуальные для стабильной сборки изменения (Spike 1/P1/P2/P3);
   базовые разделы ниже сохранены как историческая спецификация Spike 1, но
   ключевые форматы (JOIN/JOIN_OK, FRAME 88 B, OUTFIT 784 B) обновлены под
-  v14–v18 (v18: actor-сообщения E1–E7.3, 0x18–0x20, см. раздел выше).
+  v14–v19 (v19: actor-сообщения E1–E8, 0x18–0x22, см. раздел выше).
 
 Сетевой стек поверх **сервера-релея**. Один сервер, несколько клиентов
 (ASI-плагинов). Клиент периодически шлёт свой `GhostFrame`, сервер
@@ -604,12 +676,13 @@ payload: PlayerPresencePayload (8 B)
 
 - Клиент отправляет: JOIN, FRAME, LEAVE, OUTFIT/HORSE_OUTFIT, PING; хост
   дополнительно — WorldSnapshot, MissionEvent/MissionState/MissionBarrier,
-  actor-сообщения 0x18–0x1C, 0x1E (при включённых флагах); гость —
-  ActorResync 0x1D, ActorDamage 0x1F; PlayerPresence 0x20 — **любой** клиент.
+  actor-сообщения 0x18–0x1C, 0x1E, 0x21, 0x22 (при включённых флагах);
+  гость — ActorResync 0x1D, ActorDamage 0x1F; PlayerPresence 0x20 — **любой**
+  клиент.
 - Сервер рассылает: JOIN_OK/JOIN_REJECTED, PLAYER_JOINED, PLAYER_LEFT, FRAME,
   OUTFIT/HORSE_OUTFIT, HOST_CHANGED, host-only сообщения от хоста и actor-
-  сообщения 0x18–0x1C, 0x1E; ActorResync/ActorDamage — только хосту;
-  PlayerPresence 0x20 — другому клиенту без эха.
+  сообщения 0x18–0x1C, 0x1E, 0x21, 0x22; ActorResync/ActorDamage — только
+  хосту; PlayerPresence 0x20 — другому клиенту без эха.
 
 ## Транспорт
 
