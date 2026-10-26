@@ -312,7 +312,26 @@ NPC-флаги включаются только для однопК/двух-П
 | `npc_occupants` | 1 | E3d-c: водители/пассажиры/draft-лошади (0 = старое E3d-a) |
 | `npc_debug` | 0 | probe/perf/visitor/motion/world-логи (host и guest) |
 
-## Откат v19 / v18 / v17
+## Откат на предыдущую сборку
+
+Каждая сборка сохраняется локально в `dist\<label>\` (ASI + server + INI +
+`README.md` с SHA256, INI и пошаговой инструкцией восстановления). Снапшоты
+в `.gitignore` и в репозиторий не попадают.
+
+| label | protocol | ASI | server | README |
+|---|---|---|---|---|
+| `npc-e8.1` | v19 | `1EB0A633` | `E26C715A` | [dist\npc-e8.1\README.md](dist/npc-e8.1/README.md) |
+| `npc-e8` | v19 | `9E3E8D7A` | `E26C715A` | [dist\npc-e8\README.md](dist/npc-e8/README.md) |
+| `npc-e7.3` | v18 | `C9BFA565` | `BEC3428B` | [dist\npc-e7.3\README.md](dist/npc-e7.3/README.md) |
+| `npc-e7.2` | v18 | `E8971A62` | `C4DD6B1A` | [dist\npc-e7.2\README.md](dist/npc-e7.2/README.md) |
+
+**Короткий откат:** закрыть игры/сервер → ASI из снапшота в
+`E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi` → server в
+`E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` → INI привести к
+значениям из снапшота → запустить сервер и проверить протокол по JOIN.
+Компоненты **только из одного снапшота**: v18↔v19 несовместимы
+(`VersionMismatch`). Полная процедура, структура `dist\<label>` и команда
+создания снапшота — в [tools/README.md](tools/README.md).
 
 Текущий локальный деплой **npc-e8 / v19**: ASI `9E3E8D7A`, server
 `E26C715A` (деплой — task-137); **ARINA offline** — pending. v18-пара:
@@ -320,6 +339,10 @@ ASI `C9BFA565` / server `BEC3428B`; v17: ASI `35163CC2` / server
 `B7AAABAE`; v16: ASI `63388AD3` / server `4EDAE4B6`; v15:
 `dist\npc-e2c-v15\`. v15–v19 несовместимы (`JOIN` → `VersionMismatch`),
 обновлять/откатывать нужно **все компоненты сразу**.
+
+**Правило сборок:** канонические `build/` и `build-server/` обновляет только
+Lead; WIP-сборки — в отдельных каталогах; `dist/` — локальные снапшоты, в
+git не коммитятся.
 
 ## Запуск сервера
 

@@ -745,3 +745,85 @@ timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
 - Реальный прогон выполняется вместе с пользователем/Lead: этот инструмент
   не заменяет игровую проверку, а позволяет проверить wire-часть и клиентский
   apply E1 без второго ПК.
+
+## Снапшоты сборок/откат
+
+`tools/snapshot_build.ps1` сохраняет текущую сборку в `dist\<label>\` как
+самодостаточный откат: клиентский `.asi`, серверный `.exe`, копию INI и
+`README.md` с датой/протоколом/коммитом/тегом/фичами/ограничениями,
+таблицей SHA256, содержимым INI и инструкцией восстановления/деплоя на ARINA.
+
+### Запуск
+
+Windows PowerShell / PS 5.1 (скрипт сохранён с UTF-8 BOM):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\snapshot_build.ps1 `
+  -Label npc-e8.1 -Features "E3d-c occupants/draft; E3d-b mission-train" `
+  -Tag npc-e8.1
+```
+
+- `-Label` — имя папки `dist\<label>` (обязательно).
+- `-Features` — описание фич в README (обязательно).
+- `-Protocol`, `-Commit`, `-Tag`, `-Note` — необязательные; protocol
+  читается из `net/protocol.h`, commit — текущий HEAD.
+- `-AsiPath`, `-ServerExePath`, `-IniLocalPath`, `-IniArinaPath` — для
+  исторических снапшотов/нестандартных путей.
+- Запускать из корня репозитория; `dist` уже в `.gitignore`, поэтому
+  снапшоты локальные и в git не попадают.
+
+### Структура `dist\<label>\`
+
+```text
+dist\<label>\
+  rdr2_coop.asi                 # клиентский ASI
+  rdr2_coop_server.exe          # сервер этой же сборки
+  rdr2-coop.ini.local           # снимок локального INI
+  rdr2-coop.ini.arina           # если ARINA была доступна
+  README.md                     # дата/protocol/commit/tag/фичи/SHA256/INI/restore
+```
+
+Если ARINA была offline, `rdr2-coop.ini.arina` отсутствует и это явно
+указано в README снапшота.
+
+### Как откатиться на снапшот
+
+1. Закрыть RDR2 на **обоих** ПК и остановить сервер.
+2. ASI: скопировать `dist\<label>\rdr2_coop.asi` в
+   `E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi`.
+3. Сервер: скопировать `dist\<label>\rdr2_coop_server.exe` в
+   `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe`.
+4. INI: привести `rdr2-coop.ini` к значениям из раздела `INI` снапшота
+   (неизвестные старым сборкам ключи игнорируются); при наличии
+   `rdr2-coop.ini.arina` — то же на ARINA.
+5. Запустить сервер в видимом окне:
+   `build-server\Release\rdr2_coop_server.exe 7777`.
+6. Проверить протокол на проводе: JOIN должен совпасть с полем `Протокол`
+   снапшота (v18/v19), иначе будет `VersionMismatch`. Все компоненты
+   (ASI+server+INI) — **только из одного снапшота**.
+
+Деплой на ARINA (когда в сети): `rdr2_coop.asi` →
+`\\ARINA\Red Dead Redemption 2\scripts\rdr2_coop.asi`, сервер (если нужен
+на ARINA) → `\\ARINA\Red Dead Redemption 2\coop-server\rdr2_coop_server.exe`,
+INI — по разделу INI снапшота.
+
+### Сделанные снапшоты
+
+| label | protocol | ASI | server | commit/tag |
+|---|---|---|---|---|
+| `npc-e7.2` | v18 | `E8971A62` | `C4DD6B1A` | `0625344` / npc-e7.2 |
+| `npc-e7.3` | v18 | `C9BFA565` | `BEC3428B` | `7c2c37a` / npc-e7.3 |
+| `npc-e8` | v19 | `9E3E8D7A` | `E26C715A` | `ce897b5` / npc-e8 |
+| `npc-e8.1` | v19 | `1EB0A633` | `E26C715A` | `1324d00` / npc-e8.1 |
+
+Актуальные hashes/фичи/INI — в `dist\<label>\README.md`; корневой
+README содержит краткую таблицу и ссылки.
+
+### Правило канонических сборок
+
+- `build/` и `build-server/` — **только Lead**; не перезаписывать их
+  WIP-сборками.
+- WIP-сборки — в отдельных каталогах (`build-*` / временные), чтобы
+  случайно не задеплоить неканонический бинарь.
+- `dist/` — локальные снапшоты для отката, в `.gitignore`; в репозиторий
+  не коммитятся.
