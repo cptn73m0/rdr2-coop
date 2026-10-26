@@ -89,6 +89,9 @@ struct Config {
     // E9 (task-142): внешность животных/лошадей (asset/tint 0x1E + horse tack
     // 0x1C). default 0 — текущий random variation (host+guest должны совпадать).
     bool npcAnimalAppearance = false;
+    // E10 (task-148): внешность лошади под NPC-всадником через ActorOutfit
+    // 0x1C с actorId всадника. default 0 — random (host+guest совпадают).
+    bool npcMountAppearance = false;
     // P2 (task-139): частота ActorFrames (10..20 Гц; 10 = старое поведение).
     int npcFrameHz = 15;
     // Адаптивность: все стоят — 10 Гц, есть движущиеся — npc_frame_hz.

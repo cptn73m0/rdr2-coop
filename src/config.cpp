@@ -119,6 +119,8 @@ void WriteDefaultIni()
     fputs("npc_occupants = 1\n", f);
     fputs("# E9: внешность животных/лошадей (0 = random variation).\n", f);
     fputs("npc_animal_appearance = 0\n", f);
+    fputs("# E10: внешность лошади под NPC-всадником (0 = random).\n", f);
+    fputs("npc_mount_appearance = 0\n", f);
     fputs("# P2: частота кадров actor-репликации, Гц (10..20; 10 = старое).\n", f);
     fputs("npc_frame_hz = 15\n", f);
     fputs("# P2: adaptive — стоя 10 Гц, при движении npc_frame_hz (default 1).\n", f);
@@ -226,6 +228,8 @@ void ApplyLine(const std::string& raw, Config& out)
     else if (key == "npc_occupants") out.npcOccupants = AsBool(val);
     else if (key == "npc_animal_appearance")
         out.npcAnimalAppearance = AsBool(val);
+    else if (key == "npc_mount_appearance")
+        out.npcMountAppearance = AsBool(val);
     else if (key == "npc_frame_hz")
     {
         char* end = nullptr;

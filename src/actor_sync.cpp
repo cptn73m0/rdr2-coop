@@ -1774,6 +1774,10 @@ struct RosterEntry
     unsigned int lastHorseTackTick = 0;
     uint32_t horseTackFingerprint = 0;
     bool horseTackSent = false;
+    // E10 (task-148): outfit лошади под mounted NPC-всадником.
+    unsigned int lastMountOutfitTick = 0;
+    uint32_t mountOutfitFingerprint = 0;
+    bool mountOutfitSent = false;
 };
 
 std::map<unsigned int, RosterEntry> g_roster;
@@ -2755,6 +2759,80 @@ void ProcessHostHorseTackCapture(unsigned int tick)
     }
 }
 
+// E10 (task-148): внешность лошади под mounted human-актором. ActorOutfit
+// 0x1C с actorId всадника; guest применяет к mount-прокси, не к всаднику.
+// Budget 1 mounted horse/tick, период ~2 с; heartbeat каждый период (нужен
+// гостю для re-apply после reseat/пересоздания mount-прокси).
+void ProcessHostMountOutfitCapture(unsigned int tick)
+{
+    if (!coopcfg::Get().npcMountAppearance || g_roster.empty())
+        return;
+    // GetMountOf — натив на каждого human; обновляем кандидатов не чаще 1/6.
+    static unsigned int s_lastCandidateTick = 0;
+    if (s_lastCandidateTick != 0 &&
+        tick - s_lastCandidateTick < kDiscoveryPeriodTicks)
+        return;
+    s_lastCandidateTick = tick;
+    static unsigned int s_rotate = 0;
+    std::vector<unsigned int> order;
+    order.reserve(g_roster.size());
+    for (const auto& kv : g_roster)
+    {
+        if (kv.second.kind != net::kActorKindHuman)
+            continue;
+        if (GetMountOf(kv.first) != 0)
+            order.push_back(kv.first);
+    }
+    if (order.empty())
+        return;
+    const unsigned int start =
+        s_rotate % static_cast<unsigned int>(order.size());
+    s_rotate = (s_rotate + 1) % static_cast<unsigned int>(order.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+    {
+        const unsigned int handle =
+            order[(start + static_cast<unsigned int>(i)) % order.size()];
+        auto it = g_roster.find(handle);
+        if (it == g_roster.end())
+            continue;
+        RosterEntry& e = it->second;
+        if (e.kind != net::kActorKindHuman)
+            continue;
+        const bool due = e.lastMountOutfitTick == 0 ||
+                         (tick - e.lastMountOutfitTick) >=
+                             kAppearanceCapturePeriodTicks;
+        if (!due)
+            continue;
+        e.lastMountOutfitTick = tick;
+        if (!DoesExist(handle) || IsDeadPed(handle))
+            continue;
+        const unsigned int mount = GetMountOf(handle);
+        if (!mount || !DoesExist(mount))
+            continue;
+        net::OutfitState os;
+        coop::CollectLocalOutfitForActor(mount, os);
+        if (os.model == 0 || os.count == 0)
+            continue;
+        uint32_t fp = 2166136261u;
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&os);
+        for (std::size_t b = 0; b < sizeof(os); ++b)
+        {
+            fp ^= bytes[b];
+            fp *= 16777619u;
+        }
+        // Шлём при изменении и как heartbeat каждые ~2 с (guest re-apply
+        // после reseat/пересоздания mount-прокси).
+        coop::SendActorOutfit(g_hostEpoch, e.actorId, os);
+        e.mountOutfitFingerprint = fp;
+        e.mountOutfitSent = true;
+        if (coopcfg::Get().npcDebug)
+            sh_log::Write(
+                "actor: mount outfit send actor=%u model=0x%X items=%u\n",
+                e.actorId, os.model, os.count);
+        break; // 1 mounted horse/tick
+    }
+}
+
 void ProcessHostAppearanceCapture(unsigned int tick)
 {
     if (!coopcfg::Get().npcAppearance)
@@ -3006,6 +3084,7 @@ void HostTick(const TickContext& ctx)
     // E9: animal assets/horse tack — отдельные бюджеты, human не блокируют.
     ProcessHostAnimalAppearanceCapture(ctx.tickCount);
     ProcessHostHorseTackCapture(ctx.tickCount);
+    ProcessHostMountOutfitCapture(ctx.tickCount);
 
     // E5: применить урон гостей по roster-акторам (v17 0x1F).
     ProcessActorDamageRequests(ctx);
@@ -3056,6 +3135,14 @@ struct Proxy
     net::OutfitState horseTack{};
     bool pendingHorseTackValid = false;
     net::OutfitState pendingHorseTack{};
+    // E10 (task-148): внешность лошади под NPC-всадником (0x1C actorId=rider).
+    bool mountOutfitApplied = false;
+    net::OutfitState mountOutfit{};
+    unsigned int mountOutfitHandle = 0;
+    bool pendingMountOutfitValid = false;
+    net::OutfitState pendingMountOutfit{};
+    unsigned int pendingMountOutfitAttempts = 0;
+    unsigned int pendingMountOutfitSinceTick = 0;
     unsigned int appearanceAssetsWaitTick = 0;
     unsigned int appearanceAssetsIssuedTick = 0;
     // E2a.2: trail движения (последние ~1 с позиций) и сглаженные
@@ -3250,6 +3337,8 @@ unsigned int g_perfGuestAnimalAppearanceApplied = 0;
 unsigned int g_perfGuestAnimalAppearanceFailed = 0;
 unsigned int g_perfGuestHorseTackApplied = 0;
 unsigned int g_perfGuestHorseTackFailed = 0;
+unsigned int g_perfGuestMountOutfitApplied = 0;
+unsigned int g_perfGuestMountOutfitFailed = 0;
 unsigned int g_motionIssued = 0;
 unsigned int g_motionReissue = 0;
 unsigned int g_motionGaitRestart = 0;
@@ -3662,11 +3751,13 @@ void ProcessActorAppearance(unsigned int tick)
 void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
                               unsigned int tick)
 {
-    if (!coopcfg::Get().npcAnimalAppearance)
+    const bool animalOn = coopcfg::Get().npcAnimalAppearance;
+    const bool mountOn = coopcfg::Get().npcMountAppearance;
+    if (!animalOn && !mountOn)
         return;
-    (void)tick;
 
-    auto apply = [](Proxy& p, const net::OutfitState& os) -> bool {
+    // E9: loose/draft horse (kind=2) — 0x1C actorId самой лошади.
+    auto applyLoose = [](Proxy& p, const net::OutfitState& os) -> bool {
         if (!p.handle || !DoesExist(p.handle) || p.dead || p.kind != 2u)
             return false;
         if (os.count == 0 || os.model == 0)
@@ -3674,7 +3765,7 @@ void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
         if (os.model != p.model)
             return false; // model mismatch — skip
         if (p.appearanceAssetsApplyNeeded)
-            return false; // ждём assets (не randomize раньше)
+            return false; // ждём assets
         const bool assetsApplied =
             !p.appearanceAssets.empty() && !p.appearanceAssetsApplyNeeded;
         if (!assetsApplied && !p.horseTackApplied)
@@ -3685,9 +3776,9 @@ void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
             Init(natives::APPLY_SHOP_ITEM_TO_PED);
             Push(p.handle);
             Push(static_cast<unsigned long long>(os.components[i]));
-            Push(true);  // immediately
-            Push(false); // isMp
-            Push(true);  // p4
+            Push(true);
+            Push(false);
+            Push(true);
             Call();
         }
         CommitMetaPedComponentsEntity(p.handle);
@@ -3702,26 +3793,132 @@ void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
         return true;
     };
 
-    // 1) pending (ждали assets) — каждый тик.
-    for (auto& kv : g_proxies)
-    {
-        Proxy& p = kv.second;
-        if (!p.pendingHorseTackValid)
-            continue;
-        if (p.kind != 2u || p.dead)
+    // E10: mounted NPC-horse (actorId = всадник kind=0, применяем к mount-прокси).
+    auto applyMount = [](Proxy& p, const net::OutfitState& os) -> bool {
+        if (!p.handle || !DoesExist(p.handle) || p.dead ||
+            p.kind != net::kActorKindHuman)
+            return false;
+        if (!p.mountHandle || !DoesExist(p.mountHandle))
+            return false;
+        if (os.count == 0 || os.model == 0)
+            return false;
+        if (os.model != p.mountModel &&
+            os.model != GetModelOf(p.mountHandle))
+            return false; // model mismatch — skip
+        if (p.mountOutfitApplied && p.mountOutfitHandle == p.mountHandle &&
+            os.count == p.mountOutfit.count &&
+            std::memcmp(os.components, p.mountOutfit.components,
+                        sizeof(uint32_t) * net::kMaxOutfitComponents) == 0)
+            return true; // уже применено, heartbeat повторять не надо
+        using namespace natives_api;
+        for (uint32_t i = 0; i < os.count; ++i)
         {
-            p.pendingHorseTackValid = false;
-            continue;
+            Init(natives::APPLY_SHOP_ITEM_TO_PED);
+            Push(p.mountHandle);
+            Push(static_cast<unsigned long long>(os.components[i]));
+            Push(true);
+            Push(false);
+            Push(true);
+            Call();
         }
-        if (p.appearanceAssetsApplyNeeded ||
-            (p.appearanceAssetsIssued == false &&
-             !p.appearanceAssets.empty() && false))
-            continue;
-        if (apply(p, p.pendingHorseTack))
-            break; // 1 actor/tick
+        CommitMetaPedComponentsEntity(p.mountHandle);
+        SetVisible(p.mountHandle);
+        p.mountOutfit = os;
+        p.mountOutfitApplied = true;
+        p.mountOutfitHandle = p.mountHandle;
+        p.pendingMountOutfitValid = false;
+        ++g_perfGuestMountOutfitApplied;
+        if (coopcfg::Get().npcDebug)
+            sh_log::Write(
+                "actor: mount outfit apply actor=%u items=%u ok=1\n",
+                p.actorId, os.count);
+        return true;
+    };
+
+    // 1) pending horse tack (ждали animal assets).
+    if (animalOn)
+    {
+        for (auto& kv : g_proxies)
+        {
+            Proxy& p = kv.second;
+            if (!p.pendingHorseTackValid)
+                continue;
+            if (p.kind != 2u || p.dead)
+            {
+                p.pendingHorseTackValid = false;
+                continue;
+            }
+            if (p.appearanceAssetsApplyNeeded)
+                continue;
+            if (applyLoose(p, p.pendingHorseTack))
+                break; // 1 actor/tick
+        }
     }
 
-    // 2) новые сообщения (последнее на actorId важнее).
+    // 2) pending/retry mount outfit: ждём mounted+mount handle, ≤3 попытки/2 с;
+    //    после reseat/пересоздания mount-прокси — переприменяем сохранённый outfit.
+    if (mountOn)
+    {
+        for (auto& kv : g_proxies)
+        {
+            Proxy& p = kv.second;
+            if (!p.pendingMountOutfitValid)
+            {
+                // reseat: mount handle пересоздан — переприменить сохранённое.
+                if (p.mountOutfitApplied && p.mountHandle &&
+                    p.mountHandle != p.mountOutfitHandle)
+                {
+                    p.pendingMountOutfit = p.mountOutfit;
+                    p.pendingMountOutfitValid = true;
+                    p.pendingMountOutfitAttempts = 0;
+                    p.pendingMountOutfitSinceTick = tick;
+                    p.mountOutfitApplied = false;
+                }
+                continue;
+            }
+            if (p.dead || p.kind != net::kActorKindHuman)
+            {
+                p.pendingMountOutfitValid = false;
+                continue;
+            }
+            if (!p.mounted || !p.mountHandle || !DoesExist(p.mountHandle))
+            {
+                // Ждём появления mount-прокси до 2 с (attempts только на
+                // реальных apply-попытках, не на ожидании).
+                if (p.pendingMountOutfitSinceTick != 0 &&
+                    tick - p.pendingMountOutfitSinceTick > 120)
+                {
+                    p.pendingMountOutfitValid = false;
+                    ++g_perfGuestMountOutfitFailed;
+                    if (coopcfg::Get().npcDebug)
+                        sh_log::Write(
+                            "actor: mount outfit apply actor=%u items=%u ok=0\n",
+                            p.actorId, p.pendingMountOutfit.count);
+                }
+                continue;
+            }
+            if (applyMount(p, p.pendingMountOutfit))
+                break; // 1 actor/tick
+            ++p.pendingMountOutfitAttempts;
+            if (p.pendingMountOutfitAttempts >= 3 ||
+                (p.pendingMountOutfitSinceTick != 0 &&
+                 tick - p.pendingMountOutfitSinceTick > 120))
+            {
+                p.pendingMountOutfitValid = false;
+                ++g_perfGuestMountOutfitFailed;
+                if (coopcfg::Get().npcDebug)
+                    sh_log::Write(
+                        "actor: mount outfit apply actor=%u items=%u ok=0\n",
+                        p.actorId, p.pendingMountOutfit.count);
+            }
+            else
+            {
+                break; // попробуем в следующем тике
+            }
+        }
+    }
+
+    // 3) новые сообщения (последнее на actorId важнее).
     for (HorseOutfitMsg& m : msgs)
     {
         if (!m.actorId)
@@ -3730,24 +3927,28 @@ void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
         if (it == g_proxies.end())
             continue;
         Proxy& p = it->second;
-        if (p.kind != 2u || p.dead || !p.handle || !DoesExist(p.handle))
+        if (p.dead)
             continue;
-        if (p.appearanceAssetsApplyNeeded)
+
+        if (p.kind == 2u)
         {
-            p.pendingHorseTackValid = true;
-            p.pendingHorseTack = m.outfit;
-            continue;
-        }
-        if (p.horseTackApplied)
-        {
-            // samme items — период 2 с; повторный apply не нужен.
-            if (m.outfit.count == p.horseTack.count &&
-                std::memcmp(m.outfit.components, p.horseTack.components,
-                            sizeof(uint32_t) * net::kMaxOutfitComponents) == 0)
+            if (!animalOn || !p.handle || !DoesExist(p.handle))
                 continue;
-        }
-        if (m.outfit.model != p.model || m.outfit.count == 0)
-        {
+            if (p.appearanceAssetsApplyNeeded)
+            {
+                p.pendingHorseTackValid = true;
+                p.pendingHorseTack = m.outfit;
+                continue;
+            }
+            if (p.horseTackApplied)
+            {
+                if (m.outfit.count == p.horseTack.count &&
+                    std::memcmp(m.outfit.components, p.horseTack.components,
+                                sizeof(uint32_t) * net::kMaxOutfitComponents) == 0)
+                    continue;
+            }
+            if (applyLoose(p, m.outfit))
+                break; // 1 actor/tick
             ++g_perfGuestHorseTackFailed;
             if (coopcfg::Get().npcDebug)
                 sh_log::Write(
@@ -3755,12 +3956,35 @@ void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
                     m.actorId, m.outfit.count);
             continue;
         }
-        if (apply(p, m.outfit))
+
+        // kind=0 mounted: actorId всадника, outfit относится к его лошади.
+        if (!mountOn)
+            continue;
+        if (!p.mounted || !p.mountHandle || !DoesExist(p.mountHandle))
+        {
+            p.pendingMountOutfit = m.outfit;
+            p.pendingMountOutfitValid = true;
+            p.pendingMountOutfitAttempts = 0;
+            p.pendingMountOutfitSinceTick = tick;
+            continue;
+        }
+        if (m.outfit.model != p.mountModel &&
+            m.outfit.model != GetModelOf(p.mountHandle))
+        {
+            ++g_perfGuestMountOutfitFailed;
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write(
+                    "actor: mount outfit apply actor=%u items=%u ok=0\n",
+                    m.actorId, m.outfit.count);
+            continue;
+        }
+        if (applyMount(p, m.outfit))
             break; // 1 actor/tick
-        ++g_perfGuestHorseTackFailed;
-        if (coopcfg::Get().npcDebug)
-            sh_log::Write("actor: horse tack apply id=%u items=%u ok=0\n",
-                          m.actorId, m.outfit.count);
+        p.pendingMountOutfit = m.outfit;
+        p.pendingMountOutfitValid = true;
+        p.pendingMountOutfitAttempts = 0;
+        p.pendingMountOutfitSinceTick = tick;
+        break;
     }
     msgs.clear();
 }
@@ -6229,6 +6453,14 @@ void GuestTick(const TickContext& ctx)
             g_perfGuestHorseTackApplied = 0;
             g_perfGuestHorseTackFailed = 0;
         }
+        if (g_perfGuestMountOutfitApplied || g_perfGuestMountOutfitFailed)
+        {
+            sh_log::Write("actor: guest mount outfit applied=%u failed=%u\n",
+                          g_perfGuestMountOutfitApplied,
+                          g_perfGuestMountOutfitFailed);
+            g_perfGuestMountOutfitApplied = 0;
+            g_perfGuestMountOutfitFailed = 0;
+        }
         g_appliedFrames = 0;
         g_timeouts = 0;
         // E2a.2: motion issued/reissue/gait_restart + err_p95 — только при
@@ -6659,8 +6891,9 @@ void OnActorOutfit(uint32_t epoch, uint32_t actorId,
     if (!coopcfg::Get().npcActor) return;
     std::lock_guard<std::mutex> lk(g_inboxMutex);
     ++g_inbox.outfits;
-    if (coopcfg::Get().npcAnimalAppearance && actorId &&
-        outfit.count > 0 &&
+    if ((coopcfg::Get().npcAnimalAppearance ||
+         coopcfg::Get().npcMountAppearance) &&
+        actorId && outfit.count > 0 &&
         g_inbox.horseOutfits.size() < 32)
     {
         HorseOutfitMsg msg;
