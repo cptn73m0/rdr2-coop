@@ -95,6 +95,13 @@ public:
         uint32_t epoch, uint32_t actorId, uint16_t damage, uint32_t weaponHash)>;
     // E6 (v18): UI-статус другого игрока (карта/пауза/сатчель/магазин).
     using OnPlayerPresence = std::function<void(uint32_t epoch, uint16_t flags)>;
+    // E3d-c (v19): occupants транспорта от хоста (гость).
+    using OnVehicleOccupants = std::function<void(
+        uint32_t vehicleNetId,
+        const std::vector<net::VehicleOccupantEntry>& entries)>;
+    // E3d-b (v19): снимок поезда/состава v2 от хоста (гость).
+    using OnTrainSnapshotV2 = std::function<void(
+        const net::TrainSnapshotV2Payload& payload)>;
 
     Client();
     ~Client();
@@ -156,6 +163,13 @@ public:
     // любой роль; сервер релеит ДРУГОМУ игроку. flags маскируются известными
     // битами; 0 = нет статуса. Возвращает false до JOIN_OK/при epoch=0.
     bool SendPlayerPresence(uint32_t epoch, uint16_t flags);
+    // E3d-c (v19): отправить occupants транспорта (хост). count 0 — очистить
+    // occupants; entries клампится до kMaxVehicleOccupants.
+    void SendVehicleOccupants(
+        uint32_t vehicleNetId,
+        const std::vector<net::VehicleOccupantEntry>& entries);
+    // E3d-b (v19): отправить снимок поезда/состава v2 (хост).
+    void SendTrainSnapshotV2(const net::TrainSnapshotV2Payload& payload);
     // Текущее состояние роли по мнению сервера (обновляется HostChanged).
     bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
@@ -191,6 +205,8 @@ public:
     void SetActorResyncRequest(OnActorResyncRequest cb);
     void SetActorDamageRequest(OnActorDamageRequest cb);
     void SetPlayerPresence(OnPlayerPresence cb);
+    void SetVehicleOccupants(OnVehicleOccupants cb);
+    void SetTrainSnapshotV2(OnTrainSnapshotV2 cb);
 
     ClientState State() const;
 
@@ -249,6 +265,8 @@ private:
     OnActorResyncRequest onActorResyncRequest_;
     OnActorDamageRequest onActorDamageRequest_;
     OnPlayerPresence onPlayerPresence_;
+    OnVehicleOccupants onVehicleOccupants_;
+    OnTrainSnapshotV2 onTrainSnapshotV2_;
     std::atomic<bool> joined_{false};
     std::atomic<bool> isHost_{false};
     std::atomic<uint32_t> rttMs_{0};

@@ -321,6 +321,59 @@ bool ParsePlayerPresence(const std::vector<uint8_t>& p,
     return (out.flags & ~net::kPlayerPresenceKnownFlags) == 0;
 }
 
+// E3d-c (v19): occupants транспорта. Точный размер 8+count*8, count 0..8,
+// vehicleNetId != 0; записи: actorId != 0, seat -1..8, carIndex<=16,
+// harness<=5, только известные флаги.
+bool ParseVehicleOccupants(const std::vector<uint8_t>& p,
+                           uint32_t& outVehicleNetId,
+                           std::vector<net::VehicleOccupantEntry>& out)
+{
+    if (p.size() < sizeof(net::VehicleOccupantsHeader)) return false;
+    net::VehicleOccupantsHeader h{};
+    std::memcpy(&h, p.data(), sizeof(h));
+    if (h.vehicleNetId == 0) return false;
+    if (h.count > net::kMaxVehicleOccupants) return false;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.count) * sizeof(net::VehicleOccupantEntry);
+    if (p.size() != need) return false;
+    const uint8_t* data = p.data() + sizeof(h);
+    out.clear();
+    out.reserve(h.count);
+    for (uint8_t i = 0; i < h.count; ++i)
+    {
+        net::VehicleOccupantEntry e{};
+        std::memcpy(&e, data + static_cast<std::size_t>(i) * sizeof(e),
+                    sizeof(e));
+        if (e.actorId == 0) return false;
+        if (e.seat < net::kMinVehicleSeat || e.seat > net::kMaxVehicleSeat)
+            return false;
+        if ((e.flags & ~net::kVehicleOccupantKnownFlags) != 0) return false;
+        if (e.carIndex > net::kMaxVehicleCarIndex) return false;
+        if (e.harness > net::kMaxDraftHarness) return false;
+        out.push_back(e);
+    }
+    outVehicleNetId = h.vehicleNetId;
+    return true;
+}
+
+// E3d-b (v19): поезд/состав v2. Точный размер 48, epoch/trainId != 0,
+// carCount 1..kMaxTrainCars, speed -40..40, координаты конечны, флаги известны.
+bool ParseTrainSnapshotV2(const std::vector<uint8_t>& p,
+                          net::TrainSnapshotV2Payload& out)
+{
+    if (p.size() != sizeof(net::TrainSnapshotV2Payload)) return false;
+    std::memcpy(&out, p.data(), sizeof(out));
+    if (out.epoch == 0 || out.trainId == 0) return false;
+    if (out.carCount < 1 || out.carCount > net::kMaxTrainCars) return false;
+    if (!std::isfinite(out.speed) || out.speed < net::kMinTrainSpeed ||
+        out.speed > net::kMaxTrainSpeed)
+        return false;
+    if (!IsFiniteCoord(out.x) || !IsFiniteCoord(out.y) ||
+        !IsFiniteCoord(out.z) || !IsFiniteCoord(out.heading))
+        return false;
+    return (out.flags & ~net::kTrainSnapshotV2KnownFlags) == 0;
+}
+
 } // namespace
 
 Client::Client() = default;
@@ -389,6 +442,8 @@ void Client::SetActorAppearance(OnActorAppearance cb) { onActorAppearance_ = std
 void Client::SetActorResyncRequest(OnActorResyncRequest cb) { onActorResyncRequest_ = std::move(cb); }
 void Client::SetActorDamageRequest(OnActorDamageRequest cb) { onActorDamageRequest_ = std::move(cb); }
 void Client::SetPlayerPresence(OnPlayerPresence cb) { onPlayerPresence_ = std::move(cb); }
+void Client::SetVehicleOccupants(OnVehicleOccupants cb) { onVehicleOccupants_ = std::move(cb); }
+void Client::SetTrainSnapshotV2(OnTrainSnapshotV2 cb) { onTrainSnapshotV2_ = std::move(cb); }
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -679,6 +734,38 @@ bool Client::SendPlayerPresence(uint32_t epoch, uint16_t flags)
     return SendRaw(MakeFrame((uint8_t)net::Msg::PlayerPresence,
                              reinterpret_cast<const uint8_t*>(&msg),
                              static_cast<uint32_t>(sizeof(msg))));
+}
+
+void Client::SendVehicleOccupants(
+    uint32_t vehicleNetId,
+    const std::vector<net::VehicleOccupantEntry>& entries)
+{
+    // E3d-c (v19): 0x21 — хост -> сервер -> гостю. count 0 — очистить
+    // occupants; count клампится до kMaxVehicleOccupants.
+    if (vehicleNetId == 0) return;
+    uint8_t count = static_cast<uint8_t>(entries.size());
+    if (count > static_cast<uint8_t>(net::kMaxVehicleOccupants))
+        count = static_cast<uint8_t>(net::kMaxVehicleOccupants);
+    std::vector<uint8_t> pay(sizeof(net::VehicleOccupantsHeader) +
+        static_cast<std::size_t>(count) * sizeof(net::VehicleOccupantEntry));
+    net::VehicleOccupantsHeader h{};
+    h.vehicleNetId = vehicleNetId;
+    h.count = count;
+    std::memcpy(pay.data(), &h, sizeof(h));
+    for (uint8_t i = 0; i < count; ++i)
+        std::memcpy(pay.data() + sizeof(h) +
+                        static_cast<std::size_t>(i) * sizeof(net::VehicleOccupantEntry),
+                    &entries[i], sizeof(net::VehicleOccupantEntry));
+    SendRaw(MakeFrame((uint8_t)net::Msg::VehicleOccupants,
+                      pay.data(), static_cast<uint32_t>(pay.size())));
+}
+
+void Client::SendTrainSnapshotV2(const net::TrainSnapshotV2Payload& payload)
+{
+    // E3d-b (v19): 0x22 — хост -> сервер -> гостю (48 B, байт-в-байт).
+    SendRaw(MakeFrame((uint8_t)net::Msg::TrainSnapshotV2,
+                      reinterpret_cast<const uint8_t*>(&payload),
+                      static_cast<uint32_t>(sizeof(payload))));
 }
 
 void Client::SendShot(const net::ShotPayload& sp)
@@ -1088,6 +1175,22 @@ bool Client::RunOnce()
                 net::PlayerPresencePayload req{};
                 if (ParsePlayerPresence(p, req) && onPlayerPresence_)
                     onPlayerPresence_(req.epoch, req.flags);
+                break;
+            }
+            case net::Msg::VehicleOccupants:
+            {
+                uint32_t vid = 0;
+                std::vector<net::VehicleOccupantEntry> entries;
+                if (ParseVehicleOccupants(p, vid, entries) &&
+                    onVehicleOccupants_)
+                    onVehicleOccupants_(vid, entries);
+                break;
+            }
+            case net::Msg::TrainSnapshotV2:
+            {
+                net::TrainSnapshotV2Payload ts{};
+                if (ParseTrainSnapshotV2(p, ts) && onTrainSnapshotV2_)
+                    onTrainSnapshotV2_(ts);
                 break;
             }
             case net::Msg::PlayerJoined:

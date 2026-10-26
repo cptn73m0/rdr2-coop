@@ -63,6 +63,12 @@ struct OnlinePlayer {
     // E6 (v18): окно rate-limit для PlayerPresence (0x20), защищено g_mutex.
     uint64_t presenceWindowMs = 0;
     int presenceCount = 0;
+    // E3d-b/E3d-c (v19): окна rate-limit для VehicleOccupants (0x21) и
+    // TrainSnapshotV2 (0x22), защищены g_mutex.
+    uint64_t occupantsWindowMs = 0;
+    int occupantsCount = 0;
+    uint64_t trainV2WindowMs = 0;
+    int trainV2Count = 0;
     // Host migration hardening: время последнего игрового (не Ping) сообщения
     // от этого клиента (мс). Если isHost и с этого момента прошло больше
     // g_hostGameTimeoutMs — хост считается зависшим и мигрирует.
@@ -103,6 +109,10 @@ constexpr int kMaxNewConnectionsPerIpPerSecond = 12;
 constexpr int kMaxActorDamagePerSecond = 32;
 // E6 (v18): UI-статус — не больше N сообщений (0x20) в секунду от клиента.
 constexpr int kMaxPlayerPresencePerSecond = 10;
+// E3d-c (v19): occupants — не больше 20 сообщений (0x21) в секунду с клиента.
+constexpr int kMaxVehicleOccupantsPerSecond = 20;
+// E3d-b (v19): поезд v2 — не больше 4 сообщений (0x22) в секунду с клиента.
+constexpr int kMaxTrainSnapshotV2PerSecond = 4;
 std::mutex g_rateMutex;
 struct IpRate
 {
@@ -502,6 +512,66 @@ bool IsValidPlayerPresence(const std::vector<uint8_t>& pay)
     if (msg.epoch == 0)
         return false;
     return (msg.flags & ~net::kPlayerPresenceKnownFlags) == 0;
+}
+
+// E3d-c (v19): occupants транспорта. Точный размер 8+count*8, count 0..8,
+// vehicleNetId != 0; каждая запись: actorId != 0, seat -1..8, carIndex <=16,
+// harness <=5, только известные флаги.
+bool IsValidVehicleOccupants(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() < sizeof(net::VehicleOccupantsHeader))
+        return false;
+    net::VehicleOccupantsHeader h{};
+    std::memcpy(&h, pay.data(), sizeof(h));
+    if (h.vehicleNetId == 0)
+        return false;
+    if (h.count > net::kMaxVehicleOccupants)
+        return false;
+    const std::size_t need = sizeof(h) +
+        static_cast<std::size_t>(h.count) * sizeof(net::VehicleOccupantEntry);
+    if (pay.size() != need)
+        return false;
+    const uint8_t* data = pay.data() + sizeof(h);
+    for (uint8_t i = 0; i < h.count; ++i)
+    {
+        net::VehicleOccupantEntry e{};
+        std::memcpy(&e, data + static_cast<std::size_t>(i) * sizeof(e),
+                    sizeof(e));
+        if (e.actorId == 0)
+            return false;
+        if (e.seat < net::kMinVehicleSeat || e.seat > net::kMaxVehicleSeat)
+            return false;
+        if ((e.flags & ~net::kVehicleOccupantKnownFlags) != 0)
+            return false;
+        if (e.carIndex > net::kMaxVehicleCarIndex)
+            return false;
+        if (e.harness > net::kMaxDraftHarness)
+            return false;
+    }
+    return true;
+}
+
+// E3d-b (v19): поезд/состав v2. Точный размер 48, epoch/trainId != 0,
+// carCount 1..kMaxTrainCars, speed -40..40, координаты конечны, известные флаги.
+bool IsValidTrainSnapshotV2(const std::vector<uint8_t>& pay)
+{
+    if (pay.size() != sizeof(net::TrainSnapshotV2Payload))
+        return false;
+    net::TrainSnapshotV2Payload p{};
+    std::memcpy(&p, pay.data(), sizeof(p));
+    if (p.epoch == 0 || p.trainId == 0)
+        return false;
+    if (p.carCount < 1 || p.carCount > net::kMaxTrainCars)
+        return false;
+    if (!std::isfinite(p.speed) || p.speed < net::kMinTrainSpeed ||
+        p.speed > net::kMaxTrainSpeed)
+        return false;
+    if (!IsFiniteActorCoord(p.x) || !IsFiniteActorCoord(p.y) ||
+        !IsFiniteActorCoord(p.z) || !IsFiniteActorCoord(p.heading))
+        return false;
+    if ((p.flags & ~net::kTrainSnapshotV2KnownFlags) != 0)
+        return false;
+    return true;
 }
 
 bool IsValidActorResync(const std::vector<uint8_t>& pay)
@@ -1481,6 +1551,88 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                     if (kv.second.sock && kv.second.sock != sock)
                         kv.second.sock->Send(msg.data(), (int)msg.size());
                 }
+                break;
+            }
+            case net::Msg::VehicleOccupants:
+            {
+                // E3d-c (v19): occupants — только хост -> сервер -> гостю,
+                // байт-в-байт; флуд-лимит kMaxVehicleOccupantsPerSecond/с.
+                if (!IsValidVehicleOccupants(pay))
+                    break;
+                bool senderIsHost = false;
+                bool allowed = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    auto it = g_online.find(name);
+                    if (it != g_online.end())
+                    {
+                        senderIsHost = it->second.isHost;
+                        if (senderIsHost)
+                        {
+                            const uint64_t now = NowMs();
+                            if (it->second.occupantsWindowMs == 0 ||
+                                now - it->second.occupantsWindowMs >= 1000)
+                            {
+                                it->second.occupantsWindowMs = now;
+                                it->second.occupantsCount = 0;
+                            }
+                            if (it->second.occupantsCount <
+                                kMaxVehicleOccupantsPerSecond)
+                            {
+                                ++it->second.occupantsCount;
+                                allowed = true;
+                            }
+                        }
+                    }
+                }
+                if (!senderIsHost)
+                    LogWarn("[!] " + name +
+                            ": VehicleOccupants от не-хоста проигнорирован");
+                else if (allowed)
+                    BroadcastToOthers(sock, MakeMsg(
+                        (uint8_t)net::Msg::VehicleOccupants,
+                        pay.data(), static_cast<uint32_t>(pay.size())));
+                break;
+            }
+            case net::Msg::TrainSnapshotV2:
+            {
+                // E3d-b (v19): поезд v2 — только хост -> сервер -> гостю,
+                // байт-в-байт; флуд-лимит kMaxTrainSnapshotV2PerSecond/с.
+                if (!IsValidTrainSnapshotV2(pay))
+                    break;
+                bool senderIsHost = false;
+                bool allowed = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    auto it = g_online.find(name);
+                    if (it != g_online.end())
+                    {
+                        senderIsHost = it->second.isHost;
+                        if (senderIsHost)
+                        {
+                            const uint64_t now = NowMs();
+                            if (it->second.trainV2WindowMs == 0 ||
+                                now - it->second.trainV2WindowMs >= 1000)
+                            {
+                                it->second.trainV2WindowMs = now;
+                                it->second.trainV2Count = 0;
+                            }
+                            if (it->second.trainV2Count <
+                                kMaxTrainSnapshotV2PerSecond)
+                            {
+                                ++it->second.trainV2Count;
+                                allowed = true;
+                            }
+                        }
+                    }
+                }
+                if (!senderIsHost)
+                    LogWarn("[!] " + name +
+                            ": TrainSnapshotV2 от не-хоста проигнорирован");
+                else if (allowed)
+                    BroadcastToOthers(sock, MakeMsg(
+                        (uint8_t)net::Msg::TrainSnapshotV2,
+                        pay.data(), static_cast<uint32_t>(pay.size())));
                 break;
             }
             case net::Msg::ActorResync:

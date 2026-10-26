@@ -17,7 +17,9 @@ namespace net {
 // v17 (E5): ActorDamage — запрос урона по NPC от гостя хосту (host-authoritative).
 // v18 (E6): PlayerPresence — UI-статус игрока (карта/пауза/сатчель/магазин),
 //           релеится сервером другому игроку (любое направление, без эха).
-constexpr uint16_t kProtocolVersion = 18;
+// v19 (E3d-b/E3d-c): VehicleOccupants — водители/пассажиры транспорта,
+//           TrainSnapshotV2 — поезд/состав (хост -> сервер -> гость).
+constexpr uint16_t kProtocolVersion = 19;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -69,6 +71,10 @@ enum class Msg : uint8_t {
     ActorDamage     = 0x1F, // гость -> сервер -> хосту: урон по актёру
     // E6 (v18): UI-статус игрока — любой клиент -> сервер -> другому клиенту.
     PlayerPresence  = 0x20, // клиент -> сервер -> другому клиенту: UI-статус
+    // E3d-c (v19): водители/пассажиры транспорта — только хост -> гость.
+    VehicleOccupants = 0x21, // хост -> сервер -> гость: occupants/всадники
+    // E3d-b (v19): поезд/состав v2 — только хост -> сервер -> гость.
+    TrainSnapshotV2  = 0x22, // хост -> сервер -> гость: поезд/вагоны
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -575,6 +581,82 @@ struct PlayerPresencePayload {
 };
 static_assert(sizeof(PlayerPresencePayload) == 8,
               "PlayerPresencePayload must be 8 bytes");
+
+// ---------------- E3d-c (v19): пассажиры/водители транспорта ----------------
+// Хост сообщает состав транспорта (кто за рулём/пассажир/всадник-поводырь).
+// Сервер релеит ТОЛЬКО гостю, байт-в-байт; count=0 — очистить occupants.
+constexpr int kMaxVehicleOccupants = 8;
+// Флаги записи: 1 = водитель, 2 = пассажир, 4 = всадник/лошадь-поводырь.
+constexpr uint8_t kOccupantFlagDriver     = 1u << 0;
+constexpr uint8_t kOccupantFlagPassenger  = 1u << 1;
+constexpr uint8_t kOccupantFlagDraftHorse = 1u << 2;
+constexpr uint8_t kVehicleOccupantKnownFlags =
+    kOccupantFlagDriver | kOccupantFlagPassenger | kOccupantFlagDraftHorse;
+// seat: -1 (нет места) .. 8; carIndex: 0..16 (поезда); harness: 0..5 (draft).
+constexpr int kMinVehicleSeat = -1;
+constexpr int kMaxVehicleSeat = 8;
+constexpr int kMaxVehicleCarIndex = 16;
+constexpr int kMaxDraftHarness = 5;
+
+struct VehicleOccupantsHeader {
+    uint32_t vehicleNetId = 0;
+    uint8_t  count = 0; // 0..kMaxVehicleOccupants
+    uint8_t  pad[3] = {0, 0, 0};
+};
+static_assert(sizeof(VehicleOccupantsHeader) == 8,
+              "VehicleOccupantsHeader must be 8 bytes");
+
+struct VehicleOccupantEntry {
+    uint32_t actorId = 0;
+    int8_t   seat = -1;   // -1..8
+    uint8_t  flags = 0;   // kOccupantFlag*
+    uint8_t  carIndex = 0; // 0..16
+    uint8_t  harness = 0; // 0..5
+};
+static_assert(sizeof(VehicleOccupantEntry) == 8,
+              "VehicleOccupantEntry must be 8 bytes");
+// payload = header + count * entry; максимум 8 + 8*8 = 72.
+constexpr std::size_t kVehicleOccupantsMaxSize =
+    sizeof(VehicleOccupantsHeader) +
+    kMaxVehicleOccupants * sizeof(VehicleOccupantEntry);
+static_assert(kVehicleOccupantsMaxSize == 72,
+              "VehicleOccupants max payload must be 72 bytes");
+
+// ---------------- E3d-b (v19): поезд/состав v2 ----------------
+// Хост реплицирует состояние поезда (head + вагоны описываются carCount).
+// Сервер релеит ТОЛЬКО гостю, байт-в-байт.
+constexpr uint8_t kTrainFlagWaitingAtStation = 1u << 0;
+constexpr uint8_t kTrainFlagHalted           = 1u << 1;
+constexpr uint8_t kTrainFlagReversing        = 1u << 2;
+constexpr uint8_t kTrainFlagPlayerAboard     = 1u << 3;
+constexpr uint8_t kTrainSnapshotV2KnownFlags =
+    kTrainFlagWaitingAtStation | kTrainFlagHalted |
+    kTrainFlagReversing | kTrainFlagPlayerAboard;
+constexpr float kMinTrainSpeed = -40.0f;
+constexpr float kMaxTrainSpeed = 40.0f;
+
+// Раскладка: 3*u32 + 4*u8 + 5*f32 + u32 = 40 B + 8 B хвостового резерва = 48 B.
+// В ТЗ перечислено полей на 44 B (pad2[4]); чтобы соответствовать явно
+// зафиксированному размеру 48 B, хвостовой резерв расширен до pad2[8]
+// (последние 4 байта остаются нулевыми). При изменении сверять с сервером.
+struct TrainSnapshotV2Payload {
+    uint32_t epoch = 0;
+    uint32_t trainId = 0;
+    uint32_t configHash = 0;
+    uint8_t  flags = 0;         // kTrainFlag*
+    uint8_t  stationIndex = 0;
+    uint8_t  carCount = 0;      // 1..kMaxTrainCars
+    uint8_t  pad = 0;
+    float    speed = 0.f;       // -40..40
+    float    x = 0.f;
+    float    y = 0.f;
+    float    z = 0.f;
+    float    heading = 0.f;
+    uint32_t trackIndex = 0;
+    uint8_t  pad2[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+};
+static_assert(sizeof(TrainSnapshotV2Payload) == 48,
+              "TrainSnapshotV2Payload must be 48 bytes");
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

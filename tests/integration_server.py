@@ -215,16 +215,18 @@ for _limit_name, (_actual, _expected) in _PINNED_LIMITS.items():
 KNOWN_FAIL_TESTS = set()
 
 # --------------------------------------------------------------------------
-# Protocol v15 (E0) + v16 (E2c-b) + v17 (E5) + v18 (E6): actor replication and
-# presence messages 0x18..0x20. The v15 wire format is signed off in the
-# net-review E0 task; v16 ActorAppearance / v17 ActorDamage / v18 PlayerPresence
-# extensions are signed off in the E2c-b / E5 / E6 tasks. These tests are
+# Protocol v15 (E0) + v16 (E2c-b) + v17 (E5) + v18 (E6) + v19 (E3d-b/c):
+# actor replication, presence and traffic messages 0x18..0x22. The v15 wire
+# format is signed off in the net-review E0 task; v16 ActorAppearance / v17
+# ActorDamage / v18 PlayerPresence / v19 VehicleOccupants+TrainSnapshotV2
+# extensions are signed off in the E2c-b / E5 / E6 / E3d tasks. These tests are
 # skipped while net/protocol.h is still v14 (E0 not merged) and become strict
 # automatically once the header carries the messages. Expected values below are
 # pinned to the spec: spawn 64 B, frame 32 B, max 12 actors, batch sizes
 # 776/392 B, despawn/resync 12 B, event 32 B, outfit 792 B, appearance header
 # 12 B + entry 28 B (max 12 + 16*28 = 460 B, 16 компонентов), damage 16 B,
-# player presence 8 B.
+# player presence 8 B, vehicle occupants header 8 B + entry 8 B (max 72 B),
+# train snapshot v2 48 B.
 # --------------------------------------------------------------------------
 _ACTOR_MSG_PINS = {
     "ActorSpawnBatch": 0x18,
@@ -428,6 +430,67 @@ PRESENCE_TESTS = {
     "test_player_presence_validation",
 }
 
+# --------------------------------------------------------------------------
+# Protocol v19 (E3d-b/E3d-c): VehicleOccupants (0x21) + TrainSnapshotV2 (0x22).
+# 0x21: header 8 B {vehicleNetId u32, count u8, pad[3]} + count*8 B entries
+# {actorId u32, seat i8, flags u8, carIndex u8, harness u8}; count 0..8,
+# max payload 8+8*8 = 72 B; host-only relay, byte-identical.
+# 0x22: 48 B {epoch,trainId,configHash u32; flags/stationIndex/carCount/pad u8;
+# speed,x,y,z,heading f32; trackIndex u32; pad2[8]}; host-only relay.
+# --------------------------------------------------------------------------
+TRAFFIC_AVAILABLE = False
+TYPE_VEHICLE_OCCUPANTS = None
+TYPE_TRAIN_V2 = None
+OCCUPANTS_HEADER_SIZE = 0
+OCCUPANT_ENTRY_SIZE = 0
+OCCUPANTS_MAX = 0
+MAX_OCCUPANTS = 0
+TRAIN_V2_SIZE = 0
+if PROTO >= 19:
+    _missing_traffic = [name for name in ("VehicleOccupants", "TrainSnapshotV2")
+                        if name not in MSG]
+    for _name in ("VehicleOccupantsHeader", "VehicleOccupantEntry",
+                  "TrainSnapshotV2Payload"):
+        if _struct_size_optional(_name) is None:
+            _missing_traffic.append(_name)
+    _max_occ = _proto_const_optional("kMaxVehicleOccupants")
+    if _missing_traffic or _max_occ is None:
+        raise RuntimeError(
+            "protocol v19 is present but E3d traffic spec is incomplete: "
+            f"missing={_missing_traffic}, kMaxVehicleOccupants={_max_occ}")
+    require(MSG["VehicleOccupants"] == 0x21,
+            f"Msg::VehicleOccupants expected 0x21, "
+            f"got {MSG['VehicleOccupants']}")
+    require(MSG["TrainSnapshotV2"] == 0x22,
+            f"Msg::TrainSnapshotV2 expected 0x22, "
+            f"got {MSG['TrainSnapshotV2']}")
+    require(_struct_size("VehicleOccupantsHeader") == 8,
+            "VehicleOccupantsHeader expected 8 B (v19 spec)")
+    require(_struct_size("VehicleOccupantEntry") == 8,
+            "VehicleOccupantEntry expected 8 B (v19 spec)")
+    require(_struct_size("TrainSnapshotV2Payload") == 48,
+            "TrainSnapshotV2Payload expected 48 B (v19 spec)")
+    MAX_OCCUPANTS = _max_occ
+    require(MAX_OCCUPANTS == 8,
+            f"kMaxVehicleOccupants expected 8, got {MAX_OCCUPANTS}")
+    OCCUPANTS_MAX = 8 + MAX_OCCUPANTS * 8
+    require(OCCUPANTS_MAX == 72,
+            f"VehicleOccupants max expected 72 B, got {OCCUPANTS_MAX}")
+    OCCUPANTS_HEADER_SIZE = 8
+    OCCUPANT_ENTRY_SIZE = 8
+    TRAIN_V2_SIZE = 48
+    TYPE_VEHICLE_OCCUPANTS = MSG["VehicleOccupants"]
+    TYPE_TRAIN_V2 = MSG["TrainSnapshotV2"]
+    TRAFFIC_AVAILABLE = True
+
+# Names of the conditional v19 E3d traffic tests (skipped while v19 missing).
+TRAFFIC_TESTS = {
+    "test_vehicle_occupants_host_only",
+    "test_vehicle_occupants_validation",
+    "test_train_v2_host_only",
+    "test_train_v2_validation",
+}
+
 # 50-100 rounds of the JOIN race per task; overridable for slow CI.
 JOIN_RACE_ITERS = int(os.environ.get("RDR2_JOIN_RACE_ITERS", "50"))
 
@@ -600,6 +663,43 @@ def player_presence(epoch=1, flags=1, pad=0):
     require(len(payload) == PLAYER_PRESENCE_SIZE,
             f"PlayerPresence builder mismatch: "
             f"{len(payload)} != {PLAYER_PRESENCE_SIZE}")
+    return payload
+
+
+def occupant(actor_id=1, seat=0, flags=1, car_index=0, harness=0):
+    require(TRAFFIC_AVAILABLE,
+            "v19 VehicleOccupants is not in net/protocol.h yet")
+    rec = struct.pack("<IbBBB", actor_id, seat, flags, car_index, harness)
+    require(len(rec) == OCCUPANT_ENTRY_SIZE,
+            f"VehicleOccupantEntry builder mismatch: "
+            f"{len(rec)} != {OCCUPANT_ENTRY_SIZE}")
+    return rec
+
+
+def vehicle_occupants(vehicle_net_id=1, entries=None):
+    require(TRAFFIC_AVAILABLE,
+            "v19 VehicleOccupants is not in net/protocol.h yet")
+    entries = list(entries or [])
+    header = struct.pack("<IB3x", vehicle_net_id, len(entries))
+    require(len(header) == OCCUPANTS_HEADER_SIZE,
+            "VehicleOccupants header must be 8 B")
+    return header + b"".join(entries)
+
+
+def train_v2(epoch=1, train_id=1, config_hash=0x12345678, flags=0,
+             station_index=0, car_count=3, speed=5.0,
+             x=1.0, y=2.0, z=3.0, heading=90.0, track_index=1,
+             pad2=b"\x00" * 8):
+    require(TRAFFIC_AVAILABLE,
+            "v19 TrainSnapshotV2 is not in net/protocol.h yet")
+    require(len(pad2) == 8, "TrainSnapshotV2 pad2 must be 8 B")
+    payload = struct.pack("<IIIBBBBfffffI8s",
+                          epoch, train_id, config_hash, flags,
+                          station_index, car_count, 0,
+                          speed, x, y, z, heading, track_index, pad2)
+    require(len(payload) == TRAIN_V2_SIZE,
+            f"TrainSnapshotV2 builder mismatch: "
+            f"{len(payload)} != {TRAIN_V2_SIZE}")
     return payload
 
 
@@ -1808,6 +1908,142 @@ def test_player_presence_validation(exe, tmp):
         guest.close()
 
 
+def test_vehicle_occupants_host_only(exe, tmp):
+    log("[test] v19 vehicle occupants: host-only relay + count bounds")
+    require(TRAFFIC_AVAILABLE, "v19 VehicleOccupants messages missing")
+    with Server(exe, tmp / "vehicle_occupants") as srv:
+        host, guest = _actor_pair(srv)
+
+        three = vehicle_occupants(7, [
+            occupant(101, 0, 1),                      # водитель, seat 0
+            occupant(102, 1, 2),                      # пассажир, seat 1
+            occupant(103, -1, 4, car_index=2, harness=3),  # draftHorse
+        ])
+        require(len(three) == OCCUPANTS_HEADER_SIZE + 3 * OCCUPANT_ENTRY_SIZE,
+                "occupants(3) size mismatch")
+        _actor_expect_relay(host, guest, TYPE_VEHICLE_OCCUPANTS, three,
+                            "VehicleOccupants(3)")
+
+        max_occ = vehicle_occupants(8, [occupant(200 + i, i, 2)
+                                        for i in range(MAX_OCCUPANTS)])
+        require(len(max_occ) == OCCUPANTS_MAX,
+                f"max occupants {len(max_occ)} != {OCCUPANTS_MAX}")
+        _actor_expect_relay(host, guest, TYPE_VEHICLE_OCCUPANTS, max_occ,
+                            "VehicleOccupants(max)")
+
+        empty = vehicle_occupants(9, [])
+        _actor_expect_relay(host, guest, TYPE_VEHICLE_OCCUPANTS, empty,
+                            "VehicleOccupants(count=0 clear)")
+
+        guest.sendall(frame_bytes(TYPE_VEHICLE_OCCUPANTS, three))
+        require(recv_type(host, TYPE_VEHICLE_OCCUPANTS, 0.5) is None,
+                "guest VehicleOccupants must be blocked (host-only)")
+        host.close()
+        guest.close()
+
+
+def test_vehicle_occupants_validation(exe, tmp):
+    log("[test] v19 vehicle occupants: size/count/vehicleNetId/entry validation")
+    require(TRAFFIC_AVAILABLE, "v19 VehicleOccupants messages missing")
+    with Server(exe, tmp / "vehicle_occupants_validate") as srv:
+        host, guest = _actor_pair(srv)
+
+        good = vehicle_occupants(7, [occupant(101, 0, 1)])
+        _actor_expect_drop(host, guest, TYPE_VEHICLE_OCCUPANTS, good[:-1],
+                           "short VehicleOccupants")
+        _actor_expect_drop(host, guest, TYPE_VEHICLE_OCCUPANTS, good + b"\x00",
+                           "oversized VehicleOccupants")
+        too_many = vehicle_occupants(7, [occupant(100 + i, i, 2)
+                                         for i in range(MAX_OCCUPANTS + 1)])
+        _actor_expect_drop(host, guest, TYPE_VEHICLE_OCCUPANTS, too_many,
+                           "VehicleOccupants(count>max)")
+        _actor_expect_drop(host, guest, TYPE_VEHICLE_OCCUPANTS,
+                           vehicle_occupants(0, [occupant(101, 0, 1)]),
+                           "VehicleOccupants(vehicleNetId=0)")
+        for ent, what in (
+            (occupant(0, 0, 1), "actorId=0"),
+            (occupant(101, -2, 1), "seat=-2"),
+            (occupant(101, 9, 1), "seat=9"),
+            (occupant(101, 0, 1, car_index=17), "carIndex=17"),
+            (occupant(101, 0, 4, harness=6), "harness=6"),
+            (occupant(101, 0, 8), "unknown flag"),
+        ):
+            _actor_expect_drop(host, guest, TYPE_VEHICLE_OCCUPANTS,
+                               vehicle_occupants(7, [ent]),
+                               f"VehicleOccupants({what})")
+        host.sendall(frame_bytes(0x7E, b"\x00" * 32))
+        require(recv_type(guest, 0x7E, 0.5) is None,
+                "unknown type must not be relayed")
+        host.close()
+        guest.close()
+
+
+def test_train_v2_host_only(exe, tmp):
+    log("[test] v19 train snapshot v2: host-only relay, 48 B")
+    require(TRAFFIC_AVAILABLE, "v19 TrainSnapshotV2 messages missing")
+    with Server(exe, tmp / "train_v2") as srv:
+        host, guest = _actor_pair(srv)
+
+        one = train_v2(epoch=1, train_id=42, car_count=1)
+        require(len(one) == TRAIN_V2_SIZE, "train v2 size mismatch")
+        _actor_expect_relay(host, guest, TYPE_TRAIN_V2, one,
+                            "TrainSnapshotV2(1 car)")
+
+        maxc = train_v2(epoch=2, train_id=43, car_count=MAX_TRAIN_CARS,
+                        flags=1, station_index=2, speed=12.5, track_index=3)
+        require(len(maxc) == TRAIN_V2_SIZE, "train v2 size mismatch")
+        _actor_expect_relay(host, guest, TYPE_TRAIN_V2, maxc,
+                            "TrainSnapshotV2(max cars)")
+
+        _actor_expect_drop(host, guest, TYPE_TRAIN_V2, one[:-1],
+                           "short TrainSnapshotV2")
+        _actor_expect_drop(host, guest, TYPE_TRAIN_V2, one + b"\x00",
+                           "oversized TrainSnapshotV2")
+        guest.sendall(frame_bytes(TYPE_TRAIN_V2, one))
+        require(recv_type(host, TYPE_TRAIN_V2, 0.5) is None,
+                "guest TrainSnapshotV2 must be blocked (host-only)")
+        host.sendall(frame_bytes(0x7E, b"\x00" * 32))
+        require(recv_type(guest, 0x7E, 0.5) is None,
+                "unknown type must not be relayed")
+        host.close()
+        guest.close()
+
+
+def test_train_v2_validation(exe, tmp):
+    log("[test] v19 train snapshot v2: epoch/trainId/carCount/speed/finite/flags")
+    require(TRAFFIC_AVAILABLE, "v19 TrainSnapshotV2 messages missing")
+    with Server(exe, tmp / "train_v2_validate") as srv:
+        host, guest = _actor_pair(srv)
+
+        cases = [
+            (dict(epoch=0), "epoch=0"),
+            (dict(train_id=0), "trainId=0"),
+            (dict(car_count=0), "carCount=0"),
+            (dict(car_count=MAX_TRAIN_CARS + 1), "carCount>max"),
+            (dict(speed=float("nan")), "speed=NaN"),
+            (dict(speed=float("inf")), "speed=Inf"),
+            (dict(speed=41.0), "speed=41"),
+            (dict(speed=-41.0), "speed=-41"),
+            (dict(x=float("nan")), "x=NaN"),
+            (dict(y=float("inf")), "y=Inf"),
+            (dict(z=1.0e6), "z=1e6"),
+            (dict(heading=float("nan")), "heading=NaN"),
+            (dict(flags=0x10), "unknown flag"),
+        ]
+        for kwargs, what in cases:
+            _actor_expect_drop(host, guest, TYPE_TRAIN_V2,
+                               train_v2(**kwargs),
+                               f"TrainSnapshotV2({what})")
+
+        # Граничные скорости ±40 допустимы и релеятся байт-в-байт.
+        for sp in (-40.0, 40.0):
+            _actor_expect_relay(host, guest, TYPE_TRAIN_V2,
+                                train_v2(speed=sp, car_count=1),
+                                f"TrainSnapshotV2(speed={sp})")
+        host.close()
+        guest.close()
+
+
 def test_actor_gating_no_actor_log(exe, tmp):
     log("[test] v15 gating: no 'actor:' log lines in a normal session")
     # Server-side gating only: mock clients never send actor messages, so this
@@ -2624,6 +2860,10 @@ def main():
         test_actor_damage_validation,
         test_player_presence_relay,
         test_player_presence_validation,
+        test_vehicle_occupants_host_only,
+        test_vehicle_occupants_validation,
+        test_train_v2_host_only,
+        test_train_v2_validation,
         test_actor_gating_no_actor_log,
         test_oversized_and_truncated,
         test_host_migration,
@@ -2662,6 +2902,11 @@ def main():
                 log(f"[skip] {test.__name__}: protocol v18 PlayerPresence is "
                     "not in net/protocol.h yet (E6 merge pending)")
                 continue
+            if test.__name__ in TRAFFIC_TESTS and not TRAFFIC_AVAILABLE:
+                skipped += 1
+                log(f"[skip] {test.__name__}: protocol v19 E3d traffic is "
+                    "not in net/protocol.h yet (E3d merge pending)")
+                continue
             try:
                 test(exe, tmp)
                 if test.__name__ in KNOWN_FAIL_TESTS:
@@ -2685,6 +2930,8 @@ def main():
                          f"on({ACTOR_DAMAGE_SIZE}B)")
         presence_status = ("pending" if not PRESENCE_AVAILABLE else
                            f"on({PLAYER_PRESENCE_SIZE}B)")
+        traffic_status = ("pending" if not TRAFFIC_AVAILABLE else
+                          f"on(occ={OCCUPANTS_MAX}B,train={TRAIN_V2_SIZE}B)")
         log(f"{passed} passed, {failures} failed, {known_fails} known-fail"
             f"{skipped_part} "
             f"(protocol v{PROTO}, outfit={OUTFIT_SIZE}B, "
@@ -2692,6 +2939,7 @@ def main():
             f"appearance={appearance_status}, "
             f"damage={damage_status}, "
             f"presence={presence_status}, "
+            f"traffic={traffic_status}, "
             f"cap={CAP_ACTIVE}/rate={CAP_RATE}/s, "
             f"name<={MAX_NAME_BYTES}B)")
         if failures:
