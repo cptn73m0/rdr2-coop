@@ -1555,6 +1555,13 @@ struct AppearanceMsg
     uint32_t actorId = 0;
     std::vector<net::ActorAppearanceEntry> entries;
 };
+
+// E9 (task-142): horse tack от хоста (0x1C); фильтруется по kind=2 на guest.
+struct HorseOutfitMsg
+{
+    uint32_t actorId = 0;
+    net::OutfitState outfit{};
+};
 struct Inbox
 {
     bool haveSpawn = false;
@@ -1567,6 +1574,7 @@ struct Inbox
     std::vector<net::ActorFrame> frames;
     std::deque<net::ActorDespawnPayload> despawns;
     std::vector<AppearanceMsg> appearances; // E2c-b (v16)
+    std::vector<HorseOutfitMsg> horseOutfits; // E9 (task-142)
     std::deque<net::ActorDamagePayload> damage; // E5 (v17): запросы урона
     uint32_t events = 0;
     uint32_t outfits = 0;
@@ -1583,6 +1591,7 @@ void ClearInboxLocked()
     g_inbox.frames.clear();
     g_inbox.despawns.clear();
     g_inbox.appearances.clear();
+    g_inbox.horseOutfits.clear();
     g_inbox.damage.clear();
     g_inbox.events = 0;
     g_inbox.outfits = 0;
@@ -1756,6 +1765,15 @@ struct RosterEntry
     bool appearanceSent = false;
     bool appearanceCaptureFailedLogged = false;
     unsigned int lastAppearanceCaptureTick = 0;
+    // E9 (task-142): animal asset appearance + horse tack.
+    unsigned int lastAnimalAppearanceCaptureTick = 0;
+    uint32_t animalAppearanceFingerprint = 0;
+    uint32_t animalAppearanceSentFingerprint = 0;
+    bool animalAppearanceSent = false;
+    bool animalAppearanceFailedLogged = false;
+    unsigned int lastHorseTackTick = 0;
+    uint32_t horseTackFingerprint = 0;
+    bool horseTackSent = false;
 };
 
 std::map<unsigned int, RosterEntry> g_roster;
@@ -2500,6 +2518,243 @@ void ProcessHostOutfitResolution(unsigned int tick)
 // coverage): GET_META_PED_ASSET_GUIDS может вернуть false для видимых
 // компонентов — тогда лог `asset capture ... valid=0 state=failed` и fallback
 // на E2a metaOutfit.
+// E9 (task-142): количество shop-компонентов (для probe), generic для животных.
+int CountShopItemsEntity(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::GET_NUM_COMPONENT_CATEGORIES_IN_PED);
+    Push(ped);
+    int categories = static_cast<int>(Call());
+    if (categories <= 0)
+        return 0;
+    if (categories > 96)
+        categories = 96;
+    static unsigned long long inA[4] = {0, 0, 0, 0};
+    static unsigned long long inB[4] = {0, 0, 0, 0};
+    int n = 0;
+    for (int i = 0; i < categories; ++i)
+    {
+        std::memset(inA, 0, sizeof(inA));
+        std::memset(inB, 0, sizeof(inB));
+        Init(natives::GET_SHOP_ITEM_COMPONENT_AT_INDEX);
+        Push(ped);
+        Push(static_cast<unsigned long long>(i));
+        Push(static_cast<unsigned long long>(1));
+        Push(reinterpret_cast<unsigned long long>(inA));
+        Push(reinterpret_cast<unsigned long long>(inB));
+        if (Call() != 0)
+            ++n;
+    }
+    return n;
+}
+
+int GetNumComponentCategoriesEntity(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::GET_NUM_COMPONENT_CATEGORIES_IN_PED);
+    Push(ped);
+    return static_cast<int>(Call());
+}
+
+// E9: capture asset/tint для kind=1/2 при npc_animal_appearance=1.
+// Бюджет 1 animal/тик, период ~2 с; human appearance не блокируется.
+void ProcessHostAnimalAppearanceCapture(unsigned int tick)
+{
+    if (!coopcfg::Get().npcAnimalAppearance || g_roster.empty())
+        return;
+    static unsigned int s_rotate = 0;
+    std::vector<unsigned int> order;
+    order.reserve(g_roster.size());
+    for (const auto& kv : g_roster)
+        if (kv.second.kind != net::kActorKindHuman)
+            order.push_back(kv.first);
+    if (order.empty())
+        return;
+    const unsigned int start =
+        s_rotate % static_cast<unsigned int>(order.size());
+    s_rotate = (s_rotate + 1) % static_cast<unsigned int>(order.size());
+
+    for (std::size_t i = 0; i < order.size(); ++i)
+    {
+        const unsigned int handle =
+            order[(start + static_cast<unsigned int>(i)) % order.size()];
+        auto it = g_roster.find(handle);
+        if (it == g_roster.end())
+            continue;
+        RosterEntry& e = it->second;
+        if (e.kind == net::kActorKindHuman)
+            continue;
+        const bool due = e.lastAnimalAppearanceCaptureTick == 0 ||
+                         (tick - e.lastAnimalAppearanceCaptureTick) >=
+                             kAppearanceCapturePeriodTicks;
+        if (!due)
+            continue;
+        e.lastAnimalAppearanceCaptureTick = tick;
+        if (!DoesExist(handle) || IsDeadPed(handle))
+            continue;
+
+        const uint32_t model = GetModelOf(handle);
+        using namespace natives_api;
+        Init(natives::_GET_META_PED_TYPE);
+        Push(handle);
+        const int metaType = static_cast<int>(Call());
+        const int rawCount = GetPedComponentCountEntity(handle);
+        const int count = rawCount > 0 ? rawCount : 0;
+        const int cats = GetNumComponentCategoriesEntity(handle);
+        std::vector<net::ActorAppearanceEntry> entries;
+        entries.reserve(kMaxAppearanceComponents);
+        if (metaType == 3)
+        {
+            for (int idx = 0;
+                 idx < count && entries.size() < kMaxAppearanceComponents;
+                 ++idx)
+            {
+                uint32_t drawable = 0, albedo = 0, normal = 0, material = 0;
+                if (!GetMetaPedAssetGuidsEntity(handle, idx, drawable, albedo,
+                                                normal, material))
+                    continue;
+                if (drawable == 0)
+                    continue;
+                net::ActorAppearanceEntry entry;
+                entry.drawable = drawable;
+                entry.albedo = albedo;
+                entry.normal = normal;
+                entry.material = material;
+                uint32_t palette = 0;
+                int t0 = 255, t1 = 255, t2 = 255;
+                if (GetMetaPedAssetTintEntity(handle, idx, palette, t0, t1,
+                                              t2))
+                {
+                    entry.palette = palette;
+                    entry.tint0 = static_cast<int16_t>(t0);
+                    entry.tint1 = static_cast<int16_t>(t1);
+                    entry.tint2 = static_cast<int16_t>(t2);
+                }
+                else
+                {
+                    entry.palette = 0;
+                    entry.tint0 = 255;
+                    entry.tint1 = 255;
+                    entry.tint2 = 255;
+                }
+                entries.push_back(entry);
+            }
+        }
+
+        // probe 1/модель <=1/10 c (для in-game валидации assets coverage).
+        {
+            static std::unordered_map<uint32_t, unsigned long long>
+                s_probeMs;
+            const unsigned long long nowMs = GetTickCount64();
+            auto pit = s_probeMs.find(model);
+            if (coopcfg::Get().npcDebug &&
+                (pit == s_probeMs.end() || nowMs - pit->second >= 10000ull))
+            {
+                s_probeMs[model] = nowMs;
+                sh_log::Write(
+                    "actor: animal appearance probe model=0x%X type=%d "
+                    "comps=%d cats=%d valid=%d metaOutfit=0x%X shop=%d\n",
+                    model, metaType, count, cats,
+                    entries.empty() ? 0 : 1,
+                    GetMetaOutfit(handle), CountShopItemsEntity(handle));
+            }
+        }
+
+        if (entries.empty())
+        {
+            if (!e.animalAppearanceFailedLogged)
+            {
+                e.animalAppearanceFailedLogged = true;
+                LogAssetCaptureFailed(e.actorId,
+                                      static_cast<unsigned int>(count));
+            }
+            break; // E9 budget: 1 animal/tick
+        }
+        e.animalAppearanceFailedLogged = false;
+
+        uint32_t fp = 2166136261u;
+        const uint8_t* bytes =
+            reinterpret_cast<const uint8_t*>(entries.data());
+        const std::size_t nbytes = entries.size() * sizeof(entries[0]);
+        for (std::size_t b = 0; b < nbytes; ++b)
+        {
+            fp ^= bytes[b];
+            fp *= 16777619u;
+        }
+        if (!e.animalAppearanceSent || fp != e.animalAppearanceSentFingerprint)
+        {
+            coop::SendActorAppearance(g_hostEpoch, e.actorId, entries);
+            e.animalAppearanceSent = true;
+            e.animalAppearanceSentFingerprint = fp;
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write("actor: animal appearance send id=%u comps=%u\n",
+                              e.actorId,
+                              static_cast<unsigned int>(entries.size()));
+        }
+        break; // 1 animal/тик
+    }
+}
+
+// E9: horse tack (0x1C) — 1 horse/тик, период ~2 с.
+void ProcessHostHorseTackCapture(unsigned int tick)
+{
+    if (!coopcfg::Get().npcAnimalAppearance || g_roster.empty())
+        return;
+    static unsigned int s_rotate = 0;
+    std::vector<unsigned int> order;
+    order.reserve(g_roster.size());
+    for (const auto& kv : g_roster)
+        if (kv.second.kind == 2u)
+            order.push_back(kv.first);
+    if (order.empty())
+        return;
+    const unsigned int start =
+        s_rotate % static_cast<unsigned int>(order.size());
+    s_rotate = (s_rotate + 1) % static_cast<unsigned int>(order.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+    {
+        const unsigned int handle =
+            order[(start + static_cast<unsigned int>(i)) % order.size()];
+        auto it = g_roster.find(handle);
+        if (it == g_roster.end())
+            continue;
+        RosterEntry& e = it->second;
+        if (e.kind != 2u)
+            continue;
+        const bool due = e.lastHorseTackTick == 0 ||
+                         (tick - e.lastHorseTackTick) >=
+                             kAppearanceCapturePeriodTicks;
+        if (!due)
+            continue;
+        e.lastHorseTackTick = tick;
+        if (!DoesExist(handle) || IsDeadPed(handle))
+            continue;
+        net::OutfitState os;
+        coop::CollectLocalOutfitForActor(handle, os);
+        if (os.model == 0 || os.count == 0)
+            break; // E9 budget: 1 horse/tick
+        uint32_t fp = 2166136261u;
+        const uint8_t* bytes =
+            reinterpret_cast<const uint8_t*>(&os);
+        const std::size_t nbytes = sizeof(os);
+        for (std::size_t b = 0; b < nbytes; ++b)
+        {
+            fp ^= bytes[b];
+            fp *= 16777619u;
+        }
+        if (!e.horseTackSent || fp != e.horseTackFingerprint)
+        {
+            coop::SendActorOutfit(g_hostEpoch, e.actorId, os);
+            e.horseTackSent = true;
+            e.horseTackFingerprint = fp;
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write("actor: horse tack send id=%u items=%u\n",
+                              e.actorId, os.count);
+        }
+        break; // 1 horse/тик
+    }
+}
+
 void ProcessHostAppearanceCapture(unsigned int tick)
 {
     if (!coopcfg::Get().npcAppearance)
@@ -2748,6 +3003,9 @@ void HostTick(const TickContext& ctx)
     {
         ProcessHostAppearanceCapture(ctx.tickCount);
     }
+    // E9: animal assets/horse tack — отдельные бюджеты, human не блокируют.
+    ProcessHostAnimalAppearanceCapture(ctx.tickCount);
+    ProcessHostHorseTackCapture(ctx.tickCount);
 
     // E5: применить урон гостей по roster-акторам (v17 0x1F).
     ProcessActorDamageRequests(ctx);
@@ -2793,6 +3051,11 @@ struct Proxy
     std::vector<net::ActorAppearanceEntry> appearanceAssets;
     bool appearanceAssetsApplyNeeded = false;
     bool appearanceAssetsIssued = false;
+    // E9 (task-142): horse tack (0x1C), применяется после assets/random.
+    bool horseTackApplied = false;
+    net::OutfitState horseTack{};
+    bool pendingHorseTackValid = false;
+    net::OutfitState pendingHorseTack{};
     unsigned int appearanceAssetsWaitTick = 0;
     unsigned int appearanceAssetsIssuedTick = 0;
     // E2a.2: trail движения (последние ~1 с позиций) и сглаженные
@@ -2983,6 +3246,10 @@ unsigned int g_appliedFrames = 0;
 unsigned int g_timeouts = 0;
 unsigned int g_lastNoCollisionTick = 0;
 // E2a.2: счётчики движения за окно сводки (5 с), лог при npc_debug=1.
+unsigned int g_perfGuestAnimalAppearanceApplied = 0;
+unsigned int g_perfGuestAnimalAppearanceFailed = 0;
+unsigned int g_perfGuestHorseTackApplied = 0;
+unsigned int g_perfGuestHorseTackFailed = 0;
 unsigned int g_motionIssued = 0;
 unsigned int g_motionReissue = 0;
 unsigned int g_motionGaitRestart = 0;
@@ -3195,16 +3462,22 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
     p.appearanceState = 0; // E2a: запрос наряда сделает GuestTick (бюджет)
     // E2c-b (v16): asset/tint мог прийти ДО создания прокси — применить сразу
     // после CREATE_PED; assets приоритетнее metaOutfit (E2a не запускаем).
-    if (p.kind == net::kActorKindHuman)
     {
-        auto pa = g_pendingAppearanceAssets.find(s.actorId);
-        if (pa != g_pendingAppearanceAssets.end())
+        const bool wantAssets =
+            p.kind == net::kActorKindHuman
+                ? coopcfg::Get().npcAppearance
+                : coopcfg::Get().npcAnimalAppearance;
+        if (wantAssets)
         {
-            p.appearanceAssets = pa->second;
-            p.appearanceAssetsApplyNeeded = true;
-            p.appearanceAssetsWaitTick = ctx.tickCount;
-            p.appearanceState = 3; // E2a не трогаем: asset-данные главнее
-            g_pendingAppearanceAssets.erase(pa);
+            auto pa = g_pendingAppearanceAssets.find(s.actorId);
+            if (pa != g_pendingAppearanceAssets.end())
+            {
+                p.appearanceAssets = pa->second;
+                p.appearanceAssetsApplyNeeded = true;
+                p.appearanceAssetsWaitTick = ctx.tickCount;
+                p.appearanceState = 3; // E2a не трогаем: asset-данные главнее
+                g_pendingAppearanceAssets.erase(pa);
+            }
         }
     }
     // E2a.2: стартовый trail/направление для lookahead (heading = взгляд педа).
@@ -3384,16 +3657,123 @@ void ProcessActorAppearance(unsigned int tick)
 // wait ready -> reset+tags+commit -> readback -> applied / failed(fallback).
 // При невидимом/пустом результате обязателен RandomizeComponents+SetVisible,
 // чтобы NPC не остался невидимым.
-void ProcessGuestAppearanceAssets(unsigned int tick)
+// E9 (task-142): применить horse tack (0x1C) после assets/random.
+// assets применены -> не randomize; иначе random. Не randomize после tack.
+void ProcessGuestHorseOutfits(std::vector<HorseOutfitMsg>& msgs,
+                              unsigned int tick)
 {
-    if (!coopcfg::Get().npcAppearance)
+    if (!coopcfg::Get().npcAnimalAppearance)
         return;
+    (void)tick;
 
+    auto apply = [](Proxy& p, const net::OutfitState& os) -> bool {
+        if (!p.handle || !DoesExist(p.handle) || p.dead || p.kind != 2u)
+            return false;
+        if (os.count == 0 || os.model == 0)
+            return false;
+        if (os.model != p.model)
+            return false; // model mismatch — skip
+        if (p.appearanceAssetsApplyNeeded)
+            return false; // ждём assets (не randomize раньше)
+        const bool assetsApplied =
+            !p.appearanceAssets.empty() && !p.appearanceAssetsApplyNeeded;
+        if (!assetsApplied && !p.horseTackApplied)
+            RandomizeComponents(p.handle);
+        using namespace natives_api;
+        for (uint32_t i = 0; i < os.count; ++i)
+        {
+            Init(natives::APPLY_SHOP_ITEM_TO_PED);
+            Push(p.handle);
+            Push(static_cast<unsigned long long>(os.components[i]));
+            Push(true);  // immediately
+            Push(false); // isMp
+            Push(true);  // p4
+            Call();
+        }
+        CommitMetaPedComponentsEntity(p.handle);
+        SetVisible(p.handle);
+        p.horseTack = os;
+        p.horseTackApplied = true;
+        p.pendingHorseTackValid = false;
+        ++g_perfGuestHorseTackApplied;
+        if (coopcfg::Get().npcDebug)
+            sh_log::Write("actor: horse tack apply id=%u items=%u ok=1\n",
+                          p.actorId, os.count);
+        return true;
+    };
+
+    // 1) pending (ждали assets) — каждый тик.
     for (auto& kv : g_proxies)
     {
         Proxy& p = kv.second;
-        if (p.kind != net::kActorKindHuman)
-            continue; // E3c: assets не применяем для животных
+        if (!p.pendingHorseTackValid)
+            continue;
+        if (p.kind != 2u || p.dead)
+        {
+            p.pendingHorseTackValid = false;
+            continue;
+        }
+        if (p.appearanceAssetsApplyNeeded ||
+            (p.appearanceAssetsIssued == false &&
+             !p.appearanceAssets.empty() && false))
+            continue;
+        if (apply(p, p.pendingHorseTack))
+            break; // 1 actor/tick
+    }
+
+    // 2) новые сообщения (последнее на actorId важнее).
+    for (HorseOutfitMsg& m : msgs)
+    {
+        if (!m.actorId)
+            continue;
+        auto it = g_proxies.find(m.actorId);
+        if (it == g_proxies.end())
+            continue;
+        Proxy& p = it->second;
+        if (p.kind != 2u || p.dead || !p.handle || !DoesExist(p.handle))
+            continue;
+        if (p.appearanceAssetsApplyNeeded)
+        {
+            p.pendingHorseTackValid = true;
+            p.pendingHorseTack = m.outfit;
+            continue;
+        }
+        if (p.horseTackApplied)
+        {
+            // samme items — период 2 с; повторный apply не нужен.
+            if (m.outfit.count == p.horseTack.count &&
+                std::memcmp(m.outfit.components, p.horseTack.components,
+                            sizeof(uint32_t) * net::kMaxOutfitComponents) == 0)
+                continue;
+        }
+        if (m.outfit.model != p.model || m.outfit.count == 0)
+        {
+            ++g_perfGuestHorseTackFailed;
+            if (coopcfg::Get().npcDebug)
+                sh_log::Write(
+                    "actor: horse tack apply id=%u items=%u ok=0\n",
+                    m.actorId, m.outfit.count);
+            continue;
+        }
+        if (apply(p, m.outfit))
+            break; // 1 actor/tick
+        ++g_perfGuestHorseTackFailed;
+        if (coopcfg::Get().npcDebug)
+            sh_log::Write("actor: horse tack apply id=%u items=%u ok=0\n",
+                          m.actorId, m.outfit.count);
+    }
+    msgs.clear();
+}
+
+void ProcessGuestAppearanceAssets(unsigned int tick)
+{
+    for (auto& kv : g_proxies)
+    {
+        Proxy& p = kv.second;
+        const bool human = p.kind == net::kActorKindHuman;
+        if (human ? !coopcfg::Get().npcAppearance
+                  : !coopcfg::Get().npcAnimalAppearance)
+            continue;
         if (!p.appearanceAssetsApplyNeeded)
             continue;
         if (!p.handle || !DoesExist(p.handle) || p.dead ||
@@ -3414,12 +3794,16 @@ void ProcessGuestAppearanceAssets(unsigned int tick)
                 else if (tick - p.appearanceAssetsWaitTick > 180)
                 {
                     // Не отрендерился за ~3 с — fallback, не оставляем пустым.
-                    RandomizeComponents(p.handle);
+                    if (!(p.kind == 2u && p.horseTackApplied))
+                        RandomizeComponents(p.handle);
                     SetVisible(p.handle);
-                    LogAssetApplied(
-                        p.actorId,
-                        static_cast<unsigned int>(p.appearanceAssets.size()),
-                        "failed");
+                    if (human)
+                        LogAssetApplied(
+                            p.actorId,
+                            static_cast<unsigned int>(p.appearanceAssets.size()),
+                            "failed");
+                    else
+                        ++g_perfGuestAnimalAppearanceFailed;
                     p.appearanceAssetsApplyNeeded = false;
                     p.appearanceAssets.clear();
                 }
@@ -3446,16 +3830,43 @@ void ProcessGuestAppearanceAssets(unsigned int tick)
         if (firstOk)
         {
             SetVisible(p.handle);
+            if (p.kind == net::kActorKindHuman)
+                LogAssetApplied(p.actorId,
+                                static_cast<unsigned int>(
+                                    p.appearanceAssets.size()),
+                                "applied");
+            else
+            {
+                ++g_perfGuestAnimalAppearanceApplied;
+                if (coopcfg::Get().npcDebug)
+                    sh_log::Write(
+                        "actor: animal appearance apply id=%u comps=%u ok=1\n",
+                        p.actorId,
+                        static_cast<unsigned int>(p.appearanceAssets.size()));
+            }
         }
         else
         {
-            // Невидимый NPC недопустим: fallback random variation.
-            RandomizeComponents(p.handle);
+            // Невидимый NPC недопустим: fallback random variation, но не
+            // затираем уже надетый horse tack.
+            if (!(p.kind == 2u && p.horseTackApplied))
+                RandomizeComponents(p.handle);
             SetVisible(p.handle);
+            if (p.kind == net::kActorKindHuman)
+                LogAssetApplied(p.actorId,
+                                static_cast<unsigned int>(
+                                    p.appearanceAssets.size()),
+                                "failed");
+            else
+            {
+                ++g_perfGuestAnimalAppearanceFailed;
+                if (coopcfg::Get().npcDebug)
+                    sh_log::Write(
+                        "actor: animal appearance apply id=%u comps=%u ok=0\n",
+                        p.actorId,
+                        static_cast<unsigned int>(p.appearanceAssets.size()));
+            }
         }
-        LogAssetApplied(p.actorId,
-                        static_cast<unsigned int>(p.appearanceAssets.size()),
-                        firstOk ? "applied" : "failed");
         p.appearanceAssetsApplyNeeded = false;
         p.appearanceAssetsIssued = false;
         break; // бюджет: ≤1 актор/тик
@@ -5369,6 +5780,7 @@ void GuestTick(const TickContext& ctx)
     uint32_t framesEpoch = 0;
     std::deque<net::ActorDespawnPayload> despawns;
     std::vector<AppearanceMsg> appearanceMsgs; // E2c-b (v16)
+    std::vector<HorseOutfitMsg> horseOutfitMsgs; // E9 (task-142)
     {
         std::lock_guard<std::mutex> lk(g_inboxMutex);
         if (g_inbox.haveSpawn)
@@ -5388,6 +5800,7 @@ void GuestTick(const TickContext& ctx)
         }
         despawns.swap(g_inbox.despawns);
         appearanceMsgs.swap(g_inbox.appearances);
+        horseOutfitMsgs.swap(g_inbox.horseOutfits);
         g_inbox.events = 0;
         g_inbox.outfits = 0;
     }
@@ -5536,7 +5949,8 @@ void GuestTick(const TickContext& ctx)
 
     // 3b-pre) E2c-b (v16): asset/tint из inbox -> прокси/pending. Asset-данные
     // приоритетнее metaOutfit: при их наличии E2a больше не применяем.
-    if (coopcfg::Get().npcAppearance)
+    if (coopcfg::Get().npcAppearance ||
+        coopcfg::Get().npcAnimalAppearance)
     {
         for (AppearanceMsg& m : appearanceMsgs)
         {
@@ -5554,8 +5968,16 @@ void GuestTick(const TickContext& ctx)
                 continue;
             }
             Proxy& p = it->second;
-            if (p.kind != net::kActorKindHuman)
-                continue; // E3c: animals assets не нужны
+            if (p.kind == net::kActorKindHuman)
+            {
+                if (!coopcfg::Get().npcAppearance)
+                    continue;
+            }
+            else
+            {
+                if (!coopcfg::Get().npcAnimalAppearance)
+                    continue;
+            }
             if (p.outfitRequest)
             {
                 ReleaseMetaPedOutfitRequest(p.outfitRequest);
@@ -5577,6 +5999,8 @@ void GuestTick(const TickContext& ctx)
 
     // 3b2) E2c-b (v16): применение asset/tint (≤1 актор/тик).
     ProcessGuestAppearanceAssets(tick);
+    // 3b3) E9 (task-142): horse tack (0x1C) — ≤1 актор/тик.
+    ProcessGuestHorseOutfits(horseOutfitMsgs, tick);
     if (perfOn)
         g_perfGuestAppearance.AddUs(QpcDeltaUs(perfAppearanceStart));
 
@@ -5791,6 +6215,20 @@ void GuestTick(const TickContext& ctx)
             "animals=%u horses=%u corpses=%u\n",
             static_cast<unsigned int>(g_proxies.size()), g_appliedFrames,
             g_timeouts, animals, horses, corpses);
+        if (g_perfGuestAnimalAppearanceApplied ||
+            g_perfGuestAnimalAppearanceFailed ||
+            g_perfGuestHorseTackApplied || g_perfGuestHorseTackFailed)
+        {
+            sh_log::Write(
+                "actor: guest animals app applied=%u failed=%u tack=%u/%u\n",
+                g_perfGuestAnimalAppearanceApplied,
+                g_perfGuestAnimalAppearanceFailed,
+                g_perfGuestHorseTackApplied, g_perfGuestHorseTackFailed);
+            g_perfGuestAnimalAppearanceApplied = 0;
+            g_perfGuestAnimalAppearanceFailed = 0;
+            g_perfGuestHorseTackApplied = 0;
+            g_perfGuestHorseTackFailed = 0;
+        }
         g_appliedFrames = 0;
         g_timeouts = 0;
         // E2a.2: motion issued/reissue/gait_restart + err_p95 — только при
@@ -6220,8 +6658,17 @@ void OnActorOutfit(uint32_t epoch, uint32_t actorId,
 {
     if (!coopcfg::Get().npcActor) return;
     std::lock_guard<std::mutex> lk(g_inboxMutex);
-    ++g_inbox.outfits; // E1: outfit актора не применяем
-    (void)epoch; (void)actorId; (void)outfit;
+    ++g_inbox.outfits;
+    if (coopcfg::Get().npcAnimalAppearance && actorId &&
+        outfit.count > 0 &&
+        g_inbox.horseOutfits.size() < 32)
+    {
+        HorseOutfitMsg msg;
+        msg.actorId = actorId;
+        msg.outfit = outfit;
+        g_inbox.horseOutfits.push_back(msg);
+    }
+    (void)epoch;
 }
 
 // E2c-b (v16): asset/tint внешности NPC — только копия в inbox (сетевой поток).

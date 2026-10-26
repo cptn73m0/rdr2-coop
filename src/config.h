@@ -86,6 +86,9 @@ struct Config {
     bool npcVisitorPauseScenes = true;
     // E3d-c (v19): пассажиры/водители и тягловые лошади у vehicle-прокси.
     bool npcOccupants = true;
+    // E9 (task-142): внешность животных/лошадей (asset/tint 0x1E + horse tack
+    // 0x1C). default 0 — текущий random variation (host+guest должны совпадать).
+    bool npcAnimalAppearance = false;
     // P2 (task-139): частота ActorFrames (10..20 Гц; 10 = старое поведение).
     int npcFrameHz = 15;
     // Адаптивность: все стоят — 10 Гц, есть движущиеся — npc_frame_hz.

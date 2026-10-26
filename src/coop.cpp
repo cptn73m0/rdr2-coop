@@ -6077,6 +6077,18 @@ void SendActorAppearance(uint32_t epoch, uint32_t actorId,
     g_netClient.SendActorAppearance(epoch, actorId, entries);
 }
 
+// E9 (task-142): horse tack (0x1C) и сбор outfit любого педа (horse).
+void SendActorOutfit(uint32_t epoch, uint32_t actorId,
+                     const net::OutfitState& outfit)
+{
+    g_netClient.SendActorOutfit(epoch, actorId, outfit);
+}
+
+void CollectLocalOutfitForActor(unsigned int ped, net::OutfitState& out)
+{
+    CollectLocalOutfit(ped, out);
+}
+
 // E5 (v17): гость -> хост запрос урона по NPC (0x1F).
 bool SendActorDamage(uint32_t epoch, uint32_t actorId, uint16_t damage,
                      uint32_t weaponHash)

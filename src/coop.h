@@ -36,6 +36,10 @@ void SendActorDespawn(const net::ActorDespawnPayload& msg);
 // E2c-b (v16): точная внешность NPC (asset/tint) — хост -> сервер -> гости.
 void SendActorAppearance(uint32_t epoch, uint32_t actorId,
                          const std::vector<net::ActorAppearanceEntry>& entries);
+// E9 (task-142): horse tack 0x1C и сбор outfit с произвольного педа.
+void SendActorOutfit(uint32_t epoch, uint32_t actorId,
+                     const net::OutfitState& outfit);
+void CollectLocalOutfitForActor(unsigned int ped, net::OutfitState& out);
 // E5 (v17): гость -> хост запрос урона по NPC (0x1F, только guest).
 bool SendActorDamage(uint32_t epoch, uint32_t actorId, uint16_t damage,
                      uint32_t weaponHash);

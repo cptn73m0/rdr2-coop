@@ -487,8 +487,10 @@ if PROTO >= 19:
 TRAFFIC_TESTS = {
     "test_vehicle_occupants_host_only",
     "test_vehicle_occupants_validation",
+    "test_vehicle_occupants_rate_limit",
     "test_train_v2_host_only",
     "test_train_v2_validation",
+    "test_train_v2_rate_limit",
 }
 
 # 50-100 rounds of the JOIN race per task; overridable for slow CI.
@@ -2044,6 +2046,71 @@ def test_train_v2_validation(exe, tmp):
         guest.close()
 
 
+def test_vehicle_occupants_rate_limit(exe, tmp):
+    log("[test] v19 vehicle occupants: per-client rate-limit ~20/s")
+    require(TRAFFIC_AVAILABLE, "v19 VehicleOccupants messages missing")
+    # Pinned server limits (см. server/server.cpp: 0x21 = 20/с, 0x22 = 4/с).
+    limit = 20
+    burst = limit * 2
+    with Server(exe, tmp / "vehicle_occupants_rate") as srv:
+        host, guest = _actor_pair(srv)
+
+        payload = vehicle_occupants(7, [occupant(101, 0, 1)])
+        # Пачка быстрее одной секунды: в окно 1 с проходит ровно limit.
+        for _ in range(burst):
+            host.sendall(frame_bytes(TYPE_VEHICLE_OCCUPANTS, payload))
+        got = 0
+        for t, _p in recv_msgs(guest, 1.2):
+            if t == TYPE_VEHICLE_OCCUPANTS:
+                got += 1
+        require(got == limit,
+                f"VehicleOccupants rate-limit: expected {limit} relays in 1 s "
+                f"window, got {got} (burst={burst})")
+        # Окно сбрасывается: после паузы сообщения снова проходят.
+        time.sleep(1.2)
+        for _ in range(3):
+            host.sendall(frame_bytes(TYPE_VEHICLE_OCCUPANTS, payload))
+        got2 = 0
+        for t, _p in recv_msgs(guest, 1.0):
+            if t == TYPE_VEHICLE_OCCUPANTS:
+                got2 += 1
+        require(got2 == 3,
+                f"VehicleOccupants rate window must reset: got {got2}/3")
+        host.close()
+        guest.close()
+
+
+def test_train_v2_rate_limit(exe, tmp):
+    log("[test] v19 train snapshot v2: per-client rate-limit ~4/s")
+    require(TRAFFIC_AVAILABLE, "v19 TrainSnapshotV2 messages missing")
+    limit = 4
+    burst = limit * 3
+    with Server(exe, tmp / "train_v2_rate") as srv:
+        host, guest = _actor_pair(srv)
+
+        payload = train_v2(car_count=2)
+        for _ in range(burst):
+            host.sendall(frame_bytes(TYPE_TRAIN_V2, payload))
+        got = 0
+        for t, _p in recv_msgs(guest, 1.2):
+            if t == TYPE_TRAIN_V2:
+                got += 1
+        require(got == limit,
+                f"TrainSnapshotV2 rate-limit: expected {limit} relays in 1 s "
+                f"window, got {got} (burst={burst})")
+        time.sleep(1.2)
+        for _ in range(2):
+            host.sendall(frame_bytes(TYPE_TRAIN_V2, payload))
+        got2 = 0
+        for t, _p in recv_msgs(guest, 1.0):
+            if t == TYPE_TRAIN_V2:
+                got2 += 1
+        require(got2 == 2,
+                f"TrainSnapshotV2 rate window must reset: got {got2}/2")
+        host.close()
+        guest.close()
+
+
 def test_actor_gating_no_actor_log(exe, tmp):
     log("[test] v15 gating: no 'actor:' log lines in a normal session")
     # Server-side gating only: mock clients never send actor messages, so this
@@ -2862,8 +2929,10 @@ def main():
         test_player_presence_validation,
         test_vehicle_occupants_host_only,
         test_vehicle_occupants_validation,
+        test_vehicle_occupants_rate_limit,
         test_train_v2_host_only,
         test_train_v2_validation,
+        test_train_v2_rate_limit,
         test_actor_gating_no_actor_log,
         test_oversized_and_truncated,
         test_host_migration,
