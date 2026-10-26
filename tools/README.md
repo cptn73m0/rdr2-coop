@@ -680,21 +680,23 @@ pending. Для дымового теста без игры fake host `--appeara
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
 
-### E4: замеры производительности (`perf_report.py`)
+### E4/npc-e12: замеры производительности и трафика (`perf_report.py`)
 
-`tools/perf_report.py` парсит `perf: npc host ...` / `perf: npc guest ...`
-(формат E4; в v19 тот же, `npc_debug=1`) и legacy `perf: actor ...` (старые логи).
-Новый `perf: frame`/`perf: net`/server `net:` пока **не парсится** — снимать
-grep-командами из раздела «npc-e12: перф/трафик» и сверять с порогами
-`docs/PERF.md`/`docs/ACCEPTANCE_2PC.md`.
-Считает p50/p95/max по tick/discover/capture/build/spawn/appearance/motion/
-weapons, counters (`actors/spawns/frames/despawns/bytes/s`,
-`proxies/spawns/applied/failed/timeouts`), warn/errors/timeouts, сравнивает
-`--baseline` vs `--log` и выдаёт PASS/FAIL по порогам E4.
+`tools/perf_report.py` парсит `perf: npc host/guest` (E4), **npc-e12**
+`perf: frame host/guest`, client `perf: net`, server `net: bytes_in/out ...`
+и legacy `perf: actor ...`. Считает p50/p95/max полного кадра, компоненты
+world/actor/coop, frames_hz, `perf: npc` tick/components, клиентский tx/rx
+KB/s, серверные приращения bytes → KB/s и per-type долю сообщений. Выдаёт
+таблицы FULL FRAME / FRAME COMPONENTS / TRAFFIC / ISSUES / CHECKS, JSON и
+PASS/FAIL.
 
 ```powershell
-# один прогон
+# один прогон (игровой лог — perf: frame/net/npc; server_console.log — net:)
 python tools\perf_report.py --log "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log"
+
+# серверный лог: traffic heartbeat (по умолчанию интервал 10 с)
+python tools\perf_report.py --log server_console.log
+python tools\perf_report.py --log server_console.log --server-interval 10
 
 # дельты к baseline (например пустая локация vs город)
 python tools\perf_report.py --log perf_city_npc1.log `
@@ -703,11 +705,41 @@ python tools\perf_report.py --log perf_city_npc1.log `
 # JSON
 python tools\perf_report.py --log perf_city_npc1.log --json > perf.json
 ```
-Exit: 0 PASS, 1 FAIL, 2 нет `perf:` данных. Пороги: Tick p95 ≤2.0 мс
-(хост/гость; с baseline — добавленный p95), discover/capture/apply (и
-guest spawn/appearance/motion/weapons/build) p95 ≤1.5 мс, warn=0,
-timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
-Методика/приёмка — `docs/PERF.md`.
+
+Exit: **0 PASS, 1 FAIL, 2 нет данных**. Пороги:
+- full frame (`perf: frame`) host/guest p95 ≤ **4.0 мс**, max ≤ **10.0 мс**;
+  frame `actor` p95 ≤ **2.0 мс**;
+- старый `perf: npc` tick p95 ≤ **2.0 мс**; components p95 ≤1.5 мс;
+- traffic (client tx+rx и server bytes_in+out): типично (p50) ≤ **12 КБ/с**,
+  worst (max) ≤ **15 КБ/с**;
+- `perf: npc warn`=0, timeouts ≤0.5%, appearance failed ≤1%, delete failed=0.
+
+`perf: frame`/`perf: net`/server `net:` пока не входят в legacy-профиль
+`perf_report.py --baseline` (baseline применяется к `perf: npc` tick), но
+выводятся отдельными таблицами и проверяются новыми порогами. Per-type в
+server `net:` — это **счётчики сообщений** (не байты), поэтому в отчёте
+показывается их доля в %; KB/s считается по `bytes_in/out`.
+
+Пример вывода (фрагмент, synthetic/серверный лог):
+
+```text
+NPC perf report (npc-e12): pass.log
+[FULL FRAME]
+  dir       n      p50      p95      max       hz
+  host      1     0.50     1.00     2.00     19.0
+[FRAME COMPONENTS]
+  host   actor         1     0.30     0.50     0.50
+[TRAFFIC]
+  client perf: net n=1
+    tx+rx  KB/s p50=2.20 p95=2.20 max=2.20 avg=2.20
+  server net n=2 interval=10.0s
+    in+out    KB/s p50=4.17 p95=5.12 max=5.23 avg=4.17
+    per-type (messages): frame=38.3% actor=49.5% other=12.3%
+VERDICT: PASS
+```
+
+Для FAIL-кейса `VERDICT: FAIL` + рекомендации, exit 1; для лога без
+`perf:`/`net:` строк — сообщение и exit 2.
 
 ### Режим B: fake GUEST (игра — хост, эмулируется гость)
 

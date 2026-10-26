@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""E4 NPC replication performance report.
+"""NPC replication performance report (npc-e12).
 
 Parses the game log (rdr2-coop.log) and/or server_console.log looking for
-`perf: npc host ...`, `perf: npc guest ...`, legacy `perf: actor ...` lines,
-counters and failure/warn/timeout markers. Produces p50/p95/max tables,
-counters, optional baseline deltas and PASS/FAIL verdict.
+`perf: npc host ...`, `perf: npc guest ...`, `perf: frame host/guest ...`,
+client `perf: net ...`, server `net: bytes_in/out ...`, legacy `perf: actor ...`
+lines, counters and failure/warn/timeout markers. Produces p50/p95/max tables
+for full frame/actor metrics, client/server traffic KB/s and per-type shares,
+optional baseline deltas and PASS/FAIL verdict.
 
 Only the Python standard library is used.
 
 Exit codes:
-  0 = PASS (perf data found, no threshold violations)
-  1 = FAIL (perf data found, threshold/issue violation)
-  2 = no perf data / unreadable input (report not possible)
+  0 = PASS (perf/net data found, no threshold violations)
+  1 = FAIL (data found, threshold/issue violation)
+  2 = no perf/net data / unreadable input (report not possible)
 """
 
 from __future__ import annotations
@@ -23,10 +25,15 @@ import re
 import sys
 from pathlib import Path
 
-# Acceptance thresholds from E4 (milliseconds unless stated otherwise).
+# Acceptance thresholds from E4/npc-e12 (milliseconds unless stated otherwise).
 THRESHOLDS = {
     "tick_p95_ms": 2.0,
     "component_p95_ms": 1.5,
+    "frame_p95_ms": 4.0,
+    "frame_max_ms": 10.0,
+    "frame_actor_p95_ms": 2.0,
+    "traffic_typical_kbps": 12.0,
+    "traffic_worst_kbps": 15.0,
     "warn_lines": 0,
     "timeout_rate": 0.005,       # 0.5%
     "appearance_fail_rate": 0.01,  # 1%
@@ -37,6 +44,19 @@ TOKEN_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_/]*)=(-?\d+(?:\.\d+)?)")
 PERF_NPC_RE = re.compile(r"perf:\s*npc\s+(host|guest)\b(.*)$", re.IGNORECASE)
 PERF_ACTOR_RE = re.compile(r"perf:\s*actor\b(.*)$", re.IGNORECASE)
 PERF_WARN_RE = re.compile(r"perf:\s*npc\s+warn\b", re.IGNORECASE)
+PERF_FRAME_RE = re.compile(r"perf:\s*frame\s+(host|guest)\b(.*)$", re.IGNORECASE)
+PERF_NET_RE = re.compile(r"perf:\s*net\b(.*)$", re.IGNORECASE)
+FRAME_HZ_RE = re.compile(r"frames_hz\s*=\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
+FRAME_COMPONENT_RE = re.compile(
+    r"\b(world|actor|coop)\s*=\s*(-?\d+(?:\.\d+)?)\s+"
+    r"p95\s*=\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
+SERVER_NET_RE = re.compile(
+    r"^\s*net:\s*bytes_in=(\d+)\s+bytes_out=(\d+)\s*\|(.*)$", re.IGNORECASE)
+SERVER_TYPES = (
+    "frame", "actor", "world", "outfit", "presence", "damage",
+    "trains", "occupants", "other",
+)
+
 
 # Metrics whose p95 is checked against component_p95_ms, including the guest
 # side names (spawn/appearance/motion/weapons) and legacy scan/apply aliases.
@@ -114,6 +134,26 @@ def round_or_none(value, digits=2):
     return round(float(value), digits)
 
 
+def number_or_none(value):
+    if value is None or not is_number(value):
+        return None
+    return float(value)
+
+
+def stats_of(values):
+    """Average/median/p95/max for already-normalized traffic samples."""
+    values = [float(value) for value in values if is_number(value)]
+    if not values:
+        return {"n": 0, "avg": None, "p50": None, "p95": None, "max": None}
+    return {
+        "n": len(values),
+        "avg": round(sum(values) / len(values), 2),
+        "p50": round_or_none(percentile(values, 50.0)),
+        "p95": round_or_none(percentile(values, 95.0)),
+        "max": round_or_none(max(values)),
+    }
+
+
 def percentile(values, pct):
     if not values:
         return None
@@ -133,11 +173,21 @@ def MathFloor(value):
 
 
 class PerfReport:
-    def __init__(self, log_path: Path, label=None):
+    def __init__(self, log_path: Path, label=None, server_interval_s=10.0):
         self.path = log_path
         self.label = label or log_path.name
         self.directions = {"host": {}, "guest": {}, "legacy": {}}
         self.counters = {"host": {}, "guest": {}, "legacy": {}}
+        # npc-e12 full-frame metrics and traffic counters.
+        self.frame_metrics = {"host": Metric("frame"), "guest": Metric("frame")}
+        self.frame_components = {
+            "host": {name: Metric(name) for name in ("world", "actor", "coop")},
+            "guest": {name: Metric(name) for name in ("world", "actor", "coop")},
+        }
+        self.frames_hz = {"host": [], "guest": []}
+        self.client_net = []
+        self.server_net = []
+        self.server_interval_s = max(0.001, float(server_interval_s or 10.0))
         self.warn_lines = 0
         self.warn_samples = []
         self.timeout_values = []
@@ -154,6 +204,7 @@ class PerfReport:
         self.issue_samples = []
         self.lines = 0
         self.perf_lines = 0
+        self.server_net_lines = 0
 
     # -- parsing ---------------------------------------------------------
     def parse(self):
@@ -175,20 +226,82 @@ class PerfReport:
         return metrics[name]
 
     def _parse_line(self, line: str):
+        server_match = SERVER_NET_RE.match(line)
+        if server_match:
+            self._parse_server_net(server_match)
         if "perf:" in line:
             self.perf_lines += 1
             if PERF_WARN_RE.search(line):
                 self.warn_lines += 1
                 if len(self.warn_samples) < 10:
                     self.warn_samples.append(line.strip())
-            match = PERF_NPC_RE.search(line)
+            match = PERF_FRAME_RE.search(line)
             if match:
-                self._parse_perf_npc(match.group(1).lower(), match.group(2))
+                self._parse_perf_frame(match.group(1).lower(), match.group(2))
             else:
-                match = PERF_ACTOR_RE.search(line)
+                match = PERF_NPC_RE.search(line)
                 if match:
-                    self._parse_perf_actor(match.group(1))
+                    self._parse_perf_npc(match.group(1).lower(), match.group(2))
+                else:
+                    match = PERF_ACTOR_RE.search(line)
+                    if match:
+                        self._parse_perf_actor(match.group(1))
+            match = PERF_NET_RE.search(line)
+            if match:
+                self._parse_perf_net(match.group(1))
         self._parse_issues(line)
+
+    def _parse_perf_frame(self, direction: str, body: str):
+        sections = [part.strip() for part in body.split("|")]
+        if not sections:
+            return
+        first = sections[0]
+        m_tick = re.search(
+            r"\btick\s*=\s*(-?\d+(?:\.\d+)?)\s+"
+            r"p95\s*=\s*(-?\d+(?:\.\d+)?)\s+"
+            r"max\s*=\s*(-?\d+(?:\.\d+)?)", first, re.IGNORECASE)
+        if not m_tick:
+            return
+        self.frame_metrics[direction].add(
+            m_tick.group(1), m_tick.group(2), m_tick.group(3))
+        for section in sections[1:]:
+            component_match = FRAME_COMPONENT_RE.search(section)
+            if component_match:
+                name = component_match.group(1).lower()
+                if name in self.frame_components[direction]:
+                    self.frame_components[direction][name].add(
+                        component_match.group(2), component_match.group(3))
+            hz_match = FRAME_HZ_RE.search(section)
+            if hz_match and is_number(hz_match.group(1)):
+                self.frames_hz[direction].append(float(hz_match.group(1)))
+
+    def _parse_perf_net(self, body: str):
+        tokens = tokens_of(body)
+        tx = number_or_none(tokens.get("tx"))
+        rx = number_or_none(tokens.get("rx"))
+        if tx is None and rx is None:
+            return
+        self.client_net.append({
+            "tx": tx if tx is not None else 0.0,
+            "rx": rx if rx is not None else 0.0,
+            "total": (tx or 0.0) + (rx or 0.0),
+            "msgs_tx": number_or_none(tokens.get("msgs_tx")),
+            "msgs_rx": number_or_none(tokens.get("msgs_rx")),
+        })
+
+    def _parse_server_net(self, match: re.Match):
+        bytes_in = int(match.group(1))
+        bytes_out = int(match.group(2))
+        types = {}
+        for key, value in tokens_of(match.group(3)).items():
+            if key in SERVER_TYPES:
+                types[key] = int(float(value))
+        self.server_net.append({
+            "bytes_in": bytes_in,
+            "bytes_out": bytes_out,
+            "types": types,
+        })
+        self.server_net_lines += 1
 
     def _parse_perf_npc(self, direction: str, body: str):
         sections = [part.strip() for part in body.split("|")]
@@ -273,6 +386,120 @@ class PerfReport:
                 self.appearance_applied_counters += max(
                     0, int(round(numerical)))
 
+    # -- npc-e12: full frame + traffic summaries -------------------------
+    def frame_data(self):
+        directions = {}
+        for direction in ("host", "guest"):
+            frame = self.frame_metrics[direction]
+            components = {
+                name: metric.as_dict()
+                for name, metric in self.frame_components[direction].items()
+                if metric.has_data()
+            }
+            hz_values = self.frames_hz[direction]
+            if not frame.has_data() and not components and not hz_values:
+                continue
+            directions[direction] = {
+                "frame": frame.as_dict() if frame.has_data() else None,
+                "components": components,
+                "frames_hz": stats_of(hz_values),
+            }
+        return directions
+
+    def client_traffic_data(self):
+        if not self.client_net:
+            return {"n": 0, "tx": stats_of([]), "rx": stats_of([]),
+                    "total": stats_of([]), "samples": []}
+        return {
+            "n": len(self.client_net),
+            "tx": stats_of([item["tx"] for item in self.client_net]),
+            "rx": stats_of([item["rx"] for item in self.client_net]),
+            "total": stats_of([item["total"] for item in self.client_net]),
+            "msgs_tx": stats_of([
+                item["msgs_tx"] for item in self.client_net
+                if item.get("msgs_tx") is not None]),
+            "msgs_rx": stats_of([
+                item["msgs_rx"] for item in self.client_net
+                if item.get("msgs_rx") is not None]),
+            "samples": [
+                {
+                    "tx_kbps": round(item["tx"], 2),
+                    "rx_kbps": round(item["rx"], 2),
+                    "total_kbps": round(item["total"], 2),
+                }
+                for item in self.client_net
+            ],
+        }
+
+    def server_traffic_intervals(self):
+        """Cumulative server `net:` counters -> per-heartbeat KB/s deltas."""
+        intervals = []
+        for previous, current in zip(self.server_net, self.server_net[1:]):
+            d_in = current["bytes_in"] - previous["bytes_in"]
+            d_out = current["bytes_out"] - previous["bytes_out"]
+            if d_in < 0 or d_out < 0:
+                # Counter reset / new server session: do not invent a delta.
+                continue
+            type_deltas = {}
+            for name in SERVER_TYPES:
+                before = previous["types"].get(name, 0)
+                after = current["types"].get(name, 0)
+                type_deltas[name] = max(0, after - before)
+            if d_in == 0 and d_out == 0 and not any(type_deltas.values()):
+                continue  # idle heartbeat, not a traffic sample
+            second = self.server_interval_s
+            intervals.append({
+                "bytes_in": d_in,
+                "bytes_out": d_out,
+                "in_kbps": (d_in / 1024.0) / second,
+                "out_kbps": (d_out / 1024.0) / second,
+                "total_kbps": ((d_in + d_out) / 1024.0) / second,
+                "type_counts": type_deltas,
+            })
+        return intervals
+
+    def server_traffic_data(self):
+        intervals = self.server_traffic_intervals()
+        type_totals = {name: 0 for name in SERVER_TYPES}
+        for interval in intervals:
+            for name, value in interval["type_counts"].items():
+                type_totals[name] += value
+        total_messages = sum(type_totals.values())
+        per_type = []
+        for name in SERVER_TYPES:
+            count = type_totals[name]
+            per_type.append({
+                "name": name,
+                "messages": count,
+                "pct": round(100.0 * count / total_messages, 1)
+                if total_messages > 0 else 0.0,
+            })
+        return {
+            "n": len(intervals),
+            "interval_s": round(self.server_interval_s, 2),
+            "in": stats_of([item["in_kbps"] for item in intervals]),
+            "out": stats_of([item["out_kbps"] for item in intervals]),
+            "total": stats_of([item["total_kbps"] for item in intervals]),
+            "per_type": per_type,
+            "sampled_lines": self.server_net_lines,
+            "samples": [
+                {
+                    "bytes_in": item["bytes_in"],
+                    "bytes_out": item["bytes_out"],
+                    "in_kbps": round(item["in_kbps"], 2),
+                    "out_kbps": round(item["out_kbps"], 2),
+                    "total_kbps": round(item["total_kbps"], 2),
+                }
+                for item in intervals
+            ],
+        }
+
+    def traffic_data(self):
+        return {
+            "client": self.client_traffic_data(),
+            "server": self.server_traffic_data(),
+        }
+
     def _parse_issues(self, line: str):
         lower = line.lower()
         if "delete failed" in lower:
@@ -346,6 +573,8 @@ class PerfReport:
             "lines": self.lines,
             "perf_lines": self.perf_lines,
             "directions": directions,
+            "full_frame": self.frame_data(),
+            "traffic": self.traffic_data(),
             "issues": {
                 "warn_lines": self.warn_lines,
                 "warn_samples": self.warn_samples,
@@ -364,8 +593,16 @@ class PerfReport:
         }
 
     def has_data(self):
-        return any(self.directions[d] for d in self.directions) or \
-            any(self.counters[d] for d in self.counters)
+        if any(self.directions[d] for d in self.directions) or \
+                any(self.counters[d] for d in self.counters):
+            return True
+        if any(self.frame_metrics[d].has_data() for d in ("host", "guest")):
+            return True
+        if any(self.frames_hz[d] for d in ("host", "guest")):
+            return True
+        if self.client_net or self.server_net:
+            return True
+        return False
 
 
 def tokens_of(text: str) -> dict:
@@ -431,12 +668,65 @@ def evaluate(report: PerfReport, baseline: PerfReport = None):
                   THRESHOLDS["tick_p95_ms"],
                   THRESHOLDS["tick_p95_ms"], actual, detail)
     if not saw_tick_direction:
-        add_check("tick_metrics_present", False, "host/guest tick",
-                  None, "legacy perf: actor only; new perf: npc tick needed")
-        recommendations.append(
-            "No host/guest `perf: npc ... tick=` metrics: enable npc_debug=1 "
-            "with the E4-instrumented build; legacy `perf: actor` only "
-            "reports scan/spawn/apply.")
+        has_frame_metrics = any(
+            report.frame_metrics[d].has_data() for d in ("host", "guest"))
+        has_npc_metrics = any(report.directions[d] for d in ("host", "guest"))
+        if has_frame_metrics:
+            recommendations.append(
+                "`perf: npc` tick отсутствует; используем `perf: frame` "
+                "как основной full-frame бюджет.")
+        elif has_npc_metrics:
+            add_check("tick_metrics_present", False, "host/guest tick",
+                      None, "legacy perf: actor only; new perf: npc tick needed")
+            recommendations.append(
+                "No host/guest `perf: npc ... tick=` metrics: enable npc_debug=1 "
+                "with the E4-instrumented build; legacy `perf: actor` only "
+                "reports scan/spawn/apply.")
+
+    # npc-e12 full frame: top-level p95/max and actor component p95.
+    for direction in ("host", "guest"):
+        frame = report.frame_metrics[direction]
+        if frame.has_data():
+            add_check(f"{direction}_full_frame_p95_ms",
+                      frame.p95() <= THRESHOLDS["frame_p95_ms"],
+                      THRESHOLDS["frame_p95_ms"], frame.p95())
+            add_check(f"{direction}_full_frame_max_ms",
+                      frame.max() <= THRESHOLDS["frame_max_ms"],
+                      THRESHOLDS["frame_max_ms"], frame.max())
+            actor_metric = report.frame_components[direction].get("actor")
+            if actor_metric is not None and actor_metric.has_data():
+                add_check(f"{direction}_frame_actor_p95_ms",
+                          actor_metric.p95() <= THRESHOLDS["frame_actor_p95_ms"],
+                          THRESHOLDS["frame_actor_p95_ms"], actor_metric.p95())
+
+    # npc-e12 traffic: client perf: net and server net: byte deltas.
+    traffic = report.traffic_data()
+    client_traffic = traffic["client"]
+    if client_traffic["n"] > 0:
+        total = client_traffic["total"]
+        add_check("client_traffic_typical_kbps",
+                  total["p50"] <= THRESHOLDS["traffic_typical_kbps"],
+                  THRESHOLDS["traffic_typical_kbps"], total["p50"],
+                  "client tx+rx median")
+        add_check("client_traffic_worst_kbps",
+                  total["max"] <= THRESHOLDS["traffic_worst_kbps"],
+                  THRESHOLDS["traffic_worst_kbps"], total["max"],
+                  "client tx+rx worst sample")
+    server_traffic = traffic["server"]
+    if server_traffic["n"] > 0:
+        total = server_traffic["total"]
+        add_check("server_traffic_typical_kbps",
+                  total["p50"] <= THRESHOLDS["traffic_typical_kbps"],
+                  THRESHOLDS["traffic_typical_kbps"], total["p50"],
+                  "server bytes_in+out median")
+        add_check("server_traffic_worst_kbps",
+                  total["max"] <= THRESHOLDS["traffic_worst_kbps"],
+                  THRESHOLDS["traffic_worst_kbps"], total["max"],
+                  "server bytes_in+out worst sample")
+    if client_traffic["n"] == 0 and server_traffic["n"] == 0 and (
+            report.client_net or report.server_net):
+        add_check("traffic_samples_present", False, "≥1 traffic sample",
+                  None, "client perf: net / server net: lines have no deltas")
 
     # Component timings: p95 <=1.5 ms.
     for direction in ("host", "guest", "legacy"):
@@ -495,10 +785,71 @@ def fmt(value, digits=2):
 
 
 def print_human(data, baseline_data=None):
-    print(f"E4 NPC perf report: {data['label']} ({data['log']})")
+    print(f"NPC perf report (npc-e12): {data['label']} ({data['log']})")
     print(f"  lines={data['lines']} perf_lines={data['perf_lines']}")
     if baseline_data:
         print(f"  baseline: {baseline_data['label']} ({baseline_data['log']})")
+
+    full_frame = data.get("full_frame") or {}
+    if full_frame:
+        print("\n[FULL FRAME]")
+        print(f"  {'dir':<6} {'n':>4} {'p50':>8} {'p95':>8} {'max':>8} "
+              f"{'hz':>8}")
+        for direction in ("host", "guest"):
+            entry = full_frame.get(direction)
+            if not entry or not entry.get("frame"):
+                continue
+            frame = entry["frame"]
+            hz = entry.get("frames_hz") or {}
+            hz_value = hz.get("p50") if hz.get("n") else None
+            print(f"  {direction:<6} {frame['n']:>4} "
+                  f"{fmt(frame['p50']):>8} {fmt(frame['p95']):>8} "
+                  f"{fmt(frame['max']):>8} {fmt(hz_value, 1):>8}")
+        print("\n[FRAME COMPONENTS]")
+        print(f"  {'dir':<6} {'component':<10} {'n':>4} {'p50':>8} "
+              f"{'p95':>8} {'max':>8}")
+        for direction in ("host", "guest"):
+            entry = full_frame.get(direction) or {}
+            for name, values in (entry.get("components") or {}).items():
+                print(f"  {direction:<6} {name:<10} {values['n']:>4} "
+                      f"{fmt(values['p50']):>8} {fmt(values['p95']):>8} "
+                      f"{fmt(values['max']):>8}")
+
+    traffic = data.get("traffic") or {}
+    client = traffic.get("client") or {}
+    server = traffic.get("server") or {}
+    if client.get("n") or server.get("n"):
+        print("\n[TRAFFIC]")
+        if client.get("n"):
+            print(f"  client perf: net n={client['n']}")
+            for name, label in (("tx", "tx"), ("rx", "rx"),
+                                ("total", "tx+rx")):
+                stats = client.get(name) or {}
+                print(f"    {label:<6} KB/s p50={fmt(stats.get('p50'))} "
+                      f"p95={fmt(stats.get('p95'))} max={fmt(stats.get('max'))} "
+                      f"avg={fmt(stats.get('avg'))}")
+            msgs_tx = client.get("msgs_tx") or {}
+            msgs_rx = client.get("msgs_rx") or {}
+            if msgs_tx.get("n") or msgs_rx.get("n"):
+                print(f"    msgs: tx max={fmt(msgs_tx.get('max'), 0)} "
+                      f"rx max={fmt(msgs_rx.get('max'), 0)}")
+        if server.get("n"):
+            print(f"  server net n={server['n']} "
+                  f"interval={server.get('interval_s')}s "
+                  f"(cumulative {server.get('sampled_lines')} lines)")
+            for name, label in (("in", "bytes_in"), ("out", "bytes_out"),
+                                ("total", "in+out")):
+                stats = server.get(name) or {}
+                print(f"    {label:<9} KB/s p50={fmt(stats.get('p50'))} "
+                      f"p95={fmt(stats.get('p95'))} max={fmt(stats.get('max'))} "
+                      f"avg={fmt(stats.get('avg'))}")
+            per_type = [item for item in server.get("per_type", [])
+                        if item.get("messages")]
+            if per_type:
+                rendered = " ".join(
+                    f"{item['name']}={item['pct']:.1f}%" for item in per_type)
+                print(f"    per-type (messages): {rendered}")
+
     for direction in ("host", "guest", "legacy"):
         section = data["directions"].get(direction)
         if not section:
@@ -567,8 +918,8 @@ class ReportError(Exception):
 
 def build_parser():
     ap = argparse.ArgumentParser(
-        description="E4 NPC replication performance report (p50/p95/max, "
-                    "counters, baseline deltas, PASS/FAIL thresholds).",
+        description="NPC performance report (npc-e12): full frame, actor, "
+                    "client/server traffic, counters and PASS/FAIL thresholds.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     ap.add_argument("--log", required=True,
                     help="game log (rdr2-coop.log) or server_console.log")
@@ -578,6 +929,9 @@ def build_parser():
                     help="print machine-readable JSON only")
     ap.add_argument("--label", default=None,
                     help="label shown in the report (default: file name)")
+    ap.add_argument("--server-interval", type=float, default=10.0,
+                    metavar="SEC",
+                    help="server net: heartbeat interval in seconds")
     return ap
 
 
@@ -593,7 +947,7 @@ def main(argv=None):
         print(f"perf_report: log not found: {log_path}", file=sys.stderr)
         return 2
     try:
-        report = PerfReport(log_path, args.label).parse()
+        report = PerfReport(log_path, args.label, args.server_interval).parse()
     except ReportError as exc:
         print(f"perf_report: {exc}", file=sys.stderr)
         return 2
@@ -605,7 +959,8 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
         try:
-            baseline = PerfReport(baseline_path, "baseline").parse()
+            baseline = PerfReport(baseline_path, "baseline",
+                                  args.server_interval).parse()
         except ReportError as exc:
             print(f"perf_report: {exc}", file=sys.stderr)
             return 2
@@ -614,7 +969,7 @@ def main(argv=None):
             baseline = None
 
     if not report.has_data():
-        print(f"perf_report: no perf: npc/actor lines in {log_path}",
+        print(f"perf_report: no perf:/net: lines in {log_path}",
               file=sys.stderr)
         return 2
 
