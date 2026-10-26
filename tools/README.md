@@ -2,7 +2,7 @@
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v18 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E7.2/E2c (actor-репликация NPC) на
+Заменяет второй ПК при тестировании E1–E7.3/E2c (actor-репликация NPC) на
 одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v18;
 игра запускается только на одном ПК.
 
@@ -517,6 +517,34 @@ actor: motion id=1 reissue=0.00/s snap=0.00/s target_err_p95=0.0 status=...
 E6 presence и E7.1 visitor mode — игровые (fake tool их не эмулирует):
 проверять по `docs/NPC_E1_TESTING.md` (S19/S20).
 
+### E7.3: E3d-a транспорт и host migration (игровые)
+
+Fake tool **не создаёт** vehicle-прокси и не эмулирует mission/катсцены —
+E3d-a, host migration и mission-aware visitor проверяются только игрой
+(два ПК или игра-хост + fake guest для actor-части). INI на обоих:
+
+```ini
+npc_actor = 1
+world_vehicles = 1
+npc_vehicle_radius = 80
+npc_visitor_vehicles = 1
+npc_visitor_pause_scenes = 1
+```
+
+- **E3d-a:** игра-хост садится в машину/повозку и едет; гость видит
+  vehicle-прокси в радиусе 80 м; host log `world: vehicles send n=`,
+  guest `world: vehicle spawn/despawn`; локального трафика гостя нет.
+  Машины без водителей/пассажиров до E3d-c, до 16 машин; empty snapshot
+  удаляет прокси.
+- **Host migration:** игра-хост Alt+F4/quit или зависание только с Ping;
+  второй игрок становится HOST, в логах `coop: role change -> HOST reset
+  complete`/`[!] host game-timeout … promoting remaining`; старый хост
+  rejoin — как гость. Проверять по S23 в `docs/NPC_E1_TESTING.md`.
+- **Mission-aware:** в миссии/катсцене толпа гостя не удаляется
+  (`actor: visitor scene pause on`), после выхода cleanup продолжается.
+- Локальная пара npc-e7.3: ASI `C9BFA565`, server `BEC3428B` (PID 3532);
+  ARINA offline — двух-ПК прогон pending.
+
 ### E2c: поздние outfit-обновления (metaOutfit resolver)
 
 E2c: игровой хост подбирает `metaOutfit` для NPC, у которых он был 0, и
@@ -567,7 +595,7 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (ARINA/локальный на тестовом v18, финальный ASI E8971A62) —
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e7.3 ASI `C9BFA565`/server `BEC3428B`, ARINA offline) —
 pending. Для дымового теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.

@@ -6,18 +6,19 @@
 
 ## 1. Что нужно
 
-- Сервер v18 (`build-server-ci\Release\rdr2_coop_server.exe`; тестовый
-  деплой ASI `EAEB0A4B`, server `C4DD6B1A`; финальный ASI `E8971A62`).
-- v18-клиент с E4-инструментацией (тестовый ASI `EAEB0A4B`; финальный
-  `E8971A62`).
+- Сервер v18 (`build-server-ci\Release\rdr2_coop_server.exe`; локальная пара
+  npc-e7.3 — ASI `C9BFA565`, server `BEC3428B`; ARINA offline).
+- v18-клиент с E4-инструментацией (ASI `C9BFA565`, локальная пара npc-e7.3).
 - `npc_debug = 1` — включает `perf: npc ...` строки (при `npc_debug=0` или
   `npc_actor=0` — **ноль** `perf:` строк, overhead ≈ 0).
 - Для городского прогона: `npc_actor = 1`, `npc_cap = 8..12`,
   `npc_radius = 60`, `npc_animal_cap = 4`, `npc_appearance = 1`,
   `npc_damage = 1`, `npc_presence = 1`, `npc_visitor = 1`,
-  `npc_motion_update = 1` (E6/E7.1/E7.2 не выключать, если проверяем их
-  вклад); игра-хост + fake guest (`tools/fake_actor_client.py --mode guest`,
-  fake guest следует за позицией хоста), либо два ПК.
+  `npc_visitor_pause_scenes = 1`, `world_vehicles = 1`,
+  `npc_vehicle_radius = 80`, `npc_motion_update = 1` (E6/E7/E3d-a не
+  выключать, если проверяем их вклад); игра-хост + fake guest
+  (`tools/fake_actor_client.py --mode guest`, fake guest следует за позицией
+  хоста), либо два ПК.
 - Логи: `scripts\rdr2-coop.log` (игровой клиент; там `perf: npc`) и при
   необходимости `server_console.log` (ошибки/таймауты сервера).
 
@@ -181,12 +182,29 @@ E7.1 visitor mode выполняется в coop/actor tick: cleanup ≤8/тик
 tick и `actor: visitor cleanup removed=`. E5.2 corpse retention увеличивает
 число прокси (трупы) — учитывать при `npc_cap`/tick; отдельных метрик нет.
 
-## 10. Ограничения
+## 10. E3d-a — трафик транспорта и host migration
+
+E3d-a (`world_sync=0`, `npc_actor=1`, `world_vehicles=1`) не добавляет
+`perf:`-полей: `WorldSnapshot` vehicles-only шлётся раз в **6 тиков**
+(≈10 Гц при 60 Гц), до 16 Vehicle × 32 B + header 4 B → **≤516 B/6 тиков**
+(≈5.2 КБ/с на гостя, worst case); пустой snapshot — 4 B и удаляет прокси.
+Проверять host tick p95/warn и `world: vehicles send n=`; guest создаёт
+`CREATE_VEHICLE` (mission/invincible/no-collision) и дедупит `engineNetId`,
+timeout 3 с.
+
+Host migration hardening — серверный таймер 4 с (по game-thread сообщениям,
+не Ping); CPU-эффект negligible, отдельных perf-метрик нет. Client
+role-change reset (world_sync/visitor/presence/actor/боевые) — разово; при
+частых миграциях смотреть tick p95/`actor:` timeouts. При `npc_vehicle_radius`
+80 м и 16 машинах вклад в трафик детерминирован; в пустой локации
+`world: vehicles send n=0` (header 4 B) — норма.
+
+## 11. Ограничения
 
 - **1 ПК:** игра может быть хостом **или** гостем, но не обоими; host и guest
   метрики снимаются отдельными прогонами (host — с fake guest; guest — со
-  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7.2 pending; ARINA на тестовом
-  v18 (`EAEB0A4B`/`C4DD6B1A`), финальный ASI `E8971A62` — после теста.
+  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a pending; локальная пара
+  npc-e7.3 — ASI `C9BFA565`/server `BEC3428B`, ARINA offline (деплой pending).
 - Fake guest не даёт guest-`perf:` строк: это Python-инструмент, не игровой
   клиент; guest-метрики есть только у игры-гостя.
 - Baseline `npc_actor=0` не содержит `perf: npc` (нулевой overhead); для

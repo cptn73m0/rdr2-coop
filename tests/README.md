@@ -51,7 +51,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 `--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
 `KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто (20 базовых сценариев + 13 actor/presence-тестов v18)
+## Что покрыто (22 базовых сценария + 13 actor/presence-тестов v18)
 
 | Тест | Проверка |
 |---|---|
@@ -65,6 +65,8 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_worldstate_host_only` | WorldState от хоста ретранслируется, от гостя — блокируется (P0-фикс сервера) |
 | `test_oversized_and_truncated` | len > 64 КБ и обрезанные кадры не роняют сервер |
 | `test_host_migration` | при выходе хоста гость получает HostChanged(1) и может слать WorldSnapshot |
+| `test_host_game_timeout_ping_only` | хост шлёт только Ping (без game-thread сообщений) → game-timeout 4 с, close, promote, PlayerLeft+HostChanged |
+| `test_host_game_timeout_frame_activity` | Frame/game-thread сообщения продлевают хост-сессию; game-timeout не срабатывает по Ping, но срабатывает при отсутствии game-сообщений |
 | `test_join_race` | 50 раундов по 3 одновременных JOIN (threading.Barrier): ровно 2 JOIN_OK, ровно один is_host, третий → ServerFull; после JOIN гость→хост FRAME релеится; сервер чистит сессии |
 | `test_idle_timeout` | молчащий клиент отключается по таймауту (2-й аргумент сервера) |
 | `test_fuzz_frames` | 300 случайных кадров/типов/размеров + oversize + fragmented Ping (8-байтовый payload) |
@@ -94,17 +96,17 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_player_presence_relay` | 0x20: client→server→другому клиенту без эха; epoch/flags; 8 B byte-identical; rate-limit 10/с |
 | `test_player_presence_validation` | 0x20: epoch=0/short/long/unknown flag bits (6..15) drop; сервер жив |
 
-### NPC actor-репликация (E1–E7.2) — что проверено
+### NPC actor-репликация (E1–E7.3) — что проверено
 
 Wire/relay/валидация actor-сообщений покрыты actor/presence-тестами выше
-(**33/33** автоматических сценариев на `build-server-ci`, protocol v18:
-appearance + ActorDamage + PlayerPresence; 16 компонентов / 460 B, damage
-16 B, presence 8 B). Клиентская логика NPC/E2c-b/E5/E6/E7 проверена на
-**одном ПК** с fake host/guest и реальным хостом
-(`tools/fake_actor_client.py`, см. `tools/README.md`); E5/E5.1 подтверждены
-игровым гостем («выстрелы убивают, хэдшот ваншотит»); двух-ПК приёмка
-pending — ARINA/локальный на тестовом v18 (`EAEB0A4B`/`C4DD6B1A`),
-финальный ASI `E8971A62` после теста.
+(**35/35** автоматических сценариев на `build-server-ci`, protocol v18:
+appearance + ActorDamage + PlayerPresence + host migration/game-timeout;
+16 компонентов / 460 B, damage 16 B, presence 8 B, 22 базовых). Клиентская
+логика NPC/E2c-b/E5/E6/E7/E3d-a проверена на **одном ПК** с fake host/guest
+и реальным хостом (`tools/fake_actor_client.py`, см. `tools/README.md`);
+E5/E5.1 подтверждены игровым гостем («выстрелы убивают, хэдшот ваншотит»);
+двух-ПК приёмка pending — ARINA offline. Локальная пара npc-e7.3 — ASI
+`C9BFA565`/server `BEC3428B` (PID 3532).
 
 - **E1 (human-only):** discovery/roster, spawn heartbeat/frames/despawn,
   guest-прокси, resync, gating `npc_actor=0` → 0 `actor:`/`probe:` строк.
@@ -142,23 +144,30 @@ pending — ARINA/локальный на тестовом v18 (`EAEB0A4B`/`C4DD
   menu_other; суффикс `Name - in map`/`pause menu`/`in satchel`/`in shop`,
   timeout 12 с; `npc_presence=1`.
 - **E7.1:** visitor mode — подавление ambient у гостя, preserve
-  scenario/vendor/quest/event, `npc_visitor_vehicles=0` до E3d-a;
+  scenario/vendor/quest/event, `npc_visitor_vehicles=1` (после E3d-a),
+  `npc_visitor_pause_scenes=1` — пауза cleanup в миссии/катсцене;
   `npc_visitor=1`, `npc_visitor_preserve_events=1`.
 - **E7.2:** smooth motion — 60 Гц interpolation/far goal/in-place update/MBR;
   baseline `reissue<0.05/s snap=0`; `npc_motion_update=1`,
   `npc_motion_marker=0`, `npc_motion_status_p2=1`.
+- **E7.3:** E3d-a — `world_vehicles=1`, `npc_vehicle_radius=80`,
+  vehicles-only `WorldSnapshot` (≤16×32 B/6 тиков, пустой snapshot удаляет
+  прокси); host migration hardening (game-timeout 4 с, Ping не считается,
+  role-change reset, 2 теста); mission-aware visitor.
 - Используемые сообщения: **0x18** `ActorSpawnBatch` (спавн + heartbeat),
   **0x19** `ActorFrames` (10 Гц), **0x1A** `ActorDespawn` (gone/dead/evicted),
   **0x1D** `ActorResync` (guest→host; Client::SendActorResync, троттлинг ≤1/с),
   **0x1E** `ActorAppearance` (host→guest, E2c-b), **0x1F** `ActorDamage`
-  (guest→host, E5), **0x20** `PlayerPresence` (любой→другому, E6);
-  0x1B/0x1C зарезервированы/не применяются.
+  (guest→host, E5), **0x20** `PlayerPresence` (любой→другому, E6),
+  **0x10** `WorldSnapshot` vehicles-only (E3d-a); 0x1B/0x1C
+  зарезервированы/не применяются.
 - Флаги INI: `npc_actor=1` (default 0), `npc_cap` 1..12 (default 8),
   `npc_radius` 20..100 (default 60), `npc_animal_cap` 0..12 (default 4),
   `npc_appearance=1`, `npc_damage=1`, `npc_corpse_max_sec=300`,
-  `npc_presence=1`, `npc_visitor=1`, `npc_visitor_vehicles=0`,
-  `npc_visitor_preserve_events=1`, `npc_motion_update=1`,
-  `npc_motion_marker=0`, `npc_motion_status_p2=1`, `npc_debug=1`.
+  `npc_presence=1`, `npc_visitor=1`, `npc_visitor_vehicles=1`,
+  `npc_visitor_preserve_events=1`, `npc_visitor_pause_scenes=1`,
+  `npc_motion_update=1`, `npc_motion_marker=0`, `npc_motion_status_p2=1`,
+  `world_vehicles=1`, `npc_vehicle_radius=80`, `npc_debug=1`.
 - `test_actor_gating_no_actor_log` — **серверный** тест (mock-клиенты не шлют
   actor-сообщения), поэтому клиентский gating проверяется вручную
   (`npc_actor=0` → 0 строк `actor:`/`probe:` в `rdr2-coop.log`);

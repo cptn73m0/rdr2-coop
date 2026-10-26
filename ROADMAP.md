@@ -3,23 +3,24 @@
 Кооператив для одиночного сюжета RDR2. Дорожная карта показывает этапы,
 порядок работ и текущий прогресс. Отмечаем галочками по мере выполнения.
 
-**Актуально на:** 25.10.2026
+**Актуально на:** 26.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** **v18** (actor-репликация NPC E1–E7.2,
-0x18–0x20: ActorDamage 0x1F + PlayerPresence 0x20). v17↔v18 несовместимы;
-откат v17 — ASI `35163CC2`/server `B7AAABAE`, v16 — `63388AD3`/`4EDAE4B6`,
-v15 — `dist\npc-e2c-v15\`.
+**Текущий протокол:** **v18** (actor-репликация NPC E1–E7.3,
+0x18–0x20: ActorDamage 0x1F + PlayerPresence 0x20; v19 в работе).
+v17↔v18 несовместимы; откат v17 — ASI `35163CC2`/server `B7AAABAE`,
+v16 — `63388AD3`/`4EDAE4B6`, v15 — `dist\npc-e2c-v15\`.
 Рабочая база/игровой стабильный тег — **stable-v14** (пед-призрак, лошадь,
 одежда shop+wearable, выстрелы, время/погода). NPC-репликация реализована:
 E1 human-only, E2a meta-outfit, E2b всадники, E2c-a/b внешность, E3a
 сценарии/смерть, E3b оружие/бой, E3c животные/лошади, E4 перф-инструментация,
 E5 host-authoritative урон, E5.1 хедшоты, E5.2/E5.3 трупы/сглаживание
-всадников, E6 presence-суффиксы, E7.1 visitor mode, E7.2 плавное движение.
-CI **33/33** + 7 C++; HEAD 0625344; теги `npc-e0`…`npc-e5`
-(E6/E7.2 пока без тега). `npc_actor=0` по умолчанию; тестовый v18 —
-ASI `EAEB0A4B`/server `C4DD6B1A`, финальный ASI `E8971A62` после теста.
-**ARINA** — на тестовом v18 (`EAEB0A4B`/`C4DD6B1A`); двух-ПК приёмка,
-host migration и mission-aware visitor — backlog.
+всадников, E6 presence-суффиксы, E7.1 visitor mode, E7.2 плавное движение,
+**E7.3 — E3d-a транспорт, host migration hardening, mission-aware visitor**.
+CI **35/35** + 7 C++; HEAD 7c2c37a; тег **npc-e7.3**; теги
+`npc-e0`…`npc-e7.2` + `npc-e7.3`. `npc_actor=0` по умолчанию; локальная пара
+v18 — ASI `C9BFA565`/server `BEC3428B` (PID 3532), ARINA offline (pending).
+Двух-ПК приёмка, E3d-b/c и v19 (VehicleOccupants 0x21/TrainSnapshotV2 0x22)
+— backlog.
 
 ---
 
@@ -76,7 +77,7 @@ host migration и mission-aware visitor — backlog.
 
 ## Фаза 5 — P1: репликация мира/NPC
 
-### NPC-репликация — E1–E7.2 реализованы; 2-ПК/визуал pending
+### NPC-репликация — E1–E7.3 реализованы; 2-ПК/визуал pending
 - [x] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (22% NPC имеют
       metaOutfit hash; сценарии/модели/лошади/оружие)
 - [x] E0: протокол actor-сообщения 0x18–0x1E, `kMaxActors=12`,
@@ -85,8 +86,8 @@ host migration и mission-aware visitor — backlog.
       epoch/actorId!=0, finite coords, duplicate actorId), resync guest→host
 - [x] E0: integration-тесты v18 (host-only, размеры/лимиты, epoch/actorId,
       NaN/Inf, resync-направление, gating `actor:`=0, appearance 16comp/460B,
-      ActorDamage 16B direction/validation, PlayerPresence 8B relay/no-echo);
-      **33/33** на build-server-ci; C++ 7/7
+      ActorDamage 16B direction/validation, PlayerPresence 8B relay/no-echo,
+      host game-timeout 4 c/Ping-only); **35/35** на build-server-ci; C++ 7/7
 - [x] E1: human-only discovery 10 Гц вокруг обоих игроков, cap 12, roster
       actorId/epoch, spawn heartbeat 2.5 с, frames 10 Гц, despawn
       gone/dead/evicted, resync 0x1D; guest-прокси spawn≤2/тик + model load,
@@ -137,10 +138,10 @@ host migration и mission-aware visitor — backlog.
       rate-limit 10/с, unknown bits drop; flags map/pause/satchel/shop/
       cutscene/menu_other; суффикс `Name - in map`/`pause menu`/`in satchel`/
       `in shop`, timeout 12 с; `npc_presence=1`; debug `ui: pause=...`;
-      integration **33/33**
+      integration **35/35**
 - [x] **E7.1 visitor mode:** гость подавляет ambient human/ped/animal density,
-      cleanup ~10 с (≤8/тик, фейд); транспорт только при
-      `npc_visitor_vehicles=1` (default 0 до E3d-a); preserve
+      cleanup ~10 с (≤8/тик, фейд); транспорт при
+      `npc_visitor_vehicles=1` (default 1 после E3d-a); preserve
       scenario/vendor/quest/event (`npc_visitor_preserve_events=1`, whitelist
       23 моделей); road population on/off парно; логи `actor: visitor mode
       on/off`, `visitor cleanup removed=`
@@ -152,16 +153,36 @@ host migration и mission-aware visitor — backlog.
       `actor: teleport`; `npc_motion_update=1`, `npc_motion_marker=0`,
       `npc_motion_status_p2=1`; диагностика `actor: motion id=… reissue=…/s
       snap=…/s target_err_p95=… status=…`; приёмка **reissue <0.05/s, snap=0**
-- [ ] E3d-a: транспорт (машины/дилижансы/повозки) — не реализовано
-- [ ] E3d-b: поезда — не реализовано
-- [ ] E3d-c: NPC-водители — не реализовано
-- [ ] Backlog: mission-aware visitor (не подавлять NPC активной миссии),
-      adaptive 15 Гц, **двух-ПК визуальная приёмка E2c-b/E5/E6/E7**
-      (ARINA на тестовом v18; нужен финальный ASI `E8971A62`),
-      host migration/resync под нагрузкой, Tick p95/FPS и игровой чек-лист
-      «неотличимости»; `npc_actor` не включать в рабочую сборку до неё
+- [x] **E3d-a (npc-e7.3):** vehicles-only `WorldSnapshot` при `world_sync=0 &&
+      npc_actor=1 && world_vehicles=1`; `npc_vehicle_radius=80` (20..200),
+      ≤16 машин вокруг обоих игроков, пустой snapshot каждые 6 тиков удаляет
+      прокси; guest `CREATE_VEHICLE` mission/invincible/no-collision,
+      dedupe `engineNetId`, timeout 3 с; водители/пассажиры не реплицируются
+      как human actors до E3d-c; `npc_visitor_vehicles=1` подавляет локальный
+      трафик гостя; логи `world: vehicles send n=`, `world: vehicle spawn/despawn`
+- [x] **Host migration hardening (v18):** серверный host game-timeout 4 с
+      (4-й argv 2..15 с; idle 30 с отдельно), liveness только по game-thread
+      сообщениям (Ping/Pong не считаются) → close → PlayerLeft + promote +
+      HostChanged; client role-change reset (world_sync/visitor/presence/
+      actor/боевые/remote vehicle, ForceFullSpawnBatch/RequestImmediateResync),
+      лог `coop: role change -> HOST/GUEST reset complete`; интеграционные
+      тесты host migration/timeout **35/35**
+- [x] **Mission-aware visitor:** `npc_visitor_pause_scenes=1` — при
+      `GET_MISSION_FLAG` 0xB15CD1CF58771DE1 или
+      `IS_PLAYER_READY_FOR_CUTSCENE(PLAYER_ID())` 0xAA67BCB0097F2FA3
+      паузится только cleanup толпы (density/road suppression продолжаются);
+      лог `actor: visitor scene pause on/off mission=%d cutscene=%d`
+- [ ] E3d-b: поезда — mission-train в v19 (TrainSnapshotV2 0x22), старый
+      proxy-attach устарел (`docs/TRAINS.md`)
+- [ ] E3d-c: NPC-водители/пассажиры — после v19 (VehicleOccupants 0x21)
+- [ ] Backlog: mission-aware visitor расширить на NPC активной миссии,
+      adaptive 15 Гц, **двух-ПК визуальная приёмка E2c-b/E5/E6/E7/E3d-a**
+      (ARINA offline, деплой pending), host migration/resync под нагрузкой,
+      Tick p95/FPS и игровой чек-лист «неотличимости»; `npc_actor` не
+      включать в рабочую сборку до неё
 - [ ] Известные ограничения: Story Mode нельзя «подселить» в один мир;
-      RedM — другой стек; `npc_visitor_vehicles=1` до E3d-a → пустые дороги;
+      RedM — другой стек; при `world_vehicles=0` пустые дороги; до E3d-c
+      машины без водителей/пассажиров; при миграции мир не переносится;
       лицо/волосы/борода, точные анимации/катсцены; E5 без raycast,
       урон/HP аппроксимированы, headshot-радиус 0.30 м, труп до despawn
 
@@ -173,10 +194,12 @@ host migration и mission-aware visitor — backlog.
 - [x] Таймаут снапшотов 3 с → удаление прокси
 - [ ] **Тест на двух ПК** (`world_sync = 1` на обоих) — ждём прогона
 - [x] Транспорт в снапшоте (Vehicle до 16: дилижансы/повозки/лодки/трамваи;
-      mission-прокси без коллизии; поезда пока пропускаются)
+      mission-прокси без коллизии; E3d-a vehicles-only — без `world_sync`)
 - [x] Объекты/предметы в снапшоте: mission Object до 16 (амбиентные пропсы
       не дублируются — они уже есть в мире гостя)
-- [ ] Поезда (состав), произвольные/динамические объекты, миссионные акторы
+- [ ] E3d-b поезда: mission-train v19 (`TrainSnapshotV2 0x22`); старый
+      proxy-attach устарел (`docs/TRAINS.md`); произвольные/динамические
+      объекты и миссионные акторы — backlog
 - [x] Двусторонний маппинг целей handle↔netId (carry/loot host→guest и guest→host)
 - [ ] Очистка старых ambient-педов у гостя при входе в сессию
 - [x] Интерполяция/задачи анимации для прокси-NPC (walk/run/idle,
@@ -248,8 +271,10 @@ host migration и mission-aware visitor — backlog.
 - [x] scripts\restore_saves.ps1: восстановление сейва из бэкапа (dry-run/-Force)
 - [x] Проверка и фикс: probe-подключения больше не затирают players.txt
 - [x] Reconnect с backoff (1→10 с), очистка педа, повторный JOIN
-- [x] Host migration: сервер повышает гостя, шлёт HostChanged (v12)
-- [x] Headless-тест host migration: новый хост принимается для WorldSnapshot
+- [x] Host migration: сервер повышает гостя, шлёт HostChanged (v12);
+      E7.3 hardening — game-timeout 4 с/Ping не считается, role-change reset
+- [x] Headless-тест host migration: новый хост принимается для WorldSnapshot;
+      game-timeout ping-only/frame-activity тесты
 - [x] Fuzz-тест: 300 случайных кадров/размеров + C++ FrameReader fuzz
 - [x] C++ тест client reconnect с фейковым сервером
 - [x] WorldSnapshot parser stress: 4 потока × 20k, строгий размер/count,
