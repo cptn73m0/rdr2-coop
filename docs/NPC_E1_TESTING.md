@@ -1,16 +1,17 @@
-# NPC actor replication (E1–E9) — in-game test plan and acceptance metrics
+# NPC actor replication (E1–E10) — in-game test plan and acceptance metrics
 
-**Статус (26.10.2026):** E1–E9 реализованы; текущий протокол — **v19**.
+**Статус (26.10.2026):** E1–E10 реализованы; текущий протокол — **v19**.
 E1 human-only, E2a meta-outfit, E2b всадники, E2c-b asset/tint, E3a
 сценарии/смерть, E3b оружие/бой, E3c животные/свободные лошади, E4 perf,
 E5 урон/E5.1 хедшоты, E5.2/E5.3 трупы/mounted, E6 presence, E7.1 visitor,
 E7.2 плавное движение, E7.3 E3d-a vehicles/host migration/mission-aware,
 E8 — E3d-c occupants/draft (0x21) + E3d-b mission-train (0x22),
-**E9 — animal/horse appearance (0x1E assets + 0x1C tack)**.
-CI **41/41** integration + 7/7 C++; тег **npc-e9**. E2c-b/E1–E5.1 проверены
+E9 — animal/horse appearance (0x1E assets + 0x1C tack),
+**E10 — mounted NPC-horse appearance через 0x1C (семантика rider actorId)**.
+CI **41/41** integration + 7/7 C++; тег **npc-e10**. E2c-b/E1–E5.1 проверены
 на одном ПК + реальный хост; двух-ПК приёмка pending. Локальная пара
-**npc-e9/v19**: ASI `DC0C4AB7`, server `E26C715A` (PID 10276);
-**ARINA offline** — pending.
+**npc-e10/v19**: ASI `B8BA1B93`, server `E26C715A`; **ARINA offline** —
+pending. Финальный чек-лист 2-ПК: [ACCEPTANCE_2PC.md](ACCEPTANCE_2PC.md).
 
 E1 — human-only NPC; E2/E3 добавляют внешность, всадников, сценарии/смерть,
 оружие/бой, животных/лошадей. **E5** — урон применяет только хост:
@@ -19,9 +20,10 @@ E1 — human-only NPC; E2/E3 добавляют внешность, всадни
 presence 0x20. **E7.1** — visitor mode; **E7.2** — плавное движение 60 Гц;
 **E7.3** — транспорт E3d-a, mission-aware visitor и host migration hardening.
 **E8** — E3d-c водители/пассажиры/draft (0x21) и E3d-b mission-train (0x22).
-**E9** — assets животных/лошадей (0x1E) и horse tack (0x1C). Mission NPC не
-входят; 0x1B/0x1C зарезервированы (0x1C используется horse tack); resync
-0x1D реализован (≤1/с).
+**E9** — assets животных/лошадей (0x1E) и horse tack (0x1C).
+**E10** — внешность лошади под NPC-всадником через 0x1C. Mission NPC не
+входят; 0x1B зарезервирован; 0x1C используется E9/E10; resync 0x1D
+реализован (≤1/с).
 
 Автоматизированная часть — wire/relay/validation:
 `tests/integration_server.py` (**41 сценарий**, protocol v19, appearance +
@@ -33,8 +35,8 @@ ActorDamage + PlayerPresence + VehicleOccupants + TrainSnapshotV2 + rate-limit
 
 - Оба ПК: одна и та же сборка (protocol v19: `net/protocol.h`,
   `kProtocolVersion=19`), один `rdr2_coop_server.exe` v19. **Локальная пара
-  npc-e9** — ASI `DC0C4AB7`, server `E26C715A` (PID 10276); **ARINA
-  offline** — pending. Откат v18 — ASI `C9BFA565`/server `BEC3428B`; v17 —
+  npc-e10** — ASI `B8BA1B93`, server `E26C715A`; **ARINA offline** — pending.
+  Откат v18 — ASI `C9BFA565`/server `BEC3428B`; v17 —
   ASI `35163CC2`/server `B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 —
   `dist\npc-e2c-v15\`.
 - INI на обоих ПК (кроме указанных):
@@ -55,6 +57,7 @@ ActorDamage + PlayerPresence + VehicleOccupants + TrainSnapshotV2 + rate-limit
   - `world_trains = 0` — E3d-b mission-train (тестовый opt-in; включать
     только для S26);
   - `npc_animal_appearance = 0` — E9; для S27 включить **1 на обоих ПК**;
+  - `npc_mount_appearance = 0` — E10; для S28 включить **1 на обоих ПК**;
   - `npc_debug = 1` — probe/perf/visitor/motion/world-логи (host и guest);
     после прогона выключить;
   - остальные экспериментальные флаги — **0** (`world_sync=0`, `action_sync=0`,
@@ -126,7 +129,7 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 - При `npc_cap=8` (default) ожидаемые proxies 8, а не 8–12; для приёмки E1
   городского сценария используйте `npc_cap=12`.
 
-## 3. Игровой чек-лист (E1–E9, два ПК)
+## 3. Игровой чек-лист (E1–E10, два ПК)
 
 | # | Сценарий / условия | Шаги | Ожидаемо (визуал + лог) | Артефакт | Pass |
 |---|---|---|---|---|---|
@@ -158,6 +161,7 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 | **S25** | E3d-c occupants/draft | `npc_occupants=1`; хост за рулём, затем пассажиром; повозка с draft-лошадью; сравнить host/guest | Гость видит водителя/пассажиров **seated** в тех же местах, draft-лошадь прицеплена; без дублей human-прокси (occupant не спавнится как отдельный human), без T-pose/провала в текстуры; log `world: occupants vehicle=…`, `actor: seat attach … ok=`, `actor: draft attach … ok=`, `occupants errors=0`; `npc_occupants=0` откат на пустые машины | host/guest log, видео | [ ] |
 | **S26** | E3d-b mission-train | `world_trains=1` (при `npc_actor=1 && world_vehicles=1 && world_sync=0`); хост у станции/едет, останавливается, разворачивается; затем `world_trains=0` | Гость видит **один** mission-train на рельсах с правильным числом вагонов, станцией/направлением/разворотом; локального второго поезда нет; состав не скачет >25 м/|dz|>15; при выключении/leave/role change mission-train удаляется и random trains восстанавливаются (`SET_RANDOM_TRAINS(true)`); риски: config matching 87 хэшей, direction/reversing семантика | host/guest log, видео | [ ] |
 | **S27** | E9 animal/horse appearance | `npc_animal_appearance=1` на **обоих** ПК; хост в конюшне/на улице с лошадьми и животными; гость смотрит; затем флаг 0 и рестарт | Лошади: масть/грива/хвост/седло совпадают с хостом; животные — окрас/мех; нет invisible/T-pose/заморозки; host log `actor: animal appearance probe …`; `npc_animal_appearance=0` → random как раньше; без дублей/randomize после tack; выключение флага на одном ПК не допускается (INI host+guest совпадают) | host/guest log, видео, probe | [ ] |
+| **S28** | E10 mounted horse appearance | `npc_mount_appearance=1` на **обоих** ПК; хост садится на NPC-лошадь/всадника (NPC mounted pair); гость смотрит; затем флаг 0 и рестарт | Лошадь под NPC-всадником совпадает с хостом (масть/грива/хвост/седло); нет invisible/T-pose/заморозки/дублей; host log `actor: mount outfit send actor=… model=… items=…`; guest `actor: mount outfit apply … ok=1`/`guest mount outfit applied/failed`; при 0 → random; mounted-horse повторно применяется после позднего mount (heartbeat/retry) | host/guest log, видео | [ ] |
 
 Дополнительно: визуальная проверка E2c-b/E5/E6/E7/E3d-a/E3d-b/E3d-c/E9 на
 **двух ПК** (ARINA offline, деплой pending), сценарные позы (E3a), ночь/дождь.
@@ -196,6 +200,22 @@ Ambient-поезда не чистим v1, точные пассажиры по�
 - **Риски:** точные пассажиры поездов — P1; ambient-поезда не чистим v1;
   seat=-1 (driver) требует in-game проверки; direction/reversing семантика
   приближённая; config matching (87 хэшей) может давать skip/ambiguity.
+
+### E10 — mounted NPC-horse appearance (S28)
+
+- Включить `npc_mount_appearance = 1` **на обоих ПК** (INI совпадают);
+  `npc_debug=1`. Хост — NPC-всадник (rider + mount) в кадре.
+- Host: для NPC mounted pair шлёт внешность лошади через `ActorOutfit` 0x1C
+  с actorId **всадника** (`actor: mount outfit send actor=… model=0x…
+  items=…`, бюджет 1 mounted horse/тик ~2 с).
+- Guest: ждёт mounted+mount handle, применяет `ActorOutfit` к лошади
+  всадника (`actor: mount outfit apply actor=… items=… ok=1`), retry ≤3/2 с
+  после reseat/recreate; счётчик `actor: guest mount outfit applied=u failed=u`.
+- Ожидаемо: лошадь NPC-всадника совпадает с хостом, без invisible/T-pose/
+  дублей; `npc_mount_appearance=0` → random. Флаг host+guest синхронно.
+- Ограничения E10: лошадь может получить краску с задержкой/не примениться
+  при позднем mount (heartbeat/retry повторит); старые shop items не
+  снимаются; E11 точные пассажиры поездов — отдельно.
 
 ### E5.2/E6/E7 — уточнения методики
 
@@ -291,20 +311,21 @@ Ambient-поезда не чистим v1, точные пассажиры по�
   reversing семантика приближённая; точные пассажиры поездов — P1; ambient-
   поезда не чистим v1; seat=-1 (driver) требует in-game проверки; `world_trains`
   default 0; occupancy/draft проверять по S25, поезд — по S26.
-- **E9 animal/horse appearance:** cap 16 компонентов; `RESET_PED_COMPONENTS`
-  на животных не проверен в игре; horse tack model-specific (старые shop
-  items не снимаются); mounted-horse под NPC-всадником **не покрыт**;
-  assets coverage `MPT_ANIMAL` может быть неполным → random fallback;
-  MetaPedOutfit fallback только probe; `npc_animal_appearance` должен
-  совпадать на host+guest. Проверять S27.
+- **E9/E10 animal/horse appearance:** cap 16 компонентов; `RESET_PED_COMPONENTS`
+  на животных не проверен в игре; horse tack/mount model-specific (старые shop
+  items не снимаются); assets coverage `MPT_ANIMAL` может быть неполным →
+  random fallback; MetaPedOutfit fallback только probe; `npc_animal_appearance`
+  и `npc_mount_appearance` должны совпадать на host+guest. Проверять S27/S28.
+  E10: mounted horse может получить внешность с задержкой/не примениться при
+  позднем mount (heartbeat/retry повторит); E11 точные пассажиры поездов — когда будет.
 - **E2c-a resolver**: механически работает (890 моделей/4568 кандидатов,
   бюджет 24 натива/тик), но random ambient NPC без именованного outfit —
   `resolved=0/failed=11`; это закрывает E2c-b asset/tint, проверять
   `appearance_msgs/appearance_actors/entry_max/errors` и визуал.
-- **Двух-ПК приёмка не пройдена**: локальная пара npc-e9/v19 (ASI
-  `DC0C4AB7`, server `E26C715A`, PID 10276), ARINA offline — деплой pending;
-  текущие E1–E9 — однопК-проверки fake host/guest + реальный хост, E5/E5.1
-  подтверждены игровым гостем. Host migration/resync под нагрузкой — backlog.
+- **Двух-ПК приёмка не пройдена**: локальная пара npc-e10/v19 (ASI
+  `B8BA1B93`, server `E26C715A`), ARINA offline — деплой pending; текущие
+  E1–E10 — однопК-проверки fake host/guest + реальный хост, E5/E5.1
+  подтверждены игровым гостем. Финальный чек-лист: [ACCEPTANCE_2PC.md](ACCEPTANCE_2PC.md).
 - **Tick budget**: для E4 добавлена инструментация (`perf: npc host/guest ...`
   при `npc_debug=1`); анализ и пороги — `docs/PERF.md` +
   `tools/perf_report.py`. На старом логе (до E4-билда) `perf:` нет — это не
@@ -330,5 +351,5 @@ E4 принимается по `perf: npc host/guest` строкам (`npc_debug
 `--baseline` vs `--log`, `--json`, exit 0/1/2) — в `docs/PERF.md`.
 Ограничение 1 ПК: host и guest метрики снимаются отдельными прогонами;
 fake guest не даёт guest-`perf:` (это Python). Двух-ПК приёмка
-E2c-b/E4/E5/E6/E7/E3d-a/E3d-b/E3d-c/E9 — pending; локальная пара npc-e9/v19 —
-ASI `DC0C4AB7`/server `E26C715A` (PID 10276), ARINA offline (деплой pending).
+E2c-b/E4/E5/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10 — pending; локальная пара
+npc-e10/v19 — ASI `B8BA1B93`/server `E26C715A`, ARINA offline (деплой pending).
