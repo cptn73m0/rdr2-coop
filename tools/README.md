@@ -2,7 +2,7 @@
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E8/E2c (actor-репликация NPC) на
+Заменяет второй ПК при тестировании E1–E9/E2c (actor-репликация NPC) на
 одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v19;
 игра запускается только на одном ПК.
 
@@ -570,6 +570,34 @@ npc_visitor_vehicles = 1
 - Флаги: `npc_occupants=1` (0 = старое E3d-a), `world_trains=0` (opt-in);
   тесты/чек-листы — `docs/NPC_E1_TESTING.md` S25/S26.
 
+### E9: animal/horse appearance (игровые)
+
+Fake tool **не эмулирует** assets животных/лошадей и horse tack — E9
+проверяется только игрой (S27). INI **на обоих ПК одинаково**:
+
+```ini
+npc_actor = 1
+npc_animal_appearance = 1   # host+guest; 0 = random как раньше
+npc_debug = 1
+```
+
+- Хост в конюшне/на улице с лошадьми и животными; гость сравнивает масть/
+  гриву/хвост/седло и окрас; не должно быть invisible/T-pose/заморозки.
+- Host probe (1/модель ≤1/10 с):
+  `actor: animal appearance probe model=0x… type=… comps=… cats=… valid=…
+  metaOutfit=… shop=…`; guest логи
+  `actor: animal appearance apply id=… ok=`,
+  `actor: horse tack apply … ok=` и 5-сек счётчики.
+- Быстрый фильтр лога:
+  ```powershell
+  Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
+    -Pattern "actor: animal appearance|actor: horse tack"
+  ```
+- `npc_animal_appearance=0` → животные/лошади снова random (не залипают);
+  при расхождении INI host/guest поведение несимметрично — не допускается.
+- Локальная пара npc-e9/v19: ASI `DC0C4AB7`, server `E26C715A` (PID 10276);
+  ARINA offline. Чек-лист — `docs/NPC_E1_TESTING.md` S27.
+
 ### E2c: поздние outfit-обновления (metaOutfit resolver)
 
 E2c: игровой хост подбирает `metaOutfit` для NPC, у которых он был 0, и
@@ -620,7 +648,7 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e8 ASI `9E3E8D7A`/server `E26C715A`, ARINA offline) —
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e9 ASI `DC0C4AB7`/server `E26C715A`, ARINA offline) —
 pending. Для дымового теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
@@ -759,8 +787,8 @@ Windows PowerShell / PS 5.1 (скрипт сохранён с UTF-8 BOM):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\snapshot_build.ps1 `
-  -Label npc-e8.1 -Features "E3d-c occupants/draft; E3d-b mission-train" `
-  -Tag npc-e8.1
+  -Label npc-e9 -Features "E9 animal/horse appearance; E3d-c occupants" `
+  -Tag npc-e9
 ```
 
 - `-Label` — имя папки `dist\<label>` (обязательно).
@@ -815,6 +843,7 @@ INI — по разделу INI снапшота.
 | `npc-e7.3` | v18 | `C9BFA565` | `BEC3428B` | `7c2c37a` / npc-e7.3 |
 | `npc-e8` | v19 | `9E3E8D7A` | `E26C715A` | `ce897b5` / npc-e8 |
 | `npc-e8.1` | v19 | `1EB0A633` | `E26C715A` | `1324d00` / npc-e8.1 |
+| `npc-e9` | v19 | `DC0C4AB7` | `E26C715A` | `1543622` / npc-e9 |
 
 Актуальные hashes/фичи/INI — в `dist\<label>\README.md`; корневой
 README содержит краткую таблицу и ссылки.

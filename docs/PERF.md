@@ -7,8 +7,8 @@
 ## 1. Что нужно
 
 - Сервер v19 (`build-server-ci\Release\rdr2_coop_server.exe`; локальная пара
-  npc-e8 — ASI `9E3E8D7A`, server `E26C715A`; ARINA offline).
-- v19-клиент с E4-инструментацией (ASI `9E3E8D7A`, локальная пара npc-e8).
+  npc-e9 — ASI `DC0C4AB7`, server `E26C715A`; ARINA offline).
+- v19-клиент с E4-инструментацией (ASI `DC0C4AB7`, локальная пара npc-e9).
 - `npc_debug = 1` — включает `perf: npc ...` строки (при `npc_debug=0` или
   `npc_actor=0` — **ноль** `perf:` строк, overhead ≈ 0).
 - Для городского прогона: `npc_actor = 1`, `npc_cap = 8..12`,
@@ -16,9 +16,10 @@
   `npc_damage = 1`, `npc_presence = 1`, `npc_visitor = 1`,
   `npc_visitor_pause_scenes = 1`, `world_vehicles = 1`,
   `npc_vehicle_radius = 80`, `npc_occupants = 1`, `world_trains = 0`,
-  `npc_motion_update = 1` (E6/E7/E3d не выключать, если проверяем их вклад);
-  игра-хост + fake guest (`tools/fake_actor_client.py --mode guest`, fake
-  guest следует за позицией хоста), либо два ПК.
+  `npc_animal_appearance = 0`, `npc_motion_update = 1` (E6/E7/E9/E3d не
+  выключать, если проверяем их вклад); игра-хост + fake guest
+  (`tools/fake_actor_client.py --mode guest`, fake guest следует за позицией
+  хоста), либо два ПК.
 - Логи: `scripts\rdr2-coop.log` (игровой клиент; там `perf: npc`) и при
   необходимости `server_console.log` (ошибки/таймауты сервера).
 
@@ -215,12 +216,23 @@ host только при `npc_actor=1 && world_vehicles=1 && world_trains=1` и
 смотреть tick p95/warn и время создания mission-train на госте (cleanup
 timeout 2 с). При `world_trains=0` трафик 0x22 отсутствует.
 
+## 10b. E9 — animal/horse appearance
+
+E9 (`npc_animal_appearance=1`, host+guest синхронно) не добавляет
+`perf:`-полей. Host capture идёт с бюджетом **1 animal/tick** (~2 с на
+актора), payload `ActorAppearance` 0x1E ≤ **460 B** при изменении + heartbeat;
+horse tack (kind=2) — `ActorOutfit` 0x1C **792 B** on change (бюджет
+1 horse/tick ~2 с). При `npc_animal_appearance=0` — 0x1E/0x1C для животных
+не шлются (random). Отдельных guest-метрик нет: смотреть tick p95/warn,
+`actor: animal appearance apply … ok=`, `actor: horse tack apply … ok=`,
+`actor: animal appearance probe …` (1/модель ≤1/10 с) и 5-сек счётчики.
+
 ## 11. Ограничения
 
 - **1 ПК:** игра может быть хостом **или** гостем, но не обоими; host и guest
   метрики снимаются отдельными прогонами (host — с fake guest; guest — со
-  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a/E3d-b/E3d-c pending;
-  локальная пара npc-e8 — ASI `9E3E8D7A`/server `E26C715A`, ARINA offline
+  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a/E3d-b/E3d-c/E9 pending;
+  локальная пара npc-e9 — ASI `DC0C4AB7`/server `E26C715A`, ARINA offline
   (деплой pending).
 - Fake guest не даёт guest-`perf:` строк: это Python-инструмент, не игровой
   клиент; guest-метрики есть только у игры-гостя.

@@ -5,7 +5,7 @@
 
 **Актуально на:** 26.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** **v19** (actor-репликация NPC E1–E8,
+**Текущий протокол:** **v19** (actor-репликация NPC E1–E9,
 0x18–0x22: ActorDamage 0x1F + PlayerPresence 0x20 + VehicleOccupants 0x21 +
 TrainSnapshotV2 0x22). v18↔v19 несовместимы; откат v18 — ASI
 `C9BFA565`/server `BEC3428B`, v17 — `35163CC2`/`B7AAABAE`, v16 —
@@ -15,11 +15,11 @@ TrainSnapshotV2 0x22). v18↔v19 несовместимы; откат v18 — AS
 E1 human-only, E2a meta-outfit, E2b всадники, E2c-a/b внешность, E3a
 сценарии/смерть, E3b оружие/бой, E3c животные/лошади, E4 перф-инструментация,
 E5 урон/E5.1 хедшоты/E5.2-E5.3 трупы/mounted, E6 presence, E7.1 visitor,
-E7.2 плавное движение, E7.3 E3d-a/migration, **E8 — E3d-c occupants/draft +
-E3d-b mission-train**. CI **39/39** + 7 C++; HEAD ce897b5; тег **npc-e8**;
-теги `npc-e0`…`npc-e8`. `npc_actor=0` по умолчанию; локальная пара v19 —
-ASI `9E3E8D7A`/server `E26C715A` (деплой task-137), ARINA offline.
-Двух-ПК приёмка и v19-подтверждения — backlog.
+E7.2 плавное движение, E7.3 E3d-a/migration, E8 — E3d-c occupants/draft +
+E3d-b mission-train, **E9 — animal/horse appearance (0x1E assets + 0x1C tack)**.
+CI **41/41** + 7 C++; HEAD 1543622; тег **npc-e9**; теги `npc-e0`…`npc-e9`.
+`npc_actor=0` по умолчанию; локальная пара v19 — ASI `DC0C4AB7`/server
+`E26C715A` (PID 10276), ARINA offline. Двух-ПК приёмка и S27 — backlog.
 
 ---
 
@@ -76,7 +76,7 @@ ASI `9E3E8D7A`/server `E26C715A` (деплой task-137), ARINA offline.
 
 ## Фаза 5 — P1: репликация мира/NPC
 
-### NPC-репликация — E1–E8 реализованы; 2-ПК/визуал pending
+### NPC-репликация — E1–E9 реализованы; 2-ПК/визуал pending
 - [x] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (22% NPC имеют
       metaOutfit hash; сценарии/модели/лошади/оружие)
 - [x] E0: протокол actor-сообщения 0x18–0x1E, `kMaxActors=12`,
@@ -86,8 +86,8 @@ ASI `9E3E8D7A`/server `E26C715A` (деплой task-137), ARINA offline.
 - [x] E0: integration-тесты v19 (host-only, размеры/лимиты, epoch/actorId,
       NaN/Inf, resync-направление, gating `actor:`=0, appearance 16comp/460B,
       ActorDamage 16B, PlayerPresence 8B, VehicleOccupants 8+8*count≤72B,
-      TrainSnapshotV2 48B, host game-timeout 4 c/Ping-only); **39/39** на
-      build-server-ci; C++ 7/7
+      TrainSnapshotV2 48B, host game-timeout 4 c/Ping-only,
+      rate-limit 0x21/0x22); **41/41** на build-server-ci; C++ 7/7
 - [x] E1: human-only discovery 10 Гц вокруг обоих игроков, cap 12, roster
       actorId/epoch, spawn heartbeat 2.5 с, frames 10 Гц, despawn
       gone/dead/evicted, resync 0x1D; guest-прокси spawn≤2/тик + model load,
@@ -138,7 +138,7 @@ ASI `9E3E8D7A`/server `E26C715A` (деплой task-137), ARINA offline.
       rate-limit 10/с, unknown bits drop; flags map/pause/satchel/shop/
       cutscene/menu_other; суффикс `Name - in map`/`pause menu`/`in satchel`/
       `in shop`, timeout 12 с; `npc_presence=1`; debug `ui: pause=...`;
-      integration **39/39**
+      integration **41/41**
 - [x] **E7.1 visitor mode:** гость подавляет ambient human/ped/animal density,
       cleanup ~10 с (≤8/тик, фейд); транспорт при
       `npc_visitor_vehicles=1` (default 1 после E3d-a); preserve
@@ -165,7 +165,7 @@ ASI `9E3E8D7A`/server `E26C715A` (деплой task-137), ARINA offline.
       HostChanged; client role-change reset (world_sync/visitor/presence/
       actor/боевые/remote vehicle, ForceFullSpawnBatch/RequestImmediateResync),
       лог `coop: role change -> HOST/GUEST reset complete`; интеграционные
-      тесты host migration/timeout в общих **39/39**
+      тесты host migration/timeout в общих **41/41**
 - [x] **Mission-aware visitor:** `npc_visitor_pause_scenes=1` — при
       `GET_MISSION_FLAG` 0xB15CD1CF58771DE1 или
       `IS_PLAYER_READY_FOR_CUTSCENE(PLAYER_ID())` 0xAA67BCB0097F2FA3
@@ -183,18 +183,26 @@ ASI `9E3E8D7A`/server `E26C715A` (деплой task-137), ARINA offline.
       `_CREATE_MISSION_TRAIN`, sync speed/coords/warp/halt/leave/reverse,
       cleanup+restore; `world_trains=0` opt-in; старый proxy-attach устарел
       (`docs/TRAINS.md`)
-- [ ] Backlog: точные пассажиры поездов (P1), ambient-trains cleanup v1,
+- [x] **E9 (npc-e9, v19):** animal/horse appearance — `npc_animal_appearance=1`
+      (host+guest): host capture MPT_ANIMAL kind1/2 (cap16, GUIDS/TINT) →
+      ActorAppearance 0x1E (≤460 B, budget 1 animal/tick ~2 с) + horse tack
+      (kind2) → ActorOutfit 0x1C 792 B on change; guest staged apply/readback,
+      fallback random, horse tack apply; `npc_animal_appearance=0` → random;
+      probe `actor: animal appearance probe …`; tests 41/41
+- [ ] Backlog: S27 animal appearance 2-ПК (ARINA offline), mounted-horse
+      appearance, точные пассажиры поездов (P1), ambient-trains cleanup,
       mission-aware visitor расширить на NPC активной миссии, adaptive 15 Гц,
-      **двух-ПК визуальная приёмка E2c-b/E5/E6/E7/E3d-a/E3d-b/E3d-c**
-      (ARINA offline, деплой pending), host migration/resync под нагрузкой,
-      Tick p95/FPS и игровой чек-лист «неотличимости»; `npc_actor` не
+      **двух-ПК визуальная приёмка E2c-b/E5/E6/E7/E3d-a/E3d-b/E3d-c**,
+      host migration/resync под нагрузкой, Tick p95/FPS; `npc_actor` не
       включать в рабочую сборку до неё
-- [ ] Известные ограничения: Story Mode нельзя «подселить» в один мир;
-      RedM — другой стек; при `world_vehicles=0` пустые дороги; E3d-b
-      opt-in и direction/reversing приближённые; seat=-1/driver требует
-      in-game проверки; при миграции мир не переносится; лицо/волосы/
-      борода, точные анимации/катсцены; E5 без raycast, урон/HP
-      аппроксимированы, headshot-радиус 0.30 м, труп до despawn
+- [ ] Известные ограничения: E9 cap16/RESET на животных не проверен/
+      horse tack model-specific/mounted-horse не покрыт/MPT_ANIMAL coverage
+      fallback random/MetaPedOutfit только probe; Story Mode нельзя
+      «подселить»; RedM — другой стек; при `world_vehicles=0` пустые дороги;
+      E3d-b opt-in и direction/reversing приближённые; seat=-1/driver —
+      in-game; при миграции мир не переносится; лицо/волосы/борода,
+      точные анимации/катсцены; E5 без raycast, урон/HP аппроксимированы,
+      headshot-радиус 0.30 м, труп до despawn
 
 - [x] `WorldSnapshot` (0x10), хост-авторитет
 - [x] Сканер NPC 60 м, до 64 сущностей (32 Ped + 16 Vehicle + 16 Object),

@@ -276,7 +276,7 @@ payload: TrainSnapshotHeader (16 B)
   гость логировал `train: snapshot`, вагоны привязывались через
   `ATTACH_ENTITY_TO_ENTITY`; сцепка/рельсы/скорость не моделировались.
 
-## ACTOR-СООБЩЕНИЯ (v19, E1–E8)
+## ACTOR-СООБЩЕНИЯ (v19, E1–E9)
 
 v19 содержит реализованную actor-репликацию **людей, животных и свободных
 лошадей + транспорт**: E1 — discovery/lifecycle/движение; E2a — meta-outfit;
@@ -367,10 +367,12 @@ a:u32  b:u32  x:u32  y:u32  z:u32   // формат полей задаёт иг
 ```
 epoch:u32  actorId:u32  + OutfitState (784 B; см. 0x09)
 ```
-- 0x1B/0x1C **зарезервированы**: принимаются и считаются в inbox, но
-  игровым слоем не применяются. E2a использует `metaOutfit` в 0x18
-  (heartbeat), а не 0x1C. E2c-b asset/tint использует отдельный **0x1E**
-  (см. раздел 0x1E) — 784 B `OutfitState` для asset GUID не подходит.
+- **0x1B** зарезервирован: принимается и считается в inbox, но игровым слоем
+  не применяется. E2a использует `metaOutfit` в 0x18 (heartbeat), а не 0x1C.
+  **0x1C используется E9 horse tack** (kind=2): `OutfitState` 784 B on change,
+  count=0 не шлётся, model mismatch/count=0 skip; после tack randomize не
+  выполняется. E2c-b asset/tint использует отдельный **0x1E** (см. раздел
+  0x1E) — 784 B `OutfitState` для asset GUID не подходит.
 ### 0x1D ACTOR_RESYNC (гость → сервер → хосту, 12 B)
 ```
 epoch:u32  lastSeq:u32  reason:u8  pad[3]
@@ -525,21 +527,23 @@ payload: TrainSnapshotV2Payload (48 B)
 - При `npc_actor=0`: `actor_sync::Tick`/callbacks ничего не делают и не пишут
   `actor:`/`probe:`; сервер не получает actor-сообщений.
 - Статус: реализовано и проверено на одном ПК (fake host/guest + реальный
-  хост; E5/E5.1 подтверждены в игре). Локальная пара npc-e8/v19 — ASI
-  `9E3E8D7A`, server `E26C715A` (деплой task-137); ARINA offline — pending.
+  хост; E5/E5.1 подтверждены в игре). Локальная пара npc-e9/v19 — ASI
+  `DC0C4AB7`, server `E26C715A` (PID 10276); ARINA offline — pending.
   Двух-ПК приёмка pending, host migration/resync — backlog. Флаги:
   `npc_actor`, `npc_cap`, `npc_radius`, `npc_animal_cap`, `npc_appearance`,
   `npc_damage`, `npc_corpse_max_sec`, `npc_presence`, `npc_visitor`,
   `npc_visitor_vehicles` (default 1), `npc_visitor_preserve_events`,
   `npc_visitor_pause_scenes`, `npc_motion_update`, `npc_motion_marker`,
   `npc_motion_status_p2`, `world_vehicles`, `npc_vehicle_radius`,
-  `npc_occupants`, `world_trains`, `npc_debug`.
+  `npc_occupants`, `npc_animal_appearance`, `world_trains`, `npc_debug`.
 - Ограничения: mission NPC исключены; E3d-a/c транспорт и occupants;
   E3d-b mission-train opt-in (`world_trains=0`), ambient-поезда не чистим v1,
   точные пассажиры поездов P1, seat=-1/driver и direction/reversing требуют
-  in-game проверки; Story Mode нельзя «подселить»; RedM — другой стек; при
-  `world_vehicles=0` пустые дороги; при миграции мир не переносится; лицо/
-  волосы, точные анимации/катсцены не синхронизируются.
+  in-game проверки; E9 cap16/RESET на животных не проверен/horse tack
+  model-specific/mounted-horse не покрыт/MPT_ANIMAL coverage fallback random/
+  MetaPedOutfit только probe; Story Mode нельзя «подселить»; RedM — другой
+  стек; при `world_vehicles=0` пустые дороги; при миграции мир не
+  переносится; лицо/волосы, точные анимации/катсцены не синхронизируются.
 
 ### E2c-b (actor_sync, v16): host capture + guest apply
 - Хост: `_GET_NUM_COMPONENTS_IN_PED` (0-based) + `GET_META_PED_ASSET_GUIDS`/
@@ -550,7 +554,7 @@ payload: TrainSnapshotV2Payload (48 B)
 - Валидация на реальном хосте: `asset capture count=8-10 valid=8-10`
   (единичные valid=0); fake guest v16: `appearance_msgs=504
   appearance_actors=8 entry_max=10 errors=0`. Визуальная двух-ПК приёмка —
-  pending (ARINA offline, деплой npc-e8/v19 pending).
+  pending (ARINA offline, деплой npc-e9/v19 pending).
 - v15↔v16↔v17↔v18 несовместимы; откат v17 — ASI `35163CC2`/server
   `B7AAABAE`, v16 — `63388AD3`/`4EDAE4B6`, v15 — `dist\npc-e2c-v15\`.
 
@@ -566,7 +570,7 @@ payload: TrainSnapshotV2Payload (48 B)
   flag/труп как E1–E3c.
 - Проверено: host `damage id=… dmg=… hp_left=…` → `killed id=… by damage`;
   fake tool smoke (human 200/animal 100, guest `--damage-after`), игровая
-  проверка «выстрелы убивают, хэдшот ваншотит», CI 39/39.
+  проверка «выстрелы убивают, хэдшот ваншотит», CI 41/41.
 
 ### E5.2/E5.3 (v18 client behavior): corpse retention + mounted smoothing
 - E5.2: гость держит corpse-прокси, пока host-труп существует;
@@ -646,6 +650,17 @@ payload: TrainSnapshotV2Payload (48 B)
   `npc_actor=1 && world_vehicles=1 && world_trains=1`, not `world_sync=1`).
   Логи `world: train send/spawn/despawn`.
 
+### E9 (v19): animal/horse appearance
+- Без новых сообщений: host → `ActorAppearance` 0x1E (assets/tint,
+  MPT_ANIMAL type3, kind1/2, cap16, budget 1 animal/tick ~2 с) и
+  `ActorOutfit` 0x1C (horse tack, kind2, 792 B on change, budget 1 horse/tick
+  ~2 с) → сервер relay → гость.
+- Guest staged apply/readback, fallback random; horse tack apply; dead/
+  despawn skip; при `npc_animal_appearance=0` — random как раньше;
+  флаг host+guest должен совпадать. Probe/logs:
+  `actor: animal appearance probe …`, `actor: animal appearance apply … ok=`,
+  `actor: horse tack apply … ok=`.
+
 ### Reconnect (клиент)
 
 - При разрыве TCP клиент автоматически переподключается с backoff
@@ -661,7 +676,7 @@ payload: TrainSnapshotV2Payload (48 B)
 - Этот раздел описывает актуальные для стабильной сборки изменения (Spike 1/P1/P2/P3);
   базовые разделы ниже сохранены как историческая спецификация Spike 1, но
   ключевые форматы (JOIN/JOIN_OK, FRAME 88 B, OUTFIT 784 B) обновлены под
-  v14–v19 (v19: actor-сообщения E1–E8, 0x18–0x22, см. раздел выше).
+  v14–v19 (v19: actor-сообщения E1–E9, 0x18–0x22, см. раздел выше).
 
 Сетевой стек поверх **сервера-релея**. Один сервер, несколько клиентов
 (ASI-плагинов). Клиент периодически шлёт свой `GhostFrame`, сервер

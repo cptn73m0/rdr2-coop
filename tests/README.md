@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 `--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
 `KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто (26 базовых сценариев + 13 actor/presence-тестов v19)
+## Что покрыто (28 базовых сценариев + 13 actor/presence-тестов v19)
 
 | Тест | Проверка |
 |---|---|
@@ -85,6 +85,8 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_vehicle_occupants_validation` | 0x21: точный размер `8+8*count`; vehicleNetId/actorId=0, count>8, unknown flags, seat/carIndex/harness вне диапазона, short/long drop; rate-limit 20/с; сервер жив |
 | `test_train_v2_host_only` | 0x22: host→guest byte-identical 48 B; flags waiting/halted/reversing/playerAboard; guest→host blocked; rate-limit ≤4/с |
 | `test_train_v2_validation` | 0x22: epoch/trainId=0, carCount 0/17, speed ±40+, unknown flags, short/long drop; сервер жив |
+| `test_vehicle_occupants_rate_limit` | 0x21: 20/с на клиента; лишние drop; окно сбрасывается (после паузы снова проходит) |
+| `test_train_v2_rate_limit` | 0x22: ≤4/с на клиента; лишние drop; окно сбрасывается |
 
 ### actor/presence-тесты (v15–v17 base + v18 damage/presence; активны при наличии `Actor*`/`PlayerPresence` в header)
 
@@ -104,18 +106,19 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_player_presence_relay` | 0x20: client→server→другому клиенту без эха; epoch/flags; 8 B byte-identical; rate-limit 10/с |
 | `test_player_presence_validation` | 0x20: epoch=0/short/long/unknown flag bits (6..15) drop; сервер жив |
 
-### NPC actor-репликация (E1–E8) — что проверено
+### NPC actor-репликация (E1–E9) — что проверено
 
 Wire/relay/валидация actor-сообщений покрыты actor/presence-тестами выше
-(**39/39** автоматических сценариев на `build-server-ci`, protocol v19:
+(**41/41** автоматических сценариев на `build-server-ci`, protocol v19:
 appearance + ActorDamage + PlayerPresence + VehicleOccupants +
-TrainSnapshotV2 + host migration/game-timeout; 16 компонентов / 460 B,
-damage 16 B, presence 8 B, occupants ≤72 B, train 48 B, 26 базовых).
-Клиентская логика NPC/E2c-b/E5/E6/E7/E3d проверена на **одном ПК** с fake
-host/guest и реальным хостом (`tools/fake_actor_client.py`, см.
-`tools/README.md`); E5/E5.1 подтверждены игровым гостем («выстрелы убивают,
-хэдшот ваншотит»); двух-ПК приёмка pending — ARINA offline. Локальная пара
-npc-e8/v19 — ASI `9E3E8D7A`/server `E26C715A` (деплой task-137).
+TrainSnapshotV2 + rate-limit 0x21/0x22 + host migration/game-timeout;
+16 компонентов / 460 B, damage 16 B, presence 8 B, occupants ≤72 B,
+train 48 B, 28 базовых). Клиентская логика NPC/E2c-b/E5/E6/E7/E3d/E9
+проверена на **одном ПК** с fake host/guest и реальным хостом
+(`tools/fake_actor_client.py`, см. `tools/README.md`); E5/E5.1 подтверждены
+игровым гостем («выстрелы убивают, хэдшот ваншотит»); двух-ПК приёмка
+pending — ARINA offline. Локальная пара npc-e9/v19 — ASI `DC0C4AB7`/server
+`E26C715A` (PID 10276).
 
 - **E1 (human-only):** discovery/roster, spawn heartbeat/frames/despawn,
   guest-прокси, resync, gating `npc_actor=0` → 0 `actor:`/`probe:` строк.
@@ -167,15 +170,21 @@ npc-e8/v19 — ASI `9E3E8D7A`/server `E26C715A` (деплой task-137).
   (invisible→warp→visible, draft attach, skip MoveProxy); E3d-b
   `TrainSnapshotV2` 0x22 — mission-train у гостя, `SET_RANDOM_TRAINS(false)`
   + restore, speed/coords/warp/halt/leave/reverse; `npc_occupants=1`,
-  `world_trains=0` (opt-in); 39/39.
+  `world_trains=0` (opt-in).
+- **E9 (v19):** animal/horse appearance — `npc_animal_appearance=1`:
+  assets животные/лошади (MPT_ANIMAL kind1/2, cap16) → 0x1E (≤460 B,
+  budget 1 animal/tick ~2 с); horse tack kind2 → 0x1C 792 B on change;
+  guest staged apply/readback, fallback random; probe
+  `actor: animal appearance probe …`; при 0 — random. 41/41.
 - Используемые сообщения: **0x18** `ActorSpawnBatch` (спавн + heartbeat),
   **0x19** `ActorFrames` (10 Гц), **0x1A** `ActorDespawn` (gone/dead/evicted),
   **0x1D** `ActorResync` (guest→host; Client::SendActorResync, троттлинг ≤1/с),
-  **0x1E** `ActorAppearance` (host→guest, E2c-b), **0x1F** `ActorDamage`
-  (guest→host, E5), **0x20** `PlayerPresence` (любой→другому, E6),
-  **0x21** `VehicleOccupants` (host→guest, E3d-c), **0x22**
-  `TrainSnapshotV2` (host→guest, E3d-b), **0x10** `WorldSnapshot`
-  vehicles-only (E3d-a); 0x1B/0x1C зарезервированы/не применяются.
+  **0x1E** `ActorAppearance` (host→guest, E2c-b/E9 animals), **0x1F**
+  `ActorDamage` (guest→host, E5), **0x20** `PlayerPresence` (любой→другому,
+  E6), **0x21** `VehicleOccupants` (host→guest, E3d-c), **0x22**
+  `TrainSnapshotV2` (host→guest, E3d-b), **0x1C** `ActorOutfit` (host→guest,
+  E9 horse tack), **0x10** `WorldSnapshot` vehicles-only (E3d-a);
+  0x1B зарезервирован/не применяется.
 - Флаги INI: `npc_actor=1` (default 0), `npc_cap` 1..12 (default 8),
   `npc_radius` 20..100 (default 60), `npc_animal_cap` 0..12 (default 4),
   `npc_appearance=1`, `npc_damage=1`, `npc_corpse_max_sec=300`,
@@ -183,7 +192,7 @@ npc-e8/v19 — ASI `9E3E8D7A`/server `E26C715A` (деплой task-137).
   `npc_visitor_preserve_events=1`, `npc_visitor_pause_scenes=1`,
   `npc_motion_update=1`, `npc_motion_marker=0`, `npc_motion_status_p2=1`,
   `world_vehicles=1`, `npc_vehicle_radius=80`, `npc_occupants=1`,
-  `world_trains=0` (E3d-b opt-in), `npc_debug=1`.
+  `npc_animal_appearance=0`, `world_trains=0` (opt-in), `npc_debug=1`.
 - `test_actor_gating_no_actor_log` — **серверный** тест (mock-клиенты не шлют
   actor-сообщения), поэтому клиентский gating проверяется вручную
   (`npc_actor=0` → 0 строк `actor:`/`probe:` в `rdr2-coop.log`);
