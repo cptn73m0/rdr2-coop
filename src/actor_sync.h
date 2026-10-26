@@ -60,6 +60,8 @@ bool GetHandleForActorId(uint32_t actorId, unsigned int& handle);
 bool GetHostActorIdForHandle(unsigned int handle, uint32_t& actorId);
 // E3d-c (v19): occupant-handles из world_sync (mission-occupants разрешены).
 void SetOccupantHandles(const std::vector<unsigned int>& handles);
+// task-143 P2.8: pending-occupant акторы держим invisible до attach.
+void SetOccupantPendingActors(const std::vector<uint32_t>& actorIds);
 // E3d-c (v19): guest — seated/draft состояние (MoveProxy пропускает движение).
 void SetActorSeated(uint32_t actorId, unsigned int vehicleHandle, int seat,
                     uint8_t flags);

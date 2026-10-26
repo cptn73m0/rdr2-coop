@@ -1080,6 +1080,18 @@ void SetVisible(unsigned int handle)
     Call();
 }
 
+void SetPedVisible(unsigned int handle, bool visible)
+{
+    if (!handle)
+        return;
+    using namespace natives_api;
+    Init(natives::SET_ENTITY_VISIBLE);
+    Push(handle);
+    Push(visible ? static_cast<unsigned long long>(1)
+                 : static_cast<unsigned long long>(0));
+    Call();
+}
+
 void SetLodDist(unsigned int handle, int dist)
 {
     using namespace natives_api;
@@ -1751,12 +1763,22 @@ std::map<unsigned int, RosterEntry> g_roster;
 // транспорте. Их разрешаем в discovery даже если mission; остальных mission
 // NPC по-прежнему не реплицируем.
 std::unordered_set<unsigned int> g_occupantHandles;
+// task-143 P2.8: actorIds, которые ждут occupant attach — держим invisible от
+// спавна до seat/draft apply (или timeout/show).
+std::unordered_set<uint32_t> g_occupantPendingActors;
+std::unordered_set<uint32_t> g_prevOccupantPendingActors;
 uint32_t g_nextActorId = 1;
 uint32_t g_hostEpoch = 0;
 uint32_t g_sessionCounter = 0;
 unsigned int g_lastDiscoveryTick = 0;
 unsigned int g_lastHeartbeatTick = 0;
 uint16_t g_frameSeq = 0;
+// P2 (task-139): отдельный frame-период от discovery (discovery = 6 тиков).
+unsigned int g_lastFrameSendTick = 0;
+unsigned int g_hostMotionProbeTick = 0;
+bool g_hostActorsMoving = false;
+float g_actualFrameHz = 10.f;
+unsigned int g_framePeriodTicks = 6;
 std::deque<net::ActorDespawnPayload> g_despawnQueue;
 bool g_resendAllSpawns = false;
 // E5 (v17): host-authoritative урон от гостя. Лимиты: <=8 применений/тик,
@@ -1923,6 +1945,12 @@ void HostDiscovery(const TickContext& ctx)
     if (radius < 20.f) radius = 20.f;
     if (radius > 100.f) radius = 100.f;
     const float radius2 = radius * radius;
+    // task-143 P2.5: occupants не должны отсекаться npc_radius (vehicle
+    // radius 80 > npc_radius 60); для них max(radius, npc_vehicle_radius).
+    float occRadius = static_cast<float>(coopcfg::Get().npcVehicleRadius);
+    if (occRadius < radius) occRadius = radius;
+    const float occRadius2 = occRadius * occRadius;
+    static unsigned int lastVehPedSkipLogTick = 0;
 
     struct Cand
     {
@@ -1970,14 +1998,15 @@ void HostDiscovery(const TickContext& ctx)
             const float d2p = px * px + py * py;
             if (d2p < d2) d2 = d2p;
         }
-        if (d2 > radius2)
+        const bool isOccupant = g_occupantHandles.count(handle) != 0;
+        const float lim2 = isOccupant ? occRadius2 : radius2;
+        if (d2 > lim2)
             continue;
 
         if (IsPlayerPed(handle))
             continue;
         if (!IsHumanPed(handle))
             continue;
-        const bool isOccupant = g_occupantHandles.count(handle) != 0;
         if (IsMissionEntity(handle) && !isOccupant)
             continue; // mission NPC — только occupants реплицируем
         if (IsDeadPed(handle))
@@ -1986,6 +2015,21 @@ void HostDiscovery(const TickContext& ctx)
         if (!coopcfg::Get().npcOccupants && coopcfg::Get().worldVehicles &&
             IsPedInVehicleForDiscovery(handle))
             continue;
+        // task-143 P2.9: при npc_occupants=1 пед в машине без occupant-entry
+        // (vehicle вне бюджета/радиуса) не реплицируется как пешеход.
+        if (coopcfg::Get().npcOccupants && coopcfg::Get().worldVehicles &&
+            !isOccupant && IsPedInVehicleForDiscovery(handle))
+        {
+            if (coopcfg::Get().npcDebug &&
+                (lastVehPedSkipLogTick == 0 ||
+                 ctx.tickCount - lastVehPedSkipLogTick >= 600))
+            {
+                lastVehPedSkipLogTick = ctx.tickCount;
+                sh_log::Write("actor: in-vehicle ped skip (no occupant) "
+                              "handle=%u\n", handle);
+            }
+            continue;
+        }
 
         Cand c;
         c.handle = handle;
@@ -2019,13 +2063,14 @@ void HostDiscovery(const TickContext& ctx)
             const float d2p = px * px + py * py;
             if (d2p < d2) d2 = d2p;
         }
-        if (d2 > radius2)
+        const bool isOccupant = g_occupantHandles.count(handle) != 0;
+        const float lim2 = isOccupant ? occRadius2 : radius2;
+        if (d2 > lim2)
             continue;
         if (IsPlayerPed(handle))
             continue;
         if (IsHumanPed(handle))
             continue;
-        const bool isOccupant = g_occupantHandles.count(handle) != 0;
         if (IsMissionEntity(handle) && !isOccupant)
             continue;
         if (IsDeadPed(handle))
@@ -2305,20 +2350,48 @@ void HostDiscovery(const TickContext& ctx)
         g_resendAllSpawns = false;
     }
 
-    // 6) кадры движения 10 Гц
-    std::vector<net::ActorFrame> frames;
-    frames.reserve(g_roster.size());
-    for (const auto& kv : g_roster)
+    // 6) кадры движения: отдельный frame-период (discovery остаётся 6 тиков,
+    // кадры строятся из roster без повторного скана пула).
+    // P2 (task-139): npc_frame_hz 10..20; adaptive — стоя 10 Гц, при движении
+    // npc_frame_hz. Движение меряем раз в 6 тиков по roster (speed>1 м/с).
+    int baseHz = coopcfg::Get().npcFrameHz;
+    if (baseHz < 10) baseHz = 10;
+    if (baseHz > 20) baseHz = 20;
+    if (tick - g_hostMotionProbeTick >= kDiscoveryPeriodTicks)
     {
-        if (!DoesExist(kv.first)) continue;
-        frames.push_back(BuildFrame(kv.first, kv.second.actorId));
+        g_hostMotionProbeTick = tick;
+        bool moving = false;
+        for (const auto& kv : g_roster)
+        {
+            if (!DoesExist(kv.first)) continue;
+            if (GetSpeed(kv.first) > 1.0f) { moving = true; break; }
+        }
+        g_hostActorsMoving = moving;
     }
-    if (!frames.empty())
+    int targetHz = baseHz;
+    if (coopcfg::Get().npcFrameAdaptive && !g_hostActorsMoving)
+        targetHz = 10;
+    unsigned int periodTicks = static_cast<unsigned int>((60 + targetHz / 2) / targetHz);
+    if (periodTicks < 1) periodTicks = 1;
+    g_framePeriodTicks = periodTicks;
+    g_actualFrameHz = 60.0f / static_cast<float>(periodTicks);
+    if (tick - g_lastFrameSendTick >= periodTicks)
     {
-        coop::SendActorFrames(g_hostEpoch, g_frameSeq++, frames);
-        g_perfHostFrames += static_cast<unsigned long long>(frames.size());
-        g_perfHostBytes += static_cast<unsigned long long>(frames.size()) *
-                           sizeof(net::ActorFrame);
+        std::vector<net::ActorFrame> frames;
+        frames.reserve(g_roster.size());
+        for (const auto& kv : g_roster)
+        {
+            if (!DoesExist(kv.first)) continue;
+            frames.push_back(BuildFrame(kv.first, kv.second.actorId));
+        }
+        if (!frames.empty())
+        {
+            coop::SendActorFrames(g_hostEpoch, g_frameSeq++, frames);
+            g_perfHostFrames += static_cast<unsigned long long>(frames.size());
+            g_perfHostBytes += static_cast<unsigned long long>(frames.size()) *
+                               sizeof(net::ActorFrame);
+        }
+        g_lastFrameSendTick = tick;
     }
 
     if (perfOn && perfBuildStart)
@@ -2328,12 +2401,19 @@ void HostDiscovery(const TickContext& ctx)
 void HostResetState()
 {
     g_occupantHandles.clear();
+    g_occupantPendingActors.clear();
+    g_prevOccupantPendingActors.clear();
     g_roster.clear();
     g_despawnQueue.clear();
     g_hostEpoch = 0;
     g_nextActorId = 1;
     g_lastDiscoveryTick = 0;
     g_lastHeartbeatTick = 0;
+    g_lastFrameSendTick = 0;
+    g_hostMotionProbeTick = 0;
+    g_hostActorsMoving = false;
+    g_actualFrameHz = 10.f;
+    g_framePeriodTicks = 6;
     g_resendAllSpawns = false;
     g_hostDamageWindowTick = 0;
     g_hostDamageWindowCount = 0;
@@ -3089,6 +3169,10 @@ bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
         CreatePedWithSetup(s.model, s.x, s.y, z, s.heading, ctx, false);
     if (!handle)
         return false;
+    // task-143 P2.8: occupant-пед создан раньше 0x21 — не показываем стоящим
+    // у машины, пока guest не пересадит/не снимет pending.
+    if (g_occupantPendingActors.count(s.actorId) != 0)
+        SetPedVisible(handle, false);
 
     Proxy p;
     p.actorId = s.actorId;
@@ -5251,6 +5335,8 @@ void HandleGuestEpochChange(uint32_t newEpoch)
 void GuestResetState()
 {
     g_occupantHandles.clear();
+    g_occupantPendingActors.clear();
+    g_prevOccupantPendingActors.clear();
     g_guestEpoch = 0;
     g_pendingSpawns.clear();
     g_pendingSpawnIds.clear();
@@ -5823,11 +5909,12 @@ void LogNpcPerfIfDue(unsigned int tick, bool host)
             g_perfHostBuild.AvgMs(), g_perfHostBuild.P95Ms());
         sh_log::Write(
             "perf: npc host actors=%u spawns=%llu frames=%llu despawns=%llu "
-            "bytes=%llu/s\n",
+            "bytes=%llu/s frames_hz=%.1f adaptive=%d\n",
             static_cast<unsigned int>(g_roster.size()), g_perfHostSpawns,
             g_perfHostFrames, g_perfHostDespawns,
             kPerfWindowSeconds ? g_perfHostBytes / kPerfWindowSeconds
-                               : g_perfHostBytes);
+                               : g_perfHostBytes,
+            g_actualFrameHz, coopcfg::Get().npcFrameAdaptive ? 1 : 0);
         if (g_perfHostTick.P95Ms() > kNpcPerfBudgetMs)
             sh_log::Write("perf: npc warn host tick=%.2f > %.1f ms\n",
                           g_perfHostTick.P95Ms(), kNpcPerfBudgetMs);
@@ -5956,6 +6043,28 @@ void SetOccupantHandles(const std::vector<unsigned int>& handles)
         if (h)
             g_occupantHandles.insert(h);
     }
+}
+
+// task-143 P2.8: держать pending-occupant акторов invisible до attach
+// (world_sync вызывает каждый тик; hide только для новых id).
+void SetOccupantPendingActors(const std::vector<uint32_t>& actorIds)
+{
+    g_occupantPendingActors.clear();
+    for (uint32_t id : actorIds)
+    {
+        if (id)
+            g_occupantPendingActors.insert(id);
+    }
+    for (uint32_t id : g_occupantPendingActors)
+    {
+        if (g_prevOccupantPendingActors.count(id) != 0)
+            continue;
+        auto it = g_proxies.find(id);
+        if (it != g_proxies.end() && it->second.handle &&
+            DoesExist(it->second.handle))
+            SetPedVisible(it->second.handle, false);
+    }
+    g_prevOccupantPendingActors = g_occupantPendingActors;
 }
 
 // E3d-c (v19): guest — пометить actor_as_seated (skip MoveProxy) или снять.

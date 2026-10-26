@@ -117,6 +117,10 @@ void WriteDefaultIni()
     fputs("npc_visitor_pause_scenes = 1\n", f);
     fputs("# E3d-c: пассажиры/водители/тягловые лошади (0 = выкл).\n", f);
     fputs("npc_occupants = 1\n", f);
+    fputs("# P2: частота кадров actor-репликации, Гц (10..20; 10 = старое).\n", f);
+    fputs("npc_frame_hz = 15\n", f);
+    fputs("# P2: adaptive — стоя 10 Гц, при движении npc_frame_hz (default 1).\n", f);
+    fputs("npc_frame_adaptive = 1\n", f);
     fputs("# E7.2: in-place update go-to задачи (A/B; 0 = только far-target).\n", f);
     fputs("npc_motion_update = 1\n", f);
     fputs("# E7.2: fallback A2 marker-entity follow (default 0, после A/B).\n", f);
@@ -218,6 +222,15 @@ void ApplyLine(const std::string& raw, Config& out)
     else if (key == "npc_visitor_pause_scenes")
         out.npcVisitorPauseScenes = AsBool(val);
     else if (key == "npc_occupants") out.npcOccupants = AsBool(val);
+    else if (key == "npc_frame_hz")
+    {
+        char* end = nullptr;
+        const long hz = std::strtol(val.c_str(), &end, 10);
+        if (end != val.c_str() && *end == '\0' && hz >= 10 && hz <= 20)
+            out.npcFrameHz = static_cast<int>(hz);
+    }
+    else if (key == "npc_frame_adaptive")
+        out.npcFrameAdaptive = AsBool(val);
     else if (key == "npc_motion_update") out.npcMotionUpdate = AsBool(val);
     else if (key == "npc_motion_marker") out.npcMotionMarker = AsBool(val);
     else if (key == "npc_motion_status_p2")

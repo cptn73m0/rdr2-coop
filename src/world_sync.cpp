@@ -394,10 +394,12 @@ std::vector<unsigned int> CollectVehicleOccupants(
     using namespace natives_api;
     driverActorId = 0;
     std::vector<unsigned int> handles;
+    int attempted = 0;
     auto addPed = [&](unsigned int ped, int seat, uint8_t flags,
                       uint8_t harness) {
         if (!ped || ped == localPlayerPed)
             return;
+        ++attempted;
         handles.push_back(ped);
         uint32_t aid = 0;
         if (!actor_sync::GetHostActorIdForHandle(ped, aid))
@@ -444,6 +446,20 @@ std::vector<unsigned int> CollectVehicleOccupants(
         }
     }
     (void)netId;
+    // task-143 P2.6: протокол cap 8; приоритет driver+passengers, затем draft.
+    if (attempted > net::kMaxVehicleOccupants)
+    {
+        static unsigned long long lastTruncLogMs = 0;
+        const unsigned long long nowMs = GetTickCount64();
+        if (coopcfg::Get().npcDebug &&
+            (lastTruncLogMs == 0 || nowMs - lastTruncLogMs > 1000ull))
+        {
+            lastTruncLogMs = nowMs;
+            sh_log::Write("world: occupants truncated n=%u total=%u\n",
+                          static_cast<unsigned int>(net::kMaxVehicleOccupants),
+                          static_cast<unsigned int>(attempted));
+        }
+    }
     return handles;
 }
 
@@ -545,6 +561,13 @@ constexpr unsigned int kTrainSendEveryTicks = 15; // <=4/с
 constexpr float kTrainSearchRadius = 250.0f;
 constexpr float kTrainSearchRadius2 = kTrainSearchRadius * kTrainSearchRadius;
 constexpr unsigned int kTrainSnapshotTimeoutTicks = 120; // 2 c
+// task-143 P1: throttle скана поездов/кэш engine и model->IsTrainModel.
+constexpr unsigned int kTrainScanEveryTicks = 6;   // <=10 Гц
+constexpr unsigned int kTrainEngineCacheTicks = 120; // 2 c
+// Vehicle interpolation: time-based lerp + extrapolation <=150 мс.
+constexpr unsigned long long kVehicleExtrapMaxMs = 150ull;
+constexpr unsigned long long kVehicleHoldMs = 300ull;
+std::unordered_map<unsigned int, bool> g_modelIsTrainCache;
 
 bool TrainsEnabled()
 {
@@ -556,10 +579,15 @@ bool TrainsEnabled()
 
 bool IsTrainModel(unsigned int model)
 {
+    auto it = g_modelIsTrainCache.find(model);
+    if (it != g_modelIsTrainCache.end())
+        return it->second;
     using namespace natives_api;
     Init(natives::IS_THIS_MODEL_A_TRAIN);
     Push(static_cast<unsigned long long>(model));
-    return Call() != 0;
+    const bool train = Call() != 0;
+    g_modelIsTrainCache[model] = train;
+    return train;
 }
 
 // --- host: config match / snapshot ---
@@ -575,6 +603,12 @@ struct TrainScanState
 std::map<unsigned int, TrainScanState> g_trainScans;
 std::map<unsigned int, uint32_t> g_trainConfigs; // cache handle -> config
 std::map<unsigned int, uint32_t> g_trainIds;     // handle -> stable trainId
+std::map<unsigned int, uint8_t> g_trainConfigCars; // cache signature: carCount
+std::map<unsigned int, uint32_t> g_trainConfigModel0; // engine model
+std::map<unsigned int, unsigned int> g_trainLastSeen;
+unsigned int g_trainScanTick = 0;
+unsigned int g_trainEngine = 0;
+unsigned int g_trainEngineExpiry = 0;
 uint32_t g_nextTrainId = 1;
 uint32_t g_trainEpoch = 0;
 std::map<uint32_t, net::TrainSnapshotV2Payload> g_lastTrainSnapshot;
@@ -698,6 +732,9 @@ uint32_t ResolveTrainConfig(unsigned int engine, unsigned int tickCount,
         {
             const uint32_t found = st.found;
             g_trainConfigs[engine] = found;
+            g_trainConfigCars[engine] = static_cast<uint8_t>(
+                cars > 255 ? 255 : cars);
+            g_trainConfigModel0[engine] = actual[0];
             g_trainScans.erase(engine);
             return found;
         }
@@ -723,7 +760,9 @@ bool FindNearestTrain(unsigned int localPlayerPed, float partnerX,
     if (count > 1024) count = 1024;
     const Vec3 origin = GetCoords(localPlayerPed);
     float best = kTrainSearchRadius2;
+    int bestTrailers = -1;
     bool found = false;
+    using namespace natives_api;
     for (int i = 0; i < count; ++i)
     {
         const unsigned int h = static_cast<unsigned int>(handles[i]);
@@ -731,6 +770,13 @@ bool FindNearestTrain(unsigned int localPlayerPed, float partnerX,
             continue;
         const unsigned int model = GetModel(h);
         if (!model || !IsTrainModel(model))
+            continue;
+        // task-143 P1.1: engine — только вагон с trailerCount>0 (машины/
+        // отдельные вагоны/random train-vehicles отбрасываем).
+        Init(natives::_GET_TRAIN_CARRIAGE_TRAILER_NUMBER);
+        Push(h);
+        const int trailers = static_cast<int>(Call());
+        if (trailers <= 0)
             continue;
         const Vec3 p = GetCoords(h);
         const float dx = p.x - origin.x;
@@ -743,8 +789,11 @@ bool FindNearestTrain(unsigned int localPlayerPed, float partnerX,
             const float p2 = px * px + py * py;
             if (p2 < d2) d2 = p2;
         }
-        if (d2 < best)
+        // engine = максимум trailerCount (консистентность), затем ближайший.
+        if (trailers > bestTrailers ||
+            (trailers == bestTrailers && d2 < best))
         {
+            bestTrailers = trailers;
             best = d2;
             outEngine = h;
             found = true;
@@ -769,11 +818,75 @@ void TickHostTrains(unsigned int localPlayerPed, unsigned int tickCount,
 {
     if (!TrainsEnabled())
         return;
+    // task-143 P1.3: тяжёлый скан worldGetAllVehicles — не чаще 1/6 тиков.
+    if (g_trainScanTick != 0 &&
+        tickCount - g_trainScanTick < kTrainScanEveryTicks)
+        return;
+    g_trainScanTick = tickCount;
+
     unsigned int engine = 0;
     float dist = 0.f;
-    if (!FindNearestTrain(localPlayerPed, partnerX, partnerY, partnerValid,
-                          engine, dist))
-        return;
+    bool reuse = g_trainEngine != 0 && DoesExist(g_trainEngine) &&
+                 tickCount < g_trainEngineExpiry &&
+                 IsTrainModel(GetModel(g_trainEngine));
+    if (reuse)
+    {
+        engine = g_trainEngine;
+    }
+    else
+    {
+        if (!FindNearestTrain(localPlayerPed, partnerX, partnerY, partnerValid,
+                              engine, dist))
+        {
+            g_trainEngine = 0;
+            g_trainEngineExpiry = 0;
+            return;
+        }
+        g_trainEngine = engine;
+        g_trainEngineExpiry = tickCount + kTrainEngineCacheTicks;
+    }
+    g_trainLastSeen[engine] = tickCount;
+
+    // Периодическая чистка кэшей исчезнувших поездов (handle TTL).
+    if ((tickCount % 300) == 2)
+    {
+        for (auto it = g_trainLastSeen.begin(); it != g_trainLastSeen.end();)
+        {
+            if (!DoesExist(it->first) || tickCount - it->second > 600)
+            {
+                const unsigned int h = it->first;
+                auto idIt = g_trainIds.find(h);
+                if (idIt != g_trainIds.end())
+                {
+                    g_lastTrainSnapshot.erase(idIt->second);
+                    g_lastTrainSendTick.erase(idIt->second);
+                }
+                g_trainConfigs.erase(h);
+                g_trainConfigCars.erase(h);
+                g_trainConfigModel0.erase(h);
+                g_trainScans.erase(h);
+                g_trainIds.erase(h);
+                it = g_trainLastSeen.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        for (auto it = g_lastTrainSendTick.begin();
+             it != g_lastTrainSendTick.end();)
+        {
+            bool alive = false;
+            for (const auto& kv : g_trainIds)
+                if (kv.second == it->first) { alive = true; break; }
+            if (!alive || tickCount - it->second > 900)
+                it = g_lastTrainSendTick.erase(it);
+            else
+                ++it;
+        }
+    }
+
+    const uint32_t modelNow = GetModel(engine);
     bool unknown = false;
     const uint32_t cfg = ResolveTrainConfig(engine, tickCount, unknown);
     if (!cfg)
@@ -791,6 +904,19 @@ void TickHostTrains(unsigned int localPlayerPed, unsigned int tickCount,
     int cars = static_cast<int>(Call()) + 1;
     if (cars < 1) cars = 1;
     if (cars > net::kMaxTrainCars) cars = net::kMaxTrainCars;
+    // task-143 P1.10: кэш конфига валиден только для (model, carCount).
+    auto cc = g_trainConfigCars.find(engine);
+    auto cm = g_trainConfigModel0.find(engine);
+    if (cc != g_trainConfigCars.end() &&
+        (cc->second != static_cast<uint8_t>(cars) ||
+         cm == g_trainConfigModel0.end() || cm->second != modelNow))
+    {
+        g_trainConfigs.erase(engine);
+        g_trainConfigCars.erase(engine);
+        g_trainConfigModel0.erase(engine);
+        g_trainScans.erase(engine);
+        return; // пересоберём конфиг на следующем скане
+    }
     snap.carCount = static_cast<uint8_t>(cars);
     snap.speed = GetSpeed(engine);
     if (snap.speed < net::kMinTrainSpeed) snap.speed = net::kMinTrainSpeed;
@@ -867,6 +993,11 @@ bool g_guestTrainReverse = false;
 bool g_guestTrainRandomDisabled = false;
 unsigned int g_guestTrainLastSoftSync = 0;
 unsigned int g_guestTrainSpawnLogTick = 0;
+// task-143 P2.4: backoff создания mission-train (1/с, max 5).
+unsigned int g_guestTrainSpawnAttempts = 0;
+unsigned int g_guestTrainLastSpawnTick = 0;
+uint32_t g_guestTrainRetryConfig = 0;
+uint32_t g_guestTrainRetryTrainId = 0;
 
 void DeleteGuestMissionTrain(unsigned int reason)
 {
@@ -896,6 +1027,11 @@ void DeleteGuestMissionTrain(unsigned int reason)
 void CreateGuestTrain(unsigned int tickCount)
 {
     if (!g_guestTrainSnapValid)
+        return;
+    if (g_guestTrainSpawnAttempts >= 5)
+        return;
+    if (g_guestTrainLastSpawnTick != 0 &&
+        tickCount - g_guestTrainLastSpawnTick < 60)
         return;
     const net::TrainSnapshotV2Payload& snap = g_guestTrainSnap;
     if (!snap.configHash)
@@ -938,16 +1074,25 @@ void CreateGuestTrain(unsigned int tickCount)
     const unsigned int train = static_cast<unsigned int>(Call());
     if (!train)
     {
+        ++g_guestTrainSpawnAttempts;
+        g_guestTrainLastSpawnTick = tickCount;
+        g_guestTrainRetryConfig = snap.configHash;
+        g_guestTrainRetryTrainId = snap.trainId;
         if (coopcfg::Get().npcDebug &&
             (g_guestTrainSpawnLogTick == 0 ||
              tickCount - g_guestTrainSpawnLogTick >= 60))
         {
             g_guestTrainSpawnLogTick = tickCount;
-            sh_log::Write("world: train spawn config=0x%X ok=0\n",
-                          snap.configHash);
+            sh_log::Write("world: train spawn config=0x%X ok=0 attempt=%u\n",
+                          snap.configHash, g_guestTrainSpawnAttempts);
         }
+        if (g_guestTrainSpawnAttempts >= 5 && coopcfg::Get().npcDebug)
+            sh_log::Write("world: train spawn skip config=0x%X reason=retry_limit\n",
+                          snap.configHash);
         return;
     }
+    g_guestTrainSpawnAttempts = 0;
+    g_guestTrainLastSpawnTick = 0;
     g_guestTrain = train;
     g_guestTrainConfig = snap.configHash;
     g_guestTrainCars = snap.carCount;
@@ -1004,6 +1149,14 @@ void TickGuestTrains(unsigned int tickCount)
         std::lock_guard<std::mutex> lk(g_trainV2Mutex);
         if (g_hasPendingTrainV2)
         {
+            if (g_pendingTrainV2.configHash != g_guestTrainRetryConfig ||
+                g_pendingTrainV2.trainId != g_guestTrainRetryTrainId)
+            {
+                g_guestTrainSpawnAttempts = 0;
+                g_guestTrainLastSpawnTick = 0;
+                g_guestTrainRetryConfig = g_pendingTrainV2.configHash;
+                g_guestTrainRetryTrainId = g_pendingTrainV2.trainId;
+            }
             g_guestTrainSnap = g_pendingTrainV2;
             g_guestTrainSnapValid = true;
             g_hasPendingTrainV2 = false;
@@ -1693,6 +1846,7 @@ struct SeatAttempt
     uint8_t flags = 0;
     uint8_t harness = 0;
     unsigned int attempts = 0;
+    unsigned int nextRetryTick = 0; // task-143 P2.7: backoff 2-5 c
     bool applied = false;
     bool failed = false;
 };
@@ -2044,6 +2198,9 @@ void CleanupSeatAttempt(SeatAttempt& e, uint32_t netId)
 
 void CleanupVehicleOccupants(uint32_t netId)
 {
+    // task-143 P3: чистим кэши исчезнувшего vehicle (0x21 host cache).
+    g_lastOccupantsSent.erase(netId);
+    g_lastOccupantsSendTick.erase(netId);
     auto it = g_occupantVehicles.find(netId);
     if (it == g_occupantVehicles.end())
         return;
@@ -2156,7 +2313,8 @@ void ApplyPendingOccupants(unsigned int tickCount)
         for (std::size_t idx = 0; idx < st.entries.size();)
         {
             SeatAttempt& e = st.entries[idx];
-            if (e.failed)
+            if (e.failed || (e.nextRetryTick != 0 &&
+                             tickCount < e.nextRetryTick))
             {
                 ++idx;
                 continue;
@@ -2190,6 +2348,8 @@ void ApplyPendingOccupants(unsigned int tickCount)
                         actor_sync::SetActorDraftAttached(e.actorId, veh,
                                                           e.harness);
                         e.applied = true;
+                        e.attempts = 0;
+                        e.nextRetryTick = 0;
                         if (coopcfg::Get().npcDebug)
                             sh_log::Write(
                                 "actor: draft attach horse=%u vehicle=%u "
@@ -2199,15 +2359,24 @@ void ApplyPendingOccupants(unsigned int tickCount)
                     else
                     {
                         ++e.attempts;
-                        if (e.attempts >= 3)
+                        ++g_occupantsErrors;
+                        SetEntityVisible(actor, false);
+                        if (e.attempts < 6)
                         {
-                            SetEntityVisible(actor, false);
+                            // task-143 P2.7: retry backoff 2-5 с.
+                            e.nextRetryTick =
+                                tickCount + 120 + e.attempts * 30;
+                        }
+                        else
+                        {
+                            // Показать, чтобы пед не висел невидимым вечно.
+                            SetEntityVisible(actor, true);
+                            actor_sync::ClearActorDraftAttached(e.actorId);
                             e.failed = true;
-                            ++g_occupantsErrors;
                             if (coopcfg::Get().npcDebug)
                                 sh_log::Write(
                                     "actor: draft attach horse=%u vehicle=%u "
-                                    "harness=%u ok=0\n",
+                                    "harness=%u ok=0 give-up\n",
                                     e.actorId, netId, e.harness);
                         }
                     }
@@ -2233,6 +2402,8 @@ void ApplyPendingOccupants(unsigned int tickCount)
                         actor_sync::SetActorSeated(e.actorId, veh, e.seat,
                                                    e.flags);
                         e.applied = true;
+                        e.attempts = 0;
+                        e.nextRetryTick = 0;
                         if (coopcfg::Get().npcDebug)
                             sh_log::Write(
                                 "actor: seat attach actor=%u vehicle=%u "
@@ -2243,15 +2414,23 @@ void ApplyPendingOccupants(unsigned int tickCount)
                     else
                     {
                         ++e.attempts;
-                        if (e.attempts >= 3)
+                        ++g_occupantsErrors;
+                        SetEntityVisible(actor, false);
+                        if (e.attempts < 6)
                         {
-                            SetEntityVisible(actor, false);
+                            // task-143 P2.7: retry backoff 2-5 с.
+                            e.nextRetryTick =
+                                tickCount + 120 + e.attempts * 30;
+                        }
+                        else
+                        {
+                            SetEntityVisible(actor, true);
+                            actor_sync::ClearActorSeated(e.actorId);
                             e.failed = true;
-                            ++g_occupantsErrors;
                             if (coopcfg::Get().npcDebug)
                                 sh_log::Write(
                                     "actor: seat attach actor=%u vehicle=%u "
-                                    "seat=%d ok=0\n",
+                                    "seat=%d ok=0 give-up\n",
                                     e.actorId, netId,
                                     static_cast<int>(e.seat));
                         }
@@ -2262,28 +2441,76 @@ void ApplyPendingOccupants(unsigned int tickCount)
         }
         ++it;
     }
+
+    // task-143 P2.8: акторы, ждущие attach, держим invisible от спавна.
+    std::vector<uint32_t> pendingHide;
+    for (const auto& kv : g_occupantVehicles)
+    {
+        for (const SeatAttempt& e : kv.second.entries)
+        {
+            if (e.actorId && !e.applied && !e.failed)
+                pendingHide.push_back(e.actorId);
+        }
+    }
+    actor_sync::SetOccupantPendingActors(pendingHide);
 }
 
-// E3d-c: 60 Гц smooth-pursuit vehicle-прокси к последнему снапшоту.
+// task-143 P1.2: time-based lerp vehPrev->vehCur по (now-vehCurMs)/interval,
+// экстраполяция <=150 мс, нет данных >300 мс — держим позу. Heading —
+// shortest-arc; warp>8 м по-прежнему snap в UpdateProxy.
 void InterpolateVehicleProxies()
 {
     if (!coopcfg::Get().npcActor)
         return;
+    const unsigned long long now = GetTickCount64();
     for (auto& kv : g_proxies)
     {
         Proxy& p = kv.second;
         if (p.kind != net::kEntityKindVehicle || !p.vehHasTarget ||
             p.trainAttached || !DoesExist(p.handle))
             continue;
-        const Vec3 cur = GetCoords(p.handle);
-        const float a = 0.35f;
-        SetCoords(p.handle, cur.x + (p.vehCurX - cur.x) * a,
-                  cur.y + (p.vehCurY - cur.y) * a,
-                  cur.z + (p.vehCurZ - cur.z) * a);
-        float dh = p.vehCurH - GetHeading(p.handle);
-        while (dh > 180.f) dh -= 360.f;
-        while (dh < -180.f) dh += 360.f;
-        SetHeading(p.handle, GetHeading(p.handle) + dh * a);
+        const unsigned long long span =
+            p.vehCurMs > p.vehPrevMs ? p.vehCurMs - p.vehPrevMs : 0ull;
+        const unsigned long long elapsed =
+            now > p.vehCurMs ? now - p.vehCurMs : 0ull;
+        float t = 1.f;
+        unsigned long long extrapMs = 0;
+        if (span > 2ull)
+        {
+            t = static_cast<float>(elapsed) / static_cast<float>(span);
+            if (t > 1.f)
+            {
+                t = 1.f;
+                const unsigned long long over = elapsed - span;
+                extrapMs = over < kVehicleExtrapMaxMs ? over : kVehicleExtrapMaxMs;
+            }
+            if (elapsed > kVehicleHoldMs)
+                extrapMs = 0;
+        }
+        float x = p.vehPrevX + (p.vehCurX - p.vehPrevX) * t;
+        float y = p.vehPrevY + (p.vehCurY - p.vehPrevY) * t;
+        float z = p.vehPrevZ + (p.vehCurZ - p.vehPrevZ) * t;
+        float h = p.vehPrevH;
+        {
+            float dh = p.vehCurH - p.vehPrevH;
+            while (dh > 180.f) dh -= 360.f;
+            while (dh < -180.f) dh += 360.f;
+            h = p.vehPrevH + dh * t;
+        }
+        if (extrapMs > 0 && span > 2ull)
+        {
+            const float spanSec = static_cast<float>(span) / 1000.f;
+            const float exSec = static_cast<float>(extrapMs) / 1000.f;
+            x += (p.vehCurX - p.vehPrevX) / spanSec * exSec;
+            y += (p.vehCurY - p.vehPrevY) / spanSec * exSec;
+            z += (p.vehCurZ - p.vehPrevZ) / spanSec * exSec;
+            float dh = p.vehCurH - p.vehPrevH;
+            while (dh > 180.f) dh -= 360.f;
+            while (dh < -180.f) dh += 360.f;
+            h += dh / spanSec * exSec;
+        }
+        SetCoords(p.handle, x, y, z);
+        SetHeading(p.handle, h);
     }
 }
 
@@ -2607,6 +2834,17 @@ bool GetHandleForNetId(uint64_t netId, unsigned int& handle)
 
 void Reset()
 {
+    // task-143 P3: снять occupants/draft ДО DeleteProxy (handle ещё валиден).
+    for (auto& kv : g_occupantVehicles)
+    {
+        for (SeatAttempt& e : kv.second.entries)
+        {
+            SeatAttempt tmp = e;
+            CleanupSeatAttempt(tmp, kv.first);
+        }
+    }
+    g_occupantVehicles.clear();
+
     for (auto& kv : g_proxies)
     {
         if (kv.second.kind == net::kEntityKindVehicle &&
@@ -2667,7 +2905,16 @@ void Reset()
     }
     g_trainScans.clear();
     g_trainConfigs.clear();
+    g_trainConfigCars.clear();
+    g_trainConfigModel0.clear();
+    g_trainLastSeen.clear();
     g_trainIds.clear();
+    g_modelIsTrainCache.clear();
+    g_trainScanTick = 0;
+    g_trainEngine = 0;
+    g_trainEngineExpiry = 0;
+    g_guestTrainSpawnAttempts = 0;
+    g_guestTrainLastSpawnTick = 0;
     g_lastTrainSnapshot.clear();
     g_lastTrainSendTick.clear();
     g_snapshotSeq = 0;

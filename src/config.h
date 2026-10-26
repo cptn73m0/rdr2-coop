@@ -86,6 +86,10 @@ struct Config {
     bool npcVisitorPauseScenes = true;
     // E3d-c (v19): пассажиры/водители и тягловые лошади у vehicle-прокси.
     bool npcOccupants = true;
+    // P2 (task-139): частота ActorFrames (10..20 Гц; 10 = старое поведение).
+    int npcFrameHz = 15;
+    // Адаптивность: все стоят — 10 Гц, есть движущиеся — npc_frame_hz.
+    bool npcFrameAdaptive = true;
     // E7.2 smooth NPC motion (A/B):
     // npc_motion_update=1 — in-place update задачи через
     // _UPDATE_TASK_GO_TO_COORD_WITH_OFFSET (совместимость A/B ещё не
