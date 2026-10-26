@@ -24,6 +24,7 @@ target_compile_features(frame_reader_fuzz PRIVATE cxx_std_17)
 add_executable(config_test
     config_test.cpp
     ../src/config.cpp
+    ../src/log.cpp
 )
 target_include_directories(config_test PRIVATE .. ../src)
 target_compile_features(config_test PRIVATE cxx_std_17)
