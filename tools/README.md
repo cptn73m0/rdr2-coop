@@ -32,25 +32,27 @@ CRAP-прокси >5000, dup-группы `count>=4`, число TODO/FIXME. Del
 latest − baseline; отрицательная — улучшение. Baseline обновляйте
 осознанно, а не для «позеленения» CI.
 
-**Финальный delta после `0a4cc48` (net/server) + `c3dc018` (src):**
+**Финальный delta после `0a4cc48` (net/server) + `c3dc018` + `6295e6b` (src B3/B4/A3/P4); сборка/снапшот `npc-e14`:**
 
 | метрика | baseline | после | delta |
 |---|---:|---:|---:|
 | files | 45 | 45 | 0 |
-| functions | 334 | 384 | +50 |
+| functions | 334 | 386 | +52 |
 | CRAP>5000 | 4 | 1 | -3 |
 | dup>=4 | 7 | 7 | 0 |
 | TODO | 0 | 0 | 0 |
 
-Топ CRAP после: `Tick` 123552 (1602 строк), `main` frame_reader_fuzz 3192,
-`ApplyRemoteFrame` 2970, `UpdateLocalShotEvents` 2352, `ApplyActionToGhost`
-1892. `RunOnce` (24492) и `ApplyLine` (7656) из top-5 ушли; `Tick` остаётся
-единственным CRAP>5000 и следующим кандидатом. Baseline не перезаписан:
-strict-гейт продолжает ловить регрессии.
+Топ CRAP после: `Tick` 120756 (1597 строк), `main` frame_reader_fuzz 3192,
+`UpdateLocalShotEvents` 2352, `ApplyActionToGhost` 1892, `RunOnce` 1482.
+`ApplyRemoteFrame` 8010→20 и `ApplyLine` 7656→506; `Tick` остаётся
+единственным CRAP>5000 и следующим кандидатом. 7 dup>=4 — нативные обёртки
+`actor_sync`/`world_sync`, не трогали. Baseline не перезаписан: strict-гейт
+продолжает ловить регрессии. `npc-e14` (ASI `AD3C3481`, server `1BE28084`)
+задеплоен локально и на ARINA; визуальная 2-ПК приёмка ещё нужна.
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E13/E2c (actor-репликация NPC) на
+Заменяет второй ПК при тестировании E1–E14/E2c (actor-репликация NPC) на
 одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v19;
 игра запускается только на одном ПК.
 
@@ -643,7 +645,7 @@ npc_debug = 1
   ```
 - `npc_animal_appearance=0` → животные/лошади снова random (не залипают);
   при расхождении INI host/guest поведение несимметрично — не допускается.
-- Локальная пара npc-e13/v19: ASI `B43B7EE0`, server `F3EBD6D1`;
+- Локальная пара npc-e14/v19: ASI `AD3C3481`, server `1BE28084`;
   ARINA offline. Чек-лист — `docs/NPC_E1_TESTING.md` S27.
 
 ### npc-e12/e13: перф/трафик + config warnings (grep-команды)
@@ -734,7 +736,7 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e13 ASI `B43B7EE0`/server `F3EBD6D1`, ARINA offline) —
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e14 ASI `AD3C3481`/server `1BE28084`, ARINA online) —
 pending. Для дымового теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
@@ -908,8 +910,8 @@ Windows PowerShell / PS 5.1 (скрипт сохранён с UTF-8 BOM):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\snapshot_build.ps1 `
-  -Label npc-e13 -Features "E13 wall-clock + config warnings" `
-  -Tag npc-e13
+  -Label npc-e14 -Features "ub-mode refactor: net/server/src B3/B4/A3/P4" `
+  -Tag npc-e14
 ```
 
 - `-Label` — имя папки `dist\<label>` (обязательно).
@@ -967,6 +969,7 @@ INI — по разделу INI снапшота.
 | `npc-e9` | v19 | `DC0C4AB7` | `E26C715A` | `1543622` / npc-e9 |
 | `npc-e10` | v19 | `B8BA1B93` | `E26C715A` | `ff7cfc4` / npc-e10 |
 | `npc-e11` | v19 | `785B2D05` | `E26C715A` | `b2e5525` / npc-e11 |
+| `npc-e14` | v19 | `AD3C3481` | `1BE28084` | `6295e6b` / npc-e14 |
 | `npc-e13` | v19 | `B43B7EE0` | `F3EBD6D1` | `e3accaa` / npc-e13 |
 | `npc-e12` | v19 | `D47B91A5` | `F3EBD6D1` | `c22dbcc` / npc-e12 |
 
