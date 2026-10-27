@@ -979,26 +979,45 @@ std::atomic<bool> s_amHost{false};
 
 // E7.1 v2: модели продавцов/барменов (rdr2-hashdb/Peds.json) — сохраняем.
 static const uint32_t kVendorModels[] = {
+    0x0633DF9Fu, // S_M_M_UNIBUTCHERS_01
+    0x0926B79Bu, // AMSP_ROBSDGUNSMITH_MALES_01
     0x0A219825u, // U_F_M_TLJBARTENDER_01
     0x0D1298F7u, // U_M_M_NBXBARTENDER_02
     0x104FE6B3u, // U_M_M_STRGENSTOREOWNER_01
     0x1EE53C9Cu, // U_M_M_NBXBARTENDER_01
+    0x23317990u, // U_M_M_SDTRAPPER_01
     0x23DA7E9Fu, // U_M_M_RHDBARTENDER_01
+    0x23E0698Bu, // U_M_M_VALBUTCHER_01
+    0x2A37903Eu, // U_M_M_RHDDOCTOR_01
+    0x2A66EA55u, // U_M_M_NBXGUNSMITH_01
+    0x2AE5771Fu, // S_M_M_TAILOR_01
+    0x3B99237Eu, // U_M_O_BLWPHOTOGRAPHER_01
     0x3E471440u, // U_F_M_VHTBARTENDER_01
     0x400E34A9u, // U_M_M_SDCUSTOMVENDOR_01
     0x42DD47BFu, // U_M_M_WALGENERALSTOREOWNER_01
     0x5339E46Bu, // S_M_M_MARKETVENDOR_01
     0x54123716u, // U_M_M_NBXGENERALSTOREOWNER_01
     0x6958B082u, // U_M_O_BLWGENERALSTOREOWNER_01
+    0x71545DA5u, // U_M_M_VALDOCTOR_01
+    0x79FB001Cu, // U_M_M_TUMGUNSMITH_01
+    0x80D04451u, // U_M_M_ASBGUNSMITH_01
     0x893751E8u, // U_M_M_RHDGENSTOREOWNER_02
     0x8E81C857u, // U_M_O_BLWBARTENDER_01
     0x904CC489u, // U_M_O_VALBARTENDER_01
+    0x9168B88Bu, // U_M_M_TUMBUTCHER_01
     0x9B3E551Bu, // U_M_M_VALGENSTOREOWNER_01
     0x9B9EF6B7u, // U_M_M_RHDGENSTOREOWNER_01
+    0xA27B73FEu, // U_M_M_BWMSTABLEHAND_01
+    0xADDA73CEu, // U_M_M_RHDGUNSMITH_01
+    0xB66F12F2u, // U_M_M_VALHOTELOWNER_01
     0xB733CF0Fu, // U_M_M_VALBARTENDER_01
+    0xBBC5D27Fu, // U_M_M_VALGUNSMITH_01
+    0xBE9D77E1u, // U_M_M_SDPHOTOGRAPHER_01
     0xC5DF0CFEu, // U_M_M_ARMGENERALSTOREOWNER_01
     0xCE72526Eu, // U_M_O_VHTEXOTICSHOPKEEPER_01
+    0xD2FA5F10u, // S_M_M_BARBER_01
     0xD31B229Fu, // U_M_M_TUMBARTENDER_01
+    0xD371AE64u, // U_M_M_VALBARBER_01
     0xDD6D1B34u, // U_M_O_ARMBARTENDER_01
     0xF1029EA3u, // U_M_M_SDEXOTICSSHOPKEEPER_01
     0xF1711637u, // U_F_M_TUMGENERALSTOREOWNER_01
@@ -6308,8 +6327,6 @@ void InitNetworkClient()
     g_netClient.SetTrafficLog([](const std::string& s) {
         sh_log::Write("%s\n", s.c_str());
     });
-    // task-160: один раз предупредить об опасных комбинациях INI.
-    coopcfg::WarnDangerousCombos();
     // E6 (v18): локальная эпоха presence (nonzero; используется как маркер).
     s_presenceEpoch = (static_cast<uint32_t>(GetTickCount64()) &
                        0x7FFFFFFFu) | 1u;
@@ -6537,6 +6554,16 @@ void InitNetworkClient()
 
     // Запуск с параметрами из rdr2-coop.ini (адрес/порт/ник/модель).
     coopcfg::Config& cfg = coopcfg::Load();
+    // task-160/ub: warn ПОСЛЕ Load (иначе проверяются дефолты, не INI).
+    coopcfg::WarnDangerousCombos();
+    sh_log::Write("config: loaded host='%s' npc_actor=%d npc_debug=%d "
+                  "world_sync=%d world_vehicles=%d npc_occupants=%d "
+                  "npc_visitor=%d vehicle_interaction=%d wheels=%d\n",
+                  cfg.serverHost.c_str(), cfg.npcActor ? 1 : 0,
+                  cfg.npcDebug ? 1 : 0, cfg.worldSync ? 1 : 0,
+                  cfg.worldVehicles ? 1 : 0, cfg.npcOccupants ? 1 : 0,
+                  cfg.npcVisitor ? 1 : 0, cfg.vehicleInteraction ? 1 : 0,
+                  cfg.npcVehicleWheels ? 1 : 0);
     sh_log::Write("net: connecting to %s:%d as '%s' (model=0x%llX)\n",
                   cfg.serverHost.c_str(), cfg.serverPort,
                   cfg.playerName.c_str(), cfg.pedModel);

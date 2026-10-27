@@ -1973,6 +1973,14 @@ void QueueDespawn(uint32_t actorId, uint8_t reason)
 bool IsPedInVehicleForDiscovery(unsigned int ped)
 {
     using namespace natives_api;
+    // Верховой пед формально "в транспорте" (лошадь — vehicle для движка),
+    // но его нельзя скипать как водителя машины: у лошади нет 0x21-occupant
+    // записи, и всадник навсегда пропадал из репликации. Лошадь едет отдельным
+    // actor-каналом, всадник — обычный human-прокси.
+    Init(natives::IS_PED_ON_MOUNT);
+    Push(ped);
+    if (Call() != 0)
+        return false;
     Init(natives::IS_PED_IN_ANY_VEHICLE);
     Push(ped);
     Push(false);

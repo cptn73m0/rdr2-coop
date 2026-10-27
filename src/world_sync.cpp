@@ -1708,6 +1708,23 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                       int vehicleRadius, float partnerX, float partnerY,
                       float partnerZ, bool partnerValid)
 {
+    // Диагностика host-ветки: доказать, что снапшоты и occupants реально
+    // считаются, и какие конфиг-флаги действуют (npc_debug может быть выключен).
+    {
+        static unsigned long long s_lastHostWorldLogMs = 0;
+        const unsigned long long nowMs = GetTickCount64();
+        if (s_lastHostWorldLogMs == 0 || nowMs - s_lastHostWorldLogMs >= 2000ull)
+        {
+            s_lastHostWorldLogMs = nowMs;
+            sh_log::Write("world: host snapshot vehOnly=%d npcDebug=%d "
+                          "npcActor=%d npcOcc=%d\n",
+                          vehiclesOnly ? 1 : 0,
+                          coopcfg::Get().npcDebug ? 1 : 0,
+                          coopcfg::Get().npcActor ? 1 : 0,
+                          coopcfg::Get().npcOccupants ? 1 : 0);
+        }
+    }
+
     if (tickCount - g_lastHostScanTick < kSendEveryTicks)
         return;
     g_lastHostScanTick = tickCount;
