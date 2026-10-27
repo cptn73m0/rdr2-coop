@@ -106,6 +106,7 @@ $identityPrefixes = @(
 $featurePrefixes = @(
     'world_sync', 'action_sync', 'vehicle_sync', 'mission_sync',
     'world_vehicles', 'world_trains', 'train_debug',
+    'vehicle_interaction',
     'npc_', 'player_frame_'
 )
 
