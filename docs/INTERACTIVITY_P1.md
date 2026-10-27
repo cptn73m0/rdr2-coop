@@ -148,18 +148,25 @@ static_assert(offsetof(VehicleInteractionPayload, weaponHash) == 20, "...");
 ```cpp
 enum class VehicleResult : uint8_t {
     Applied = 0,       // натив применён, состояние прочитано
-    Rejected = 1,      // политика/параметры (см. detail)
+    NotAllowed = 1,    // policy/param reject; reason — detail bits 8..15
     StaleEpoch = 2,
     NotFound = 3,      // netId не в host handle map / vehicle исчез
     OutOfRange = 4,
     SeatOccupied = 5,
-    MissionProtected = 6,
-    Locked = 7,
-    NoAuthority = 8,   // host player's current vehicle / role/flag policy
-    RateLimited = 9,   // cooldown/budget/queue
-    Timeout = 10,      // не применено за отведённый тик-бюджет
-    Correction = 11,   // state поправлен; guest обязан reconcile
+    Locked = 6,
+    RateLimited = 7,   // cooldown/budget/queue
+    Timeout = 8,       // не применено за отведённый тик-бюджет
+    Correction = 9,    // state поправлен; guest обязан reconcile
 };
+
+// detail bits 8..15 для result=NotAllowed (u8 reason = (detail >> 8) & 0xFF):
+constexpr uint8_t kResultReasonConfigOff        = 1; // vehicle_interaction=0
+constexpr uint8_t kResultReasonMissionProtected = 2; // mission vehicle (default)
+constexpr uint8_t kResultReasonHostVehicle      = 3; // host player's current vehicle
+constexpr uint8_t kResultReasonBadParam         = 4; // seat/door/part/flags/param
+constexpr uint8_t kResultReasonDeadGuest        = 5; // guest ghost мёртв/нет
+constexpr uint8_t kResultReasonBadRole          = 6; // не та роль / self-target
+constexpr uint8_t kResultReasonPolicy           = 7; // прочая политика (P1 default)
 
 struct VehicleInteractionResultPayload {
     uint32_t epoch = 0;        // 0
@@ -176,6 +183,7 @@ static_assert(sizeof(VehicleInteractionResultPayload) == 16, "...");
 
 | action | bits | смысл |
 |---|---|---|
+| **NotAllowed (любой action)** | 8..15 reason (`kResultReason*`); 0..7 — action-specific (0) | причина policy-reject: mission/host-vehicle/config/bad-param/dead-guest/role |
 | Damage | 0..7 part; 8..9 resultFlags (0 applied,1 mission-blocked native,2 health-read-failed); 16..31 appliedDamage | какой урон реально применён |
 | DoorOpen/Close/Break | 0..7 doorId; 8..9 doorState (0 closed,1 open,2 broken,3 unknown); 10..11 lockStatus low bits | readback |
 | DoorLock/Unlock | 0..7 lockStatus raw (R&D enum), 255 unknown | readback |
@@ -183,7 +191,7 @@ static_assert(sizeof(VehicleInteractionResultPayload) == 16, "...");
 | Loot | 0..7 lootKind (0 none,1 coach,2 container), 8..15 lootFlags | P1 лог |
 | Hitch/Unhitch | 0..7 harness; 8..15 draftCount/resultFlags | readback |
 
-Результат — финальный для P1 (`Applied`/`Rejected`/…). Дубликат `(epoch, seq)`
+Результат — финальный для P1 (`Applied`/`NotAllowed`/…). Дубликат `(epoch, seq)`
 host отвечает из кеша ≤2 с **без повторного натива**.
 
 ### 2.4. `VehicleState` 0x26 (24 B)
@@ -321,11 +329,11 @@ crapper/dryer): `IsValidVehicleInteraction`, `IsValidVehicleInteractionResult`,
    - Hijack: seat -1/127; door 255; (targetId 0 или flags&TargetActor);
    - Loot: flags&TargetEntity → targetId != 0; иначе targetId=0; seat 127;
    - Hitch/Unhitch: door 0..5 (harness); targetId 0 или flags&TargetEntity;
-   - window parts (12..15) в P1 reject (`Rejected`);
+   - window parts (12..15) в P1 reject (`NotAllowed`, reason=bad param);
 6. `weaponHash` — любой (контекст), для не-Damage должен быть 0 (reject иначе).
 
 `IsValidVehicleInteractionResult(p)`:
-`epoch != 0`, `vehicleNetId != 0`, `seq != 0`, `action` 1..12, `result` 0..11.
+`epoch != 0`, `vehicleNetId != 0`, `seq != 0`, `action` 1..12, `result` 0..9.
 
 `IsValidVehicleState(p)`:
 `epoch != 0`, `vehicleNetId != 0`, `flags & ~kVehicleStateKnownFlags == 0`;
@@ -359,7 +367,7 @@ rate. Невалидный payload — молча drop (как v19); role violat
   получает result → локальный retry policy клиента (§4.7) → лог и сдача;
 - хост не нашёл netId/vehicle: `NotFound` (не relay-ошибка — это ответ хоста);
 - vehicle исчез между интентом и тиком: `NotFound`/`OutOfRange`;
-- mission/locked/seat busy: `MissionProtected`/`Locked`/`SeatOccupied`;
+- mission/locked/seat busy: `NotAllowed` (reason=mission) / `Locked` / `SeatOccupied`;
 - сервер никогда не эмулирует и не отвечает от себя.
 
 ### 3.5. Метрики / traffic bucket
@@ -404,8 +412,8 @@ Cross-модульные вызовы — как в v19: `coop::SendXxx(...)` (c
 Обработка одного интента (порядок; при reject — сразу result, без натива):
 
 1. `coopcfg::Get().vehicleInteraction` выключен или `partnerGhost == 0`/не существует →
-   drop (лог debug; если гость прислал — результат `NotFound`/`NoAuthority` при
-   наличии seq; при выключенном конфиге — молча, чтобы не спамить).
+   `NotAllowed` (reason=config_off / dead_guest) при наличии seq; при выключенном
+   конфиге — молча drop, чтобы не спамить.
 2. `p.epoch == actor_sync::HostEpoch()` и `p.epoch != 0`; иначе `StaleEpoch`.
 3. idempotency: `(epoch, vehicleNetId, seq)` в кеше ≤2 с → отправить закешированный
    result, выйти (натив не повторять).
@@ -415,17 +423,17 @@ Cross-модульные вызовы — как в v19: `coop::SendXxx(...)` (c
    Нет handle / `!DoesExist` → `NotFound`.
 5. policy:
    - `IsMissionEntity(vehicle)` (`IS_ENTITY_A_MISSION_ENTITY`) && !`vehicleInteractionMission`
-     → `MissionProtected`;
+     → `NotAllowed` (reason=mission_protected);
    - host's own vehicle: `GET_VEHICLE_PED_IS_USING(localPlayerPed) == vehicle` &&
-     !`vehicleInteractionHostVehicle` → `NoAuthority` для Damage/Hijack/DoorBreak;
-     passenger Enter разрешён (или тоже запрещён, если seat=-1 хоста? — см. §9 Q3);
-   - гость мёртв/оглушён (партнёрский ghost) → `Rejected`;
+     !`vehicleInteractionHostVehicle` → `NotAllowed` (reason=host_vehicle) для
+     Damage/Hijack/DoorBreak; passenger Enter разрешён (Leads decision D2/D4, §9);
+   - гость мёртв/оглушён (партнёрский ghost) → `NotAllowed` (reason=dead_guest);
    - distance: coords(vehicle) vs coords(partnerGhost) по action (12/5/6 м) →
      `OutOfRange`; учитывать высоту (dz ≤ 3 м) и invalid partner → `OutOfRange`.
 6. action-specific (см. таблицу §2.2 и validate helper): seat free через
    `IS_VEHICLE_SEAT_FREE`, driver для Hijack `GET_DRIVER_OF_VEHICLE`,
    harness free/occupied через `_GET_PED_IN_DRAFT_HARNESS`, vehicle locked/`Locked`,
-   vehicle dead/`IS_VEHICLE_WRECKED` → `Rejected`/`Locked`.
+   vehicle dead/`IS_VEHICLE_WRECKED` → `NotAllowed` (reason=bad_param)/`Locked`.
 7. cooldown per `(vehicle, action)` 250 мс (Urgent 100 мс); damage budget 200 HP/с/
    vehicle; per-tick применили ≥2 → остаток обработать в следующем тике (`Timeout`
    не шлём, если остались в очереди; если очередь переполнена → `RateLimited`).
@@ -528,7 +536,7 @@ Cross-модульные вызовы — как в v19: `coop::SendXxx(...)` (c
   seat есть NPC driver (`g_occupantVehicles[netId]`, `kOccupantFlagDriver`) →
   action Hijack (targetId=driverActorId).
 - переход «proxy → нет/другой»: action Exit.
-- Если результат `Rejected`/`SeatOccupied` → guest выходит из локального proxy
+- Если результат `NotAllowed`/`SeatOccupied` → guest выходит из локального proxy
   (`TASK_LEAVE_VEHICLE`) и лог; если `Applied` → остаётся (controls disabled).
 - rate: 1 интент за переход, не чаще 500 мс.
 
@@ -549,7 +557,8 @@ Cross-модульные вызовы — как в v19: `coop::SendXxx(...)` (c
 **C4. Loot / Hitch / Unhitch — wire-ready, capture в P1.1:**
 - wire/actions валидируются и тестируются fake-клиентом; capture требует
   подтверждённых интерактивных нативов/промптов (R&D gap §6 R4) — в P1 не включать,
-  кнопки/промпты не выдумывать. В конфиге отдельные ключи не нужны: action просто
+  кнопки/промпты не выдумывать. Control-prompt R&D идёт параллельно и **не
+  блокирует P1** (Lead D1); в конфиге отдельные ключи не нужны: action просто
   не отправляется игровым capture.
 
 ### 4.5. Guest proxy: «осязаемый» локальный proxy
@@ -669,7 +678,7 @@ pins для rate-констант (`_server_const` + pinned: 8/20/10). Новы�
    ровно ≤8 релеев, окно сбрасывается (как `test_vehicle_occupants_rate_limit`).
 4. `test_vehicle_result_host_only_relay` — host шлёт 0x24 → guest получает;
    guest-отправитель 0x24 → drop + warn; нет эха хосту.
-5. `test_vehicle_result_validation_rate` — размер/поля/result>11/rate 20/с.
+5. `test_vehicle_result_validation_rate` — размер/поля/result>9/rate 20/с.
 6. `test_vehicle_state_host_only_relay` — 0x26 host→guest; guest-отправитель drop;
    невалидные health/flags/seat → drop; rate 10/с.
 7. `test_vehicle_interaction_no_host_drop` — один guest без хоста шлёт 0x23 →
@@ -714,8 +723,8 @@ CLI:
 | I2 | Двери: guest открывает/закрывает дверь локального proxy (если C3 A/B PASS) | host+guest дверь в одном состоянии; state doorBits совпадает; host видит анимацию/дверь |
 | I3 | Гость входит в припаркованный wagon (passenger) | host сажает guest ghost; guest local player в proxy; `VehicleState.guestSeat` совпадает; нет второго vehicle/дубля |
 | I4 | Гость hijack не-mission NPC-водителя | NPC выходит/изгнан; guest в driver seat (host ghost); `driving disabled` лог; no driving |
-| I5 | Mission wagon: damage/hijack | `result=mission_protected`, host мир не изменён, guest лог/тост; mission не ломается |
-| I6 | Host едет на своей wagon, guest пытается damage/hijack | `result=no_authority` (default `vehicle_interaction_host_vehicle=0`), host vehicle не изменён |
+| I5 | Mission wagon: damage/hijack | `result=not_allowed` (reason=mission_protected), host мир не изменён, guest лог/тост; mission не ломается |
+| I6 | Host едет на своей wagon, guest пытается damage/hijack | `result=not_allowed` (reason=host_vehicle; default `vehicle_interaction_host_vehicle=0`), host vehicle не изменён |
 | I7 | Loss/dup: отключить сеть на 2–3 с mid-intent (или fake burst) | нет двойного применения (idempotency seq), state heartbeat чинит; без duplicate damage/seat |
 | I8 | Host migration во время P1 (alt+F4/soft) | intents/results/state старого epoch дропаются; новые интенты идут новому хосту; no crash/leak; proxies reset |
 | I9 | Rate/anti-grief: fake guest 30 интентов/с | сервер дропает >8/с; host не спайкает; `perf: frame host` p95/max в норме; лог `rate_limited` при host-бюджете |
@@ -756,9 +765,9 @@ P1 total: typical **<0.3 KiB/s**, worst **<0.7 KiB/s** на направлени
 | # | риск | вероятность/эффект | митигация |
 |---|---|---|---|
 | R1 | `SET_VEHICLE_DAMAGE`/health имеет неожиданные ограничения (p6, invincible/mission/strong) | мед/высокий визуал | A/B в игре до кода; fallback `SET_VEHICLE_BODY_HEALTH`/`ENGINE_HEALTH`; P1 PASS — реальное изменение health host |
-| R2 | lock enum / door state readback не подтверждены (SIGNATURE-ONLY) | высокий риск для DoorLock/state | P1: lock actions wire-ready, capture/game-действия только после A/B; до этого default `applied`-проверка readback, иначе `Rejected` |
+| R2 | lock enum / door state readback не подтверждены (SIGNATURE-ONLY) | высокий риск для DoorLock/state | P1: lock actions wire-ready, capture/game-действия только после A/B; до этого default `applied`-проверка readback, иначе `NotAllowed` |
 | R3 | `TASK_ENTER_VEHICLE` flags/поведение (animated) vs `SET_PED_INTO_VEHICLE` (warp) | средний | v1 `SET_PED_INTO_VEHICLE` (детерминизм); animated — A/B; hijack через TASK_LEAVE + SET_PED_INTO |
-| R4 | нет подтверждённых control/prompt-нативов для дверей/лута/hitch (NativeDecl 1491.50 не даёт IS_CONTROL_PRESSED) | высокий для C3/C4 | capture v1: shot-damage + enter/exit; C3 — proxy-state polling A/B; C4 — P1.1; wire/actions тестируются fake-клиентом |
+| R4 | нет подтверждённых control/prompt-нативов для дверей/лута/hitch (NativeDecl 1491.50 не даёт IS_CONTROL_PRESSED) | высокий для C3/C4 | capture v1: shot-damage + enter/exit; C3 — proxy-state polling A/B; C4 — P1.1; control-prompt R&D идёт **параллельно и не блокирует P1**; wire/actions тестируются fake-клиентом |
 | R5 | локальная посадка/двери на mission/invincible proxy могут быть заблокированы | средний | A/B: `SET_VEHICLE_IS_CONSIDERED_BY_PLAYER`; fallback — временно снять mission/invincible у near-proxy; если не работает — P1 enter/hijack в игре не включать (wire/fake остаются) |
 | R6 | guest local player сидит в proxy, host двигает real vehicle → interpolation тянет игрока | средний | controls suppressed/UNDRIVEABLE; seat reconciliation по state; при жёсткой коррекции — warp игрока вместе с proxy; P1 не обещает езду |
 | R7 | server не может валидировать netId/мир → spoof/flood | низкий | host validation (netId map, distance, mission, cooldown, budget); server rate 8/с + exact size; логи |
@@ -771,9 +780,10 @@ P1 total: typical **<0.3 KiB/s**, worst **<0.7 KiB/s** на направлени
 
 **R&D gate:** ни один натив не реализуется, пока его hash/arity/семантика не
 перепроверены по `third_party/rdr2-runtime-scripthook/.../NativeDecl.cs` (1491.50)
-и не подтверждён in-game A/B (для P1 — body damage, doors, enter, hijack). В таблице
-§4.3 часть health-readback hashes помечены «уточнить» — их нельзя брать из старых
-native-DB (1207).
+и не подтверждён in-game A/B (для P1 — body damage, doors, enter, hijack). Полный
+список на проверку — §10; результат researcher'а вносится в
+`docs/NATIVE_RESEARCH_INTERACT.md` до соответствующего unit'а. Lock enum и
+GET-health hashes нельзя брать из локального native-DB 1207.
 
 ---
 
@@ -861,7 +871,7 @@ worktree clean, commit с why/what/proof. Промежуточные комми�
 
 | файл | точки |
 |---|---|
-| `net/protocol.h` | `:22`; `:36-78`; после `:659` — новs structs/enums/validators/limits |
+| `net/protocol.h` | `:22`; `:36-78`; после `:659` — новые structs/enums/validators/limits |
 | `net/client.h` | callbacks `~:104`; senders `~:172`; setters `~:225`; handlers `~:268`; members `~:326` |
 | `net/client.cpp` | validators `:320-410`; handlers `:1057-1100`; dispatch `:1215-1226`; senders `:769-837` |
 | `server/server.cpp` | `:53-74`; `:104-148`; `:193-202`; `:287-316`; `:588-668`; `:947-995`; `:1714-1810`; `:1947-1956`; `:1038-1048` |
@@ -908,41 +918,137 @@ server/client — по одному case на сообщение; дублиро
 
 ---
 
-## 9. Открытые вопросы к Lead (нужны решения до U1/U4)
+## 9. Финальные решения Lead (2026-10-27) — Decisions
 
-1. **Scope P1:** подтвердить, что P1 без вождения (0x25/0x27 P3), без инвентарного
-   лута (loot = host-side лог/визуал), без окон (part 12–15 reject) — ок?
-2. **Capture v1:** ок ли разделение — P1 capture = damage (выстрелы),
-   enter/exit/hijack (локальная посадка в осязаемый proxy), двери через A/B
-   state-polling (constexpr-гейт `kVehicleInteractionCaptureDoors`, не INI);
-  loot/hitch/unhitch — wire-ready +
-   fake-клиент, capture в P1.1 после R&D? Или требуете control-prompt R&D сейчас
-   (NativeDecl 1491.50 не даёт `IS_CONTROL_PRESSED`)?
-3. **Политика mission/host-vehicle:** reject по умолчанию (`vehicle_interaction_mission=0`,
-   `vehicle_interaction_host_vehicle=0`), passenger Enter в host vehicle разрешён —
-   подтвердить.
-4. **Лимиты:** 8/с 0x23, 20/с 0x24, 10/с 0x26; дистанции 12/5/6 м; damage budget
-   200 HP/с/vehicle; cooldown 250 мс (Urgent 100) — утвердить/изменить.
-5. **IDs/размеры:** 0x23 24 B, 0x24 16 B, 0x26 24 B; 0x25/0x27 reserved — ок?
-6. **Bump/deploy:** v20 bump в U2, deploy только после U5 парой (npc-e20), v19
-   rejected, rollback npc-e19 — ок?
-7. **Seat P1:** host сажает guest ghost в real vehicle; guest local player сидит в
-   local proxy с disabled controls; host-player seat только в 0x26 (`hostSeat`)
-   для лога/P2, без пересадки ghost до P2 — ок?
-8. **0x24/0x26 routing:** использовать broadcast-to-non-host (2 игрока = гость);
-   unicast/target-id — в будущем >2 players bump — ок?
-9. **INI:** 4 новых ключа (`vehicle_interaction`, `vehicle_interaction_mission`,
-   `vehicle_interaction_host_vehicle`, `vehicle_interaction_debug`)
-   → 32 приёмочных ключа / 42 строки; A/B-гейты capture — constexpr в world_sync,
-   не INI (при необходимости вынести в P1.1) — ок?
-10. **CI gates:** integration 42→50, C++ 7→8, pinned rate-константы 8/20/10;
-    quality strict без обновления baseline — ок?
-11. **Fake tool:** отдельный `tools/fake_vehicle_client.py` (не трогать
-    `fake_actor_client.py`) — ок?
+Решения получены после ревью спеки и **обязательны** для U1–U5. Отступления —
+только письменно до U1.
+
+| # | Решение | Где в спеке |
+|---|---|---|
+| D1 | **Scope P1:** интенты без вождения/инвентаря/окон (part 12–15 reject); двери — capture через A/B constexpr (не INI); loot/hitch/unhitch — wire/fake-ready, capture в P1.1; control-prompt R&D **не блокирует** P1 | §2.2, §4.4, §5.3, §7 U4 |
+| D2 | **Defaults:** mission-vehicle и host-vehicle — reject, `result=NotAllowed` (reason в detail bits 8..15); seat/door/harness/lock валидируются; defaults безопасные. `NotAllowed` — единый policy-код (заменяет прежний `Rejected`; `MissionProtected`/`NoAuthority` стали reason-битами detail) | §2.3, §4.2 |
+| D3 | **Лимиты:** rate 8/20/10 в/с; дистанции 12/5/6 м; 200 HP/с/vehicle; cooldown 250 мс; IDs/размеры 0x23=24 B, 0x24=16 B, 0x26=24 B; v20 bump в U2; deploy-пара только U5 (`npc-e20`, rollback `npc-e19`) | §2.6, §2.7 |
+| D4 | **Seat P1:** host сажает guest ghost на host-vehicle; guest — в local proxy с disabled controls (`SET_VEHICLE_UNDRIVEABLE`); `hostSeat`/`guestSeat` в 0x26 до P2; 0x24/0x26 broadcast non-host при `kMaxPlayers=2` — ок | §4.3, §4.6 |
+| D5 | **INI/CI:** 4 ключа → 32 приёмочных/42 строки; CI gates 50 integration / 8 C++ / pinned rate 8/20/10 | §4.7, §5.1–5.2 |
+| D6 | **Протокол/flow:** принято как в спеке; отступления — только письменно до U1 | весь файл |
+| D7 | **R&D-подзадача** (GET body/engine health hashes, lock enum, control-prompt и др.) идёт отдельным researcher'ом параллельно; точный список — §10. P1 не блокируется, кроме R13-зависимого health-readback: до подтверждения host state `bodyHealth/engineHealth = unknown`, `DamageValid=0` | §4.3, §6, §10 |
+
+**Статус:** все 11 вопросов ревью закрыты (D1–D6) — открытых вопросов к Lead нет.
+Остаются только R&D-неизвестные (§10) и in-game A/B (R1–R5, R13); они решаются в
+U3/U4 без изменения wire/protocol.
 
 ---
 
-## 10. Ссылки
+## 10. R&D-запрос для researcher (передаётся Lead'ом)
+
+**Target build:** RDR2 PC **1491.50**. Проверять по
+`third_party/rdr2-runtime-scripthook/source/scripting_v3/RDR2.Native/NativeDecl.cs`
+(локальный ScriptHook runtime), latest `alloc8or/rdr3-nativedb-data` (`natives.json`),
+и — где возможно — in-game A/B на scripted wagon.
+**Формат ответа на каждый пункт:** native name, hash, arity + полная сигнатура
+(типы), return type + диапазон/enum, статус **CONFIRMED / SIGNATURE-ONLY / UNCERTAIN
+/ ABSENT**, источник (NativeDecl.cs:line / nativedb), замечания и риск. Для enum —
+все значения. Отсутствующие нативы помечать явно «ABSENT in 1491.50».
+
+### P0 — блокирует U3 (host apply/state) и P1 state
+
+1. `GET_VEHICLE_BODY_HEALTH(Vehicle)` — hash, arity, return int, диапазон
+   (0..1000?), поведение при destroyed/mission/invincible.
+2. `GET_VEHICLE_ENGINE_HEALTH(Vehicle)` — hash, arity, return int, диапазон
+   (−4000..1000?), destroyed state.
+3. `GET_VEHICLE_PETROL_TANK_HEALTH(Vehicle)` — hash/arity/range (если есть).
+4. `GET_VEHICLE_DOOR_LOCK_STATUS(Vehicle)` — hash, arity, return enum: все значения
+   и mapping (unlocked/locked/locked-for-player/…), сверить с
+   `SET_VEHICLE_DOORS_LOCKED(veh, status)` и
+   `SET_VEHICLE_INDIVIDUAL_DOORS_LOCKED(veh, doorId, status)` (enum `status`).
+5. `IS_VEHICLE_DOOR_FULLY_OPEN(Vehicle, doorId)` и
+   `_IS_VEHICLE_DOOR_BROKEN(Vehicle, doorId)` — hash/arity/return; семантика после
+   `SET_VEHICLE_DOOR_OPEN/SHUT/BROKEN`; поведение при `deleteDoor=true`.
+6. `_IS_VEHICLE_WHEEL_DESTROYED(Vehicle, wheelIndex)` — hash/arity/return;
+   **mapping wheelIndex** (DB comment «0 left, 1 right, 4/5 unknown» — подтвердить
+   для wagon/cart), `_ARE_ANY_VEHICLE_WHEELS_DESTROYED(Vehicle)`; как damage в зону
+   колеса через `SET_VEHICLE_DAMAGE` отражается на wheel state.
+7. `SET_VEHICLE_DAMAGE(veh,x,y,z,damage,radius,p6)` — hash/arity уже подтверждены;
+   проверить: p6=true/false семантика, система координат offset (локальная модель
+   или мир), clamp damage/radius, поведение на mission/invincible/strong/
+   player-driven, порог «деталь отвалилась» (wheel/door), воспроизводимость.
+8. `SET_VEHICLE_BODY_HEALTH` / `SET_VEHICLE_ENGINE_HEALTH` — range/clamp
+   (body 0..1000, engine −4000..1000?), destroyed behavior, взаимодействие с
+   invincible/mission; нужно ли писать body health после damage.
+9. Флаги видимого урона/посадки: `SET_ENTITY_AS_MISSION_ENTITY(entity,bool,bool)`,
+   `SET_ENTITY_INVINCIBLE`, `SET_VEHICLE_STRONG`, `SET_VEHICLE_CAN_BREAK`,
+   `SET_VEHICLE_CAN_BE_VISIBLY_DAMAGED` — что из этого блокирует visible damage /
+   открытие дверей / посадку local player в scripted proxy; минимальный набор,
+   чтобы (a) host real vehicle принимал damage, (b) guest proxy показывал
+   visual mirror. Отдельно: можно ли временно снять mission/invincible у proxy и
+   вернуть без cleanup/despawn.
+10. `IS_VEHICLE_SEAT_FREE(veh, seat)` для wagon/draft на -1/0..8;
+    `GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS(veh)` и
+    `GET_VEHICLE_MODEL_NUMBER_OF_SEATS(model)` — сколько реально seats у wagon/coach
+    (для валидации seat); `GET_PED_IN_VEHICLE_SEAT` для readback.
+11. `SET_PED_INTO_VEHICLE(ped, veh, seat)` — работает ли для **не-local** ped
+    (host-side ghost игрока/ NPC) в host world; seat -1/0..8; поведение для
+    mission/invincible vehicle; что видит local player.
+12. `TASK_ENTER_VEHICLE(ped,veh,timeout,seat,speed,flag,p6)` — подтвердить arity 7
+    и flags: `ECF_JACK_ANYONE(1<<3)`, `ECF_WARP_PED(1<<4)`,
+    `ECF_DONT_WAIT_FOR_VEHICLE_TO_STOP(1<<6)`, `ECF_JUST_PULL_PED_OUT(1<<19)`,
+    p6 тип/значение; `TASK_LEAVE_VEHICLE(ped,veh,flag)` — flags (0?), для host NPC
+    driver; сравнить animated enter vs `SET_PED_INTO_VEHICLE`.
+13. `GET_DRIVER_OF_VEHICLE(veh)`, `GET_VEHICLE_PED_IS_ENTERING(ped)`,
+    `IS_PED_IN_VEHICLE(ped,veh,atGetIn)` (p3 semantics),
+    `GET_VEHICLE_PED_IS_IN(ped,lastVehicle)` — arity/return; поведение
+    `GET_VEHICLE_PED_IS_ENTERING` при warp-`SET_PED_INTO_VEHICLE` (возвращает ли
+    handle до входа).
+14. Draft/wagon: `_ATTACH_DRAFT_VEHICLE_HARNESS_PED(horse,veh,harness)` — return
+    BOOL и harness enum 0..5 (LR,RR,LM,RM,LF,RF) порядок; поведение при занятом
+    harness/неверном типе лошади; `_DETACH_DRAFT_VEHICLE_HARNESS_PED(veh,horse)`;
+    `_GET_PED_IN_DRAFT_HARNESS(veh,harness)`; `GET_DRAFT_ANIMAL_COUNT(veh,&expected,
+    &actual)` — точные типы/return; можно ли attach/detach host-side ghost.
+15. Proxy tangibility/controls: `SET_VEHICLE_UNDRIVEABLE(veh,bool)` — эффект
+    (нельзя тронуться) и совместимость с player input/AI;
+    `SET_VEHICLE_IS_CONSIDERED_BY_PLAYER(veh,bool)` — делает ли proxy «enterable»
+    для local player и показывает ли prompt; `SET_VEHICLE_NOT_STEALABLE_AMBIENTLY`;
+    `SET_ENTITY_COLLISION(entity,toggle,keepPhysics)` — keepPhysics semantics для
+    локального proxy.
+
+### P1 — нужно для дверей C3 capture / P1.1 (не блокирует U1–U3)
+
+16. **Control/prompt R&D:** есть ли в 1491.50 чтение действий игрока:
+    `IS_CONTROL_PRESSED` / `IS_CONTROL_JUST_PRESSED` / `GET_CONTROL_VALUE` /
+    `GET_CONTROL_NORMAL` / `IS_DISABLED_CONTROL_PRESSED`. В локальном NativeDecl
+    найдены только `IS_CONTROL_ENABLED(control,action)` `0x1CEA6BFDF248E5D9`,
+    `UI_PROMPT_IS_CONTROL_ACTION_ACTIVE` `0x1BE19185B8AFE299`,
+    `_IS_CONTROL_ACTION_VALID` `0xBC0884BC590951C7`. Нужно: вердикт ABSENT/PRESENT,
+    корректные hashes/сигнатуры, RDR2 control/action enum для ENTER/CONTEXT/ATTACK
+    у vehicle prompt; если чтения контроля нет — подтвердить, что единственный
+    путь — game-native взаимодействие (локальные двери/prompt на proxy) и что оно
+    доступно для scripted/mission proxy.
+17. `SET_VEHICLE_DOOR_CONTROL(veh,doorId,speed,angle)`,
+    `SET_VEHICLE_DOOR_LATCHED(veh,doorId,p2,p3,p4)` (p2..p4 unknown),
+    `SET_VEHICLE_DOORS_LOCKED_FOR_ALL_PLAYERS`, `SET_VEHICLE_DOORS_TO_OPEN_AT_ANY_DISTANCE`
+    — нужны ли для плавного mirror/локов, параметры/статус.
+18. Door IDs/window mapping для wagon/coach: какие `eDoorId` реально
+    существуют/видны на wagon/coach (0..11: DSIDE_F/M/M1/M2/R, PSIDE_F/M/M1/M2/R,
+    BONNET, BOOT); `windowIndex` 0 FR,1 FL,2 BR,3 BL — подтвердить.
+19. Lock readback: `GET_VEHICLE_DOOR_LOCK_STATUS` vs
+    `_GET_BREAKABLE_VEHICLE_LOCKS_STATE(veh)` — какой стабилен/что возвращает;
+    `_BREAK_LOCKS_ON_VEHICLE(veh)` — эффект (swing doors? какие двери?) и readback.
+20. (P1.1 loot/hitch) `TASK_LOOT_ENTITY`, `_SET_FORCE_COACH_ROBBERY_LOOT`,
+    `_GET_LOOTING_PICKUP_TARGET_ENTITY`, `_REQUEST_ENTITY_LOOT_LIST`,
+    coach-robbery loot hashes — статус/параметры для wagon; hitch capture —
+    `GET_DRAFT_ANIMAL_COUNT`/harness poll.
+
+### P2 — P3/P4, не блокирует
+
+21. `_SET_DRAFT_VEHICLE_DESIRED_SPEED`, AI tasks (`TASK_VEHICLE_TEMP_ACTION` /
+    `TASK_VEHICLE_DRIVE_TO_COORD`), `SET_VEHICLE_FORWARD_SPEED`/`STEER_BIAS` —
+    только P3; сейчас достаточно статуса из R&D-дока.
+22. Ghost ped seat visibility: что нужно, чтобы local player увидел host-side
+    ghost сидящим в vehicle (текущий occupant attach) — mission/network flags.
+
+---
+
+## 11. Ссылки
 
 - `docs/INTERACTIVITY.md` — общий дизайн P0–P4, authority model, §4.1–4.5, §9, §10.
 - `docs/NATIVE_RESEARCH_INTERACT.md` — hashes/arity/door/seat/draft/loot таблицы.
