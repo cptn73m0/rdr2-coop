@@ -20,46 +20,46 @@ Make it Right → Practice». Установлен как обязательны
 дублирование), роль mutator — тесты `tests/` + CI (там, где честный тест возможен; для
 игровых нативов — smoke/2-ПК сценарии). Не пишем «плохие» тесты ради покрытия.
 
-## Метрики: baseline → после 5799ea7 (npc-e15)
+## Метрики: initial baseline → 0e64a22 (npc-e16), baseline lowered
 
-Источник baseline — `tools/quality_baseline.json` (снимок из
-`docs/UB_MODE_BASELINE.md`); финальный скан —
-`python tools\quality_scan.py --json build\quality_final_e15.json --top 20`.
-Baseline зафиксирован до шлифовки и **не перезаписывается** автоматически.
+Финальный скан — `python tools\quality_scan.py --json build\quality_final_e16.json --top 20`
+по чистому `git archive 0e64a22` (worktree мог содержать следующий WIP).
+**Baseline осознанно обновлён после 0e64a22**: `tools/quality_baseline.json`
+теперь 45/388/**1**/**3**/0, поэтому strict ловит регрессии относительно
+нового лучшего состояния (CRAP>5000=1, dup>=4=3, TODO=0).
 
-| метрика | baseline | после 0a4cc48/c3dc018/6295e6b/5799ea7 | delta |
+| метрика | initial baseline | после e16 | delta |
 |---|---:|---:|---:|
 | файлов | 45 | 45 | 0 |
-| функций | 334 | 387 | +53 |
+| функций | 334 | 388 | +54 |
 | функций с CRAP-прокси >5000 | **4** | **1** | **-3** |
 | dup-групп `count>=4` | **7** | **3** | **-4** |
 | TODO/FIXME | **0** | **0** | 0 |
 | warning-disable | 0 | 0 | 0 |
 
-Рост числа функций — выделенные helpers при разбиении `RunOnce`/`Tick`/
-`ApplyRemoteFrame`/`ApplyLine` + behavior-тесты; CRAP>5000 снизился,
-`world_sync` host-netId dedupe убрал 4 dup-блока (7→3).
+Рост числа функций — выделенные helpers (refactor units) + behavior-тесты;
+CRAP>5000 и dup>=4 снизились.
 
 Топ-5 CRAP:
 
-| # | baseline | после |
+| # | initial baseline | после e16 |
 |---|---|---|
-| 1 | `coop.cpp Tick` **140250** (1712) | `coop.cpp Tick` **120756** (1597) |
+| 1 | `coop.cpp Tick` **140250** (1712) | `coop.cpp Tick` **115940** (1551) |
 | 2 | `net/client.cpp RunOnce` 24492 (574) | `tests/frame_reader_fuzz.cpp main` 3192 (312) |
 | 3 | `coop.cpp ApplyRemoteFrame` 8010 (386) | `coop.cpp ApplyActionToGhost` 1892 (168) |
 | 4 | `config.cpp ApplyLine` 7656 (129) | `net/client.cpp RunOnce` 1482 (211) |
 | 5 | `tests/frame_reader_fuzz.cpp main` 2550 (280) | `coop.cpp ApplyPedStateToGhost` 1332 (185) |
 
-`ApplyRemoteFrame` 8010→**20** (386→22 строк), `ApplyLine` 7656→506,
-`RunOnce` 24492→1482, `UpdateLocalShotEvents` 181→132 строк (CRAP 2352→1260)
-— из top-5 вышли.
+`ApplyRemoteFrame` 8010→**20** (386→22), `ApplyLine` 7656→506,
+`RunOnce` 24492→1482, `UpdateLocalShotEvents` 181→132 (CRAP 2352→1260),
+`ApplyOutfitToGhost` 165→141 (CRAP 1122→756), `Tick` 1597→1551.
 
 **Остаточные hotspots:** `coop.cpp Tick` — единственная функция CRAP>5000
-(120756, 1597 строк); 3 dup-группы `count>=4` — оставшиеся нативные обёртки
+(115940, 1551 строк); 3 dup-группы `count>=4` — оставшиеся нативные обёртки
 `src/actor_sync.cpp:2689/2691`, `src/world_sync.cpp:1751`; следующие helper'ы —
 `ApplyActionToGhost` 1892 (168), `ApplyPedStateToGhost` 1332 (185),
-`ApplyOutfitToGhost` 1122 (165); dead code/native dedupe — backlog.
-Baseline оставлен прежним, чтобы strict-гейт продолжал ловить регрессии.
+`UpdateLocalShotEvents` 1260 (132), `ApplyOutfitToGhost` 756 (141);
+dead code/native dedupe/остальные A-фазы Tick — backlog.
 
 ## Quality gate в CI
 
@@ -117,7 +117,7 @@ docs/UB_MODE_BASELINE.md`). Каждая единица шлифовки офо�
 | 0 | Установка навыка и директива «always» | DSH + AGENTS.md | done |
 | 1 | `quality_scan.py` + baseline | tools/docs | done |
 | 2 | Шлифовка `net/` и `server/` | net-review | done — **0a4cc48** |
-| 3 | Шлифовка `src/` (кооп-логика, actor_sync, world_sync) | client-review | done — **c3dc018 + 6295e6b + 5799ea7** |
+| 3 | Шлифовка `src/` (кооп-логика, actor_sync, world_sync) | client-review | done — **c3dc018 + 6295e6b + 5799ea7 + 0e64a22** |
 | 4 | Шлифовка тестов/скриптов/доков + quality-гейт в CI | qa-tests-review | done |
 | 5 | Независимое ревью шлифовки по чек-листу ub-mode | worldsync-architect | planned |
 
@@ -133,6 +133,7 @@ docs/UB_MODE_BASELINE.md`). Каждая единица шлифовки офо�
 | 6 | Финальный quality-delta после 0a4cc48/c3dc018 | `quality_scan.py --json build\quality_final.json --top 20`; обновлены числа «до/после» | 45/334/4/7/0 → 45/384/1/7/0; top-5 таблица; canonical CI 41/41 strict PASS |
 | 7 | Финальный e14-delta после 6295e6b (npc-e14) | `quality_scan.py --json build\quality_final_e14.json --top 20`; docs/tools обновлены | 45/334/4/7/0 → 45/386/1/7/0; Tick 120756; e14 deployed local+ARINA |
 | 8 | Финальный e15-delta после 5799ea7 (npc-e15) | `quality_scan.py --json build\quality_final_e15.json --top 20`; docs/tools/README обновлены | 45/334/4/7/0 → 45/387/1/3/0; Tick 120756; e15 local+ARINA, сервер PID 10636 |
+| 9 | e16-delta после 0e64a22 (npc-e16) + **lowered baseline** | скан чистого архива 0e64a22; `tools/quality_baseline.json` = 45/388/1/3/0; docs/tools/README | 45/388/1/3/0 → baseline; strict CI PASS; e16 local+ARINA, ASI C4E4CF70 |
 
 
 ## Правила безопасного рефакторинга

@@ -32,29 +32,28 @@ CRAP-прокси >5000, dup-группы `count>=4`, число TODO/FIXME. Del
 latest − baseline; отрицательная — улучшение. Baseline обновляйте
 осознанно, а не для «позеленения» CI.
 
-**Финальный delta после `0a4cc48` + `c3dc018` + `6295e6b` + `5799ea7`; сборка/снапшот `npc-e15`:**
+**Финальный delta после `0a4cc48` + `c3dc018` + `6295e6b` + `5799ea7` + `0e64a22`; сборка/снапшот `npc-e16`:**
 
-| метрика | baseline | после | delta |
+| метрика | initial baseline | после e16 | delta |
 |---|---:|---:|---:|
 | files | 45 | 45 | 0 |
-| functions | 334 | 387 | +53 |
+| functions | 334 | 388 | +54 |
 | CRAP>5000 | 4 | 1 | -3 |
 | dup>=4 | 7 | 3 | **-4** |
 | TODO | 0 | 0 | 0 |
 
-Топ CRAP после: `Tick` 120756 (1597 строк), `main` frame_reader_fuzz 3192,
-`ApplyActionToGhost` 1892, `RunOnce` 1482, `ApplyPedStateToGhost` 1332.
-`ApplyRemoteFrame` 8010→20, `ApplyLine` 7656→506, `UpdateLocalShotEvents`
-181→132 строк (CRAP 2352→1260); `world_sync` host-netId dedupe 4 блока→1
-(dup≥4 7→3). `Tick` остаётся единственным CRAP>5000 и следующим кандидатом;
-3 dup≥4 — оставшиеся native-обёртки `actor_sync`/`world_sync`. Baseline не
-перезаписан: strict-гейт продолжает ловить регрессии. `npc-e15`
-(ASI `3CC80BE3`, server без изменений `1BE28084`) задеплоен локально и на
-ARINA; визуальная 2-ПК приёмка ещё нужна.
+Топ CRAP после: `Tick` 115940 (1551 строк), `main` frame_reader_fuzz 3192,
+`ApplyActionToGhost` 1892, `RunOnce` 1482, `ApplyPedStateToGhost` 1332;
+`ApplyOutfitToGhost` 165→141 (CRAP 1122→756). `ApplyRemoteFrame` 8010→20,
+`ApplyLine` 7656→506, `RunOnce` 24492→1482; 3 dup≥4 — оставшиеся
+native-обёртки `actor_sync`/`world_sync`. **Baseline осознанно обновлён
+после 0e64a22** до 45/388/1/3/0, strict теперь ловит регрессии относительно
+нового лучшего состояния. `npc-e16` (ASI `C4E4CF70`, server без изменений
+`1BE28084`) задеплоен локально и на ARINA; визуальная 2-ПК приёмка ещё нужна.
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E15/E2c (actor-репликация NPC) на
+Заменяет второй ПК при тестировании E1–E16/E2c (actor-репликация NPC) на
 одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v19;
 игра запускается только на одном ПК.
 
@@ -647,7 +646,7 @@ npc_debug = 1
   ```
 - `npc_animal_appearance=0` → животные/лошади снова random (не залипают);
   при расхождении INI host/guest поведение несимметрично — не допускается.
-- Локальная пара npc-e15/v19: ASI `3CC80BE3`, server `1BE28084`;
+- Локальная пара npc-e16/v19: ASI `C4E4CF70`, server `1BE28084`;
   ARINA offline. Чек-лист — `docs/NPC_E1_TESTING.md` S27.
 
 ### npc-e12/e13: перф/трафик + config warnings (grep-команды)
@@ -738,7 +737,7 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e15 ASI `3CC80BE3`/server `1BE28084`, ARINA online) —
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e16 ASI `C4E4CF70`/server `1BE28084`, ARINA online) —
 pending. Для дымового теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
@@ -912,8 +911,8 @@ Windows PowerShell / PS 5.1 (скрипт сохранён с UTF-8 BOM):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\snapshot_build.ps1 `
-  -Label npc-e15 -Features "ub-mode C2-1 ammo helpers + hostNetId dedupe" `
-  -Tag npc-e15
+  -Label npc-e16 -Features "ub-mode ApplyOutfitToGhost dedupe + Tick perf-window" `
+  -Tag npc-e16
 ```
 
 - `-Label` — имя папки `dist\<label>` (обязательно).
@@ -971,6 +970,7 @@ INI — по разделу INI снапшота.
 | `npc-e9` | v19 | `DC0C4AB7` | `E26C715A` | `1543622` / npc-e9 |
 | `npc-e10` | v19 | `B8BA1B93` | `E26C715A` | `ff7cfc4` / npc-e10 |
 | `npc-e11` | v19 | `785B2D05` | `E26C715A` | `b2e5525` / npc-e11 |
+| `npc-e16` | v19 | `C4E4CF70` | `1BE28084` | `0e64a22` / npc-e16 |
 | `npc-e15` | v19 | `3CC80BE3` | `1BE28084` | `5799ea7` / npc-e15 |
 | `npc-e14` | v19 | `AD3C3481` | `1BE28084` | `6295e6b` / npc-e14 |
 | `npc-e13` | v19 | `B43B7EE0` | `F3EBD6D1` | `e3accaa` / npc-e13 |

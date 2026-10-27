@@ -152,10 +152,10 @@
     },
     {
       "path": "src/config.cpp",
-      "loc": 337,
-      "code_loc": 311,
+      "loc": 336,
+      "code_loc": 305,
       "long_lines": 0,
-      "magic": 36,
+      "magic": 27,
       "todos": [],
       "warn_disables": 0,
       "funcs": [
@@ -201,16 +201,32 @@
         },
         {
           "file": "src/config.cpp",
+          "name": "ApplyIntKey",
+          "line": 166,
+          "lines": 33,
+          "branches": 9,
+          "params": 3
+        },
+        {
+          "file": "src/config.cpp",
+          "name": "ApplyBoolKey",
+          "line": 201,
+          "lines": 39,
+          "branches": 2,
+          "params": 3
+        },
+        {
+          "file": "src/config.cpp",
           "name": "ApplyLine",
-          "line": 150,
-          "lines": 129,
-          "branches": 86,
+          "line": 242,
+          "lines": 36,
+          "branches": 21,
           "params": 2
         },
         {
           "file": "src/config.cpp",
           "name": "ParseStream",
-          "line": 281,
+          "line": 280,
           "lines": 6,
           "branches": 1,
           "params": 2
@@ -218,7 +234,7 @@
         {
           "file": "src/config.cpp",
           "name": "Load",
-          "line": 291,
+          "line": 290,
           "lines": 15,
           "branches": 2,
           "params": 0
@@ -226,7 +242,7 @@
         {
           "file": "src/config.cpp",
           "name": "LoadFromFile",
-          "line": 308,
+          "line": 307,
           "lines": 5,
           "branches": 1,
           "params": 2
@@ -234,7 +250,7 @@
         {
           "file": "src/config.cpp",
           "name": "Get",
-          "line": 315,
+          "line": 314,
           "lines": 3,
           "branches": 0,
           "params": 0
@@ -242,7 +258,7 @@
         {
           "file": "src/config.cpp",
           "name": "WarnDangerousCombos",
-          "line": 320,
+          "line": 319,
           "lines": 15,
           "branches": 12,
           "params": 0
@@ -261,8 +277,8 @@
     },
     {
       "path": "src/coop.cpp",
-      "loc": 7939,
-      "code_loc": 6282,
+      "loc": 8033,
+      "code_loc": 6354,
       "long_lines": 0,
       "magic": 430,
       "todos": [],
@@ -1054,16 +1070,24 @@
         },
         {
           "file": "src/coop.cpp",
+          "name": "ApplyGhostOutfitComponents",
+          "line": 3581,
+          "lines": 16,
+          "branches": 3,
+          "params": 2
+        },
+        {
+          "file": "src/coop.cpp",
           "name": "ApplyOutfitToGhost",
-          "line": 3580,
-          "lines": 165,
-          "branches": 32,
+          "line": 3599,
+          "lines": 141,
+          "branches": 26,
           "params": 1
         },
         {
           "file": "src/coop.cpp",
           "name": "RefreshGhostComponents",
-          "line": 3751,
+          "line": 3746,
           "lines": 14,
           "branches": 4,
           "params": 0
@@ -1071,7 +1095,7 @@
         {
           "file": "src/coop.cpp",
           "name": "TryApplyPendingOutfit",
-          "line": 3768,
+          "line": 3763,
           "lines": 8,
           "branches": 5,
           "params": 0
@@ -1079,7 +1103,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyHorseOutfitToMount",
-          "line": 3781,
+          "line": 3776,
           "lines": 43,
           "branches": 8,
           "params": 1
@@ -1087,23 +1111,39 @@
         {
           "file": "src/coop.cpp",
           "name": "RespawnGhostPed",
-          "line": 3835,
+          "line": 3830,
           "lines": 106,
           "branches": 16,
           "params": 1
         },
         {
           "file": "src/coop.cpp",
+          "name": "ApplyRemoteFrameEarly",
+          "line": 3939,
+          "lines": 17,
+          "branches": 6,
+          "params": 1
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "ApplyRemoteFrameVisualTail",
+          "line": 4305,
+          "lines": 18,
+          "branches": 5,
+          "params": 2
+        },
+        {
+          "file": "src/coop.cpp",
           "name": "ApplyRemoteFrame",
-          "line": 3943,
-          "lines": 386,
-          "branches": 88,
+          "line": 4325,
+          "lines": 22,
+          "branches": 3,
           "params": 1
         },
         {
           "file": "src/coop.cpp",
           "name": "DeleteGhostEntity",
-          "line": 4333,
+          "line": 4351,
           "lines": 27,
           "branches": 4,
           "params": 0
@@ -1111,7 +1151,7 @@
         {
           "file": "src/coop.cpp",
           "name": "CleanupGhost",
-          "line": 4363,
+          "line": 4381,
           "lines": 85,
           "branches": 3,
           "params": 0
@@ -1119,7 +1159,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalMoveState",
-          "line": 4453,
+          "line": 4471,
           "lines": 68,
           "branches": 10,
           "params": 1
@@ -1127,7 +1167,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalPedState",
-          "line": 4525,
+          "line": 4543,
           "lines": 18,
           "branches": 7,
           "params": 1
@@ -1135,7 +1175,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalFlags",
-          "line": 4546,
+          "line": 4564,
           "lines": 15,
           "branches": 4,
           "params": 1
@@ -1143,7 +1183,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalAction",
-          "line": 4567,
+          "line": 4585,
           "lines": 19,
           "branches": 7,
           "params": 1
@@ -1151,7 +1191,7 @@
         {
           "file": "src/coop.cpp",
           "name": "UpdateLocalActionState",
-          "line": 4602,
+          "line": 4620,
           "lines": 61,
           "branches": 17,
           "params": 1
@@ -1159,7 +1199,7 @@
         {
           "file": "src/coop.cpp",
           "name": "UpdateLocalAim",
-          "line": 4671,
+          "line": 4689,
           "lines": 50,
           "branches": 4,
           "params": 1
@@ -1167,7 +1207,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ResetLocalShotDetector",
-          "line": 4755,
+          "line": 4773,
           "lines": 13,
           "branches": 0,
           "params": 0
@@ -1175,7 +1215,7 @@
         {
           "file": "src/coop.cpp",
           "name": "NpcDamageForWeapon",
-          "line": 4774,
+          "line": 4792,
           "lines": 15,
           "branches": 7,
           "params": 1
@@ -1183,23 +1223,31 @@
         {
           "file": "src/coop.cpp",
           "name": "IsEntityHeadshot",
-          "line": 4794,
+          "line": 4812,
           "lines": 59,
           "branches": 15,
           "params": 2
         },
         {
           "file": "src/coop.cpp",
+          "name": "HandleLocalWeaponChange",
+          "line": 4912,
+          "lines": 9,
+          "branches": 1,
+          "params": 1
+        },
+        {
+          "file": "src/coop.cpp",
           "name": "UpdateLocalShotEvents",
-          "line": 4893,
-          "lines": 181,
-          "branches": 47,
+          "line": 4977,
+          "lines": 132,
+          "branches": 34,
           "params": 1
         },
         {
           "file": "src/coop.cpp",
           "name": "GetLocalHealth01",
-          "line": 5078,
+          "line": 5113,
           "lines": 11,
           "branches": 2,
           "params": 1
@@ -1207,7 +1255,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyMoveToGhost",
-          "line": 5095,
+          "line": 5130,
           "lines": 108,
           "branches": 14,
           "params": 3
@@ -1215,7 +1263,7 @@
         {
           "file": "src/coop.cpp",
           "name": "GetLocalWeaponHash",
-          "line": 5208,
+          "line": 5243,
           "lines": 15,
           "branches": 1,
           "params": 1
@@ -1223,7 +1271,7 @@
         {
           "file": "src/coop.cpp",
           "name": "GetLocalSelectedWeaponHash",
-          "line": 5228,
+          "line": 5263,
           "lines": 26,
           "branches": 5,
           "params": 1
@@ -1231,7 +1279,7 @@
         {
           "file": "src/coop.cpp",
           "name": "CheckRemoteModelChange",
-          "line": 5262,
+          "line": 5297,
           "lines": 123,
           "branches": 13,
           "params": 1
@@ -1239,23 +1287,31 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalActionV2",
-          "line": 5389,
+          "line": 5424,
           "lines": 75,
           "branches": 13,
           "params": 1
         },
         {
           "file": "src/coop.cpp",
+          "name": "ApplyRemoteCoverAction",
+          "line": 5562,
+          "lines": 27,
+          "branches": 5,
+          "params": 3
+        },
+        {
+          "file": "src/coop.cpp",
           "name": "ApplyRemoteActionV2",
-          "line": 5467,
-          "lines": 122,
-          "branches": 32,
+          "line": 5632,
+          "lines": 20,
+          "branches": 3,
           "params": 1
         },
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalPlayerVehicle",
-          "line": 5593,
+          "line": 5658,
           "lines": 36,
           "branches": 5,
           "params": 1
@@ -1263,7 +1319,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DeleteRemotePlayerVehicle",
-          "line": 5631,
+          "line": 5696,
           "lines": 21,
           "branches": 2,
           "params": 0
@@ -1271,7 +1327,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyRemotePlayerVehicle",
-          "line": 5654,
+          "line": 5719,
           "lines": 67,
           "branches": 15,
           "params": 1
@@ -1279,7 +1335,7 @@
         {
           "file": "src/coop.cpp",
           "name": "PollHostMissions",
-          "line": 5725,
+          "line": 5790,
           "lines": 70,
           "branches": 14,
           "params": 0
@@ -1287,7 +1343,7 @@
         {
           "file": "src/coop.cpp",
           "name": "LogMissionRewardPlan",
-          "line": 5799,
+          "line": 5864,
           "lines": 27,
           "branches": 11,
           "params": 1
@@ -1295,7 +1351,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyMissionEventToGuest",
-          "line": 5829,
+          "line": 5894,
           "lines": 57,
           "branches": 12,
           "params": 1
@@ -1303,7 +1359,7 @@
         {
           "file": "src/coop.cpp",
           "name": "InitNetworkClient",
-          "line": 5892,
+          "line": 5957,
           "lines": 229,
           "branches": 11,
           "params": 0
@@ -1311,7 +1367,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendWorldSnapshot",
-          "line": 6127,
+          "line": 6192,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -1319,7 +1375,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendTrainSnapshotV2",
-          "line": 6141,
+          "line": 6206,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -1327,7 +1383,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendTrainSnapshot",
-          "line": 6147,
+          "line": 6212,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -1335,7 +1391,7 @@
         {
           "file": "src/coop.cpp",
           "name": "IsWorldSyncExcluded",
-          "line": 6154,
+          "line": 6219,
           "lines": 3,
           "branches": 2,
           "params": 1
@@ -1343,7 +1399,7 @@
         {
           "file": "src/coop.cpp",
           "name": "CollectLocalOutfitForActor",
-          "line": 6180,
+          "line": 6245,
           "lines": 3,
           "branches": 0,
           "params": 2
@@ -1351,7 +1407,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendPlayerPresence",
-          "line": 6193,
+          "line": 6258,
           "lines": 3,
           "branches": 0,
           "params": 2
@@ -1359,7 +1415,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendActorDespawn",
-          "line": 6204,
+          "line": 6269,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -1367,17 +1423,49 @@
         {
           "file": "src/coop.cpp",
           "name": "SendActorResync",
-          "line": 6209,
+          "line": 6274,
           "lines": 14,
           "branches": 3,
           "params": 3
         },
         {
           "file": "src/coop.cpp",
+          "name": "TickWorldStateSync",
+          "line": 6291,
+          "lines": 67,
+          "branches": 11,
+          "params": 0
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "TickJoinSubtitle",
+          "line": 6360,
+          "lines": 17,
+          "branches": 3,
+          "params": 0
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "TickRttHud",
+          "line": 6379,
+          "lines": 34,
+          "branches": 9,
+          "params": 0
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "TickPersistGhostPosition",
+          "line": 6415,
+          "lines": 9,
+          "branches": 4,
+          "params": 0
+        },
+        {
+          "file": "src/coop.cpp",
           "name": "Tick",
-          "line": 6225,
-          "lines": 1712,
-          "branches": 373,
+          "line": 6480,
+          "lines": 1551,
+          "branches": 339,
           "params": 0
         }
       ]
@@ -1836,8 +1924,8 @@
     },
     {
       "path": "src/world_sync.cpp",
-      "loc": 3481,
-      "code_loc": 3151,
+      "loc": 3466,
+      "code_loc": 3139,
       "long_lines": 0,
       "magic": 114,
       "todos": [],
@@ -1846,7 +1934,7 @@
         {
           "file": "src/world_sync.cpp",
           "name": "SuppressAmbientForVisitor",
-          "line": 3198,
+          "line": 3183,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -1854,7 +1942,7 @@
         {
           "file": "src/world_sync.cpp",
           "name": "OnSnapshot",
-          "line": 3203,
+          "line": 3188,
           "lines": 6,
           "branches": 0,
           "params": 1
@@ -1862,7 +1950,7 @@
         {
           "file": "src/world_sync.cpp",
           "name": "OnTrainSnapshotV2",
-          "line": 3246,
+          "line": 3231,
           "lines": 5,
           "branches": 0,
           "params": 1
@@ -1870,7 +1958,7 @@
         {
           "file": "src/world_sync.cpp",
           "name": "OnTrainSnapshot",
-          "line": 3253,
+          "line": 3238,
           "lines": 5,
           "branches": 0,
           "params": 1
@@ -1878,7 +1966,7 @@
         {
           "file": "src/world_sync.cpp",
           "name": "GetNetIdForHandle",
-          "line": 3260,
+          "line": 3245,
           "lines": 21,
           "branches": 6,
           "params": 2
@@ -1886,7 +1974,7 @@
         {
           "file": "src/world_sync.cpp",
           "name": "GetHandleForNetId",
-          "line": 3283,
+          "line": 3268,
           "lines": 22,
           "branches": 8,
           "params": 2
@@ -1894,7 +1982,7 @@
         {
           "file": "src/world_sync.cpp",
           "name": "Reset",
-          "line": 3307,
+          "line": 3292,
           "lines": 104,
           "branches": 9,
           "params": 0
@@ -1913,10 +2001,10 @@
     },
     {
       "path": "net/client.cpp",
-      "loc": 1455,
-      "code_loc": 1274,
+      "loc": 1450,
+      "code_loc": 1234,
       "long_lines": 0,
-      "magic": 63,
+      "magic": 59,
       "todos": [],
       "warn_disables": 0,
       "funcs": [
@@ -1954,8 +2042,24 @@
         },
         {
           "file": "net/client.cpp",
+          "name": "ReadF32LE",
+          "line": 111,
+          "lines": 7,
+          "branches": 0,
+          "params": 2
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "ReadU64LE",
+          "line": 120,
+          "lines": 6,
+          "branches": 1,
+          "params": 2
+        },
+        {
+          "file": "net/client.cpp",
           "name": "ParseNamePayload",
-          "line": 109,
+          "line": 128,
           "lines": 8,
           "branches": 4,
           "params": 2
@@ -1963,7 +2067,7 @@
         {
           "file": "net/client.cpp",
           "name": "IsFiniteCoord",
-          "line": 119,
+          "line": 138,
           "lines": 3,
           "branches": 1,
           "params": 1
@@ -1971,7 +2075,7 @@
         {
           "file": "net/client.cpp",
           "name": "IsSaneFrame",
-          "line": 126,
+          "line": 145,
           "lines": 6,
           "branches": 8,
           "params": 1
@@ -1979,7 +2083,7 @@
         {
           "file": "net/client.cpp",
           "name": "IsSaneWorldState",
-          "line": 134,
+          "line": 153,
           "lines": 5,
           "branches": 5,
           "params": 1
@@ -1987,7 +2091,7 @@
         {
           "file": "net/client.cpp",
           "name": "IsSaneVehicle",
-          "line": 141,
+          "line": 160,
           "lines": 4,
           "branches": 3,
           "params": 1
@@ -1995,7 +2099,7 @@
         {
           "file": "net/client.cpp",
           "name": "IsSaneWorldSnapshot",
-          "line": 147,
+          "line": 166,
           "lines": 19,
           "branches": 8,
           "params": 1
@@ -2003,7 +2107,7 @@
         {
           "file": "net/client.cpp",
           "name": "IsSaneActorSpawn",
-          "line": 171,
+          "line": 190,
           "lines": 4,
           "branches": 4,
           "params": 1
@@ -2011,7 +2115,7 @@
         {
           "file": "net/client.cpp",
           "name": "IsSaneActorFrame",
-          "line": 177,
+          "line": 196,
           "lines": 4,
           "branches": 4,
           "params": 1
@@ -2019,7 +2123,7 @@
         {
           "file": "net/client.cpp",
           "name": "ParseActorDespawn",
-          "line": 232,
+          "line": 251,
           "lines": 5,
           "branches": 2,
           "params": 2
@@ -2027,7 +2131,7 @@
         {
           "file": "net/client.cpp",
           "name": "ParseActorEvent",
-          "line": 239,
+          "line": 258,
           "lines": 5,
           "branches": 2,
           "params": 2
@@ -2035,7 +2139,7 @@
         {
           "file": "net/client.cpp",
           "name": "ParseActorResync",
-          "line": 261,
+          "line": 280,
           "lines": 5,
           "branches": 1,
           "params": 2
@@ -2043,7 +2147,7 @@
         {
           "file": "net/client.cpp",
           "name": "NowMs",
-          "line": 381,
+          "line": 400,
           "lines": 5,
           "branches": 0,
           "params": 0
@@ -2051,7 +2155,7 @@
         {
           "file": "net/client.cpp",
           "name": "CurrentSocket",
-          "line": 388,
+          "line": 407,
           "lines": 4,
           "branches": 0,
           "params": 0
@@ -2059,7 +2163,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendRaw",
-          "line": 394,
+          "line": 413,
           "lines": 6,
           "branches": 1,
           "params": 1
@@ -2067,7 +2171,7 @@
         {
           "file": "net/client.cpp",
           "name": "EmitTrafficLog",
-          "line": 417,
+          "line": 436,
           "lines": 12,
           "branches": 1,
           "params": 1
@@ -2075,7 +2179,7 @@
         {
           "file": "net/client.cpp",
           "name": "GetTrafficStats",
-          "line": 431,
+          "line": 450,
           "lines": 12,
           "branches": 0,
           "params": 0
@@ -2083,7 +2187,7 @@
         {
           "file": "net/client.cpp",
           "name": "SetTrafficLog",
-          "line": 445,
+          "line": 464,
           "lines": 4,
           "branches": 0,
           "params": 1
@@ -2091,7 +2195,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendPing",
-          "line": 451,
+          "line": 470,
           "lines": 11,
           "branches": 3,
           "params": 0
@@ -2099,7 +2203,7 @@
         {
           "file": "net/client.cpp",
           "name": "Stop",
-          "line": 515,
+          "line": 534,
           "lines": 12,
           "branches": 2,
           "params": 0
@@ -2107,7 +2211,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendFrame",
-          "line": 529,
+          "line": 548,
           "lines": 6,
           "branches": 0,
           "params": 1
@@ -2115,7 +2219,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendDied",
-          "line": 537,
+          "line": 556,
           "lines": 4,
           "branches": 0,
           "params": 0
@@ -2123,7 +2227,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendRespawned",
-          "line": 543,
+          "line": 562,
           "lines": 4,
           "branches": 0,
           "params": 0
@@ -2131,7 +2235,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendWorldState",
-          "line": 549,
+          "line": 568,
           "lines": 7,
           "branches": 0,
           "params": 1
@@ -2139,7 +2243,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendOutfit",
-          "line": 558,
+          "line": 577,
           "lines": 7,
           "branches": 0,
           "params": 1
@@ -2147,7 +2251,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendHorseOutfit",
-          "line": 567,
+          "line": 586,
           "lines": 7,
           "branches": 0,
           "params": 1
@@ -2155,7 +2259,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendWorldSnapshot",
-          "line": 576,
+          "line": 595,
           "lines": 5,
           "branches": 0,
           "params": 1
@@ -2163,7 +2267,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendActionState",
-          "line": 583,
+          "line": 602,
           "lines": 6,
           "branches": 0,
           "params": 1
@@ -2171,7 +2275,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendPlayerVehicle",
-          "line": 591,
+          "line": 610,
           "lines": 6,
           "branches": 0,
           "params": 1
@@ -2179,7 +2283,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendMissionEvent",
-          "line": 599,
+          "line": 618,
           "lines": 6,
           "branches": 0,
           "params": 1
@@ -2187,7 +2291,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendMissionState",
-          "line": 607,
+          "line": 626,
           "lines": 6,
           "branches": 0,
           "params": 1
@@ -2195,7 +2299,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendMissionBarrier",
-          "line": 615,
+          "line": 634,
           "lines": 6,
           "branches": 0,
           "params": 1
@@ -2203,7 +2307,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendTrainSnapshot",
-          "line": 623,
+          "line": 642,
           "lines": 6,
           "branches": 0,
           "params": 1
@@ -2211,7 +2315,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendActorSpawnBatch",
-          "line": 631,
+          "line": 650,
           "lines": 19,
           "branches": 2,
           "params": 2
@@ -2219,7 +2323,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendActorDespawn",
-          "line": 675,
+          "line": 694,
           "lines": 5,
           "branches": 0,
           "params": 1
@@ -2227,7 +2331,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendActorEvent",
-          "line": 682,
+          "line": 701,
           "lines": 5,
           "branches": 0,
           "params": 1
@@ -2235,7 +2339,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendActorResync",
-          "line": 701,
+          "line": 720,
           "lines": 13,
           "branches": 1,
           "params": 3
@@ -2243,7 +2347,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendPlayerPresence",
-          "line": 771,
+          "line": 790,
           "lines": 14,
           "branches": 2,
           "params": 2
@@ -2251,7 +2355,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendTrainSnapshotV2",
-          "line": 811,
+          "line": 830,
           "lines": 6,
           "branches": 0,
           "params": 1
@@ -2259,7 +2363,7 @@
         {
           "file": "net/client.cpp",
           "name": "SendShot",
-          "line": 819,
+          "line": 838,
           "lines": 7,
           "branches": 0,
           "params": 1
@@ -2267,25 +2371,257 @@
         {
           "file": "net/client.cpp",
           "name": "Run",
-          "line": 828,
+          "line": 847,
           "lines": 49,
           "branches": 10,
           "params": 0
         },
         {
           "file": "net/client.cpp",
+          "name": "HandleJoinRejected",
+          "line": 937,
+          "lines": 17,
+          "branches": 4,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandlePong",
+          "line": 956,
+          "lines": 9,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleWorldSnapshot",
+          "line": 967,
+          "lines": 5,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleActionState",
+          "line": 974,
+          "lines": 6,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandlePlayerVehicle",
+          "line": 982,
+          "lines": 6,
+          "branches": 3,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleMissionEvent",
+          "line": 990,
+          "lines": 6,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleMissionState",
+          "line": 998,
+          "lines": 6,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleMissionBarrier",
+          "line": 1006,
+          "lines": 6,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleTrainSnapshot",
+          "line": 1014,
+          "lines": 4,
+          "branches": 1,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleActorSpawnBatch",
+          "line": 1020,
+          "lines": 6,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleActorFrames",
+          "line": 1028,
+          "lines": 7,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleActorDespawn",
+          "line": 1037,
+          "lines": 4,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleActorEvent",
+          "line": 1043,
+          "lines": 4,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleActorOutfit",
+          "line": 1049,
+          "lines": 6,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleActorAppearance",
+          "line": 1057,
+          "lines": 6,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleActorResync",
+          "line": 1065,
+          "lines": 5,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleActorDamage",
+          "line": 1072,
+          "lines": 5,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandlePlayerPresence",
+          "line": 1079,
+          "lines": 5,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleVehicleOccupants",
+          "line": 1086,
+          "lines": 6,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleTrainSnapshotV2",
+          "line": 1094,
+          "lines": 5,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandlePlayerJoined",
+          "line": 1101,
+          "lines": 30,
+          "branches": 12,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleFrame",
+          "line": 1133,
+          "lines": 6,
+          "branches": 3,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandlePlayerLeft",
+          "line": 1141,
+          "lines": 4,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleDied",
+          "line": 1147,
+          "lines": 4,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleRespawned",
+          "line": 1153,
+          "lines": 4,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleWorldState",
+          "line": 1159,
+          "lines": 6,
+          "branches": 3,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleOutfitMsg",
+          "line": 1167,
+          "lines": 8,
+          "branches": 3,
+          "params": 2
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleShot",
+          "line": 1177,
+          "lines": 8,
+          "branches": 5,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleHostChanged",
+          "line": 1187,
+          "lines": 6,
+          "branches": 2,
+          "params": 1
+        },
+        {
+          "file": "net/client.cpp",
           "name": "RunOnce",
-          "line": 879,
-          "lines": 574,
-          "branches": 155,
+          "line": 1237,
+          "lines": 211,
+          "branches": 37,
           "params": 0
         }
       ]
     },
     {
       "path": "net/client.h",
-      "loc": 305,
-      "code_loc": 217,
+      "loc": 341,
+      "code_loc": 250,
       "long_lines": 0,
       "magic": 2,
       "todos": [],
@@ -2524,17 +2860,17 @@
     },
     {
       "path": "server/server.cpp",
-      "loc": 2119,
-      "code_loc": 1795,
+      "loc": 2140,
+      "code_loc": 1789,
       "long_lines": 0,
-      "magic": 84,
+      "magic": 81,
       "todos": [],
       "warn_disables": 0,
       "funcs": [
         {
           "file": "server/server.cpp",
           "name": "TrafficBucketFor",
-          "line": 114,
+          "line": 116,
           "lines": 29,
           "branches": 23,
           "params": 1
@@ -2542,7 +2878,7 @@
         {
           "file": "server/server.cpp",
           "name": "CountInboundTraffic",
-          "line": 145,
+          "line": 147,
           "lines": 6,
           "branches": 0,
           "params": 2
@@ -2550,15 +2886,23 @@
         {
           "file": "server/server.cpp",
           "name": "SendTracked",
-          "line": 154,
+          "line": 156,
           "lines": 7,
           "branches": 3,
           "params": 3
         },
         {
           "file": "server/server.cpp",
+          "name": "AllowRate",
+          "line": 166,
+          "lines": 10,
+          "branches": 3,
+          "params": 3
+        },
+        {
+          "file": "server/server.cpp",
           "name": "AllowConnectionFrom",
-          "line": 193,
+          "line": 208,
           "lines": 25,
           "branches": 6,
           "params": 2
@@ -2566,7 +2910,7 @@
         {
           "file": "server/server.cpp",
           "name": "RefundRateSlotOnJoin",
-          "line": 225,
+          "line": 240,
           "lines": 11,
           "branches": 5,
           "params": 2
@@ -2574,7 +2918,7 @@
         {
           "file": "server/server.cpp",
           "name": "ConsoleCtrlHandler",
-          "line": 239,
+          "line": 254,
           "lines": 4,
           "branches": 0,
           "params": 1
@@ -2582,7 +2926,7 @@
         {
           "file": "server/server.cpp",
           "name": "PosixSignalHandler",
-          "line": 245,
+          "line": 260,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -2590,7 +2934,7 @@
         {
           "file": "server/server.cpp",
           "name": "IsGameThreadMessage",
-          "line": 266,
+          "line": 281,
           "lines": 28,
           "branches": 20,
           "params": 1
@@ -2598,7 +2942,7 @@
         {
           "file": "server/server.cpp",
           "name": "NowMs",
-          "line": 296,
+          "line": 311,
           "lines": 5,
           "branches": 0,
           "params": 0
@@ -2606,7 +2950,7 @@
         {
           "file": "server/server.cpp",
           "name": "Now",
-          "line": 307,
+          "line": 322,
           "lines": 12,
           "branches": 0,
           "params": 0
@@ -2614,7 +2958,7 @@
         {
           "file": "server/server.cpp",
           "name": "LogLine",
-          "line": 321,
+          "line": 336,
           "lines": 8,
           "branches": 1,
           "params": 1
@@ -2622,7 +2966,7 @@
         {
           "file": "server/server.cpp",
           "name": "LogWarn",
-          "line": 333,
+          "line": 348,
           "lines": 5,
           "branches": 2,
           "params": 1
@@ -2630,7 +2974,7 @@
         {
           "file": "server/server.cpp",
           "name": "IsFiniteCoord",
-          "line": 348,
+          "line": 363,
           "lines": 3,
           "branches": 1,
           "params": 1
@@ -2638,7 +2982,7 @@
         {
           "file": "server/server.cpp",
           "name": "IsValidName",
-          "line": 353,
+          "line": 368,
           "lines": 10,
           "branches": 6,
           "params": 1
@@ -2646,7 +2990,7 @@
         {
           "file": "server/server.cpp",
           "name": "IsSaneFramePayload",
-          "line": 365,
+          "line": 380,
           "lines": 6,
           "branches": 8,
           "params": 1
@@ -2654,7 +2998,7 @@
         {
           "file": "server/server.cpp",
           "name": "IsValidWorldSnapshot",
-          "line": 373,
+          "line": 388,
           "lines": 23,
           "branches": 8,
           "params": 1
@@ -2662,7 +3006,7 @@
         {
           "file": "server/server.cpp",
           "name": "IsValidTrainSnapshot",
-          "line": 398,
+          "line": 413,
           "lines": 22,
           "branches": 8,
           "params": 1
@@ -2670,15 +3014,23 @@
         {
           "file": "server/server.cpp",
           "name": "IsFiniteActorCoord",
-          "line": 426,
+          "line": 441,
           "lines": 3,
           "branches": 1,
           "params": 1
         },
         {
           "file": "server/server.cpp",
+          "name": "ReadExactPayload",
+          "line": 449,
+          "lines": 5,
+          "branches": 1,
+          "params": 2
+        },
+        {
+          "file": "server/server.cpp",
           "name": "IsSaneActorSpawnRecord",
-          "line": 431,
+          "line": 456,
           "lines": 5,
           "branches": 4,
           "params": 1
@@ -2686,7 +3038,7 @@
         {
           "file": "server/server.cpp",
           "name": "IsSaneActorFrameRecord",
-          "line": 438,
+          "line": 463,
           "lines": 5,
           "branches": 4,
           "params": 1
@@ -2694,7 +3046,7 @@
         {
           "file": "server/server.cpp",
           "name": "IsValidActorSpawnBatch",
-          "line": 445,
+          "line": 470,
           "lines": 28,
           "branches": 8,
           "params": 1
@@ -2702,7 +3054,7 @@
         {
           "file": "server/server.cpp",
           "name": "IsValidActorFrames",
-          "line": 475,
+          "line": 500,
           "lines": 27,
           "branches": 8,
           "params": 1
@@ -2710,31 +3062,31 @@
         {
           "file": "server/server.cpp",
           "name": "IsValidActorDespawn",
-          "line": 504,
-          "lines": 7,
+          "line": 529,
+          "lines": 5,
           "branches": 2,
           "params": 1
         },
         {
           "file": "server/server.cpp",
           "name": "IsValidActorEvent",
-          "line": 513,
-          "lines": 7,
+          "line": 536,
+          "lines": 5,
           "branches": 2,
           "params": 1
         },
         {
           "file": "server/server.cpp",
           "name": "IsValidActorOutfit",
-          "line": 522,
-          "lines": 7,
+          "line": 543,
+          "lines": 5,
           "branches": 2,
           "params": 1
         },
         {
           "file": "server/server.cpp",
           "name": "IsValidActorAppearance",
-          "line": 534,
+          "line": 553,
           "lines": 24,
           "branches": 8,
           "params": 1
@@ -2742,23 +3094,23 @@
         {
           "file": "server/server.cpp",
           "name": "IsValidActorDamage",
-          "line": 562,
-          "lines": 9,
+          "line": 581,
+          "lines": 7,
           "branches": 4,
           "params": 1
         },
         {
           "file": "server/server.cpp",
           "name": "IsValidPlayerPresence",
-          "line": 575,
-          "lines": 9,
+          "line": 592,
+          "lines": 7,
           "branches": 2,
           "params": 1
         },
         {
           "file": "server/server.cpp",
           "name": "IsValidVehicleOccupants",
-          "line": 589,
+          "line": 604,
           "lines": 32,
           "branches": 11,
           "params": 1
@@ -2766,23 +3118,23 @@
         {
           "file": "server/server.cpp",
           "name": "IsValidTrainSnapshotV2",
-          "line": 625,
-          "lines": 19,
+          "line": 640,
+          "lines": 17,
           "branches": 13,
           "params": 1
         },
         {
           "file": "server/server.cpp",
           "name": "IsValidActorResync",
-          "line": 646,
-          "lines": 7,
+          "line": 659,
+          "lines": 5,
           "branches": 1,
           "params": 1
         },
         {
           "file": "server/server.cpp",
           "name": "ParseFloatField",
-          "line": 667,
+          "line": 678,
           "lines": 14,
           "branches": 7,
           "params": 3
@@ -2790,7 +3142,7 @@
         {
           "file": "server/server.cpp",
           "name": "ParseSavedLine",
-          "line": 685,
+          "line": 696,
           "lines": 26,
           "branches": 18,
           "params": 2
@@ -2798,7 +3150,7 @@
         {
           "file": "server/server.cpp",
           "name": "UpdateLastPosLocked",
-          "line": 715,
+          "line": 726,
           "lines": 10,
           "branches": 2,
           "params": 2
@@ -2806,7 +3158,7 @@
         {
           "file": "server/server.cpp",
           "name": "LoadAllSaved",
-          "line": 729,
+          "line": 740,
           "lines": 45,
           "branches": 10,
           "params": 0
@@ -2814,7 +3166,7 @@
         {
           "file": "server/server.cpp",
           "name": "SaveAll",
-          "line": 776,
+          "line": 787,
           "lines": 63,
           "branches": 12,
           "params": 0
@@ -2822,7 +3174,7 @@
         {
           "file": "server/server.cpp",
           "name": "MakeMsg",
-          "line": 842,
+          "line": 853,
           "lines": 10,
           "branches": 2,
           "params": 3
@@ -2830,7 +3182,7 @@
         {
           "file": "server/server.cpp",
           "name": "MakeNameMsg",
-          "line": 878,
+          "line": 889,
           "lines": 6,
           "branches": 0,
           "params": 2
@@ -2838,7 +3190,7 @@
         {
           "file": "server/server.cpp",
           "name": "SendJoinRejectedAndClose",
-          "line": 894,
+          "line": 905,
           "lines": 15,
           "branches": 2,
           "params": 2
@@ -2846,23 +3198,15 @@
         {
           "file": "server/server.cpp",
           "name": "BroadcastToOthers",
-          "line": 912,
+          "line": 923,
           "lines": 9,
           "branches": 3,
           "params": 2
         },
         {
           "file": "server/server.cpp",
-          "name": "BroadcastToAll",
-          "line": 923,
-          "lines": 8,
-          "branches": 2,
-          "params": 1
-        },
-        {
-          "file": "server/server.cpp",
           "name": "PrintStatus",
-          "line": 960,
+          "line": 991,
           "lines": 76,
           "branches": 7,
           "params": 0
@@ -2870,17 +3214,105 @@
         {
           "file": "server/server.cpp",
           "name": "StatusThread",
-          "line": 1039,
+          "line": 1070,
           "lines": 9,
           "branches": 4,
           "params": 0
         },
         {
           "file": "server/server.cpp",
+          "name": "ParsePortArg",
+          "line": 1877,
+          "lines": 9,
+          "branches": 3,
+          "params": 2
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "ApplyTimeoutArgs",
+          "line": 1888,
+          "lines": 22,
+          "branches": 8,
+          "params": 2
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "InstallSignalHandlers",
+          "line": 1912,
+          "lines": 8,
+          "branches": 0,
+          "params": 0
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "CloseSocketSafe",
+          "line": 1922,
+          "lines": 7,
+          "branches": 0,
+          "params": 1
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "OpenListenSocket",
+          "line": 1933,
+          "lines": 34,
+          "branches": 5,
+          "params": 1
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "PrintStartupBanner",
+          "line": 1969,
+          "lines": 9,
+          "branches": 0,
+          "params": 1
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "StartStatusThread",
+          "line": 1980,
+          "lines": 3,
+          "branches": 0,
+          "params": 0
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "StartTestExitTimer",
+          "line": 1985,
+          "lines": 8,
+          "branches": 0,
+          "params": 0
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "AdmitAndStartClient",
+          "line": 1997,
+          "lines": 70,
+          "branches": 8,
+          "params": 3
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "AcceptLoop",
+          "line": 2069,
+          "lines": 23,
+          "branches": 3,
+          "params": 1
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "DrainClientThreadsAndSave",
+          "line": 2096,
+          "lines": 10,
+          "branches": 3,
+          "params": 0
+        },
+        {
+          "file": "server/server.cpp",
           "name": "main",
-          "line": 1910,
-          "lines": 209,
-          "branches": 32,
+          "line": 2110,
+          "lines": 30,
+          "branches": 3,
           "params": 2
         }
       ]
@@ -2922,10 +3354,10 @@
     },
     {
       "path": "tests/config_test.cpp",
-      "loc": 248,
-      "code_loc": 207,
+      "loc": 326,
+      "code_loc": 276,
       "long_lines": 0,
-      "magic": 22,
+      "magic": 43,
       "todos": [],
       "warn_disables": 0,
       "funcs": [
@@ -2957,7 +3389,7 @@
           "file": "tests/config_test.cpp",
           "name": "main",
           "line": 48,
-          "lines": 200,
+          "lines": 278,
           "branches": 15,
           "params": 0
         }
@@ -2965,10 +3397,10 @@
     },
     {
       "path": "tests/frame_reader_fuzz.cpp",
-      "loc": 373,
-      "code_loc": 332,
+      "loc": 405,
+      "code_loc": 360,
       "long_lines": 0,
-      "magic": 40,
+      "magic": 44,
       "todos": [],
       "warn_disables": 0,
       "funcs": [
@@ -2984,18 +3416,18 @@
           "file": "tests/frame_reader_fuzz.cpp",
           "name": "main",
           "line": 93,
-          "lines": 280,
-          "branches": 49,
+          "lines": 312,
+          "branches": 55,
           "params": 0
         }
       ]
     },
     {
       "path": "tests/mission_barrier_rules_fuzz.cpp",
-      "loc": 135,
-      "code_loc": 112,
+      "loc": 176,
+      "code_loc": 147,
       "long_lines": 0,
-      "magic": 5,
+      "magic": 21,
       "todos": [],
       "warn_disables": 0,
       "funcs": [
@@ -3019,7 +3451,7 @@
           "file": "tests/mission_barrier_rules_fuzz.cpp",
           "name": "main",
           "line": 103,
-          "lines": 32,
+          "lines": 73,
           "branches": 3,
           "params": 0
         }
@@ -3062,10 +3494,10 @@
     },
     {
       "path": "tests/world_entity_budget_test.cpp",
-      "loc": 173,
-      "code_loc": 155,
+      "loc": 188,
+      "code_loc": 168,
       "long_lines": 0,
-      "magic": 14,
+      "magic": 17,
       "todos": [],
       "warn_disables": 0,
       "funcs": [
@@ -3097,7 +3529,7 @@
           "file": "tests/world_entity_budget_test.cpp",
           "name": "main",
           "line": 127,
-          "lines": 46,
+          "lines": 61,
           "branches": 6,
           "params": 0
         }
@@ -3105,10 +3537,10 @@
     },
     {
       "path": "tests/world_snapshot_parse_test.cpp",
-      "loc": 138,
-      "code_loc": 115,
+      "loc": 167,
+      "code_loc": 138,
       "long_lines": 0,
-      "magic": 18,
+      "magic": 20,
       "todos": [],
       "warn_disables": 0,
       "funcs": [
@@ -3140,8 +3572,8 @@
           "file": "tests/world_snapshot_parse_test.cpp",
           "name": "main",
           "line": 86,
-          "lines": 52,
-          "branches": 5,
+          "lines": 81,
+          "branches": 9,
           "params": 0
         }
       ]
@@ -3151,56 +3583,20 @@
     {
       "file": "src/coop.cpp",
       "name": "Tick",
-      "line": 6225,
-      "lines": 1712,
-      "branches": 373,
+      "line": 6480,
+      "lines": 1551,
+      "branches": 339,
       "params": 0,
-      "crap_proxy": 140250
-    },
-    {
-      "file": "net/client.cpp",
-      "name": "RunOnce",
-      "line": 879,
-      "lines": 574,
-      "branches": 155,
-      "params": 0,
-      "crap_proxy": 24492
-    },
-    {
-      "file": "src/coop.cpp",
-      "name": "ApplyRemoteFrame",
-      "line": 3943,
-      "lines": 386,
-      "branches": 88,
-      "params": 1,
-      "crap_proxy": 8010
-    },
-    {
-      "file": "src/config.cpp",
-      "name": "ApplyLine",
-      "line": 150,
-      "lines": 129,
-      "branches": 86,
-      "params": 2,
-      "crap_proxy": 7656
+      "crap_proxy": 115940
     },
     {
       "file": "tests/frame_reader_fuzz.cpp",
       "name": "main",
       "line": 93,
-      "lines": 280,
-      "branches": 49,
+      "lines": 312,
+      "branches": 55,
       "params": 0,
-      "crap_proxy": 2550
-    },
-    {
-      "file": "src/coop.cpp",
-      "name": "UpdateLocalShotEvents",
-      "line": 4893,
-      "lines": 181,
-      "branches": 47,
-      "params": 1,
-      "crap_proxy": 2352
+      "crap_proxy": 3192
     },
     {
       "file": "src/coop.cpp",
@@ -3210,6 +3606,15 @@
       "branches": 42,
       "params": 1,
       "crap_proxy": 1892
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "RunOnce",
+      "line": 1237,
+      "lines": 211,
+      "branches": 37,
+      "params": 0,
+      "crap_proxy": 1482
     },
     {
       "file": "src/coop.cpp",
@@ -3222,30 +3627,12 @@
     },
     {
       "file": "src/coop.cpp",
-      "name": "ApplyOutfitToGhost",
-      "line": 3580,
-      "lines": 165,
-      "branches": 32,
+      "name": "UpdateLocalShotEvents",
+      "line": 4977,
+      "lines": 132,
+      "branches": 34,
       "params": 1,
-      "crap_proxy": 1122
-    },
-    {
-      "file": "src/coop.cpp",
-      "name": "ApplyRemoteActionV2",
-      "line": 5467,
-      "lines": 122,
-      "branches": 32,
-      "params": 1,
-      "crap_proxy": 1122
-    },
-    {
-      "file": "server/server.cpp",
-      "name": "main",
-      "line": 1910,
-      "lines": 209,
-      "branches": 32,
-      "params": 2,
-      "crap_proxy": 1122
+      "crap_proxy": 1260
     },
     {
       "file": "src/coop.cpp",
@@ -3276,6 +3663,15 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyOutfitToGhost",
+      "line": 3599,
+      "lines": 141,
+      "branches": 26,
+      "params": 1,
+      "crap_proxy": 756
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "MoveMountTo",
       "line": 2234,
       "lines": 125,
@@ -3295,7 +3691,7 @@
     {
       "file": "server/server.cpp",
       "name": "TrafficBucketFor",
-      "line": 114,
+      "line": 116,
       "lines": 29,
       "branches": 23,
       "params": 1,
@@ -3311,9 +3707,18 @@
       "crap_proxy": 552
     },
     {
+      "file": "src/config.cpp",
+      "name": "ApplyLine",
+      "line": 242,
+      "lines": 36,
+      "branches": 21,
+      "params": 2,
+      "crap_proxy": 506
+    },
+    {
       "file": "server/server.cpp",
       "name": "IsGameThreadMessage",
-      "line": 266,
+      "line": 281,
       "lines": 28,
       "branches": 20,
       "params": 1,
@@ -3340,7 +3745,7 @@
     {
       "file": "server/server.cpp",
       "name": "ParseSavedLine",
-      "line": 685,
+      "line": 696,
       "lines": 26,
       "branches": 18,
       "params": 2,
@@ -3349,7 +3754,7 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateLocalActionState",
-      "line": 4602,
+      "line": 4620,
       "lines": 61,
       "branches": 17,
       "params": 1,
@@ -3367,7 +3772,7 @@
     {
       "file": "src/coop.cpp",
       "name": "RespawnGhostPed",
-      "line": 3835,
+      "line": 3830,
       "lines": 106,
       "branches": 16,
       "params": 1,
@@ -3394,7 +3799,7 @@
     {
       "file": "src/coop.cpp",
       "name": "IsEntityHeadshot",
-      "line": 4794,
+      "line": 4812,
       "lines": 59,
       "branches": 15,
       "params": 2,
@@ -3403,7 +3808,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemotePlayerVehicle",
-      "line": 5654,
+      "line": 5719,
       "lines": 67,
       "branches": 15,
       "params": 1,
@@ -3422,7 +3827,7 @@
       "file": "tests/config_test.cpp",
       "name": "main",
       "line": 48,
-      "lines": 200,
+      "lines": 278,
       "branches": 15,
       "params": 0,
       "crap_proxy": 272
@@ -3448,7 +3853,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyMoveToGhost",
-      "line": 5095,
+      "line": 5130,
       "lines": 108,
       "branches": 14,
       "params": 3,
@@ -3457,7 +3862,7 @@
     {
       "file": "src/coop.cpp",
       "name": "PollHostMissions",
-      "line": 5725,
+      "line": 5790,
       "lines": 70,
       "branches": 14,
       "params": 0,
@@ -3475,7 +3880,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CheckRemoteModelChange",
-      "line": 5262,
+      "line": 5297,
       "lines": 123,
       "branches": 13,
       "params": 1,
@@ -3484,7 +3889,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalActionV2",
-      "line": 5389,
+      "line": 5424,
       "lines": 75,
       "branches": 13,
       "params": 1,
@@ -3493,8 +3898,8 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidTrainSnapshotV2",
-      "line": 625,
-      "lines": 19,
+      "line": 640,
+      "lines": 17,
       "branches": 13,
       "params": 1,
       "crap_proxy": 210
@@ -3502,7 +3907,7 @@
     {
       "file": "src/config.cpp",
       "name": "WarnDangerousCombos",
-      "line": 320,
+      "line": 319,
       "lines": 15,
       "branches": 12,
       "params": 0,
@@ -3511,7 +3916,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyMissionEventToGuest",
-      "line": 5829,
+      "line": 5894,
       "lines": 57,
       "branches": 12,
       "params": 1,
@@ -3527,9 +3932,18 @@
       "crap_proxy": 182
     },
     {
+      "file": "net/client.cpp",
+      "name": "HandlePlayerJoined",
+      "line": 1101,
+      "lines": 30,
+      "branches": 12,
+      "params": 1,
+      "crap_proxy": 182
+    },
+    {
       "file": "server/server.cpp",
       "name": "SaveAll",
-      "line": 776,
+      "line": 787,
       "lines": 63,
       "branches": 12,
       "params": 0,
@@ -3556,7 +3970,7 @@
     {
       "file": "src/coop.cpp",
       "name": "LogMissionRewardPlan",
-      "line": 5799,
+      "line": 5864,
       "lines": 27,
       "branches": 11,
       "params": 1,
@@ -3565,8 +3979,17 @@
     {
       "file": "src/coop.cpp",
       "name": "InitNetworkClient",
-      "line": 5892,
+      "line": 5957,
       "lines": 229,
+      "branches": 11,
+      "params": 0,
+      "crap_proxy": 156
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TickWorldStateSync",
+      "line": 6291,
+      "lines": 67,
       "branches": 11,
       "params": 0,
       "crap_proxy": 156
@@ -3574,7 +3997,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidVehicleOccupants",
-      "line": 589,
+      "line": 604,
       "lines": 32,
       "branches": 11,
       "params": 1,
@@ -3583,7 +4006,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalMoveState",
-      "line": 4453,
+      "line": 4471,
       "lines": 68,
       "branches": 10,
       "params": 1,
@@ -3601,7 +4024,7 @@
     {
       "file": "net/client.cpp",
       "name": "Run",
-      "line": 828,
+      "line": 847,
       "lines": 49,
       "branches": 10,
       "params": 0,
@@ -3610,7 +4033,7 @@
     {
       "file": "server/server.cpp",
       "name": "LoadAllSaved",
-      "line": 729,
+      "line": 740,
       "lines": 45,
       "branches": 10,
       "params": 0,
@@ -3623,6 +4046,15 @@
       "lines": 37,
       "branches": 9,
       "params": 1,
+      "crap_proxy": 110
+    },
+    {
+      "file": "src/config.cpp",
+      "name": "ApplyIntKey",
+      "line": 166,
+      "lines": 33,
+      "branches": 9,
+      "params": 3,
       "crap_proxy": 110
     },
     {
@@ -3653,9 +4085,18 @@
       "crap_proxy": 110
     },
     {
+      "file": "src/coop.cpp",
+      "name": "TickRttHud",
+      "line": 6379,
+      "lines": 34,
+      "branches": 9,
+      "params": 0,
+      "crap_proxy": 110
+    },
+    {
       "file": "src/world_sync.cpp",
       "name": "Reset",
-      "line": 3307,
+      "line": 3292,
       "lines": 104,
       "branches": 9,
       "params": 0,
@@ -3666,6 +4107,15 @@
       "name": "main",
       "line": 100,
       "lines": 60,
+      "branches": 9,
+      "params": 0,
+      "crap_proxy": 110
+    },
+    {
+      "file": "tests/world_snapshot_parse_test.cpp",
+      "name": "main",
+      "line": 86,
+      "lines": 81,
       "branches": 9,
       "params": 0,
       "crap_proxy": 110
@@ -3700,7 +4150,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyHorseOutfitToMount",
-      "line": 3781,
+      "line": 3776,
       "lines": 43,
       "branches": 8,
       "params": 1,
@@ -3709,7 +4159,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "GetHandleForNetId",
-      "line": 3283,
+      "line": 3268,
       "lines": 22,
       "branches": 8,
       "params": 2,
@@ -3718,7 +4168,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneFrame",
-      "line": 126,
+      "line": 145,
       "lines": 6,
       "branches": 8,
       "params": 1,
@@ -3727,7 +4177,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneWorldSnapshot",
-      "line": 147,
+      "line": 166,
       "lines": 19,
       "branches": 8,
       "params": 1,
@@ -3736,7 +4186,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsSaneFramePayload",
-      "line": 365,
+      "line": 380,
       "lines": 6,
       "branches": 8,
       "params": 1,
@@ -3745,7 +4195,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidWorldSnapshot",
-      "line": 373,
+      "line": 388,
       "lines": 23,
       "branches": 8,
       "params": 1,
@@ -3754,7 +4204,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidTrainSnapshot",
-      "line": 398,
+      "line": 413,
       "lines": 22,
       "branches": 8,
       "params": 1,
@@ -3763,7 +4213,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorSpawnBatch",
-      "line": 445,
+      "line": 470,
       "lines": 28,
       "branches": 8,
       "params": 1,
@@ -3772,7 +4222,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorFrames",
-      "line": 475,
+      "line": 500,
       "lines": 27,
       "branches": 8,
       "params": 1,
@@ -3781,10 +4231,28 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorAppearance",
-      "line": 534,
+      "line": 553,
       "lines": 24,
       "branches": 8,
       "params": 1,
+      "crap_proxy": 90
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "ApplyTimeoutArgs",
+      "line": 1888,
+      "lines": 22,
+      "branches": 8,
+      "params": 2,
+      "crap_proxy": 90
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "AdmitAndStartClient",
+      "line": 1997,
+      "lines": 70,
+      "branches": 8,
+      "params": 3,
       "crap_proxy": 90
     },
     {
@@ -3826,7 +4294,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalPedState",
-      "line": 4525,
+      "line": 4543,
       "lines": 18,
       "branches": 7,
       "params": 1,
@@ -3835,7 +4303,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalAction",
-      "line": 4567,
+      "line": 4585,
       "lines": 19,
       "branches": 7,
       "params": 1,
@@ -3844,7 +4312,7 @@
     {
       "file": "src/coop.cpp",
       "name": "NpcDamageForWeapon",
-      "line": 4774,
+      "line": 4792,
       "lines": 15,
       "branches": 7,
       "params": 1,
@@ -3862,7 +4330,7 @@
     {
       "file": "server/server.cpp",
       "name": "ParseFloatField",
-      "line": 667,
+      "line": 678,
       "lines": 14,
       "branches": 7,
       "params": 3,
@@ -3871,7 +4339,7 @@
     {
       "file": "server/server.cpp",
       "name": "PrintStatus",
-      "line": 960,
+      "line": 991,
       "lines": 76,
       "branches": 7,
       "params": 0,
@@ -3900,6 +4368,15 @@
       "name": "SurgicalRemoveShopCategories",
       "line": 3466,
       "lines": 29,
+      "branches": 6,
+      "params": 1,
+      "crap_proxy": 56
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ApplyRemoteFrameEarly",
+      "line": 3939,
+      "lines": 17,
       "branches": 6,
       "params": 1,
       "crap_proxy": 56
@@ -3934,7 +4411,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "GetNetIdForHandle",
-      "line": 3260,
+      "line": 3245,
       "lines": 21,
       "branches": 6,
       "params": 2,
@@ -3952,7 +4429,7 @@
     {
       "file": "server/server.cpp",
       "name": "AllowConnectionFrom",
-      "line": 193,
+      "line": 208,
       "lines": 25,
       "branches": 6,
       "params": 2,
@@ -3961,7 +4438,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidName",
-      "line": 353,
+      "line": 368,
       "lines": 10,
       "branches": 6,
       "params": 1,
@@ -3971,7 +4448,7 @@
       "file": "tests/world_entity_budget_test.cpp",
       "name": "main",
       "line": 127,
-      "lines": 46,
+      "lines": 61,
       "branches": 6,
       "params": 0,
       "crap_proxy": 56
@@ -4006,7 +4483,7 @@
     {
       "file": "src/coop.cpp",
       "name": "TryApplyPendingOutfit",
-      "line": 3768,
+      "line": 3763,
       "lines": 8,
       "branches": 5,
       "params": 0,
@@ -4014,8 +4491,17 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyRemoteFrameVisualTail",
+      "line": 4305,
+      "lines": 18,
+      "branches": 5,
+      "params": 2,
+      "crap_proxy": 42
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "GetLocalSelectedWeaponHash",
-      "line": 5228,
+      "line": 5263,
       "lines": 26,
       "branches": 5,
       "params": 1,
@@ -4023,8 +4509,17 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyRemoteCoverAction",
+      "line": 5562,
+      "lines": 27,
+      "branches": 5,
+      "params": 3,
+      "crap_proxy": 42
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "DetectLocalPlayerVehicle",
-      "line": 5593,
+      "line": 5658,
       "lines": 36,
       "branches": 5,
       "params": 1,
@@ -4042,8 +4537,17 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneWorldState",
-      "line": 134,
+      "line": 153,
       "lines": 5,
+      "branches": 5,
+      "params": 1,
+      "crap_proxy": 42
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleShot",
+      "line": 1177,
+      "lines": 8,
       "branches": 5,
       "params": 1,
       "crap_proxy": 42
@@ -4051,19 +4555,19 @@
     {
       "file": "server/server.cpp",
       "name": "RefundRateSlotOnJoin",
-      "line": 225,
+      "line": 240,
       "lines": 11,
       "branches": 5,
       "params": 2,
       "crap_proxy": 42
     },
     {
-      "file": "tests/world_snapshot_parse_test.cpp",
-      "name": "main",
-      "line": 86,
-      "lines": 52,
+      "file": "server/server.cpp",
+      "name": "OpenListenSocket",
+      "line": 1933,
+      "lines": 34,
       "branches": 5,
-      "params": 0,
+      "params": 1,
       "crap_proxy": 42
     },
     {
@@ -4105,7 +4609,7 @@
     {
       "file": "src/coop.cpp",
       "name": "RefreshGhostComponents",
-      "line": 3751,
+      "line": 3746,
       "lines": 14,
       "branches": 4,
       "params": 0,
@@ -4114,7 +4618,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DeleteGhostEntity",
-      "line": 4333,
+      "line": 4351,
       "lines": 27,
       "branches": 4,
       "params": 0,
@@ -4123,7 +4627,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalFlags",
-      "line": 4546,
+      "line": 4564,
       "lines": 15,
       "branches": 4,
       "params": 1,
@@ -4132,10 +4636,19 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateLocalAim",
-      "line": 4671,
+      "line": 4689,
       "lines": 50,
       "branches": 4,
       "params": 1,
+      "crap_proxy": 30
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TickPersistGhostPosition",
+      "line": 6415,
+      "lines": 9,
+      "branches": 4,
+      "params": 0,
       "crap_proxy": 30
     },
     {
@@ -4168,7 +4681,7 @@
     {
       "file": "net/client.cpp",
       "name": "ParseNamePayload",
-      "line": 109,
+      "line": 128,
       "lines": 8,
       "branches": 4,
       "params": 2,
@@ -4177,7 +4690,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneActorSpawn",
-      "line": 171,
+      "line": 190,
       "lines": 4,
       "branches": 4,
       "params": 1,
@@ -4186,8 +4699,17 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneActorFrame",
-      "line": 177,
+      "line": 196,
       "lines": 4,
+      "branches": 4,
+      "params": 1,
+      "crap_proxy": 30
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleJoinRejected",
+      "line": 937,
+      "lines": 17,
       "branches": 4,
       "params": 1,
       "crap_proxy": 30
@@ -4195,7 +4717,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsSaneActorSpawnRecord",
-      "line": 431,
+      "line": 456,
       "lines": 5,
       "branches": 4,
       "params": 1,
@@ -4204,7 +4726,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsSaneActorFrameRecord",
-      "line": 438,
+      "line": 463,
       "lines": 5,
       "branches": 4,
       "params": 1,
@@ -4213,8 +4735,8 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorDamage",
-      "line": 562,
-      "lines": 9,
+      "line": 581,
+      "lines": 7,
       "branches": 4,
       "params": 1,
       "crap_proxy": 30
@@ -4222,7 +4744,7 @@
     {
       "file": "server/server.cpp",
       "name": "StatusThread",
-      "line": 1039,
+      "line": 1070,
       "lines": 9,
       "branches": 4,
       "params": 0,
@@ -4320,8 +4842,26 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyGhostOutfitComponents",
+      "line": 3581,
+      "lines": 16,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ApplyRemoteFrame",
+      "line": 4325,
+      "lines": 22,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "CleanupGhost",
-      "line": 4363,
+      "line": 4381,
       "lines": 85,
       "branches": 3,
       "params": 0,
@@ -4329,11 +4869,29 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyRemoteActionV2",
+      "line": 5632,
+      "lines": 20,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "SendActorResync",
-      "line": 6209,
+      "line": 6274,
       "lines": 14,
       "branches": 3,
       "params": 3,
+      "crap_proxy": 20
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TickJoinSubtitle",
+      "line": 6360,
+      "lines": 17,
+      "branches": 3,
+      "params": 0,
       "crap_proxy": 20
     },
     {
@@ -4366,7 +4924,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneVehicle",
-      "line": 141,
+      "line": 160,
       "lines": 4,
       "branches": 3,
       "params": 1,
@@ -4375,10 +4933,46 @@
     {
       "file": "net/client.cpp",
       "name": "SendPing",
-      "line": 451,
+      "line": 470,
       "lines": 11,
       "branches": 3,
       "params": 0,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandlePlayerVehicle",
+      "line": 982,
+      "lines": 6,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleFrame",
+      "line": 1133,
+      "lines": 6,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleWorldState",
+      "line": 1159,
+      "lines": 6,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleOutfitMsg",
+      "line": 1167,
+      "lines": 8,
+      "branches": 3,
+      "params": 2,
       "crap_proxy": 20
     },
     {
@@ -4411,7 +5005,7 @@
     {
       "file": "server/server.cpp",
       "name": "SendTracked",
-      "line": 154,
+      "line": 156,
       "lines": 7,
       "branches": 3,
       "params": 3,
@@ -4419,9 +5013,54 @@
     },
     {
       "file": "server/server.cpp",
+      "name": "AllowRate",
+      "line": 166,
+      "lines": 10,
+      "branches": 3,
+      "params": 3,
+      "crap_proxy": 20
+    },
+    {
+      "file": "server/server.cpp",
       "name": "BroadcastToOthers",
-      "line": 912,
+      "line": 923,
       "lines": 9,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "ParsePortArg",
+      "line": 1877,
+      "lines": 9,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "AcceptLoop",
+      "line": 2069,
+      "lines": 23,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "DrainClientThreadsAndSave",
+      "line": 2096,
+      "lines": 10,
+      "branches": 3,
+      "params": 0,
+      "crap_proxy": 20
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "main",
+      "line": 2110,
+      "lines": 30,
       "branches": 3,
       "params": 2,
       "crap_proxy": 20
@@ -4439,7 +5078,7 @@
       "file": "tests/mission_barrier_rules_fuzz.cpp",
       "name": "main",
       "line": 103,
-      "lines": 32,
+      "lines": 73,
       "branches": 3,
       "params": 0,
       "crap_proxy": 20
@@ -4491,8 +5130,17 @@
     },
     {
       "file": "src/config.cpp",
+      "name": "ApplyBoolKey",
+      "line": 201,
+      "lines": 39,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/config.cpp",
       "name": "Load",
-      "line": 291,
+      "line": 290,
       "lines": 15,
       "branches": 2,
       "params": 0,
@@ -4618,7 +5266,7 @@
     {
       "file": "src/coop.cpp",
       "name": "GetLocalHealth01",
-      "line": 5078,
+      "line": 5113,
       "lines": 11,
       "branches": 2,
       "params": 1,
@@ -4627,7 +5275,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DeleteRemotePlayerVehicle",
-      "line": 5631,
+      "line": 5696,
       "lines": 21,
       "branches": 2,
       "params": 0,
@@ -4636,7 +5284,7 @@
     {
       "file": "src/coop.cpp",
       "name": "IsWorldSyncExcluded",
-      "line": 6154,
+      "line": 6219,
       "lines": 3,
       "branches": 2,
       "params": 1,
@@ -4663,7 +5311,7 @@
     {
       "file": "net/client.cpp",
       "name": "ParseActorDespawn",
-      "line": 232,
+      "line": 251,
       "lines": 5,
       "branches": 2,
       "params": 2,
@@ -4672,7 +5320,7 @@
     {
       "file": "net/client.cpp",
       "name": "ParseActorEvent",
-      "line": 239,
+      "line": 258,
       "lines": 5,
       "branches": 2,
       "params": 2,
@@ -4681,7 +5329,7 @@
     {
       "file": "net/client.cpp",
       "name": "Stop",
-      "line": 515,
+      "line": 534,
       "lines": 12,
       "branches": 2,
       "params": 0,
@@ -4690,7 +5338,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendActorSpawnBatch",
-      "line": 631,
+      "line": 650,
       "lines": 19,
       "branches": 2,
       "params": 2,
@@ -4699,10 +5347,199 @@
     {
       "file": "net/client.cpp",
       "name": "SendPlayerPresence",
-      "line": 771,
+      "line": 790,
       "lines": 14,
       "branches": 2,
       "params": 2,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandlePong",
+      "line": 956,
+      "lines": 9,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleWorldSnapshot",
+      "line": 967,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActionState",
+      "line": 974,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleMissionEvent",
+      "line": 990,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleMissionState",
+      "line": 998,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleMissionBarrier",
+      "line": 1006,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorSpawnBatch",
+      "line": 1020,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorFrames",
+      "line": 1028,
+      "lines": 7,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorDespawn",
+      "line": 1037,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorEvent",
+      "line": 1043,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorOutfit",
+      "line": 1049,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorAppearance",
+      "line": 1057,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorResync",
+      "line": 1065,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorDamage",
+      "line": 1072,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandlePlayerPresence",
+      "line": 1079,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleVehicleOccupants",
+      "line": 1086,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleTrainSnapshotV2",
+      "line": 1094,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandlePlayerLeft",
+      "line": 1141,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleDied",
+      "line": 1147,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleRespawned",
+      "line": 1153,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleHostChanged",
+      "line": 1187,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
       "crap_proxy": 12
     },
     {
@@ -4735,7 +5572,7 @@
     {
       "file": "server/server.cpp",
       "name": "LogWarn",
-      "line": 333,
+      "line": 348,
       "lines": 5,
       "branches": 2,
       "params": 1,
@@ -4744,8 +5581,8 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorDespawn",
-      "line": 504,
-      "lines": 7,
+      "line": 529,
+      "lines": 5,
       "branches": 2,
       "params": 1,
       "crap_proxy": 12
@@ -4753,8 +5590,8 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorEvent",
-      "line": 513,
-      "lines": 7,
+      "line": 536,
+      "lines": 5,
       "branches": 2,
       "params": 1,
       "crap_proxy": 12
@@ -4762,8 +5599,8 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorOutfit",
-      "line": 522,
-      "lines": 7,
+      "line": 543,
+      "lines": 5,
       "branches": 2,
       "params": 1,
       "crap_proxy": 12
@@ -4771,8 +5608,8 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidPlayerPresence",
-      "line": 575,
-      "lines": 9,
+      "line": 592,
+      "lines": 7,
       "branches": 2,
       "params": 1,
       "crap_proxy": 12
@@ -4780,7 +5617,7 @@
     {
       "file": "server/server.cpp",
       "name": "UpdateLastPosLocked",
-      "line": 715,
+      "line": 726,
       "lines": 10,
       "branches": 2,
       "params": 2,
@@ -4789,7 +5626,7 @@
     {
       "file": "server/server.cpp",
       "name": "MakeMsg",
-      "line": 842,
+      "line": 853,
       "lines": 10,
       "branches": 2,
       "params": 3,
@@ -4798,19 +5635,10 @@
     {
       "file": "server/server.cpp",
       "name": "SendJoinRejectedAndClose",
-      "line": 894,
+      "line": 905,
       "lines": 15,
       "branches": 2,
       "params": 2,
-      "crap_proxy": 12
-    },
-    {
-      "file": "server/server.cpp",
-      "name": "BroadcastToAll",
-      "line": 923,
-      "lines": 8,
-      "branches": 2,
-      "params": 1,
       "crap_proxy": 12
     },
     {
@@ -4897,7 +5725,7 @@
     {
       "file": "src/config.cpp",
       "name": "ParseStream",
-      "line": 281,
+      "line": 280,
       "lines": 6,
       "branches": 1,
       "params": 2,
@@ -4906,7 +5734,7 @@
     {
       "file": "src/config.cpp",
       "name": "LoadFromFile",
-      "line": 308,
+      "line": 307,
       "lines": 5,
       "branches": 1,
       "params": 2,
@@ -5040,8 +5868,17 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "HandleLocalWeaponChange",
+      "line": 4912,
+      "lines": 9,
+      "branches": 1,
+      "params": 1,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "GetLocalWeaponHash",
-      "line": 5208,
+      "line": 5243,
       "lines": 15,
       "branches": 1,
       "params": 1,
@@ -5103,8 +5940,17 @@
     },
     {
       "file": "net/client.cpp",
+      "name": "ReadU64LE",
+      "line": 120,
+      "lines": 6,
+      "branches": 1,
+      "params": 2,
+      "crap_proxy": 6
+    },
+    {
+      "file": "net/client.cpp",
       "name": "IsFiniteCoord",
-      "line": 119,
+      "line": 138,
       "lines": 3,
       "branches": 1,
       "params": 1,
@@ -5113,7 +5959,7 @@
     {
       "file": "net/client.cpp",
       "name": "ParseActorResync",
-      "line": 261,
+      "line": 280,
       "lines": 5,
       "branches": 1,
       "params": 2,
@@ -5122,7 +5968,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendRaw",
-      "line": 394,
+      "line": 413,
       "lines": 6,
       "branches": 1,
       "params": 1,
@@ -5131,7 +5977,7 @@
     {
       "file": "net/client.cpp",
       "name": "EmitTrafficLog",
-      "line": 417,
+      "line": 436,
       "lines": 12,
       "branches": 1,
       "params": 1,
@@ -5140,10 +5986,19 @@
     {
       "file": "net/client.cpp",
       "name": "SendActorResync",
-      "line": 701,
+      "line": 720,
       "lines": 13,
       "branches": 1,
       "params": 3,
+      "crap_proxy": 6
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleTrainSnapshot",
+      "line": 1014,
+      "lines": 4,
+      "branches": 1,
+      "params": 1,
       "crap_proxy": 6
     },
     {
@@ -5185,7 +6040,7 @@
     {
       "file": "server/server.cpp",
       "name": "LogLine",
-      "line": 321,
+      "line": 336,
       "lines": 8,
       "branches": 1,
       "params": 1,
@@ -5194,7 +6049,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsFiniteCoord",
-      "line": 348,
+      "line": 363,
       "lines": 3,
       "branches": 1,
       "params": 1,
@@ -5203,7 +6058,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsFiniteActorCoord",
-      "line": 426,
+      "line": 441,
       "lines": 3,
       "branches": 1,
       "params": 1,
@@ -5211,9 +6066,18 @@
     },
     {
       "file": "server/server.cpp",
+      "name": "ReadExactPayload",
+      "line": 449,
+      "lines": 5,
+      "branches": 1,
+      "params": 2,
+      "crap_proxy": 6
+    },
+    {
+      "file": "server/server.cpp",
       "name": "IsValidActorResync",
-      "line": 646,
-      "lines": 7,
+      "line": 659,
+      "lines": 5,
       "branches": 1,
       "params": 1,
       "crap_proxy": 6
@@ -5311,7 +6175,7 @@
     {
       "file": "src/config.cpp",
       "name": "Get",
-      "line": 315,
+      "line": 314,
       "lines": 3,
       "branches": 0,
       "params": 0,
@@ -5617,7 +6481,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ResetLocalShotDetector",
-      "line": 4755,
+      "line": 4773,
       "lines": 13,
       "branches": 0,
       "params": 0,
@@ -5626,7 +6490,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendWorldSnapshot",
-      "line": 6127,
+      "line": 6192,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -5635,7 +6499,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendTrainSnapshotV2",
-      "line": 6141,
+      "line": 6206,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -5644,7 +6508,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendTrainSnapshot",
-      "line": 6147,
+      "line": 6212,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -5653,7 +6517,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CollectLocalOutfitForActor",
-      "line": 6180,
+      "line": 6245,
       "lines": 3,
       "branches": 0,
       "params": 2,
@@ -5662,7 +6526,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendPlayerPresence",
-      "line": 6193,
+      "line": 6258,
       "lines": 3,
       "branches": 0,
       "params": 2,
@@ -5671,7 +6535,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendActorDespawn",
-      "line": 6204,
+      "line": 6269,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -5770,7 +6634,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "SuppressAmbientForVisitor",
-      "line": 3198,
+      "line": 3183,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -5779,7 +6643,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "OnSnapshot",
-      "line": 3203,
+      "line": 3188,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -5788,7 +6652,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "OnTrainSnapshotV2",
-      "line": 3246,
+      "line": 3231,
       "lines": 5,
       "branches": 0,
       "params": 1,
@@ -5797,7 +6661,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "OnTrainSnapshot",
-      "line": 3253,
+      "line": 3238,
       "lines": 5,
       "branches": 0,
       "params": 1,
@@ -5814,8 +6678,17 @@
     },
     {
       "file": "net/client.cpp",
+      "name": "ReadF32LE",
+      "line": 111,
+      "lines": 7,
+      "branches": 0,
+      "params": 2,
+      "crap_proxy": 2
+    },
+    {
+      "file": "net/client.cpp",
       "name": "NowMs",
-      "line": 381,
+      "line": 400,
       "lines": 5,
       "branches": 0,
       "params": 0,
@@ -5824,7 +6697,7 @@
     {
       "file": "net/client.cpp",
       "name": "CurrentSocket",
-      "line": 388,
+      "line": 407,
       "lines": 4,
       "branches": 0,
       "params": 0,
@@ -5833,7 +6706,7 @@
     {
       "file": "net/client.cpp",
       "name": "GetTrafficStats",
-      "line": 431,
+      "line": 450,
       "lines": 12,
       "branches": 0,
       "params": 0,
@@ -5842,7 +6715,7 @@
     {
       "file": "net/client.cpp",
       "name": "SetTrafficLog",
-      "line": 445,
+      "line": 464,
       "lines": 4,
       "branches": 0,
       "params": 1,
@@ -5851,7 +6724,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendFrame",
-      "line": 529,
+      "line": 548,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -5860,7 +6733,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendDied",
-      "line": 537,
+      "line": 556,
       "lines": 4,
       "branches": 0,
       "params": 0,
@@ -5869,7 +6742,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendRespawned",
-      "line": 543,
+      "line": 562,
       "lines": 4,
       "branches": 0,
       "params": 0,
@@ -5878,7 +6751,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendWorldState",
-      "line": 549,
+      "line": 568,
       "lines": 7,
       "branches": 0,
       "params": 1,
@@ -5887,7 +6760,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendOutfit",
-      "line": 558,
+      "line": 577,
       "lines": 7,
       "branches": 0,
       "params": 1,
@@ -5896,7 +6769,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendHorseOutfit",
-      "line": 567,
+      "line": 586,
       "lines": 7,
       "branches": 0,
       "params": 1,
@@ -5905,7 +6778,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendWorldSnapshot",
-      "line": 576,
+      "line": 595,
       "lines": 5,
       "branches": 0,
       "params": 1,
@@ -5914,7 +6787,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendActionState",
-      "line": 583,
+      "line": 602,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -5923,7 +6796,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendPlayerVehicle",
-      "line": 591,
+      "line": 610,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -5932,7 +6805,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendMissionEvent",
-      "line": 599,
+      "line": 618,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -5941,7 +6814,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendMissionState",
-      "line": 607,
+      "line": 626,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -5950,7 +6823,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendMissionBarrier",
-      "line": 615,
+      "line": 634,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -5959,7 +6832,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendTrainSnapshot",
-      "line": 623,
+      "line": 642,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -5968,7 +6841,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendActorDespawn",
-      "line": 675,
+      "line": 694,
       "lines": 5,
       "branches": 0,
       "params": 1,
@@ -5977,7 +6850,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendActorEvent",
-      "line": 682,
+      "line": 701,
       "lines": 5,
       "branches": 0,
       "params": 1,
@@ -5986,7 +6859,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendTrainSnapshotV2",
-      "line": 811,
+      "line": 830,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -5995,7 +6868,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendShot",
-      "line": 819,
+      "line": 838,
       "lines": 7,
       "branches": 0,
       "params": 1,
@@ -6085,7 +6958,7 @@
     {
       "file": "server/server.cpp",
       "name": "CountInboundTraffic",
-      "line": 145,
+      "line": 147,
       "lines": 6,
       "branches": 0,
       "params": 2,
@@ -6094,7 +6967,7 @@
     {
       "file": "server/server.cpp",
       "name": "ConsoleCtrlHandler",
-      "line": 239,
+      "line": 254,
       "lines": 4,
       "branches": 0,
       "params": 1,
@@ -6103,7 +6976,7 @@
     {
       "file": "server/server.cpp",
       "name": "PosixSignalHandler",
-      "line": 245,
+      "line": 260,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -6112,7 +6985,7 @@
     {
       "file": "server/server.cpp",
       "name": "NowMs",
-      "line": 296,
+      "line": 311,
       "lines": 5,
       "branches": 0,
       "params": 0,
@@ -6121,7 +6994,7 @@
     {
       "file": "server/server.cpp",
       "name": "Now",
-      "line": 307,
+      "line": 322,
       "lines": 12,
       "branches": 0,
       "params": 0,
@@ -6130,10 +7003,55 @@
     {
       "file": "server/server.cpp",
       "name": "MakeNameMsg",
-      "line": 878,
+      "line": 889,
       "lines": 6,
       "branches": 0,
       "params": 2,
+      "crap_proxy": 2
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "InstallSignalHandlers",
+      "line": 1912,
+      "lines": 8,
+      "branches": 0,
+      "params": 0,
+      "crap_proxy": 2
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "CloseSocketSafe",
+      "line": 1922,
+      "lines": 7,
+      "branches": 0,
+      "params": 1,
+      "crap_proxy": 2
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "PrintStartupBanner",
+      "line": 1969,
+      "lines": 9,
+      "branches": 0,
+      "params": 1,
+      "crap_proxy": 2
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "StartStatusThread",
+      "line": 1980,
+      "lines": 3,
+      "branches": 0,
+      "params": 0,
+      "crap_proxy": 2
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "StartTestExitTimer",
+      "line": 1985,
+      "lines": 8,
+      "branches": 0,
+      "params": 0,
       "crap_proxy": 2
     },
     {
@@ -6159,65 +7077,47 @@
     {
       "file": "src/coop.cpp",
       "name": "Tick",
-      "line": 6225,
-      "lines": 1712,
-      "branches": 373,
+      "line": 6480,
+      "lines": 1551,
+      "branches": 339,
       "params": 0,
-      "crap_proxy": 140250
-    },
-    {
-      "file": "net/client.cpp",
-      "name": "RunOnce",
-      "line": 879,
-      "lines": 574,
-      "branches": 155,
-      "params": 0,
-      "crap_proxy": 24492
-    },
-    {
-      "file": "src/coop.cpp",
-      "name": "ApplyRemoteFrame",
-      "line": 3943,
-      "lines": 386,
-      "branches": 88,
-      "params": 1,
-      "crap_proxy": 8010
+      "crap_proxy": 115940
     },
     {
       "file": "tests/frame_reader_fuzz.cpp",
       "name": "main",
       "line": 93,
-      "lines": 280,
-      "branches": 49,
+      "lines": 312,
+      "branches": 55,
       "params": 0,
-      "crap_proxy": 2550
+      "crap_proxy": 3192
+    },
+    {
+      "file": "tests/config_test.cpp",
+      "name": "main",
+      "line": 48,
+      "lines": 278,
+      "branches": 15,
+      "params": 0,
+      "crap_proxy": 272
     },
     {
       "file": "src/coop.cpp",
       "name": "InitNetworkClient",
-      "line": 5892,
+      "line": 5957,
       "lines": 229,
       "branches": 11,
       "params": 0,
       "crap_proxy": 156
     },
     {
-      "file": "server/server.cpp",
-      "name": "main",
-      "line": 1910,
-      "lines": 209,
-      "branches": 32,
-      "params": 2,
-      "crap_proxy": 1122
-    },
-    {
-      "file": "tests/config_test.cpp",
-      "name": "main",
-      "line": 48,
-      "lines": 200,
-      "branches": 15,
+      "file": "net/client.cpp",
+      "name": "RunOnce",
+      "line": 1237,
+      "lines": 211,
+      "branches": 37,
       "params": 0,
-      "crap_proxy": 272
+      "crap_proxy": 1482
     },
     {
       "file": "src/coop.cpp",
@@ -6227,15 +7127,6 @@
       "branches": 35,
       "params": 1,
       "crap_proxy": 1332
-    },
-    {
-      "file": "src/coop.cpp",
-      "name": "UpdateLocalShotEvents",
-      "line": 4893,
-      "lines": 181,
-      "branches": 47,
-      "params": 1,
-      "crap_proxy": 2352
     },
     {
       "file": "src/coop.cpp",
@@ -6249,20 +7140,20 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyOutfitToGhost",
-      "line": 3580,
-      "lines": 165,
-      "branches": 32,
+      "line": 3599,
+      "lines": 141,
+      "branches": 26,
       "params": 1,
-      "crap_proxy": 1122
+      "crap_proxy": 756
     },
     {
-      "file": "src/config.cpp",
-      "name": "ApplyLine",
-      "line": 150,
-      "lines": 129,
-      "branches": 86,
-      "params": 2,
-      "crap_proxy": 7656
+      "file": "src/coop.cpp",
+      "name": "UpdateLocalShotEvents",
+      "line": 4977,
+      "lines": 132,
+      "branches": 34,
+      "params": 1,
+      "crap_proxy": 1260
     },
     {
       "file": "src/coop.cpp",
@@ -6276,20 +7167,11 @@
     {
       "file": "src/coop.cpp",
       "name": "CheckRemoteModelChange",
-      "line": 5262,
+      "line": 5297,
       "lines": 123,
       "branches": 13,
       "params": 1,
       "crap_proxy": 210
-    },
-    {
-      "file": "src/coop.cpp",
-      "name": "ApplyRemoteActionV2",
-      "line": 5467,
-      "lines": 122,
-      "branches": 32,
-      "params": 1,
-      "crap_proxy": 1122
     },
     {
       "file": "src/coop.cpp",
@@ -6312,7 +7194,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyMoveToGhost",
-      "line": 5095,
+      "line": 5130,
       "lines": 108,
       "branches": 14,
       "params": 3,
@@ -6321,7 +7203,7 @@
     {
       "file": "src/coop.cpp",
       "name": "RespawnGhostPed",
-      "line": 3835,
+      "line": 3830,
       "lines": 106,
       "branches": 16,
       "params": 1,
@@ -6330,7 +7212,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "Reset",
-      "line": 3307,
+      "line": 3292,
       "lines": 104,
       "branches": 9,
       "params": 0,
@@ -6366,7 +7248,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CleanupGhost",
-      "line": 4363,
+      "line": 4381,
       "lines": 85,
       "branches": 3,
       "params": 0,
@@ -6382,6 +7264,15 @@
       "crap_proxy": 930
     },
     {
+      "file": "tests/world_snapshot_parse_test.cpp",
+      "name": "main",
+      "line": 86,
+      "lines": 81,
+      "branches": 9,
+      "params": 0,
+      "crap_proxy": 110
+    },
+    {
       "file": "src/coop.cpp",
       "name": "RequestMountModel",
       "line": 2065,
@@ -6393,7 +7284,7 @@
     {
       "file": "server/server.cpp",
       "name": "PrintStatus",
-      "line": 960,
+      "line": 991,
       "lines": 76,
       "branches": 7,
       "params": 0,
@@ -6402,7 +7293,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalActionV2",
-      "line": 5389,
+      "line": 5424,
       "lines": 75,
       "branches": 13,
       "params": 1,
@@ -6418,18 +7309,36 @@
       "crap_proxy": 552
     },
     {
+      "file": "tests/mission_barrier_rules_fuzz.cpp",
+      "name": "main",
+      "line": 103,
+      "lines": 73,
+      "branches": 3,
+      "params": 0,
+      "crap_proxy": 20
+    },
+    {
       "file": "src/coop.cpp",
       "name": "PollHostMissions",
-      "line": 5725,
+      "line": 5790,
       "lines": 70,
       "branches": 14,
       "params": 0,
       "crap_proxy": 240
     },
     {
+      "file": "server/server.cpp",
+      "name": "AdmitAndStartClient",
+      "line": 1997,
+      "lines": 70,
+      "branches": 8,
+      "params": 3,
+      "crap_proxy": 90
+    },
+    {
       "file": "src/coop.cpp",
       "name": "DetectLocalMoveState",
-      "line": 4453,
+      "line": 4471,
       "lines": 68,
       "branches": 10,
       "params": 1,
@@ -6438,11 +7347,20 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemotePlayerVehicle",
-      "line": 5654,
+      "line": 5719,
       "lines": 67,
       "branches": 15,
       "params": 1,
       "crap_proxy": 272
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TickWorldStateSync",
+      "line": 6291,
+      "lines": 67,
+      "branches": 11,
+      "params": 0,
+      "crap_proxy": 156
     },
     {
       "file": "src/world_scan.cpp",
@@ -6465,7 +7383,7 @@
     {
       "file": "server/server.cpp",
       "name": "SaveAll",
-      "line": 776,
+      "line": 787,
       "lines": 63,
       "branches": 12,
       "params": 0,
@@ -6483,11 +7401,20 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateLocalActionState",
-      "line": 4602,
+      "line": 4620,
       "lines": 61,
       "branches": 17,
       "params": 1,
       "crap_proxy": 342
+    },
+    {
+      "file": "tests/world_entity_budget_test.cpp",
+      "name": "main",
+      "line": 127,
+      "lines": 61,
+      "branches": 6,
+      "params": 0,
+      "crap_proxy": 56
     },
     {
       "file": "tests/client_reconnect_test.cpp",
@@ -6501,7 +7428,7 @@
     {
       "file": "src/coop.cpp",
       "name": "IsEntityHeadshot",
-      "line": 4794,
+      "line": 4812,
       "lines": 59,
       "branches": 15,
       "params": 2,
@@ -6510,7 +7437,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyMissionEventToGuest",
-      "line": 5829,
+      "line": 5894,
       "lines": 57,
       "branches": 12,
       "params": 1,
@@ -6535,15 +7462,6 @@
       "crap_proxy": 90
     },
     {
-      "file": "tests/world_snapshot_parse_test.cpp",
-      "name": "main",
-      "line": 86,
-      "lines": 52,
-      "branches": 5,
-      "params": 0,
-      "crap_proxy": 42
-    },
-    {
       "file": "src/coop.cpp",
       "name": "ResetGhostCombatState",
       "line": 1929,
@@ -6564,7 +7482,7 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateLocalAim",
-      "line": 4671,
+      "line": 4689,
       "lines": 50,
       "branches": 4,
       "params": 1,
@@ -6582,7 +7500,7 @@
     {
       "file": "net/client.cpp",
       "name": "Run",
-      "line": 828,
+      "line": 847,
       "lines": 49,
       "branches": 10,
       "params": 0,
@@ -6616,15 +7534,6 @@
       "crap_proxy": 90
     },
     {
-      "file": "tests/world_entity_budget_test.cpp",
-      "name": "main",
-      "line": 127,
-      "lines": 46,
-      "branches": 6,
-      "params": 0,
-      "crap_proxy": 56
-    },
-    {
       "file": "src/coop.cpp",
       "name": "UpdateLocalPresence",
       "line": 736,
@@ -6636,7 +7545,7 @@
     {
       "file": "server/server.cpp",
       "name": "LoadAllSaved",
-      "line": 729,
+      "line": 740,
       "lines": 45,
       "branches": 10,
       "params": 0,
@@ -6654,7 +7563,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyHorseOutfitToMount",
-      "line": 3781,
+      "line": 3776,
       "lines": 43,
       "branches": 8,
       "params": 1,
@@ -6668,6 +7577,15 @@
       "branches": 11,
       "params": 1,
       "crap_proxy": 156
+    },
+    {
+      "file": "src/config.cpp",
+      "name": "ApplyBoolKey",
+      "line": 201,
+      "lines": 39,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
     },
     {
       "file": "src/coop.cpp",
@@ -6697,6 +7615,15 @@
       "crap_proxy": 110
     },
     {
+      "file": "src/config.cpp",
+      "name": "ApplyLine",
+      "line": 242,
+      "lines": 36,
+      "branches": 21,
+      "params": 2,
+      "crap_proxy": 506
+    },
+    {
       "file": "src/coop.cpp",
       "name": "IsWeaponHashValid",
       "line": 2520,
@@ -6708,7 +7635,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalPlayerVehicle",
-      "line": 5593,
+      "line": 5658,
       "lines": 36,
       "branches": 5,
       "params": 1,
@@ -6724,6 +7651,33 @@
       "crap_proxy": 56
     },
     {
+      "file": "src/coop.cpp",
+      "name": "TickRttHud",
+      "line": 6379,
+      "lines": 34,
+      "branches": 9,
+      "params": 0,
+      "crap_proxy": 110
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "OpenListenSocket",
+      "line": 1933,
+      "lines": 34,
+      "branches": 5,
+      "params": 1,
+      "crap_proxy": 42
+    },
+    {
+      "file": "src/config.cpp",
+      "name": "ApplyIntKey",
+      "line": 166,
+      "lines": 33,
+      "branches": 9,
+      "params": 3,
+      "crap_proxy": 110
+    },
+    {
       "file": "net/client.cpp",
       "name": "SanitizePlayerName",
       "line": 36,
@@ -6735,20 +7689,11 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidVehicleOccupants",
-      "line": 589,
+      "line": 604,
       "lines": 32,
       "branches": 11,
       "params": 1,
       "crap_proxy": 156
-    },
-    {
-      "file": "tests/mission_barrier_rules_fuzz.cpp",
-      "name": "main",
-      "line": 103,
-      "lines": 32,
-      "branches": 3,
-      "params": 0,
-      "crap_proxy": 20
     },
     {
       "file": "src/coop.cpp",
@@ -6758,6 +7703,24 @@
       "branches": 5,
       "params": 2,
       "crap_proxy": 42
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandlePlayerJoined",
+      "line": 1101,
+      "lines": 30,
+      "branches": 12,
+      "params": 1,
+      "crap_proxy": 182
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "main",
+      "line": 2110,
+      "lines": 30,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
     },
     {
       "file": "tests/client_reconnect_test.cpp",
@@ -6807,7 +7770,7 @@
     {
       "file": "server/server.cpp",
       "name": "TrafficBucketFor",
-      "line": 114,
+      "line": 116,
       "lines": 29,
       "branches": 23,
       "params": 1,
@@ -6834,7 +7797,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsGameThreadMessage",
-      "line": 266,
+      "line": 281,
       "lines": 28,
       "branches": 20,
       "params": 1,
@@ -6843,7 +7806,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorSpawnBatch",
-      "line": 445,
+      "line": 470,
       "lines": 28,
       "branches": 8,
       "params": 1,
@@ -6861,7 +7824,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DeleteGhostEntity",
-      "line": 4333,
+      "line": 4351,
       "lines": 27,
       "branches": 4,
       "params": 0,
@@ -6869,8 +7832,17 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyRemoteCoverAction",
+      "line": 5562,
+      "lines": 27,
+      "branches": 5,
+      "params": 3,
+      "crap_proxy": 42
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "LogMissionRewardPlan",
-      "line": 5799,
+      "line": 5864,
       "lines": 27,
       "branches": 11,
       "params": 1,
@@ -6879,7 +7851,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorFrames",
-      "line": 475,
+      "line": 500,
       "lines": 27,
       "branches": 8,
       "params": 1,
@@ -6906,7 +7878,7 @@
     {
       "file": "src/coop.cpp",
       "name": "GetLocalSelectedWeaponHash",
-      "line": 5228,
+      "line": 5263,
       "lines": 26,
       "branches": 5,
       "params": 1,
@@ -6915,7 +7887,7 @@
     {
       "file": "server/server.cpp",
       "name": "ParseSavedLine",
-      "line": 685,
+      "line": 696,
       "lines": 26,
       "branches": 18,
       "params": 2,
@@ -6933,7 +7905,7 @@
     {
       "file": "server/server.cpp",
       "name": "AllowConnectionFrom",
-      "line": 193,
+      "line": 208,
       "lines": 25,
       "branches": 6,
       "params": 2,
@@ -6951,7 +7923,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidActorAppearance",
-      "line": 534,
+      "line": 553,
       "lines": 24,
       "branches": 8,
       "params": 1,
@@ -6987,11 +7959,20 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidWorldSnapshot",
-      "line": 373,
+      "line": 388,
       "lines": 23,
       "branches": 8,
       "params": 1,
       "crap_proxy": 90
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "AcceptLoop",
+      "line": 2069,
+      "lines": 23,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
     },
     {
       "file": "src/coop.cpp",
@@ -7003,9 +7984,18 @@
       "crap_proxy": 30
     },
     {
+      "file": "src/coop.cpp",
+      "name": "ApplyRemoteFrame",
+      "line": 4325,
+      "lines": 22,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
       "file": "src/world_sync.cpp",
       "name": "GetHandleForNetId",
-      "line": 3283,
+      "line": 3268,
       "lines": 22,
       "branches": 8,
       "params": 2,
@@ -7014,16 +8004,25 @@
     {
       "file": "server/server.cpp",
       "name": "IsValidTrainSnapshot",
-      "line": 398,
+      "line": 413,
       "lines": 22,
       "branches": 8,
       "params": 1,
       "crap_proxy": 90
     },
     {
+      "file": "server/server.cpp",
+      "name": "ApplyTimeoutArgs",
+      "line": 1888,
+      "lines": 22,
+      "branches": 8,
+      "params": 2,
+      "crap_proxy": 90
+    },
+    {
       "file": "src/coop.cpp",
       "name": "DeleteRemotePlayerVehicle",
-      "line": 5631,
+      "line": 5696,
       "lines": 21,
       "branches": 2,
       "params": 0,
@@ -7041,7 +8040,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "GetNetIdForHandle",
-      "line": 3260,
+      "line": 3245,
       "lines": 21,
       "branches": 6,
       "params": 2,
@@ -7085,8 +8084,17 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyRemoteActionV2",
+      "line": 5632,
+      "lines": 20,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "DetectLocalAction",
-      "line": 4567,
+      "line": 4585,
       "lines": 19,
       "branches": 7,
       "params": 1,
@@ -7095,7 +8103,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneWorldSnapshot",
-      "line": 147,
+      "line": 166,
       "lines": 19,
       "branches": 8,
       "params": 1,
@@ -7104,20 +8112,11 @@
     {
       "file": "net/client.cpp",
       "name": "SendActorSpawnBatch",
-      "line": 631,
+      "line": 650,
       "lines": 19,
       "branches": 2,
       "params": 2,
       "crap_proxy": 12
-    },
-    {
-      "file": "server/server.cpp",
-      "name": "IsValidTrainSnapshotV2",
-      "line": 625,
-      "lines": 19,
-      "branches": 13,
-      "params": 1,
-      "crap_proxy": 210
     },
     {
       "file": "src/actor_sync.cpp",
@@ -7148,8 +8147,17 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyRemoteFrameVisualTail",
+      "line": 4305,
+      "lines": 18,
+      "branches": 5,
+      "params": 2,
+      "crap_proxy": 42
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "DetectLocalPedState",
-      "line": 4525,
+      "line": 4543,
       "lines": 18,
       "branches": 7,
       "params": 1,
@@ -7192,6 +8200,24 @@
       "crap_proxy": 30
     },
     {
+      "file": "src/coop.cpp",
+      "name": "ApplyRemoteFrameEarly",
+      "line": 3939,
+      "lines": 17,
+      "branches": 6,
+      "params": 1,
+      "crap_proxy": 56
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TickJoinSubtitle",
+      "line": 6360,
+      "lines": 17,
+      "branches": 3,
+      "params": 0,
+      "crap_proxy": 20
+    },
+    {
       "file": "src/main.cpp",
       "name": "DllMain",
       "line": 34,
@@ -7208,6 +8234,24 @@
       "branches": 3,
       "params": 1,
       "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleJoinRejected",
+      "line": 937,
+      "lines": 17,
+      "branches": 4,
+      "params": 1,
+      "crap_proxy": 30
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "IsValidTrainSnapshotV2",
+      "line": 640,
+      "lines": 17,
+      "branches": 13,
+      "params": 1,
+      "crap_proxy": 210
     },
     {
       "file": "src/coop.cpp",
@@ -7237,6 +8281,15 @@
       "crap_proxy": 12
     },
     {
+      "file": "src/coop.cpp",
+      "name": "ApplyGhostOutfitComponents",
+      "line": 3581,
+      "lines": 16,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
+    },
+    {
       "file": "net/socket.cpp",
       "name": "CompactLocked",
       "line": 97,
@@ -7248,7 +8301,7 @@
     {
       "file": "src/config.cpp",
       "name": "Load",
-      "line": 291,
+      "line": 290,
       "lines": 15,
       "branches": 2,
       "params": 0,
@@ -7257,7 +8310,7 @@
     {
       "file": "src/config.cpp",
       "name": "WarnDangerousCombos",
-      "line": 320,
+      "line": 319,
       "lines": 15,
       "branches": 12,
       "params": 0,
@@ -7284,7 +8337,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalFlags",
-      "line": 4546,
+      "line": 4564,
       "lines": 15,
       "branches": 4,
       "params": 1,
@@ -7293,7 +8346,7 @@
     {
       "file": "src/coop.cpp",
       "name": "NpcDamageForWeapon",
-      "line": 4774,
+      "line": 4792,
       "lines": 15,
       "branches": 7,
       "params": 1,
@@ -7302,7 +8355,7 @@
     {
       "file": "src/coop.cpp",
       "name": "GetLocalWeaponHash",
-      "line": 5208,
+      "line": 5243,
       "lines": 15,
       "branches": 1,
       "params": 1,
@@ -7329,7 +8382,7 @@
     {
       "file": "server/server.cpp",
       "name": "SendJoinRejectedAndClose",
-      "line": 894,
+      "line": 905,
       "lines": 15,
       "branches": 2,
       "params": 2,
@@ -7383,7 +8436,7 @@
     {
       "file": "src/coop.cpp",
       "name": "RefreshGhostComponents",
-      "line": 3751,
+      "line": 3746,
       "lines": 14,
       "branches": 4,
       "params": 0,
@@ -7392,7 +8445,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendActorResync",
-      "line": 6209,
+      "line": 6274,
       "lines": 14,
       "branches": 3,
       "params": 3,
@@ -7410,7 +8463,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendPlayerPresence",
-      "line": 771,
+      "line": 790,
       "lines": 14,
       "branches": 2,
       "params": 2,
@@ -7419,7 +8472,7 @@
     {
       "file": "server/server.cpp",
       "name": "ParseFloatField",
-      "line": 667,
+      "line": 678,
       "lines": 14,
       "branches": 7,
       "params": 3,
@@ -7455,7 +8508,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ResetLocalShotDetector",
-      "line": 4755,
+      "line": 4773,
       "lines": 13,
       "branches": 0,
       "params": 0,
@@ -7473,7 +8526,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendActorResync",
-      "line": 701,
+      "line": 720,
       "lines": 13,
       "branches": 1,
       "params": 3,
@@ -7500,7 +8553,7 @@
     {
       "file": "net/client.cpp",
       "name": "EmitTrafficLog",
-      "line": 417,
+      "line": 436,
       "lines": 12,
       "branches": 1,
       "params": 1,
@@ -7509,7 +8562,7 @@
     {
       "file": "net/client.cpp",
       "name": "GetTrafficStats",
-      "line": 431,
+      "line": 450,
       "lines": 12,
       "branches": 0,
       "params": 0,
@@ -7518,7 +8571,7 @@
     {
       "file": "net/client.cpp",
       "name": "Stop",
-      "line": 515,
+      "line": 534,
       "lines": 12,
       "branches": 2,
       "params": 0,
@@ -7527,7 +8580,7 @@
     {
       "file": "server/server.cpp",
       "name": "Now",
-      "line": 307,
+      "line": 322,
       "lines": 12,
       "branches": 0,
       "params": 0,
@@ -7545,7 +8598,7 @@
     {
       "file": "src/coop.cpp",
       "name": "GetLocalHealth01",
-      "line": 5078,
+      "line": 5113,
       "lines": 11,
       "branches": 2,
       "params": 1,
@@ -7554,7 +8607,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendPing",
-      "line": 451,
+      "line": 470,
       "lines": 11,
       "branches": 3,
       "params": 0,
@@ -7572,7 +8625,7 @@
     {
       "file": "server/server.cpp",
       "name": "RefundRateSlotOnJoin",
-      "line": 225,
+      "line": 240,
       "lines": 11,
       "branches": 5,
       "params": 2,
@@ -7670,8 +8723,17 @@
     },
     {
       "file": "server/server.cpp",
+      "name": "AllowRate",
+      "line": 166,
+      "lines": 10,
+      "branches": 3,
+      "params": 3,
+      "crap_proxy": 20
+    },
+    {
+      "file": "server/server.cpp",
       "name": "IsValidName",
-      "line": 353,
+      "line": 368,
       "lines": 10,
       "branches": 6,
       "params": 1,
@@ -7680,7 +8742,7 @@
     {
       "file": "server/server.cpp",
       "name": "UpdateLastPosLocked",
-      "line": 715,
+      "line": 726,
       "lines": 10,
       "branches": 2,
       "params": 2,
@@ -7689,11 +8751,20 @@
     {
       "file": "server/server.cpp",
       "name": "MakeMsg",
-      "line": 842,
+      "line": 853,
       "lines": 10,
       "branches": 2,
       "params": 3,
       "crap_proxy": 12
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "DrainClientThreadsAndSave",
+      "line": 2096,
+      "lines": 10,
+      "branches": 3,
+      "params": 0,
+      "crap_proxy": 20
     },
     {
       "file": "src/actor_sync.cpp",
@@ -7741,6 +8812,24 @@
       "crap_proxy": 56
     },
     {
+      "file": "src/coop.cpp",
+      "name": "HandleLocalWeaponChange",
+      "line": 4912,
+      "lines": 9,
+      "branches": 1,
+      "params": 1,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TickPersistGhostPosition",
+      "line": 6415,
+      "lines": 9,
+      "branches": 4,
+      "params": 0,
+      "crap_proxy": 30
+    },
+    {
       "file": "src/native_call.h",
       "name": "CallVec3",
       "line": 79,
@@ -7750,18 +8839,9 @@
       "crap_proxy": 6
     },
     {
-      "file": "server/server.cpp",
-      "name": "IsValidActorDamage",
-      "line": 562,
-      "lines": 9,
-      "branches": 4,
-      "params": 1,
-      "crap_proxy": 30
-    },
-    {
-      "file": "server/server.cpp",
-      "name": "IsValidPlayerPresence",
-      "line": 575,
+      "file": "net/client.cpp",
+      "name": "HandlePong",
+      "line": 956,
       "lines": 9,
       "branches": 2,
       "params": 1,
@@ -7770,7 +8850,7 @@
     {
       "file": "server/server.cpp",
       "name": "BroadcastToOthers",
-      "line": 912,
+      "line": 923,
       "lines": 9,
       "branches": 3,
       "params": 2,
@@ -7779,11 +8859,29 @@
     {
       "file": "server/server.cpp",
       "name": "StatusThread",
-      "line": 1039,
+      "line": 1070,
       "lines": 9,
       "branches": 4,
       "params": 0,
       "crap_proxy": 30
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "ParsePortArg",
+      "line": 1877,
+      "lines": 9,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "PrintStartupBanner",
+      "line": 1969,
+      "lines": 9,
+      "branches": 0,
+      "params": 1,
+      "crap_proxy": 2
     },
     {
       "file": "src/actor_sync.cpp",
@@ -7860,7 +8958,7 @@
     {
       "file": "src/coop.cpp",
       "name": "TryApplyPendingOutfit",
-      "line": 3768,
+      "line": 3763,
       "lines": 8,
       "branches": 5,
       "params": 0,
@@ -7896,11 +8994,29 @@
     {
       "file": "net/client.cpp",
       "name": "ParseNamePayload",
-      "line": 109,
+      "line": 128,
       "lines": 8,
       "branches": 4,
       "params": 2,
       "crap_proxy": 30
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleOutfitMsg",
+      "line": 1167,
+      "lines": 8,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleShot",
+      "line": 1177,
+      "lines": 8,
+      "branches": 5,
+      "params": 1,
+      "crap_proxy": 42
     },
     {
       "file": "net/socket.cpp",
@@ -7914,7 +9030,7 @@
     {
       "file": "server/server.cpp",
       "name": "LogLine",
-      "line": 321,
+      "line": 336,
       "lines": 8,
       "branches": 1,
       "params": 1,
@@ -7922,12 +9038,21 @@
     },
     {
       "file": "server/server.cpp",
-      "name": "BroadcastToAll",
-      "line": 923,
+      "name": "InstallSignalHandlers",
+      "line": 1912,
       "lines": 8,
-      "branches": 2,
-      "params": 1,
-      "crap_proxy": 12
+      "branches": 0,
+      "params": 0,
+      "crap_proxy": 2
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "StartTestExitTimer",
+      "line": 1985,
+      "lines": 8,
+      "branches": 0,
+      "params": 0,
+      "crap_proxy": 2
     },
     {
       "file": "src/actor_sync.cpp",
@@ -8120,8 +9245,17 @@
     },
     {
       "file": "net/client.cpp",
+      "name": "ReadF32LE",
+      "line": 111,
+      "lines": 7,
+      "branches": 0,
+      "params": 2,
+      "crap_proxy": 2
+    },
+    {
+      "file": "net/client.cpp",
       "name": "SendWorldState",
-      "line": 549,
+      "line": 568,
       "lines": 7,
       "branches": 0,
       "params": 1,
@@ -8130,7 +9264,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendOutfit",
-      "line": 558,
+      "line": 577,
       "lines": 7,
       "branches": 0,
       "params": 1,
@@ -8139,7 +9273,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendHorseOutfit",
-      "line": 567,
+      "line": 586,
       "lines": 7,
       "branches": 0,
       "params": 1,
@@ -8148,11 +9282,20 @@
     {
       "file": "net/client.cpp",
       "name": "SendShot",
-      "line": 819,
+      "line": 838,
       "lines": 7,
       "branches": 0,
       "params": 1,
       "crap_proxy": 2
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorFrames",
+      "line": 1028,
+      "lines": 7,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
     },
     {
       "file": "net/socket.cpp",
@@ -8175,7 +9318,7 @@
     {
       "file": "server/server.cpp",
       "name": "SendTracked",
-      "line": 154,
+      "line": 156,
       "lines": 7,
       "branches": 3,
       "params": 3,
@@ -8183,8 +9326,17 @@
     },
     {
       "file": "server/server.cpp",
-      "name": "IsValidActorDespawn",
-      "line": 504,
+      "name": "IsValidActorDamage",
+      "line": 581,
+      "lines": 7,
+      "branches": 4,
+      "params": 1,
+      "crap_proxy": 30
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "IsValidPlayerPresence",
+      "line": 592,
       "lines": 7,
       "branches": 2,
       "params": 1,
@@ -8192,30 +9344,12 @@
     },
     {
       "file": "server/server.cpp",
-      "name": "IsValidActorEvent",
-      "line": 513,
+      "name": "CloseSocketSafe",
+      "line": 1922,
       "lines": 7,
-      "branches": 2,
+      "branches": 0,
       "params": 1,
-      "crap_proxy": 12
-    },
-    {
-      "file": "server/server.cpp",
-      "name": "IsValidActorOutfit",
-      "line": 522,
-      "lines": 7,
-      "branches": 2,
-      "params": 1,
-      "crap_proxy": 12
-    },
-    {
-      "file": "server/server.cpp",
-      "name": "IsValidActorResync",
-      "line": 646,
-      "lines": 7,
-      "branches": 1,
-      "params": 1,
-      "crap_proxy": 6
+      "crap_proxy": 2
     },
     {
       "file": "tests/config_test.cpp",
@@ -8292,7 +9426,7 @@
     {
       "file": "src/config.cpp",
       "name": "ParseStream",
-      "line": 281,
+      "line": 280,
       "lines": 6,
       "branches": 1,
       "params": 2,
@@ -8427,7 +9561,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "OnSnapshot",
-      "line": 3203,
+      "line": 3188,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -8435,8 +9569,17 @@
     },
     {
       "file": "net/client.cpp",
+      "name": "ReadU64LE",
+      "line": 120,
+      "lines": 6,
+      "branches": 1,
+      "params": 2,
+      "crap_proxy": 6
+    },
+    {
+      "file": "net/client.cpp",
       "name": "IsSaneFrame",
-      "line": 126,
+      "line": 145,
       "lines": 6,
       "branches": 8,
       "params": 1,
@@ -8445,7 +9588,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendRaw",
-      "line": 394,
+      "line": 413,
       "lines": 6,
       "branches": 1,
       "params": 1,
@@ -8454,7 +9597,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendFrame",
-      "line": 529,
+      "line": 548,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -8463,7 +9606,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendActionState",
-      "line": 583,
+      "line": 602,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -8472,7 +9615,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendPlayerVehicle",
-      "line": 591,
+      "line": 610,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -8481,7 +9624,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendMissionEvent",
-      "line": 599,
+      "line": 618,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -8490,7 +9633,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendMissionState",
-      "line": 607,
+      "line": 626,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -8499,7 +9642,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendMissionBarrier",
-      "line": 615,
+      "line": 634,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -8508,7 +9651,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendTrainSnapshot",
-      "line": 623,
+      "line": 642,
       "lines": 6,
       "branches": 0,
       "params": 1,
@@ -8517,11 +9660,119 @@
     {
       "file": "net/client.cpp",
       "name": "SendTrainSnapshotV2",
-      "line": 811,
+      "line": 830,
       "lines": 6,
       "branches": 0,
       "params": 1,
       "crap_proxy": 2
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActionState",
+      "line": 974,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandlePlayerVehicle",
+      "line": 982,
+      "lines": 6,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleMissionEvent",
+      "line": 990,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleMissionState",
+      "line": 998,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleMissionBarrier",
+      "line": 1006,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorSpawnBatch",
+      "line": 1020,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorOutfit",
+      "line": 1049,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorAppearance",
+      "line": 1057,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleVehicleOccupants",
+      "line": 1086,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleFrame",
+      "line": 1133,
+      "lines": 6,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleWorldState",
+      "line": 1159,
+      "lines": 6,
+      "branches": 3,
+      "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleHostChanged",
+      "line": 1187,
+      "lines": 6,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
     },
     {
       "file": "net/frame.cpp",
@@ -8535,7 +9786,7 @@
     {
       "file": "server/server.cpp",
       "name": "CountInboundTraffic",
-      "line": 145,
+      "line": 147,
       "lines": 6,
       "branches": 0,
       "params": 2,
@@ -8544,7 +9795,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsSaneFramePayload",
-      "line": 365,
+      "line": 380,
       "lines": 6,
       "branches": 8,
       "params": 1,
@@ -8553,7 +9804,7 @@
     {
       "file": "server/server.cpp",
       "name": "MakeNameMsg",
-      "line": 878,
+      "line": 889,
       "lines": 6,
       "branches": 0,
       "params": 2,
@@ -8580,7 +9831,7 @@
     {
       "file": "src/config.cpp",
       "name": "LoadFromFile",
-      "line": 308,
+      "line": 307,
       "lines": 5,
       "branches": 1,
       "params": 2,
@@ -8625,7 +9876,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "OnTrainSnapshotV2",
-      "line": 3246,
+      "line": 3231,
       "lines": 5,
       "branches": 0,
       "params": 1,
@@ -8634,7 +9885,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "OnTrainSnapshot",
-      "line": 3253,
+      "line": 3238,
       "lines": 5,
       "branches": 0,
       "params": 1,
@@ -8643,7 +9894,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneWorldState",
-      "line": 134,
+      "line": 153,
       "lines": 5,
       "branches": 5,
       "params": 1,
@@ -8652,7 +9903,7 @@
     {
       "file": "net/client.cpp",
       "name": "ParseActorDespawn",
-      "line": 232,
+      "line": 251,
       "lines": 5,
       "branches": 2,
       "params": 2,
@@ -8661,7 +9912,7 @@
     {
       "file": "net/client.cpp",
       "name": "ParseActorEvent",
-      "line": 239,
+      "line": 258,
       "lines": 5,
       "branches": 2,
       "params": 2,
@@ -8670,7 +9921,7 @@
     {
       "file": "net/client.cpp",
       "name": "ParseActorResync",
-      "line": 261,
+      "line": 280,
       "lines": 5,
       "branches": 1,
       "params": 2,
@@ -8679,7 +9930,7 @@
     {
       "file": "net/client.cpp",
       "name": "NowMs",
-      "line": 381,
+      "line": 400,
       "lines": 5,
       "branches": 0,
       "params": 0,
@@ -8688,7 +9939,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendWorldSnapshot",
-      "line": 576,
+      "line": 595,
       "lines": 5,
       "branches": 0,
       "params": 1,
@@ -8697,7 +9948,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendActorDespawn",
-      "line": 675,
+      "line": 694,
       "lines": 5,
       "branches": 0,
       "params": 1,
@@ -8706,11 +9957,56 @@
     {
       "file": "net/client.cpp",
       "name": "SendActorEvent",
-      "line": 682,
+      "line": 701,
       "lines": 5,
       "branches": 0,
       "params": 1,
       "crap_proxy": 2
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleWorldSnapshot",
+      "line": 967,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorResync",
+      "line": 1065,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorDamage",
+      "line": 1072,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandlePlayerPresence",
+      "line": 1079,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleTrainSnapshotV2",
+      "line": 1094,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
     },
     {
       "file": "net/socket.cpp",
@@ -8733,7 +10029,7 @@
     {
       "file": "server/server.cpp",
       "name": "NowMs",
-      "line": 296,
+      "line": 311,
       "lines": 5,
       "branches": 0,
       "params": 0,
@@ -8742,7 +10038,7 @@
     {
       "file": "server/server.cpp",
       "name": "LogWarn",
-      "line": 333,
+      "line": 348,
       "lines": 5,
       "branches": 2,
       "params": 1,
@@ -8750,8 +10046,17 @@
     },
     {
       "file": "server/server.cpp",
+      "name": "ReadExactPayload",
+      "line": 449,
+      "lines": 5,
+      "branches": 1,
+      "params": 2,
+      "crap_proxy": 6
+    },
+    {
+      "file": "server/server.cpp",
       "name": "IsSaneActorSpawnRecord",
-      "line": 431,
+      "line": 456,
       "lines": 5,
       "branches": 4,
       "params": 1,
@@ -8760,11 +10065,47 @@
     {
       "file": "server/server.cpp",
       "name": "IsSaneActorFrameRecord",
-      "line": 438,
+      "line": 463,
       "lines": 5,
       "branches": 4,
       "params": 1,
       "crap_proxy": 30
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "IsValidActorDespawn",
+      "line": 529,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "IsValidActorEvent",
+      "line": 536,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "IsValidActorOutfit",
+      "line": 543,
+      "lines": 5,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "IsValidActorResync",
+      "line": 659,
+      "lines": 5,
+      "branches": 1,
+      "params": 1,
+      "crap_proxy": 6
     },
     {
       "file": "src/coop.cpp",
@@ -8814,7 +10155,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneVehicle",
-      "line": 141,
+      "line": 160,
       "lines": 4,
       "branches": 3,
       "params": 1,
@@ -8823,7 +10164,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneActorSpawn",
-      "line": 171,
+      "line": 190,
       "lines": 4,
       "branches": 4,
       "params": 1,
@@ -8832,7 +10173,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsSaneActorFrame",
-      "line": 177,
+      "line": 196,
       "lines": 4,
       "branches": 4,
       "params": 1,
@@ -8841,7 +10182,7 @@
     {
       "file": "net/client.cpp",
       "name": "CurrentSocket",
-      "line": 388,
+      "line": 407,
       "lines": 4,
       "branches": 0,
       "params": 0,
@@ -8850,7 +10191,7 @@
     {
       "file": "net/client.cpp",
       "name": "SetTrafficLog",
-      "line": 445,
+      "line": 464,
       "lines": 4,
       "branches": 0,
       "params": 1,
@@ -8859,7 +10200,7 @@
     {
       "file": "net/client.cpp",
       "name": "SendDied",
-      "line": 537,
+      "line": 556,
       "lines": 4,
       "branches": 0,
       "params": 0,
@@ -8868,11 +10209,65 @@
     {
       "file": "net/client.cpp",
       "name": "SendRespawned",
-      "line": 543,
+      "line": 562,
       "lines": 4,
       "branches": 0,
       "params": 0,
       "crap_proxy": 2
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleTrainSnapshot",
+      "line": 1014,
+      "lines": 4,
+      "branches": 1,
+      "params": 1,
+      "crap_proxy": 6
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorDespawn",
+      "line": 1037,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleActorEvent",
+      "line": 1043,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandlePlayerLeft",
+      "line": 1141,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleDied",
+      "line": 1147,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleRespawned",
+      "line": 1153,
+      "lines": 4,
+      "branches": 2,
+      "params": 1,
+      "crap_proxy": 12
     },
     {
       "file": "net/frame.cpp",
@@ -8922,7 +10317,7 @@
     {
       "file": "server/server.cpp",
       "name": "ConsoleCtrlHandler",
-      "line": 239,
+      "line": 254,
       "lines": 4,
       "branches": 0,
       "params": 1,
@@ -8958,7 +10353,7 @@
     {
       "file": "src/config.cpp",
       "name": "Get",
-      "line": 315,
+      "line": 314,
       "lines": 3,
       "branches": 0,
       "params": 0,
@@ -8985,7 +10380,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendWorldSnapshot",
-      "line": 6127,
+      "line": 6192,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -8994,7 +10389,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendTrainSnapshotV2",
-      "line": 6141,
+      "line": 6206,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -9003,7 +10398,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendTrainSnapshot",
-      "line": 6147,
+      "line": 6212,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -9012,7 +10407,7 @@
     {
       "file": "src/coop.cpp",
       "name": "IsWorldSyncExcluded",
-      "line": 6154,
+      "line": 6219,
       "lines": 3,
       "branches": 2,
       "params": 1,
@@ -9021,7 +10416,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CollectLocalOutfitForActor",
-      "line": 6180,
+      "line": 6245,
       "lines": 3,
       "branches": 0,
       "params": 2,
@@ -9030,7 +10425,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendPlayerPresence",
-      "line": 6193,
+      "line": 6258,
       "lines": 3,
       "branches": 0,
       "params": 2,
@@ -9039,7 +10434,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendActorDespawn",
-      "line": 6204,
+      "line": 6269,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -9111,7 +10506,7 @@
     {
       "file": "src/world_sync.cpp",
       "name": "SuppressAmbientForVisitor",
-      "line": 3198,
+      "line": 3183,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -9120,7 +10515,7 @@
     {
       "file": "net/client.cpp",
       "name": "IsFiniteCoord",
-      "line": 119,
+      "line": 138,
       "lines": 3,
       "branches": 1,
       "params": 1,
@@ -9138,7 +10533,7 @@
     {
       "file": "server/server.cpp",
       "name": "PosixSignalHandler",
-      "line": 245,
+      "line": 260,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -9147,7 +10542,7 @@
     {
       "file": "server/server.cpp",
       "name": "IsFiniteCoord",
-      "line": 348,
+      "line": 363,
       "lines": 3,
       "branches": 1,
       "params": 1,
@@ -9156,11 +10551,20 @@
     {
       "file": "server/server.cpp",
       "name": "IsFiniteActorCoord",
-      "line": 426,
+      "line": 441,
       "lines": 3,
       "branches": 1,
       "params": 1,
       "crap_proxy": 6
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "StartStatusThread",
+      "line": 1980,
+      "lines": 3,
+      "branches": 0,
+      "params": 0,
+      "crap_proxy": 2
     }
   ],
   "duplication": [
@@ -9179,38 +10583,10 @@
       ]
     },
     {
-      "hash": "58950da13055",
+      "hash": "33a7e7de3d63",
       "count": 4,
       "locations": [
-        "src/world_sync.cpp:1738"
-      ]
-    },
-    {
-      "hash": "f4f1f2ff810a",
-      "count": 4,
-      "locations": [
-        "src/world_sync.cpp:1739"
-      ]
-    },
-    {
-      "hash": "65c50d7bfcc1",
-      "count": 4,
-      "locations": [
-        "src/world_sync.cpp:1741"
-      ]
-    },
-    {
-      "hash": "eecd419a1dd1",
-      "count": 4,
-      "locations": [
-        "src/world_sync.cpp:1742"
-      ]
-    },
-    {
-      "hash": "49293d3c2b08",
-      "count": 4,
-      "locations": [
-        "src/world_sync.cpp:1744"
+        "src/world_sync.cpp:1751"
       ]
     },
     {
@@ -9234,7 +10610,7 @@
       "count": 3,
       "locations": [
         "src/actor_sync.cpp:2030",
-        "src/world_sync.cpp:1721"
+        "src/world_sync.cpp:1734"
       ]
     },
     {
@@ -9336,50 +10712,6 @@
       "count": 3,
       "locations": [
         "src/actor_sync.cpp:5812"
-      ]
-    },
-    {
-      "hash": "bcc108f71597",
-      "count": 3,
-      "locations": [
-        "src/actor_sync.cpp:5813"
-      ]
-    },
-    {
-      "hash": "6d93ed1d5bfa",
-      "count": 3,
-      "locations": [
-        "src/coop.cpp:3451"
-      ]
-    },
-    {
-      "hash": "1b5342ec696d",
-      "count": 3,
-      "locations": [
-        "src/world_sync.cpp:260"
-      ]
-    },
-    {
-      "hash": "0d1e99dee382",
-      "count": 3,
-      "locations": [
-        "src/world_sync.cpp:261"
-      ]
-    },
-    {
-      "hash": "3d84aa4836f7",
-      "count": 2,
-      "locations": [
-        "net/client.h:160",
-        "src/coop.h:44"
-      ]
-    },
-    {
-      "hash": "82b1e31e8f5f",
-      "count": 2,
-      "locations": [
-        "net/client.h:161",
-        "src/coop.h:45"
       ]
     }
   ],
