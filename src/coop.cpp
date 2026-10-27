@@ -4913,56 +4913,41 @@ void TrySendNpcDamage(unsigned int localPed, unsigned long long weapon,
                                   headshot);
 }
 
-void UpdateLocalShotEvents(unsigned int ped)
+// ub-mode unit C2-1: независимые шаги детектора выстрелов.
+void HandleLocalWeaponChange(unsigned long long weapon)
+{
+    if (weapon == s_ammoDetectWeapon)
+        return;
+    s_ammoDetectWeapon = weapon;
+    s_lastClipAmmo = -1;
+    s_ammoDetectActive = false;
+    s_ammoDetectEver = false;
+    s_pendingAmmoShots = 0;
+}
+
+bool QueryLocalClipAmmo(unsigned int ped, unsigned long long weapon,
+                        int& clipAmmo)
 {
     using namespace natives_api;
-
-    // Локальный игрок мёртв/умирает: магазин может читаться как 0/refill —
-    // это НЕ выстрелы. Сбрасываем baseline+очередь, чтобы не отправить
-    // фантомные Shot пачкой (гость стреляет реальными пулями).
-    if (IsPedDeadOrDying(ped))
-    {
-        ResetLocalShotDetector();
-        return;
-    }
-
-    // 0) Смена оружия: ammo-латч и неотправленный остаток старого оружия
-    // неактуальны (точки/счётчики от прошлого ствола не шлём).
-    const unsigned long long weapon = GetLocalWeaponHash(ped);
-    if (weapon != s_ammoDetectWeapon)
-    {
-        s_ammoDetectWeapon = weapon;
-        s_lastClipAmmo = -1;
-        s_ammoDetectActive = false;
-        s_ammoDetectEver = false;
-        s_pendingAmmoShots = 0;
-    }
-
-    // 1) Ammo-детект: каждый тик читаем патроны в магазине.
-    int clipAmmo = 0;
-    bool haveAmmo = false;
-    if (weapon)
-    {
-        Init(natives::GET_AMMO_IN_CLIP);
-        Push(ped);
-        Push(reinterpret_cast<unsigned long long>(&clipAmmo));
-        Push(weapon);
-        haveAmmo = Call() != 0;
-    }
-    if (weapon && !haveAmmo && !s_ammoQueryFailLogged)
+    if (!weapon)
+        return false;
+    Init(natives::GET_AMMO_IN_CLIP);
+    Push(ped);
+    Push(reinterpret_cast<unsigned long long>(&clipAmmo));
+    Push(weapon);
+    const bool haveAmmo = Call() != 0;
+    if (!haveAmmo && !s_ammoQueryFailLogged)
     {
         s_ammoQueryFailLogged = true;
         sh_log::Write("coop: GET_AMMO_IN_CLIP failed for weapon 0x%llX; "
                       "using impact/shooting fallback\n", weapon);
     }
-    s_ammoDetectActive = haveAmmo;
+    return haveAmmo;
+}
 
-    bool reloading = false;
-    if (weapon)
-    {
-        Init(natives::IS_PED_RELOADING); Push(ped);
-        reloading = Call() != 0;
-    }
+void UpdateLocalAmmoDetector(bool haveAmmo, int clipAmmo, bool reloading,
+                             unsigned long long weapon)
+{
     if (haveAmmo)
     {
         // Смена оружия / перезарядка / refill / первый замер — это НЕ выстрелы:
@@ -4992,6 +4977,38 @@ void UpdateLocalShotEvents(unsigned int ped)
             }
         }
     }
+}
+
+void UpdateLocalShotEvents(unsigned int ped)
+{
+    using namespace natives_api;
+
+    // Локальный игрок мёртв/умирает: магазин может читаться как 0/refill —
+    // это НЕ выстрелы. Сбрасываем baseline+очередь, чтобы не отправить
+    // фантомные Shot пачкой (гость стреляет реальными пулями).
+    if (IsPedDeadOrDying(ped))
+    {
+        ResetLocalShotDetector();
+        return;
+    }
+
+    // 0) Смена оружия: ammo-латч и неотправленный остаток старого оружия
+    // неактуальны (точки/счётчики от прошлого ствола не шлём).
+    const unsigned long long weapon = GetLocalWeaponHash(ped);
+    HandleLocalWeaponChange(weapon);
+
+    // 1) Ammo-детект: каждый тик читаем патроны в магазине.
+    int clipAmmo = 0;
+    const bool haveAmmo = QueryLocalClipAmmo(ped, weapon, clipAmmo);
+    s_ammoDetectActive = haveAmmo;
+
+    bool reloading = false;
+    if (weapon)
+    {
+        Init(natives::IS_PED_RELOADING); Push(ped);
+        reloading = Call() != 0;
+    }
+    UpdateLocalAmmoDetector(haveAmmo, clipAmmo, reloading, weapon);
 
     // 2) Точка попадания последнего выстрела (если натив дал данные).
     unsigned long long impactBuf[3] = {0, 0, 0};

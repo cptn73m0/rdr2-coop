@@ -328,6 +328,19 @@ struct Candidate
 
 std::unordered_map<unsigned int, HostIdState> g_hostIds;
 uint64_t g_nextNetId = 1;
+uint32_t EnsureHostNetId(unsigned int handle, unsigned int model,
+                         unsigned int tickCount)
+{
+    HostIdState& state = g_hostIds[handle];
+    if (state.netId == 0 || state.model != model)
+    {
+        state.netId = g_nextNetId++;
+        state.model = model;
+    }
+    state.lastSeenTick = tickCount;
+    return static_cast<uint32_t>(state.netId);
+}
+
 unsigned int g_lastHostScanTick = 0;
 unsigned int g_hostSnapshotCount = 0;
 bool g_missingWorldQueriesLogged = false;
@@ -1735,16 +1748,9 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         if (!model)
             continue;
 
-        HostIdState& state = g_hostIds[handle];
-        if (state.netId == 0 || state.model != model)
-        {
-            state.netId = g_nextNetId++;
-            state.model = model;
-        }
-        state.lastSeenTick = tickCount;
-
+        const uint32_t netId = EnsureHostNetId(handle, model, tickCount);
         net::WorldEntity e{};
-        e.netId = state.netId;
+        e.netId = netId;
         e.model = model;
         e.x = p.x; e.y = p.y; e.z = p.z;
         e.heading = GetHeading(handle);
@@ -1811,16 +1817,9 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             if (!model)
                 return false;
 
-            HostIdState& state = g_hostIds[handle];
-            if (state.netId == 0 || state.model != model)
-            {
-                state.netId = g_nextNetId++;
-                state.model = model;
-            }
-            state.lastSeenTick = tickCount;
-
+            const uint32_t netId = EnsureHostNetId(handle, model, tickCount);
             net::WorldEntity e{};
-            e.netId = state.netId;
+            e.netId = netId;
             e.model = model;
             e.x = p.x; e.y = p.y; e.z = p.z;
             e.heading = GetHeading(handle);
@@ -1896,16 +1895,9 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                 }
             }
 
-            HostIdState& state = g_hostIds[handle];
-            if (state.netId == 0 || state.model != model)
-            {
-                state.netId = g_nextNetId++;
-                state.model = model;
-            }
-            state.lastSeenTick = tickCount;
-
+            const uint32_t netId = EnsureHostNetId(handle, model, tickCount);
             net::WorldEntity e{};
-            e.netId = state.netId;
+            e.netId = netId;
             e.model = model;
             e.x = p.x; e.y = p.y; e.z = p.z;
             e.heading = GetHeading(handle);
@@ -2033,16 +2025,9 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             if (!model)
                 continue;
 
-            HostIdState& state = g_hostIds[handle];
-            if (state.netId == 0 || state.model != model)
-            {
-                state.netId = g_nextNetId++;
-                state.model = model;
-            }
-            state.lastSeenTick = tickCount;
-
+            const uint32_t netId = EnsureHostNetId(handle, model, tickCount);
             net::WorldEntity e{};
-            e.netId = state.netId;
+            e.netId = netId;
             e.model = model;
             e.x = p.x; e.y = p.y; e.z = p.z;
             e.heading = GetHeading(handle);
