@@ -3577,6 +3577,25 @@ bool OutfitsEqual(const net::OutfitState& a, const net::OutfitState& b)
 // Применить надетые shop-предметы (одежду) удалённого игрока к педу призрака
 // через _APPLY_SHOP_ITEM_TO_PED + _UPDATE_PED_VARIATION (как в rdr2-runtime
 // ApplyShopItemComponents). Вызывается из Tick() (игровой поток).
+// ub-mode unit C2-4: одно место применения shop-компонентов наряда.
+void ApplyGhostOutfitComponents(const net::OutfitState& os, uint32_t& applied)
+{
+    using namespace natives_api;
+    for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
+    {
+        const uint32_t c = os.components[i];
+        if (!c) continue;
+        Init(natives::APPLY_SHOP_ITEM_TO_PED);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(c));
+        Push(static_cast<unsigned long long>(1)); // immediately = true
+        Push(static_cast<unsigned long long>(0)); // isMp = false
+        Push(static_cast<unsigned long long>(1)); // p4 = true
+        Call();
+        ++applied;
+    }
+}
+
 void ApplyOutfitToGhost(const net::OutfitState& os)
 {
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
@@ -3656,19 +3675,7 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
             }
             return;
         }
-        for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
-        {
-            const uint32_t c = os.components[i];
-            if (!c) continue;
-            Init(natives::APPLY_SHOP_ITEM_TO_PED);
-            Push(s_ghost);
-            Push(static_cast<unsigned long long>(c));
-            Push(static_cast<unsigned long long>(1)); // immediately = true
-            Push(static_cast<unsigned long long>(0)); // isMp = false
-            Push(static_cast<unsigned long long>(1)); // p4 = true
-            Call();
-            ++applied;
-        }
+        ApplyGhostOutfitComponents(os, applied);
         // Heartbeat/refresh: только reapply, без scrub/remove.
         // Wearable states (куртка открыта/закрыта) применяем до UPDATE.
         ApplyGhostWearableStates(os);
@@ -3709,19 +3716,7 @@ void ApplyOutfitToGhost(const net::OutfitState& os)
 
     // Применяем новый набор в ИСХОДНОМ порядке (components идут по индексу
     // категории от отправителя: от нижних слоёв к верхним), НЕ сортируем.
-    for (uint32_t i = 0; i < os.count && i < net::kMaxOutfitComponents; ++i)
-    {
-        const uint32_t c = os.components[i];
-        if (!c) continue;
-        Init(natives::APPLY_SHOP_ITEM_TO_PED);
-        Push(s_ghost);
-        Push(static_cast<unsigned long long>(c));
-        Push(static_cast<unsigned long long>(1)); // immediately = true
-        Push(static_cast<unsigned long long>(0)); // isMp = false
-        Push(static_cast<unsigned long long>(1)); // p4 = true (как в rdr2-runtime)
-        Call();
-        ++applied;
-    }
+    ApplyGhostOutfitComponents(os, applied);
     // Один UPDATE в конце — без повторной RandomizePedComponents; пара
     // _SET_ACTIVE_META_PED_COMPONENTS_UPDATED + UPDATE_PED_VARIATION из nativedb.
     // Wearable states (открытая/закрытая куртка) — до финального UPDATE.
@@ -6428,6 +6423,60 @@ void TickPersistGhostPosition()
     }
 }
 
+// ub-mode unit A4: perf-окно полного кадра (вынесено из Tick).
+void TickPerfWindow(unsigned long long perfFrameStart,
+                    unsigned long long perfWorldUs,
+                    unsigned long long perfActorUs)
+{
+    // P0-1 (task-156): полный кадр coop::Tick = world + actor + coop.
+    {
+        const unsigned long long frameUs = QpcDeltaUs(perfFrameStart);
+        const unsigned long long coopUs =
+            frameUs > perfWorldUs + perfActorUs
+                ? frameUs - perfWorldUs - perfActorUs
+                : 0;
+        g_framePerf.Add(static_cast<double>(frameUs));
+        g_worldPerf.Add(static_cast<double>(perfWorldUs));
+        g_actorPerf.Add(static_cast<double>(perfActorUs));
+        g_coopPerf.Add(static_cast<double>(coopUs));
+        if (s_perfWindowStartMs == 0)
+            s_perfWindowStartMs = GetTickCount64();
+        if (++g_perfWindowTicks >= 300)
+        {
+            if (coopcfg::Get().npcDebug)
+            {
+                const unsigned long long nowMs = GetTickCount64();
+                const unsigned long long elapsedMs =
+                    nowMs > s_perfWindowStartMs
+                        ? nowMs - s_perfWindowStartMs
+                        : 5000ull;
+                const double tickHz =
+                    elapsedMs > 0
+                        ? 300.0 * 1000.0 / static_cast<double>(elapsedMs)
+                        : 60.0;
+                sh_log::Write(
+                    "perf: frame %s tick=%.2f p95=%.2f max=%.2f | "
+                    "world=%.2f p95=%.2f | actor=%.2f p95=%.2f | "
+                    "coop=%.2f p95=%.2f frames_hz=%.1f tick_hz=%.1f\n",
+                    s_amHost.load() ? "host" : "guest",
+                    g_framePerf.Avg() / 1000.0, g_framePerf.P95() / 1000.0,
+                    g_framePerf.Max() / 1000.0,
+                    g_worldPerf.Avg() / 1000.0, g_worldPerf.P95() / 1000.0,
+                    g_actorPerf.Avg() / 1000.0, g_actorPerf.P95() / 1000.0,
+                    g_coopPerf.Avg() / 1000.0, g_coopPerf.P95() / 1000.0,
+                    g_frameSentWindow / (elapsedMs / 1000.0), tickHz);
+            }
+            g_framePerf.Reset();
+            g_worldPerf.Reset();
+            g_actorPerf.Reset();
+            g_coopPerf.Reset();
+            g_perfWindowTicks = 0;
+            g_frameSentWindow = 0;
+            s_perfWindowStartMs = GetTickCount64();
+        }
+    }
+}
+
 void Tick()
 {
     ++s_tickCount;
@@ -7978,53 +8027,7 @@ void Tick()
     // мелькает миллисекунду и пропадает.
     TickRttHud();
 
-    // P0-1 (task-156): полный кадр coop::Tick = world + actor + coop.
-    {
-        const unsigned long long frameUs = QpcDeltaUs(perfFrameStart);
-        const unsigned long long coopUs =
-            frameUs > perfWorldUs + perfActorUs
-                ? frameUs - perfWorldUs - perfActorUs
-                : 0;
-        g_framePerf.Add(static_cast<double>(frameUs));
-        g_worldPerf.Add(static_cast<double>(perfWorldUs));
-        g_actorPerf.Add(static_cast<double>(perfActorUs));
-        g_coopPerf.Add(static_cast<double>(coopUs));
-        if (s_perfWindowStartMs == 0)
-            s_perfWindowStartMs = GetTickCount64();
-        if (++g_perfWindowTicks >= 300)
-        {
-            if (coopcfg::Get().npcDebug)
-            {
-                const unsigned long long nowMs = GetTickCount64();
-                const unsigned long long elapsedMs =
-                    nowMs > s_perfWindowStartMs
-                        ? nowMs - s_perfWindowStartMs
-                        : 5000ull;
-                const double tickHz =
-                    elapsedMs > 0
-                        ? 300.0 * 1000.0 / static_cast<double>(elapsedMs)
-                        : 60.0;
-                sh_log::Write(
-                    "perf: frame %s tick=%.2f p95=%.2f max=%.2f | "
-                    "world=%.2f p95=%.2f | actor=%.2f p95=%.2f | "
-                    "coop=%.2f p95=%.2f frames_hz=%.1f tick_hz=%.1f\n",
-                    s_amHost.load() ? "host" : "guest",
-                    g_framePerf.Avg() / 1000.0, g_framePerf.P95() / 1000.0,
-                    g_framePerf.Max() / 1000.0,
-                    g_worldPerf.Avg() / 1000.0, g_worldPerf.P95() / 1000.0,
-                    g_actorPerf.Avg() / 1000.0, g_actorPerf.P95() / 1000.0,
-                    g_coopPerf.Avg() / 1000.0, g_coopPerf.P95() / 1000.0,
-                    g_frameSentWindow / (elapsedMs / 1000.0), tickHz);
-            }
-            g_framePerf.Reset();
-            g_worldPerf.Reset();
-            g_actorPerf.Reset();
-            g_coopPerf.Reset();
-            g_perfWindowTicks = 0;
-            g_frameSentWindow = 0;
-            s_perfWindowStartMs = GetTickCount64();
-        }
-    }
+    TickPerfWindow(perfFrameStart, perfWorldUs, perfActorUs);
 }
 
 } // namespace coop
