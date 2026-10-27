@@ -118,6 +118,9 @@ void WriteDefaultIni()
     fputs("npc_visitor_pause_scenes = 1\n", f);
     fputs("# E3d-c: пассажиры/водители/тягловые лошади (0 = выкл).\n", f);
     fputs("npc_occupants = 1\n", f);
+    fputs("# v20 (A/B, default 0): спин колёс guest vehicle-прокси через\n"
+          "# SET_VEHICLE_FORWARD_SPEED (может конфликтовать с интерполяцией).\n", f);
+    fputs("npc_vehicle_wheels = 0\n", f);
     fputs("# E9: внешность животных/лошадей (0 = random variation).\n", f);
     fputs("npc_animal_appearance = 0\n", f);
     fputs("# E10: внешность лошади под NPC-всадником (0 = random).\n", f);
@@ -221,6 +224,7 @@ bool ApplyBoolKey(const std::string& key, const std::string& val, Config& out)
         {"npc_visitor_preserve_events", &Config::npcVisitorPreserveEvents},
         {"npc_visitor_pause_scenes", &Config::npcVisitorPauseScenes},
         {"npc_occupants", &Config::npcOccupants},
+        {"npc_vehicle_wheels", &Config::npcVehicleWheels},
         {"npc_animal_appearance", &Config::npcAnimalAppearance},
         {"npc_mount_appearance", &Config::npcMountAppearance},
         {"npc_frame_adaptive", &Config::npcFrameAdaptive},

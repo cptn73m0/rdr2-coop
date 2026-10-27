@@ -86,6 +86,10 @@ struct Config {
     bool npcVisitorPauseScenes = true;
     // E3d-c (v19): пассажиры/водители и тягловые лошади у vehicle-прокси.
     bool npcOccupants = true;
+    // v20 (opt-in): приблизить «спин колёс» guest vehicle-прокси — каждый тик
+    // повторять SET_VEHICLE_FORWARD_SPEED со скоростью из дельты снапшота.
+    // default 0: натив SIGNATURE-ONLY, может конфликтовать с интерполяцией.
+    bool npcVehicleWheels = false;
     // E9 (task-142): внешность животных/лошадей (asset/tint 0x1E + horse tack
     // 0x1C). default 0 — текущий random variation (host+guest должны совпадать).
     bool npcAnimalAppearance = false;

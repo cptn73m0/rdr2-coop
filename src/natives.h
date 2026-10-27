@@ -63,6 +63,15 @@ constexpr unsigned long long MAP_GET_BLIP_FROM_ENTITY = 0x6D2C41A8BD6D6FD0ull;
 constexpr unsigned long long MAP_SET_BLIP_SPRITE    = 0x74F74D3207ED525Cull;
 constexpr unsigned long long MAP_SET_BLIP_SCALE     = 0xD38744167B2FA257ull;
 constexpr unsigned long long MAP_REMOVE_BLIP        = 0xF2C3C9DA47AAA54Aull;
+// Подпись блипа (label на карте/легенде): строка готовится
+// MISC_VAR_STRING(10, "LITERAL_STRING", name) -> string handle, затем
+// _SET_BLIP_NAME. Без неё на карте дефолтная подпись «Companion»/«Спутник».
+// CONFIRMED: NativeDecl 1491.50, ScriptHook Blip.Name использует её.
+constexpr unsigned long long _SET_BLIP_NAME         = 0x9CB1A1623062F402ull;
+// Снять модификаторы блипа (0 = все). Резерв: если после _SET_BLIP_NAME
+// подпись осталась «Спутник» — вызвать ПЕРЕД установкой имени, затем вернуть
+// friendly-модификатор, чтобы не потерять цвет метки.
+constexpr unsigned long long BLIP_REMOVE_MODIFIER   = 0xB059D7BD3D78C16Full;
 // Yellow friendly-ally blip modifier (as in missions).
 constexpr unsigned long long BLIP_MODIFIER_FRIENDLY   = 0x6414AA9Aull;
 constexpr unsigned long long BLIP_MODIFIER_FRIENDLY_OBJECTIVE = 0xC586CF7Aull;
@@ -331,6 +340,9 @@ constexpr unsigned long long GET_VEHICLE_PED_IS_IN            = 0x9A9112A0FE9A47
 constexpr unsigned long long GET_PED_IN_VEHICLE_SEAT          = 0xBB40DD2270B65366ull;
 constexpr unsigned long long IS_PED_IN_VEHICLE                = 0xA3EE4A07279BB9DBull;
 constexpr unsigned long long SET_PED_INTO_VEHICLE             = 0xF75B0D629E1C063Dull;
+// v20 (opt-in npc_vehicle_wheels): единственный кандидат «крутить колёса»
+// guest-прокси — задать прокси скорость вперёд (SIGNATURE-ONLY, A/B).
+constexpr unsigned long long SET_VEHICLE_FORWARD_SPEED         = 0xF9F92AF49F12F6E7ull;
 // E3d-c (v19): occupants транспорта + draft-лошади.
 constexpr unsigned long long GET_DRIVER_OF_VEHICLE            = 0x2963B5C1637E8A27ull;
 constexpr unsigned long long GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS = 0xA9C55F1C15E62E06ull;

@@ -129,11 +129,16 @@ void RequestModel(unsigned int model)
 void SetCoords(unsigned int handle, float x, float y, float z)
 {
     using namespace natives_api;
+    // SET_ENTITY_COORDS — 8 аргументов (NativeDecl 1491.50):
+    // (entity, x, y, z, xAxis, yAxis, zAxis, clearArea). Все 4 BOOL = 0:
+    // оси не инвертируем, область вокруг телепорта НЕ чистим.
     Init(natives::SET_ENTITY_COORDS);
     Push(handle);
     Push(x); Push(y); Push(z);
-    Push(false); Push(false); Push(false);
-    Push(false); // clearTasks=false: не рвём задачи анимации
+    Push(false); // xAxis
+    Push(false); // yAxis
+    Push(false); // zAxis
+    Push(false); // clearArea
     Call();
 }
 
@@ -2097,6 +2102,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         g_lastOccupantsCollectMs = occScanNowMs;
         g_lastOccupantsCollectTick = tickCount;
         std::vector<unsigned int> occupantHandles;
+        std::unordered_set<unsigned int> probedVehicles;
         int sendBudget = 6; // не флудим 0x21 в одном скане
         for (const Candidate& c : candidates)
         {
@@ -2105,6 +2111,7 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             unsigned int veh = 0;
             if (!FindHostHandleByNetId(c.entity.netId, veh))
                 continue;
+            probedVehicles.insert(veh);
             std::vector<net::VehicleOccupantEntry> entries;
             uint32_t driverActorId = 0;
             const std::vector<unsigned int> hs = CollectVehicleOccupants(
@@ -2141,6 +2148,48 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                     "world: occupants vehicle=%u n=%u driver=%u\n",
                     c.entity.netId, static_cast<unsigned int>(entries.size()),
                     driverActorId);
+        }
+        // Allowlist completeness (root-cause fix): actor discovery скипает
+        // in-vehicle ped, которого нет в g_occupantHandles (P2.9), а handles
+        // сейчас собираются только для vehicle, выбранных в снапшот (budget/
+        // радиус). Если vehicle не попал в снапшот, его occupant-пед никогда
+        // не получает actorId -> 0x21 навсегда неполный (n=1 driver=0) ->
+        // гость не видит кучера/draft-лошадей. Поэтому в allowlist добавляем
+        // handles occupants ВСЕХ vehicle в occ-радиусе (тем же radius, что в
+        // discovery). Ничего не шлём и не создаём — только allowlist.
+        {
+            float occRadius = static_cast<float>(coopcfg::Get().npcVehicleRadius);
+            const float cfgNpcRadius =
+                static_cast<float>(coopcfg::Get().npcRadius);
+            if (cfgNpcRadius > occRadius) occRadius = cfgNpcRadius;
+            const float occRadius2 = occRadius * occRadius;
+            unsigned int localVehicle = 0;
+            {
+                using namespace natives_api;
+                Init(natives::GET_VEHICLE_PED_IS_USING);
+                Push(localPlayerPed);
+                localVehicle = static_cast<unsigned int>(Call());
+            }
+            for (unsigned int veh : g_vehicleScanHandles)
+            {
+                if (!veh || veh == localVehicle ||
+                    probedVehicles.count(veh) != 0)
+                    continue;
+                if (coop::IsWorldSyncExcluded(veh) || !DoesExist(veh))
+                    continue;
+                const Vec3 p = GetCoords(veh);
+                if (dist2ToPlayers(p.x, p.y) > occRadius2)
+                    continue;
+                const unsigned int model = GetModel(veh);
+                if (!model || IsTrainModel(model))
+                    continue; // поезд — отдельный путь (0x22 + train 0x21)
+                std::vector<net::VehicleOccupantEntry> ignored;
+                uint32_t ignoredDriver = 0;
+                const std::vector<unsigned int> hs = CollectVehicleOccupants(
+                    veh, localPlayerPed, 0, ignored, ignoredDriver);
+                occupantHandles.insert(occupantHandles.end(), hs.begin(),
+                                       hs.end());
+            }
         }
         // E11: handles нужны и для train-passengers (TickHostTrains добавит).
         g_hostOccHandles = std::move(occupantHandles);
@@ -2896,6 +2945,44 @@ void ApplyPendingOccupants(unsigned int tickCount)
     actor_sync::SetOccupantPendingActors(pendingHide);
 }
 
+// v20 (opt-in npc_vehicle_wheels=1): колёса guest vehicle-прокси не крутятся —
+// позицию задаёт интерполяция, значит физическая скорость прокси = 0. Публичного
+// натива «задать вращение колёс» в 1491.50 нет; единственный кандидат —
+// SET_VEHICLE_FORWARD_SPEED (SIGNATURE-ONLY): оцениваем скорость хоста из
+// дельты positions/dt между двумя снапшотами (clamp 0..30 м/с) и повторяем её
+// прокси КАЖДЫЙ тик. Позицию/поворот по-прежнему задаёт интерполяция
+// (SetCoords/SetHeading) — их не трогаем. Риск: натив может «бороться» с
+// интерполяцией и двигать прокси, поэтому default 0 (только A/B в игре).
+void ApplyGuestVehicleWheelSpeed(const Proxy& p)
+{
+    if (!coopcfg::Get().npcVehicleWheels)
+        return;
+    const unsigned long long span =
+        p.vehCurMs > p.vehPrevMs ? p.vehCurMs - p.vehPrevMs : 0ull;
+    if (span < 10ull)
+        return; // нет осмысленной дельты (первый снапшот/замер)
+    const float dx = p.vehCurX - p.vehPrevX;
+    const float dy = p.vehCurY - p.vehPrevY;
+    const float dz = p.vehCurZ - p.vehPrevZ;
+    float speed = std::sqrt(dx * dx + dy * dy + dz * dz) /
+                  (static_cast<float>(span) / 1000.f);
+    if (speed < 0.f) speed = 0.f;
+    if (speed > 30.f) speed = 30.f; // защита от мусорных дельт/warp
+    using namespace natives_api;
+    Init(natives::SET_VEHICLE_FORWARD_SPEED);
+    Push(p.handle);
+    Push(speed);
+    Call();
+    static unsigned long long lastLogMs = 0;
+    const unsigned long long now = GetTickCount64();
+    if (coopcfg::Get().npcDebug &&
+        (lastLogMs == 0 || now - lastLogMs >= 1000ull))
+    {
+        lastLogMs = now;
+        sh_log::Write("world: vehicle wheels speed=%.1f\n", speed);
+    }
+}
+
 // task-143 P1.2: time-based lerp vehPrev->vehCur по (now-vehCurMs)/interval,
 // экстраполяция <=150 мс, нет данных >300 мс — держим позу. Heading —
 // shortest-arc; warp>8 м по-прежнему snap в UpdateProxy.
@@ -2952,6 +3039,7 @@ void InterpolateVehicleProxies()
         }
         SetCoords(p.handle, x, y, z);
         SetHeading(p.handle, h);
+        ApplyGuestVehicleWheelSpeed(p);
     }
 }
 

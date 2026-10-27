@@ -893,11 +893,16 @@ uint16_t BuildFlags(unsigned int ped)
 void SetCoordsNative(unsigned int handle, float x, float y, float z)
 {
     using namespace natives_api;
+    // SET_ENTITY_COORDS — 8 аргументов (NativeDecl 1491.50):
+    // (entity, x, y, z, xAxis, yAxis, zAxis, clearArea). Все 4 BOOL = 0:
+    // оси не инвертируем, область вокруг телепорта НЕ чистим.
     Init(natives::SET_ENTITY_COORDS);
     Push(handle);
     Push(x); Push(y); Push(z);
-    Push(false); Push(false); Push(false);
-    Push(false); // clearTasks=false: не рвём текущую задачу
+    Push(false); // xAxis
+    Push(false); // yAxis
+    Push(false); // zAxis
+    Push(false); // clearArea
     Call();
 }
 
@@ -2256,45 +2261,69 @@ void HostDiscovery(const TickContext& ctx)
         selected.push_back(h);
         selectedSet.insert(h);
     }
-    // 1) уже известные люди, которые всё ещё в кандидатах
-    for (const auto& kv : g_roster)
+    // E3d-c priority: occupants (водители/пассажиры/draft-лошади) получают
+    // слоты ПЕРВЫМИ — и люди, и животные. Иначе cap занимают случайные
+    // горожане, occupant-пед никогда не discovered, actorId не появляется и
+    // 0x21 навсегда неполный (наблюдали: «n=1 driver=0», кучер/лошади
+    // повозки не доезжают до гостя). Порядок: occupant-люди -> occupant-
+    // животные -> известные люди (hysteresis actorId) -> новые люди ->
+    // прочие животные.
+    int animalsSelected = 0;
+    auto totalRoom = [&]() {
+        return static_cast<int>(selected.size()) < net::kMaxActors;
+    };
+    auto humanRoom = [&]() {
+        const int humans = static_cast<int>(selected.size()) - animalsSelected;
+        return humans < cap && totalRoom();
+    };
+    auto animalRoom = [&]() {
+        return animalsSelected < animalCap && totalRoom();
+    };
+    auto takeHandle = [&](unsigned int handle) -> bool {
+        if (selectedSet.count(handle) != 0) return false;
+        selected.push_back(handle);
+        selectedSet.insert(handle);
+        return true;
+    };
+    auto isOccupant = [&](unsigned int handle) {
+        return g_occupantHandles.count(handle) != 0;
+    };
+    for (const Cand& c : candidates)
     {
-        if (static_cast<int>(selected.size()) >= cap) break;
-        if (kv.second.kind != net::kActorKindHuman) continue;
-        if (!present.count(kv.first)) continue;
-        if (selectedSet.count(kv.first)) continue;
-        selected.push_back(kv.first);
-        selectedSet.insert(kv.first);
+        if (!humanRoom()) break;
+        if (!isOccupant(c.handle)) continue;
+        takeHandle(c.handle);
+    }
+    for (const Cand& c : animalCandidates)
+    {
+        if (!animalRoom()) break;
+        if (!isOccupant(c.handle)) continue;
+        if (takeHandle(c.handle)) ++animalsSelected;
+    }
+    // 1) уже известные люди, которые всё ещё в кандидатах (стабильный actorId)
+    for (const Cand& c : candidates)
+    {
+        if (!humanRoom()) break;
+        if (g_roster.count(c.handle) == 0) continue;
+        takeHandle(c.handle);
     }
     // 2) добор новыми ближайшими людьми
     for (const Cand& c : candidates)
     {
-        if (static_cast<int>(selected.size()) >= cap) break;
-        if (selectedSet.count(c.handle)) continue;
-        selected.push_back(c.handle);
-        selectedSet.insert(c.handle);
+        if (!humanRoom()) break;
+        takeHandle(c.handle);
     }
     // 3) животные: известные (hysteresis) + новые, пока есть слоты/cap
-    int remaining = net::kMaxActors - static_cast<int>(selected.size());
-    if (animalCap > remaining) animalCap = remaining;
-    int animalsSelected = 0;
-    for (const auto& kv : g_roster)
+    for (const Cand& c : animalCandidates)
     {
-        if (animalsSelected >= animalCap) break;
-        if (kv.second.kind == net::kActorKindHuman) continue;
-        if (!present.count(kv.first)) continue;
-        if (selectedSet.count(kv.first)) continue;
-        selected.push_back(kv.first);
-        selectedSet.insert(kv.first);
-        ++animalsSelected;
+        if (!animalRoom()) break;
+        if (g_roster.count(c.handle) == 0) continue;
+        if (takeHandle(c.handle)) ++animalsSelected;
     }
     for (const Cand& c : animalCandidates)
     {
-        if (animalsSelected >= animalCap) break;
-        if (selectedSet.count(c.handle)) continue;
-        selected.push_back(c.handle);
-        selectedSet.insert(c.handle);
-        ++animalsSelected;
+        if (!animalRoom()) break;
+        if (takeHandle(c.handle)) ++animalsSelected;
     }
 
     // 3) остальных из roster — despawn (умер/вытеснен/ушёл)

@@ -100,6 +100,9 @@ unsigned int g_frameSentWindow = 0;
 
 unsigned int s_ghost = 0;
 unsigned int s_blip = 0;
+// Имя, уже применённое к текущему blip ("" = ещё не задано/блип пересоздан).
+// Подпись метки на карте = имя удалённого игрока (s_pedName).
+char s_blipName[64] = "";
 bool s_ghostDead = false;
 bool s_localDiedNotified = false; // отправили ли серверу Died для своего педа
 unsigned long long s_requestedModel = 0; // какая модель уже запрошена у движка
@@ -270,16 +273,20 @@ bool GetGroundZForCoord(const Vec3& at, float& outZ)
 void SetEntityCoords(unsigned int handle, const Vec3& v)
 {
     using namespace natives_api;
+    // SET_ENTITY_COORDS — 8 аргументов (NativeDecl 1491.50):
+    // (entity, x, y, z, xAxis, yAxis, zAxis, clearArea). Все 4 BOOL = 0:
+    // оси не инвертируем, область вокруг телепорта НЕ чистим (clearArea=1
+    // удалял бы NPC/объекты/миссионные сущности у цели). Поведение
+    // телепортов (без clear tasks) сохраняем.
     Init(natives::SET_ENTITY_COORDS);
     Push(handle);
     Push(v.x);
     Push(v.y);
     Push(v.z);
-    Push(false);
-    Push(false);
-    Push(false);
-    Push(false); // clearTasks=false: НЕ сбрасывать задачи (TASK_GO/CLIMB и т.п.),
-                // иначе ручное перемещение на ходу обрывает анимацию (Т-поза).
+    Push(false); // xAxis
+    Push(false); // yAxis
+    Push(false); // zAxis
+    Push(false); // clearArea
     Call();
 }
 
@@ -308,25 +315,27 @@ unsigned int CreateGhostPed(unsigned long long model, const Vec3& at, float head
     return static_cast<unsigned int>(Call());
 }
 
+// RDR2 требует готовить строку через MISC::VAR_STRING(10, "LITERAL_STRING",
+// text) — иначе текст (субтитр/имя над головой/подпись блипа) не отрисуется.
+// Один рецепт на все использования: возвращает string-handle.
+unsigned long long MakeLiteralString(const char* text)
+{
+    using namespace natives_api;
+    Init(natives::MISC_VAR_STRING);
+    Push(static_cast<unsigned long long>(10)); // forced string type
+    Push(reinterpret_cast<unsigned long long>(const_cast<char*>("LITERAL_STRING")));
+    Push(reinterpret_cast<unsigned long long>(const_cast<char*>(text)));
+    return Call();
+}
+
 // Draw a small subtitle-like line (compact, lower-left). Text-drawing must
-// run within a ScriptWait loop, which Tick() is. IMPORTANT: RDR2 requires
-// the string to be prepared with MISC::VAR_STRING(10, "LITERAL_STRING", text)
-// before _BG_DISPLAY_TEXT, otherwise nothing is drawn.
+// run within a ScriptWait loop, which Tick() is.
 void DrawSubtitle(const char* text)
 {
     const float sx = 0.15f; // left-ish
     const float sy = 0.85f; // near bottom
 
-    // Prepare the string handle via VAR_STRING.
-    unsigned long long strHandle = 0;
-    {
-        using namespace natives_api;
-        Init(natives::MISC_VAR_STRING);
-        Push(static_cast<unsigned long long>(10));          // forced string type
-        Push(reinterpret_cast<unsigned long long>(const_cast<char*>("LITERAL_STRING")));
-        Push(reinterpret_cast<unsigned long long>(const_cast<char*>(text)));
-        strHandle = Call();
-    }
+    const unsigned long long strHandle = MakeLiteralString(text);
 
     using namespace natives_api;
     Init(natives::UI_BG_SET_TEXT_SCALE);
@@ -345,15 +354,7 @@ void DrawSubtitle(const char* text)
 // Маленькая строка-индикатор в левом верхнем углу (для отладки сети).
 void DrawHudLine(const char* text)
 {
-    unsigned long long strHandle = 0;
-    {
-        using namespace natives_api;
-        Init(natives::MISC_VAR_STRING);
-        Push(static_cast<unsigned long long>(10));
-        Push(reinterpret_cast<unsigned long long>(const_cast<char*>("LITERAL_STRING")));
-        Push(reinterpret_cast<unsigned long long>(const_cast<char*>(text)));
-        strHandle = Call();
-    }
+    const unsigned long long strHandle = MakeLiteralString(text);
     using namespace natives_api;
     Init(natives::UI_BG_SET_TEXT_SCALE);
     Push(0.28f); Push(0.28f);
@@ -373,6 +374,9 @@ void DrawHudLine(const char* text)
 // the ped's world coords and keep its coords up to date each tick.
 unsigned int CreateFriendlyBlipAt(const Vec3& at)
 {
+    // Новый blip — подпись ещё не задана (name применяется в Tick после
+    // создания; см. UpdateBlipName).
+    s_blipName[0] = '\0';
     using namespace natives_api;
     Init(natives::MAP_BLIP_ADD_FOR_COORDS);
     // A plain, valid base sprite (BLIP_ADD_FOR_COORDS expects a sprite,
@@ -397,6 +401,20 @@ unsigned int CreateFriendlyBlipAt(const Vec3& at)
         Call();
     }
     return blip;
+}
+
+// Подпись метки на карте/легенде: _SET_BLIP_NAME(blip, VAR_STRING(name)).
+// Friendly-модификатор и масштаб не трогаем — только label.
+void SetBlipName(unsigned int blip, const char* name)
+{
+    if (!blip || !name || !name[0]) return;
+    using namespace natives_api;
+    const unsigned long long nameStr = MakeLiteralString(name);
+    Init(natives::_SET_BLIP_NAME);
+    Push(blip);
+    Push(nameStr);
+    Call();
+    sh_log::Write("coop: blip name '%s'\n", name);
 }
 
 void UpdateBlipCoords(unsigned int blip, const Vec3& at)
@@ -431,6 +449,17 @@ constexpr float NAME_VISIBILITY_RANGE = 500.0f;
 constexpr int   HEAD_BONE_ID          = 0x796E; // "SKEL_Head"
 
 char s_pedName[64] = "";   // name currently drawn over the ped
+
+// Держать подпись метки на карте равной имени удалённого игрока: имя ставится
+// после создания blip и обновляется при смене ника/rejoin/respawn. Идемпотентно:
+// натив вызывается только когда имя изменилось или blip пересоздан.
+void UpdateBlipName()
+{
+    if (!s_blip) return;
+    if (std::strcmp(s_blipName, s_pedName) == 0) return;
+    std::snprintf(s_blipName, sizeof(s_blipName), "%s", s_pedName);
+    SetBlipName(s_blip, s_blipName);
+}
 
 Vec3 GetPedBoneCoords(unsigned int handle, int boneId)
 {
@@ -480,15 +509,7 @@ void DrawNameAt(const Vec3& worldPos, const char* name)
         return; // outside viewport
 
     // Prepare the string via VAR_STRING, then draw small centered text.
-    unsigned long long strHandle = 0;
-    {
-        using namespace natives_api;
-        Init(natives::MISC_VAR_STRING);
-        Push(static_cast<unsigned long long>(10));
-        Push(reinterpret_cast<unsigned long long>(const_cast<char*>("LITERAL_STRING")));
-        Push(reinterpret_cast<unsigned long long>(const_cast<char*>(name)));
-        strHandle = Call();
-    }
+    const unsigned long long strHandle = MakeLiteralString(name);
 
     using namespace natives_api;
     Init(natives::UI_BG_SET_TEXT_SCALE);
@@ -7974,6 +7995,10 @@ void Tick()
             DrawNameAt(aboveHead, displayName);
         }
     }
+
+    // Подпись блипа = имя удалённого игрока (ставится после создания blip,
+    // обновляется на rejoin/respawn — см. UpdateBlipName).
+    UpdateBlipName();
 
     // Keep the ped's blip on its current position (coords-based blip).
     if (s_blip && s_ghost && DoesEntityExist(s_ghost))
