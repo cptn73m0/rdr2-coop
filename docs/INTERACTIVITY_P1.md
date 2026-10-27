@@ -147,7 +147,7 @@ static_assert(offsetof(VehicleInteractionPayload, weaponHash) == 20, "...");
 | Enter/Exit | `seat`=-1/0..8/127 (Enter), 127 (Exit) | seat free, гость рядом, гость жив |
 | Hijack | `seat`=-1/127, `targetId`=actorId (optional) | NPC driver существует/не mission; seat -1; host vehicle policy |
 | Loot | `targetId`=netId(optional), flags | P1: host-side лог/loot-таблица; без инвентаря |
-| Hitch/Unhitch | `door`=harness 0..5, `targetId`=netId(optional) | draft/wagon, harness свободен/занят |
+| Hitch/Unhitch | `door`=harness (0 LR,1 RR,2 LM,3 RM,4 LF,5 RF), `targetId`=netId(optional) | draft/wagon, harness свободен/занят; attach/detach verify `GET_DRAFT_ANIMAL_COUNT` |
 
 ### 2.3. `VehicleInteractionResult` 0x24 (16 B)
 
@@ -700,10 +700,10 @@ bool vehicleInteractionDebug = false;    // vehicle_interaction_debug
   `# v20 P1: guest→host vehicle interactions ...` + **4 ключа** (0/1) — INI снапшота
   станет **32 приёмочных ключа / 42 строки** (было 28/38);
 - `ApplyBoolKey` (`:204-232`) — 4 новые записи; иначе key unknown → warn/ignore;
-- A/B-гейты capture (`kVehicleInteractionCaptureDoors`,
-  `kVehicleInteractionDoorBreak`) — **constexpr в world_sync.cpp**, не INI:
-  временно, до in-game A/B; при необходимости вынести в INI в P1.1 отдельным bump'ом
-  acceptance-INI (не в v20 P1);
+- A/B-гейты capture (`kVehicleInteractionCaptureDoors` — default **true** в U4,
+  `kVehicleInteractionDoorBreak` — default false) — **constexpr в world_sync.cpp**,
+  не INI: страховка на случай конфликта control-mapping (A/B I2); при необходимости
+  вынести в INI в P1.1 отдельным bump'ом acceptance-INI (не в v20 P1);
 - config warn (`:320-340`): `vehicle_interaction=1 && npc_actor=0` →
   `config: warn vehicle_interaction=1 requires npc_actor=1` (нет epoch → интенты
   не пойдут); `vehicle_interaction_mission=1` — предупреждение о риске mission.
@@ -826,7 +826,8 @@ P1 total: typical **<0.3 KiB/s**, worst **<0.7 KiB/s** на направлени
   max ≤10 ms не хуже e19; `perf: npc warn`=0; новые функции — маленькие
   (CRAP < ~100), `quality_scan` strict gate vs baseline (не расти CRAP>5000/dup≥4/TODO);
 - guest: 0 доп. нативов в тик, кроме near-proxy collisions (≤16 proxies, только
-  при изменении near/варп; poll дверей ≤1 door/тик при near);
+  при изменении near/варп) и control-poll (≤5 проверок `IS_CONTROL_*`/тик при near;
+  `DISABLE_CONTROL_ACTION` — только пока guest в proxy);
 - server: точные размеры/rate — без очередей; host timeout не зависит от 0x23.
 
 ---
@@ -913,6 +914,8 @@ worktree clean, commit с why/what/proof. Промежуточные комми�
 - `src/world_sync.cpp`: `GetVehicleProxyNetId`, `UpdateInteractiveProxy`
   (после `InterpolateVehicleProxies` `:2989-3044`, вызов в guest-branch `:3526-3534`),
   guest inbox/mirror/rollback, proxy flags в `CreateProxy`/`UpdateProxy`/`Reset`;
+- controls capture C3/C4 (`IS_CONTROL_*`, `DISABLE_CONTROL_ACTION`/`ENABLE_CONTROL_ACTION`
+  suppress, restore на exit/reset) + health readback float→u16/i16 (§2.4/§10);
 - `src/config.h:92` поля, `src/config.cpp:121-123` INI, `:204-232` parse,
   `:320-340` warn; `tests/config_test.cpp` — покрыть 4 ключа/дефолты;
 - `src/actor_sync.h` — `HostEpoch()/GuestEpoch()` accessors, реализации у
