@@ -6311,6 +6311,23 @@ void GuestTick(const TickContext& ctx)
             ++it;
             continue;
         }
+        // task-180 A: visitor mode сохраняет локальных продавцов; host-прокси
+        // продавца не спавним (иначе дубли). Лог throttled.
+        if (coopcfg::Get().npcVisitor && coop::IsVisitorVendorModel(s.model))
+        {
+            static unsigned int s_lastVendorSkipLogTick = 0;
+            if (coopcfg::Get().npcDebug &&
+                (s_lastVendorSkipLogTick == 0 ||
+                 tick - s_lastVendorSkipLogTick >= 600))
+            {
+                s_lastVendorSkipLogTick = tick;
+                sh_log::Write("actor: visitor vendor skip id=%u model=0x%X\n",
+                              s.actorId, s.model);
+            }
+            g_pendingSpawnIds.erase(s.actorId);
+            it = g_pendingSpawns.erase(it);
+            continue;
+        }
         if (CreateProxy(s, ctx))
         {
             g_pendingSpawnIds.erase(s.actorId);

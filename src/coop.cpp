@@ -6881,7 +6881,25 @@ void Tick()
 
     unsigned int playerPed = GetPlayerPedFor(0);
     if (!playerPed)
+    {
+        // task-176: на загрузке/респавне playerPed может отсутствовать —
+        // сервер видит game-thread только по presence. Пока сети запущена,
+        // шлём flags=0 каждые ~2000 мс (обычная presence-логика не работает
+        // без ped; при появлении ped снова берёт верх, дублей нет).
+        if (g_netStarted)
+        {
+            const unsigned long long loadingNowMs = GetTickCount64();
+            static unsigned long long s_lastLoadingPresenceMs = 0;
+            if (s_lastLoadingPresenceMs == 0 ||
+                loadingNowMs - s_lastLoadingPresenceMs >= 2000ull)
+            {
+                s_lastLoadingPresenceMs = loadingNowMs;
+                if (SendPlayerPresence(s_presenceEpoch, 0))
+                    s_lastPresenceSendMs = loadingNowMs;
+            }
+        }
         return;
+    }
 
     // Забрать из сетевого inbox последние кадр/наряд/состояние мира. Дальше
     // работаем только с игровыми копиями — гонок с сетевым потоком нет.
@@ -8067,4 +8085,9 @@ void Tick()
     TickPerfWindow(perfFrameStart, perfWorldUs, perfActorUs);
 }
 
+
+bool IsVisitorVendorModel(uint32_t model)
+{
+    return IsVendorModel(model);
+}
 } // namespace coop

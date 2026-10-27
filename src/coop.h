@@ -26,6 +26,8 @@ void SendTrainSnapshot(const std::vector<uint8_t>& payload);
 // P1: служебные сущности мода (ghost/mount), которые нельзя реплицировать
 // как NPC мира.
 bool IsWorldSyncExcluded(unsigned int handle);
+// task-180: модель продавца (visitor mode не спавнит host-прокси).
+bool IsVisitorVendorModel(uint32_t model);
 
 // E1: отправка actor-сообщений от хоста (вызывается actor_sync).
 void SendActorSpawnBatch(uint32_t epoch,
