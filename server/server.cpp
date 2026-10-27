@@ -75,7 +75,10 @@ struct OnlinePlayer {
     // от этого клиента (мс). Если isHost и с этого момента прошло больше
     // g_hostGameTimeoutMs — хост считается зависшим и мигрирует.
     uint64_t lastGameMs = 0;
-    bool hostGraceDone = false;
+    // task-175: грейс хоста до первого game-thread сообщения. joinMs — момент
+    // JOIN/промоушена; sawGameMsg — приходило ли уже такое сообщение.
+    uint64_t joinMs = 0;
+    bool sawGameMsg = false;
 };
 
 std::mutex g_mutex;                       // защищает g_online и g_lastPos
@@ -271,6 +274,9 @@ uint64_t g_idleTimeoutMs = 30000;
 // Если игровой поток хоста завис, сессия должна мигрировать на гостя.
 // Настраивается 4-м аргументом (мс), clamp 2..15 с; отдельно от idle timeout.
 uint64_t g_hostGameTimeoutMs = 4000;
+// task-175: начальный грейс хоста до первого game-thread сообщения. Загрузка
+// уровня/меню может занять >4 с — в это время роли НЕ трогаем.
+constexpr uint64_t kHostGameGraceMs = 15000;
 // Test-only: если >0, сервер сам инициирует корректную остановку через N мс.
 uint64_t g_testExitAfterMs = 0;
 
@@ -301,6 +307,7 @@ bool IsGameThreadMessage(net::Msg m)
     case net::Msg::ActorDespawn:
     case net::Msg::ActorEvent:
     case net::Msg::ActorOutfit:
+    case net::Msg::PlayerPresence: // task-175: клиент шлёт из игрового потока
     case net::Msg::ActorAppearance:
         return true;
     default:
@@ -1079,725 +1086,889 @@ void StatusThread()
 }
 
 // ---------------- Обработка клиента ----------------
-void HandleClient(netio::Socket* sock, const std::string& peerIp,
-                  bool& preJoinCounted, uint64_t acceptedAtMs)
+// ---------------- ub-mode (task-174): HandleClient phases ----------------
+// HandleClient был 782 строки/CRAP 25440. Явная сессия ClientSession + фазы:
+// read-loop, timeout/keepalive, dispatch, cleanup/save. Каждая фаза вызывается
+// строго на месте прежнего кода; false = закрыть соединение и выйти (cleanup
+// всё равно выполняется, как и прежний goto done).
+struct ClientSession
 {
+    netio::Socket* sock = nullptr;
+    std::string peerIp;
     std::string name;
     netio::FrameReader reader;
     bool registered = false;
-    const uint64_t connStartMs = NowMs();
-    uint64_t lastRecvMs = connStartMs;
+    bool* preJoinCounted = nullptr;
+    uint64_t connStartMs = 0;
+    uint64_t lastRecvMs = 0;
+    uint64_t acceptedAtMs = 0;
+    uint8_t buf[4096] = {};
+};
 
-    uint8_t buf[4096];
-    for (;;)
+// Чтение из сокета (flushing хвоста, остановка сервера). false = break.
+bool ReadSocketPhase(ClientSession& s)
+{
+    // Корректная остановка сервера (Ctrl+C): не ждём idle timeout.
+    if (!g_running.load())
     {
-        // Корректная остановка сервера (Ctrl+C): не ждём idle timeout.
-        if (!g_running.load())
+        s.sock->Close();
+        return false;
+    }
+
+    int n = 0;
+    s.sock->Flush(); // дослать хвост из очереди (неблокирующие сокеты)
+    const Result r = s.sock->Recv(s.buf, sizeof(s.buf), n);
+    // Closed — сокет закрыт нами/другим потоком (например, Send обнаружил
+    // обрыв). Раньше этот результат не обрабатывался, и обработчик крутился
+    // в цикле вечно, не доходя до cleanup (зависший игрок в g_online).
+    if (r == Result::NoData || r == Result::Error || r == Result::Closed)
+    {
+        s.sock->Close();
+        return false;
+    }
+    if (r == Result::Ok)
+    {
+        s.lastRecvMs = NowMs();
+        s.reader.Feed(s.buf, n);
+    }
+    else std::this_thread::sleep_for(std::chrono::milliseconds(1)); // не крутим CPU
+    return true;
+}
+
+// Pre-JOIN deadline и idle timeout. false = close+break (логи как раньше).
+bool CheckTimeoutPhase(ClientSession& s, uint64_t nowMs)
+{
+    // До JOIN — короткий дедлайн, чтобы «мёртвые» probe-сокеты не
+    // занимали слоты до общего idle timeout.
+    if (!s.registered && nowMs - s.connStartMs > kPreJoinTimeoutMs)
+    {
+        LogLine("[!] " + s.peerIp + ": нет JOIN за " +
+                std::to_string(kPreJoinTimeoutMs / 1000) + " s — закрываю");
+        s.sock->Close();
+        return false;
+    }
+    if (nowMs - s.lastRecvMs > g_idleTimeoutMs)
+    {
+        LogLine("[!] " + s.peerIp + ": idle timeout (" +
+                std::to_string(g_idleTimeoutMs / 1000) + " s), закрываю");
+        s.sock->Close();
+        return false;
+    }
+    return true;
+}
+
+// task-175: host game-timeout — МЯГКАЯ миграция, а НЕ закрытие сокета.
+// Инварианты:
+//  - до первого game-thread сообщения хост получает kHostGameGraceMs (15 с)
+//    от JOIN/промоушена: загрузка/меню не должны дёргать роли;
+//  - после первого game-thread сообщения действует обычный
+//    g_hostGameTimeoutMs; Ping/Pong его НЕ продлевают;
+//  - по таймауту сокет НЕ закрываем: снимаем isHost, повышаем второго,
+//    обоим шлём HostChanged; старый хост остаётся обычным клиентом (idle/
+//    connection cleanup закроет его только при реальном обрыве);
+//  - если других игроков нет, роли не меняем (мигрировать некуда).
+bool CheckHostGameTimeoutPhase(ClientSession& s, uint64_t nowMs)
+{
+    if (!s.registered || s.name.empty())
+        return true;
+    bool demote = false;
+    uint64_t hostIdleMs = 0;
+    std::string newHost;
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        auto it = g_online.find(s.name);
+        if (it == g_online.end() || it->second.sock != s.sock ||
+            !it->second.isHost)
+            return true;
+        OnlinePlayer& h = it->second;
+        if (!h.sawGameMsg)
         {
-            sock->Close();
+            if (nowMs - h.joinMs <= kHostGameGraceMs)
+                return true; // загрузка/меню — ещё грейс
+            demote = true;
+            hostIdleMs = nowMs - h.joinMs;
+        }
+        else if (nowMs - h.lastGameMs > g_hostGameTimeoutMs)
+        {
+            demote = true;
+            hostIdleMs = nowMs - h.lastGameMs;
+        }
+        if (!demote)
+            return true;
+
+        // Мигрировать можно только на другого игрока.
+        auto other = g_online.end();
+        for (auto nit = g_online.begin(); nit != g_online.end(); ++nit)
+        {
+            if (nit->first != s.name)
+            {
+                other = nit;
+                break;
+            }
+        }
+        if (other == g_online.end())
+            return true; // некого повышать — хост остаётся хостом
+
+        h.isHost = false;
+        newHost = other->first;
+        other->second.isHost = true;
+        // Новому хосту — тот же грейс до первого game-thread сообщения.
+        other->second.joinMs = nowMs;
+        other->second.sawGameMsg = false;
+        other->second.lastGameMs = nowMs;
+        for (auto& kv : g_online)
+        {
+            net::HostChangedPayload hc{};
+            hc.isHost = (kv.first == newHost) ? 1 : 0;
+            const std::vector<uint8_t> msg = MakeMsg(
+                (uint8_t)net::Msg::HostChanged,
+                reinterpret_cast<const uint8_t*>(&hc),
+                (uint32_t)sizeof(hc));
+            if (kv.second.sock)
+                SendTracked(kv.second.sock, msg.data(), (int)msg.size());
+        }
+    }
+    if (demote)
+    {
+        LogLine("[!] host game-timeout (" + std::to_string(hostIdleMs) +
+                " ms), promoting remaining");
+        LogLine("[HOST] " + newHost + " повышен до хоста");
+    }
+    return true;
+}
+
+// ---------------- ub-mode (task-174): message dispatch phase ----------------
+// Разбор всех входящих сообщений (pre-JOIN gate, host liveness, switch).
+// false = соединение закрыто и нужно выйти (все прежние goto done пути уже
+// вызвали Close); true = продолжаем read-loop.
+// JOIN/handshake phase: разбор/валидация ника, версии, атомарная регистрация,
+// JOIN_OK/PlayerJoined, RefundRateSlotOnJoin. false = соединение закрыто.
+bool JoinRequestPhase(ClientSession& s, const std::vector<uint8_t>& pay)
+{
+    if (s.registered)
+    {
+        LogLine("[!] " + s.peerIp + ": повторный JOIN — соединение закрыто");
+        s.sock->Close();
+        return false;
+    }
+
+    // --- Разбор и валидация имени (до любых блокировок) ---
+    if (pay.empty())
+    {
+        LogLine("[!] " + s.peerIp + " отклонён: пустой JOIN");
+        SendJoinRejectedAndClose(s.sock, net::JoinRejectReason::BadName);
+        return false;
+    }
+    const uint8_t nl = pay[0];
+    if (nl == 0 || nl > kMaxNameLength || pay.size() < 1u + nl)
+    {
+        LogLine("[!] " + s.peerIp + " отклонён: некорректная длина ника");
+        SendJoinRejectedAndClose(s.sock, net::JoinRejectReason::BadName);
+        return false;
+    }
+    std::string candidate(reinterpret_cast<const char*>(pay.data() + 1), nl);
+    if (!IsValidName(candidate))
+    {
+        LogLine("[!] " + s.peerIp + " отклонён: недопустимые символы в нике");
+        SendJoinRejectedAndClose(s.sock, net::JoinRejectReason::BadName);
+        return false;
+    }
+
+    // модель персонажа (может отсутствовать в старом клиенте)
+    unsigned long long model = 0;
+    const size_t off = 1u + nl;
+    if (pay.size() >= off + 8)
+    {
+        for (int i = 0; i < 8; ++i)
+            model |= (unsigned long long)pay[off + i] << (8 * i);
+    }
+
+    // Версия протокола обязательна: чужие байты не разбираем.
+    uint16_t version = 0;
+    if (pay.size() >= off + 10)
+        version = static_cast<uint16_t>(pay[off + 8] |
+                                        (pay[off + 9] << 8));
+    if (version != net::kProtocolVersion)
+    {
+        LogLine("[!] " + s.peerIp + " отклонён: версия протокола " +
+                std::to_string(version) + " != " +
+                std::to_string(net::kProtocolVersion));
+        SendJoinRejectedAndClose(s.sock, net::JoinRejectReason::VersionMismatch);
+        return false;
+    }
+
+    // --- Атомарная регистрация + первые сообщения ---
+    // Всё под одним g_mutex: проверки full/taken, вставка записи и
+    // отправка JOIN_OK. Инвариант: ПЕРВОЕ сообщение новичку — всегда
+    // JoinOk (или JoinRejected): другие потоки не могут вклиниться
+    // и прислать PlayerJoined раньше JOIN_OK. Раньше проверка,
+    // вставка и ответ были раздельными — два одновременных JOIN
+    // могли дать двух хостов, третьего игрока или затирание записи
+    // с тем же ником.
+    bool full = false, taken = false, isHost = false, has = false;
+    float sx = 0, sy = 0, sz = 0, shd = 0;
+    uint64_t sid = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        full = g_online.size() >= static_cast<std::size_t>(net::kMaxPlayers);
+        taken = !full && g_online.find(candidate) != g_online.end();
+        if (!full && !taken)
+        {
+            const auto lp = g_lastPos.find(candidate);
+            if (lp != g_lastPos.end() && lp->second.hasLoc)
+            {
+                has = true;
+                sx = lp->second.x; sy = lp->second.y;
+                sz = lp->second.z; shd = lp->second.heading;
+            }
+            isHost = g_online.empty();
+            OnlinePlayer p;
+            p.name = candidate;
+            p.ip = s.peerIp;
+            p.pedModel = model;
+            p.sock = s.sock;
+            p.isHost = isHost;
+            p.sessionId = g_nextSession.fetch_add(1);
+            p.lastGameMs = NowMs();
+            p.joinMs = p.lastGameMs;
+            p.sawGameMsg = false;
+            if (has)
+            {
+                p.x = sx; p.y = sy; p.z = sz; p.heading = shd;
+                p.hasLoc = true;
+            }
+            g_online[candidate] = p;
+            UpdateLastPosLocked(candidate, p);
+            s.name = candidate;
+            sid = p.sessionId;
+            s.registered = true;
+            if ((*s.preJoinCounted))
+            {
+                --g_preJoinConnections;
+                (*s.preJoinCounted) = false;
+            }
+
+            // 1) JOIN_OK — строго первым кадром новичку.
+            std::vector<uint8_t> resp;
+            uint8_t le[8];
+            for (int i = 0; i < 8; ++i) le[i] = (uint8_t)(sid >> (8 * i));
+            resp.insert(resp.end(), le, le + 8);
+            resp.push_back(has ? 1 : 0);
+            if (has)
+            {
+                auto pushf = [&](float v) {
+                    uint32_t u;
+                    std::memcpy(&u, &v, 4);
+                    for (int i = 0; i < 4; ++i)
+                        resp.push_back((uint8_t)(u >> (8 * i)));
+                };
+                pushf(sx); pushf(sy); pushf(sz); pushf(shd);
+            }
+            resp.push_back(isHost ? 1 : 0);
+            const std::vector<uint8_t> ok = MakeMsg(
+                (uint8_t)net::Msg::JoinOk, resp.data(), (uint32_t)resp.size());
+            SendTracked(s.sock, ok.data(), (int)ok.size());
+
+            // 2) Существующие игроки — новичку (уже после JOIN_OK).
+            for (auto& kv : g_online)
+            {
+                if (kv.first == s.name) continue;
+                const std::vector<uint8_t> info = MakePlayerInfoMsg(
+                    (uint8_t)net::Msg::PlayerJoined,
+                    kv.second.name, kv.second.pedModel,
+                    kv.second.hasLoc, kv.second.x, kv.second.y,
+                    kv.second.z, kv.second.heading);
+                SendTracked(s.sock, info.data(), (int)info.size());
+            }
+
+            // 3) Остальным — что подключился новый (с его позицией).
+            const std::vector<uint8_t> joinedMsg = MakePlayerInfoMsg(
+                (uint8_t)net::Msg::PlayerJoined, s.name, model,
+                has, sx, sy, sz, shd);
+            for (auto& kv : g_online)
+            {
+                if (kv.first == s.name || !kv.second.sock) continue;
+                SendTracked(kv.second.sock, joinedMsg.data(),
+                            (int)joinedMsg.size());
+            }
+        }
+    }
+
+    if (!s.registered)
+    {
+        LogLine("[!] " + candidate + " отклонён: " +
+                (full ? std::string("сервер полон")
+                      : std::string("ник занят")));
+        SendJoinRejectedAndClose(s.sock, full ? net::JoinRejectReason::ServerFull
+                                            : net::JoinRejectReason::NameTaken);
+        return false;
+    }
+
+    // JOIN удался — вернуть per-IP токен (см. RefundRateSlotOnJoin).
+    RefundRateSlotOnJoin(s.peerIp, s.acceptedAtMs);
+
+    LogLine("[+] " + s.name + " подключился (" + s.peerIp + ")" +
+            (isHost ? " [HOST]" : " [GUEST]") +
+            (has ? " — возврат, позиция восстановлена" : " — новый игрок"));
+    return true;
+}
+
+// Leave/Died/Respawned phase. false = соединение закрыто (Leave).
+bool LifecycleMessagesPhase(ClientSession& s,
+                            const std::vector<uint8_t>& pay, net::Msg msg)
+{
+    switch (msg)
+    {
+        case net::Msg::Leave:
+            LogLine("[-] " + s.name + " вышел");
+            s.sock->Close();
+            return false;
+        case net::Msg::Died:
+            LogLine("[x] " + s.name + " умер (игрок погиб в мире, " + s.peerIp + ")");
+            // Ретранслируем остальным (с именем) — они покажут смерть
+            // педа-призрака (убить, но оставить труп и снаряжение).
+            if (s.registered && !s.name.empty())
+                BroadcastToOthers(s.sock, MakeNameMsg((uint8_t)net::Msg::Died, s.name));
             break;
-        }
-
-        int n = 0;
-        sock->Flush(); // дослать хвост из очереди (неблокирующие сокеты)
-        Result r = sock->Recv(buf, sizeof(buf), n);
-        // Closed — сокет закрыт нами/другим потоком (например, Send обнаружил
-        // обрыв и закрыл его). Раньше этот результат не обрабатывался, и
-        // обработчик крутился в цикле вечно, не доходя до cleanup (зависший
-        // игрок в g_online, слот не освобождается).
-        if (r == Result::NoData || r == Result::Error || r == Result::Closed)
-        {
-            sock->Close();
+        case net::Msg::Respawned:
+            LogLine("[+] " + s.name + " возродился после смерти");
+            if (s.registered && !s.name.empty())
+                BroadcastToOthers(s.sock, MakeNameMsg((uint8_t)net::Msg::Respawned, s.name));
             break;
-        }
-        if (r == Result::Ok)
+    }
+    return true;
+}
+
+void FrameMessagesPhase(ClientSession& s, const std::vector<uint8_t>& pay)
+{
+    switch (net::Msg::Frame)
+    {
+        case net::Msg::Frame:
         {
-            lastRecvMs = NowMs();
-            reader.Feed(buf, n);
-        }
-        else std::this_thread::sleep_for(std::chrono::milliseconds(1)); // не крутим CPU
-
-        const uint64_t nowMs = NowMs();
-        // До JOIN — короткий дедлайн, чтобы «мёртвые» probe-сокеты не
-        // занимали слоты до общего idle timeout.
-        if (!registered && nowMs - connStartMs > kPreJoinTimeoutMs)
-        {
-            LogLine("[!] " + peerIp + ": нет JOIN за " +
-                    std::to_string(kPreJoinTimeoutMs / 1000) + " s — закрываю");
-            sock->Close();
-            break;
-        }
-        if (nowMs - lastRecvMs > g_idleTimeoutMs)
-        {
-            LogLine("[!] " + peerIp + ": idle timeout (" +
-                    std::to_string(g_idleTimeoutMs / 1000) + " s), закрываю");
-            sock->Close();
-            break;
-        }
-
-        uint8_t type; std::vector<uint8_t> pay;
-        while (reader.Poll(type, pay))
-        {
-            const net::Msg msg = static_cast<net::Msg>(type);
-            // P0 (task-155): фактический входящий трафик (включая framing).
-            CountInboundTraffic(msg, pay.size());
-
-            // До JOIN разрешаем только JOIN и Ping. Остальное — закрываем:
-            // клиент, не прошедший регистрацию, не должен ретранслировать мир.
-            if (!registered && msg != net::Msg::Join && msg != net::Msg::Ping)
+            if (pay.size() == sizeof(net::FramePayload))
             {
-                LogLine("[!] " + peerIp + ": сообщение type=" +
-                        std::to_string((unsigned)type) + " до JOIN — соединение закрыто");
-                sock->Close();
-                goto done;
-            }
+                net::FramePayload fp;
+                std::memcpy(&fp, pay.data(), sizeof(fp));
 
-            // Host liveness: игровые сообщения (не Ping!) продлевают жизнь
-            // хоста — по ним определяется, жив ли его игровой поток.
-            if (registered && IsGameThreadMessage(msg))
-            {
-                std::lock_guard<std::mutex> lk(g_mutex);
-                auto git = g_online.find(name);
-                if (git != g_online.end() && git->second.sock == sock)
-                    git->second.lastGameMs = nowMs;
-            }
-
-            switch (msg)
-            {
-            case net::Msg::Join:
-            {
-                if (registered)
+                // NaN/Inf/абсурдные координаты не ретранслируем и не
+                // сохраняем (иначе жертва получает SetEntityCoords(NaN),
+                // а players.txt «заражается» навсегда).
+                if (!IsSaneFramePayload(fp))
                 {
-                    LogLine("[!] " + peerIp + ": повторный JOIN — соединение закрыто");
-                    sock->Close();
-                    goto done;
-                }
-
-                // --- Разбор и валидация имени (до любых блокировок) ---
-                if (pay.empty())
-                {
-                    LogLine("[!] " + peerIp + " отклонён: пустой JOIN");
-                    SendJoinRejectedAndClose(sock, net::JoinRejectReason::BadName);
-                    goto done;
-                }
-                const uint8_t nl = pay[0];
-                if (nl == 0 || nl > kMaxNameLength || pay.size() < 1u + nl)
-                {
-                    LogLine("[!] " + peerIp + " отклонён: некорректная длина ника");
-                    SendJoinRejectedAndClose(sock, net::JoinRejectReason::BadName);
-                    goto done;
-                }
-                std::string candidate(reinterpret_cast<const char*>(pay.data() + 1), nl);
-                if (!IsValidName(candidate))
-                {
-                    LogLine("[!] " + peerIp + " отклонён: недопустимые символы в нике");
-                    SendJoinRejectedAndClose(sock, net::JoinRejectReason::BadName);
-                    goto done;
-                }
-
-                // модель персонажа (может отсутствовать в старом клиенте)
-                unsigned long long model = 0;
-                const size_t off = 1u + nl;
-                if (pay.size() >= off + 8)
-                {
-                    for (int i = 0; i < 8; ++i)
-                        model |= (unsigned long long)pay[off + i] << (8 * i);
-                }
-
-                // Версия протокола обязательна: чужие байты не разбираем.
-                uint16_t version = 0;
-                if (pay.size() >= off + 10)
-                    version = static_cast<uint16_t>(pay[off + 8] |
-                                                    (pay[off + 9] << 8));
-                if (version != net::kProtocolVersion)
-                {
-                    LogLine("[!] " + peerIp + " отклонён: версия протокола " +
-                            std::to_string(version) + " != " +
-                            std::to_string(net::kProtocolVersion));
-                    SendJoinRejectedAndClose(sock, net::JoinRejectReason::VersionMismatch);
-                    goto done;
-                }
-
-                // --- Атомарная регистрация + первые сообщения ---
-                // Всё под одним g_mutex: проверки full/taken, вставка записи и
-                // отправка JOIN_OK. Инвариант: ПЕРВОЕ сообщение новичку — всегда
-                // JoinOk (или JoinRejected): другие потоки не могут вклиниться
-                // и прислать PlayerJoined раньше JOIN_OK. Раньше проверка,
-                // вставка и ответ были раздельными — два одновременных JOIN
-                // могли дать двух хостов, третьего игрока или затирание записи
-                // с тем же ником.
-                bool full = false, taken = false, isHost = false, has = false;
-                float sx = 0, sy = 0, sz = 0, shd = 0;
-                uint64_t sid = 0;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    full = g_online.size() >= static_cast<std::size_t>(net::kMaxPlayers);
-                    taken = !full && g_online.find(candidate) != g_online.end();
-                    if (!full && !taken)
-                    {
-                        const auto lp = g_lastPos.find(candidate);
-                        if (lp != g_lastPos.end() && lp->second.hasLoc)
-                        {
-                            has = true;
-                            sx = lp->second.x; sy = lp->second.y;
-                            sz = lp->second.z; shd = lp->second.heading;
-                        }
-                        isHost = g_online.empty();
-                        OnlinePlayer p;
-                        p.name = candidate;
-                        p.ip = peerIp;
-                        p.pedModel = model;
-                        p.sock = sock;
-                        p.isHost = isHost;
-                        p.sessionId = g_nextSession.fetch_add(1);
-                        p.lastGameMs = NowMs();
-                        p.hostGraceDone = false;
-                        if (has)
-                        {
-                            p.x = sx; p.y = sy; p.z = sz; p.heading = shd;
-                            p.hasLoc = true;
-                        }
-                        g_online[candidate] = p;
-                        UpdateLastPosLocked(candidate, p);
-                        name = candidate;
-                        sid = p.sessionId;
-                        registered = true;
-                        if (preJoinCounted)
-                        {
-                            --g_preJoinConnections;
-                            preJoinCounted = false;
-                        }
-
-                        // 1) JOIN_OK — строго первым кадром новичку.
-                        std::vector<uint8_t> resp;
-                        uint8_t le[8];
-                        for (int i = 0; i < 8; ++i) le[i] = (uint8_t)(sid >> (8 * i));
-                        resp.insert(resp.end(), le, le + 8);
-                        resp.push_back(has ? 1 : 0);
-                        if (has)
-                        {
-                            auto pushf = [&](float v) {
-                                uint32_t u;
-                                std::memcpy(&u, &v, 4);
-                                for (int i = 0; i < 4; ++i)
-                                    resp.push_back((uint8_t)(u >> (8 * i)));
-                            };
-                            pushf(sx); pushf(sy); pushf(sz); pushf(shd);
-                        }
-                        resp.push_back(isHost ? 1 : 0);
-                        const std::vector<uint8_t> ok = MakeMsg(
-                            (uint8_t)net::Msg::JoinOk, resp.data(), (uint32_t)resp.size());
-                        SendTracked(sock, ok.data(), (int)ok.size());
-
-                        // 2) Существующие игроки — новичку (уже после JOIN_OK).
-                        for (auto& kv : g_online)
-                        {
-                            if (kv.first == name) continue;
-                            const std::vector<uint8_t> info = MakePlayerInfoMsg(
-                                (uint8_t)net::Msg::PlayerJoined,
-                                kv.second.name, kv.second.pedModel,
-                                kv.second.hasLoc, kv.second.x, kv.second.y,
-                                kv.second.z, kv.second.heading);
-                            SendTracked(sock, info.data(), (int)info.size());
-                        }
-
-                        // 3) Остальным — что подключился новый (с его позицией).
-                        const std::vector<uint8_t> joinedMsg = MakePlayerInfoMsg(
-                            (uint8_t)net::Msg::PlayerJoined, name, model,
-                            has, sx, sy, sz, shd);
-                        for (auto& kv : g_online)
-                        {
-                            if (kv.first == name || !kv.second.sock) continue;
-                            SendTracked(kv.second.sock, joinedMsg.data(),
-                                        (int)joinedMsg.size());
-                        }
-                    }
-                }
-
-                if (!registered)
-                {
-                    LogLine("[!] " + candidate + " отклонён: " +
-                            (full ? std::string("сервер полон")
-                                  : std::string("ник занят")));
-                    SendJoinRejectedAndClose(sock, full ? net::JoinRejectReason::ServerFull
-                                                        : net::JoinRejectReason::NameTaken);
-                    goto done;
-                }
-
-                // JOIN удался — вернуть per-IP токен (см. RefundRateSlotOnJoin).
-                RefundRateSlotOnJoin(peerIp, acceptedAtMs);
-
-                LogLine("[+] " + name + " подключился (" + peerIp + ")" +
-                        (isHost ? " [HOST]" : " [GUEST]") +
-                        (has ? " — возврат, позиция восстановлена" : " — новый игрок"));
-                break;
-            }
-            case net::Msg::Frame:
-            {
-                if (pay.size() == sizeof(net::FramePayload))
-                {
-                    net::FramePayload fp;
-                    std::memcpy(&fp, pay.data(), sizeof(fp));
-
-                    // NaN/Inf/абсурдные координаты не ретранслируем и не
-                    // сохраняем (иначе жертва получает SetEntityCoords(NaN),
-                    // а players.txt «заражается» навсегда).
-                    if (!IsSaneFramePayload(fp))
-                    {
-                        LogWarn("[!] " + name +
-                                ": FRAME с NaN/Inf/огромными координатами отброшен");
-                        break;
-                    }
-
-                    // обновить координаты для таблицы и персистентности
-                    {
-                        std::lock_guard<std::mutex> lk(g_mutex);
-                        auto it = g_online.find(name);
-                        if (it != g_online.end())
-                        {
-                            it->second.x = fp.x; it->second.y = fp.y;
-                            it->second.z = fp.z; it->second.heading = fp.heading;
-                            it->second.hasLoc = true;
-                            UpdateLastPosLocked(name, it->second);
-                        }
-                    }
-
-                    // ретрансляция всем, кроме отправителя
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::Frame,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
-            }
-            case net::Msg::Leave:
-                LogLine("[-] " + name + " вышел");
-                sock->Close();
-                goto done;
-            case net::Msg::Died:
-                LogLine("[x] " + name + " умер (игрок погиб в мире, " + peerIp + ")");
-                // Ретранслируем остальным (с именем) — они покажут смерть
-                // педа-призрака (убить, но оставить труп и снаряжение).
-                if (registered && !name.empty())
-                    BroadcastToOthers(sock, MakeNameMsg((uint8_t)net::Msg::Died, name));
-                break;
-            case net::Msg::Respawned:
-                LogLine("[+] " + name + " возродился после смерти");
-                if (registered && !name.empty())
-                    BroadcastToOthers(sock, MakeNameMsg((uint8_t)net::Msg::Respawned, name));
-                break;
-            case net::Msg::WorldState:
-            {
-                // Время/погода канонические только у хоста (как WorldSnapshot).
-                bool senderIsHost = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    senderIsHost = it != g_online.end() && it->second.isHost;
-                }
-                if (!senderIsHost)
-                {
-                    LogWarn("[!] " + name + ": WorldState от не-хоста проигнорирован");
+                    LogWarn("[!] " + s.name +
+                            ": FRAME с NaN/Inf/огромными координатами отброшен");
                     break;
                 }
-                if (pay.size() == sizeof(net::WorldState))
-                {
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::WorldState,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
-            }
-            case net::Msg::WorldSnapshot:
-            {
-                // P1: снапшот мира принимаем ТОЛЬКО от хоста сессии и
-                // ретранслируем остальным (гостю). Гость не может подменить мир.
-                bool senderIsHost = false;
+
+                // обновить координаты для таблицы и персистентности
                 {
                     std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    senderIsHost = it != g_online.end() && it->second.isHost;
-                }
-                if (!senderIsHost)
-                {
-                    LogWarn("[!] " + name + ": WorldSnapshot от не-хоста проигнорирован");
-                    break;
-                }
-                if (IsValidWorldSnapshot(pay))
-                {
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::WorldSnapshot,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
-            }
-            case net::Msg::Outfit:
-            {
-                // Компоненты одежды — ретранслируем остальным (как Frame).
-                if (pay.size() == sizeof(net::OutfitState))
-                {
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::Outfit,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
-            }
-            case net::Msg::ActionState:
-            {
-                // P2: действие/сценарий своего персонажа — просто ретрансляция.
-                if (pay.size() == sizeof(net::ActionStatePayload))
-                {
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::ActionState,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
-            }
-            case net::Msg::PlayerVehicle:
-            {
-                // P2: посадка в транспорт — ретрансляция остальным.
-                if (pay.size() == sizeof(net::PlayerVehicleState))
-                {
-                    BroadcastToOthers(sock, MakeMsg(
-                        (uint8_t)net::Msg::PlayerVehicle,
-                        pay.data(), (uint32_t)pay.size()));
-                }
-                break;
-            }
-            case net::Msg::MissionEvent:
-            {
-                // P3: событие MissionData принимаем только от хоста.
-                bool senderIsHost = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    senderIsHost = it != g_online.end() && it->second.isHost;
-                }
-                if (!senderIsHost)
-                {
-                    LogWarn("[!] " + name + ": MissionEvent от не-хоста проигнорирован");
-                    break;
-                }
-                if (pay.size() == sizeof(net::MissionEventPayload))
-                {
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::MissionEvent,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
-            }
-            case net::Msg::MissionState:
-            {
-                // P3: активная миссия — только от хоста.
-                bool senderIsHost = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    senderIsHost = it != g_online.end() && it->second.isHost;
-                }
-                if (!senderIsHost)
-                {
-                    LogWarn("[!] " + name + ": MissionState от не-хоста проигнорирован");
-                    break;
-                }
-                if (pay.size() == sizeof(net::MissionStatePayload))
-                {
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::MissionState,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
-            }
-            case net::Msg::MissionBarrier:
-            {
-                // P3: направление фаз фиксировано: host шлёт Offer/StartWindow/
-                // Abort, guest — Ready/Started. Иначе игнорируем.
-                if (pay.size() != sizeof(net::MissionBarrierPayload))
-                    break;
-                net::MissionBarrierPayload ev{};
-                std::memcpy(&ev, pay.data(), sizeof(ev));
-                bool senderIsHost = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    senderIsHost = it != g_online.end() && it->second.isHost;
-                }
-                const bool hostPhase =
-                    coop::missionsbarrier::IsPhaseAllowedForRole(
-                        coop::missionsbarrier::Role::Host, ev.phase);
-                const bool guestPhase =
-                    coop::missionsbarrier::IsPhaseAllowedForRole(
-                        coop::missionsbarrier::Role::Guest, ev.phase);
-                const bool phaseAllowed =
-                    coop::missionsbarrier::IsKnownPhase(ev.phase) &&
-                    ((senderIsHost && hostPhase) || (!senderIsHost && guestPhase));
-                if (!phaseAllowed)
-                {
-                    LogWarn("[!] " + name + ": MissionBarrier phase=" +
-                            std::to_string((unsigned)ev.phase) +
-                            " не от той роли — проигнорирован");
-                    break;
-                }
-                BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::MissionBarrier,
-                                                pay.data(), (uint32_t)pay.size()));
-                break;
-            }
-            case net::Msg::TrainSnapshot:
-            {
-                // R&D: состав принимаем только от хоста и строго по формату.
-                bool senderIsHost = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    senderIsHost = it != g_online.end() && it->second.isHost;
-                }
-                if (!senderIsHost)
-                {
-                    LogWarn("[!] " + name + ": TrainSnapshot от не-хоста проигнорирован");
-                    break;
-                }
-                if (IsValidTrainSnapshot(pay))
-                {
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::TrainSnapshot,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
-            }
-            // ---------------- E0 (v15): actor-сообщения ----------------
-            case net::Msg::ActorSpawnBatch:
-            {
-                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorSpawnBatch,
-                              IsValidActorSpawnBatch, "ActorSpawnBatch");
-                break;
-            }
-            case net::Msg::ActorFrames:
-            {
-                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorFrames,
-                              IsValidActorFrames, "ActorFrames");
-                break;
-            }
-            case net::Msg::ActorDespawn:
-            {
-                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorDespawn,
-                              IsValidActorDespawn, "ActorDespawn");
-                break;
-            }
-            case net::Msg::ActorEvent:
-            {
-                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorEvent,
-                              IsValidActorEvent, "ActorEvent");
-                break;
-            }
-            case net::Msg::ActorOutfit:
-            {
-                RelayHostOnly(sock, name, pay, (uint8_t)net::Msg::ActorOutfit,
-                              IsValidActorOutfit, "ActorOutfit");
-                break;
-            }
-            case net::Msg::ActorAppearance:
-            {
-                // E2c-b (v16): точная внешность NPC — только хост -> гостям.
-                RelayHostOnly(sock, name, pay,
-                              (uint8_t)net::Msg::ActorAppearance,
-                              IsValidActorAppearance, "ActorAppearance");
-                break;
-            }
-            case net::Msg::ActorDamage:
-            {
-                // E5 (v17): урон по NPC — только гость -> сервер -> хосту.
-                // Хост урон не запрашивает (он его применяет), гостям не
-                // релеим; защита от флуда — не больше kMaxActorDamagePerSecond
-                // запросов в секунду от клиента (лишние молча дропаются).
-                if (!IsValidActorDamage(pay))
-                    break;
-                bool senderIsHost = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
+                    auto it = g_online.find(s.name);
                     if (it != g_online.end())
                     {
-                        senderIsHost = it->second.isHost;
-                        if (!senderIsHost &&
-                            AllowRate(it->second.damageRate,
-                                      kMaxActorDamagePerSecond, NowMs()))
+                        it->second.x = fp.x; it->second.y = fp.y;
+                        it->second.z = fp.z; it->second.heading = fp.heading;
+                        it->second.hasLoc = true;
+                        UpdateLastPosLocked(s.name, it->second);
+                    }
+                }
+
+                // ретрансляция всем, кроме отправителя
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::Frame,
+                                                pay.data(), (uint32_t)pay.size()));
+            }
+            break;
+        }
+    }
+}
+
+// World/mission relay phase (host-only/validated) — байт-в-байт.
+void WorldRelayMessagesPhase(ClientSession& s,
+                             const std::vector<uint8_t>& pay, net::Msg msg)
+{
+    switch (msg)
+    {
+        case net::Msg::WorldState:
+        {
+            // Время/погода канонические только у хоста (как WorldSnapshot).
+            bool senderIsHost = false;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto it = g_online.find(s.name);
+                senderIsHost = it != g_online.end() && it->second.isHost;
+            }
+            if (!senderIsHost)
+            {
+                LogWarn("[!] " + s.name + ": WorldState от не-хоста проигнорирован");
+                break;
+            }
+            if (pay.size() == sizeof(net::WorldState))
+            {
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::WorldState,
+                                                pay.data(), (uint32_t)pay.size()));
+            }
+            break;
+        }
+        case net::Msg::WorldSnapshot:
+        {
+            // P1: снапшот мира принимаем ТОЛЬКО от хоста сессии и
+            // ретранслируем остальным (гостю). Гость не может подменить мир.
+            bool senderIsHost = false;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto it = g_online.find(s.name);
+                senderIsHost = it != g_online.end() && it->second.isHost;
+            }
+            if (!senderIsHost)
+            {
+                LogWarn("[!] " + s.name + ": WorldSnapshot от не-хоста проигнорирован");
+                break;
+            }
+            if (IsValidWorldSnapshot(pay))
+            {
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::WorldSnapshot,
+                                                pay.data(), (uint32_t)pay.size()));
+            }
+            break;
+        }
+        case net::Msg::Outfit:
+        {
+            // Компоненты одежды — ретранслируем остальным (как Frame).
+            if (pay.size() == sizeof(net::OutfitState))
+            {
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::Outfit,
+                                                pay.data(), (uint32_t)pay.size()));
+            }
+            break;
+        }
+        case net::Msg::ActionState:
+        {
+            // P2: действие/сценарий своего персонажа — просто ретрансляция.
+            if (pay.size() == sizeof(net::ActionStatePayload))
+            {
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::ActionState,
+                                                pay.data(), (uint32_t)pay.size()));
+            }
+            break;
+        }
+        case net::Msg::PlayerVehicle:
+        {
+            // P2: посадка в транспорт — ретрансляция остальным.
+            if (pay.size() == sizeof(net::PlayerVehicleState))
+            {
+                BroadcastToOthers(s.sock, MakeMsg(
+                    (uint8_t)net::Msg::PlayerVehicle,
+                    pay.data(), (uint32_t)pay.size()));
+            }
+            break;
+        }
+        case net::Msg::MissionEvent:
+        {
+            // P3: событие MissionData принимаем только от хоста.
+            bool senderIsHost = false;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto it = g_online.find(s.name);
+                senderIsHost = it != g_online.end() && it->second.isHost;
+            }
+            if (!senderIsHost)
+            {
+                LogWarn("[!] " + s.name + ": MissionEvent от не-хоста проигнорирован");
+                break;
+            }
+            if (pay.size() == sizeof(net::MissionEventPayload))
+            {
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::MissionEvent,
+                                                pay.data(), (uint32_t)pay.size()));
+            }
+            break;
+        }
+        case net::Msg::MissionState:
+        {
+            // P3: активная миссия — только от хоста.
+            bool senderIsHost = false;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto it = g_online.find(s.name);
+                senderIsHost = it != g_online.end() && it->second.isHost;
+            }
+            if (!senderIsHost)
+            {
+                LogWarn("[!] " + s.name + ": MissionState от не-хоста проигнорирован");
+                break;
+            }
+            if (pay.size() == sizeof(net::MissionStatePayload))
+            {
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::MissionState,
+                                                pay.data(), (uint32_t)pay.size()));
+            }
+            break;
+        }
+        case net::Msg::MissionBarrier:
+        {
+            // P3: направление фаз фиксировано: host шлёт Offer/StartWindow/
+            // Abort, guest — Ready/Started. Иначе игнорируем.
+            if (pay.size() != sizeof(net::MissionBarrierPayload))
+                break;
+            net::MissionBarrierPayload ev{};
+            std::memcpy(&ev, pay.data(), sizeof(ev));
+            bool senderIsHost = false;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto it = g_online.find(s.name);
+                senderIsHost = it != g_online.end() && it->second.isHost;
+            }
+            const bool hostPhase =
+                coop::missionsbarrier::IsPhaseAllowedForRole(
+                    coop::missionsbarrier::Role::Host, ev.phase);
+            const bool guestPhase =
+                coop::missionsbarrier::IsPhaseAllowedForRole(
+                    coop::missionsbarrier::Role::Guest, ev.phase);
+            const bool phaseAllowed =
+                coop::missionsbarrier::IsKnownPhase(ev.phase) &&
+                ((senderIsHost && hostPhase) || (!senderIsHost && guestPhase));
+            if (!phaseAllowed)
+            {
+                LogWarn("[!] " + s.name + ": MissionBarrier phase=" +
+                        std::to_string((unsigned)ev.phase) +
+                        " не от той роли — проигнорирован");
+                break;
+            }
+            BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::MissionBarrier,
+                                            pay.data(), (uint32_t)pay.size()));
+            break;
+        }
+        case net::Msg::TrainSnapshot:
+        {
+            // R&D: состав принимаем только от хоста и строго по формату.
+            bool senderIsHost = false;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto it = g_online.find(s.name);
+                senderIsHost = it != g_online.end() && it->second.isHost;
+            }
+            if (!senderIsHost)
+            {
+                LogWarn("[!] " + s.name + ": TrainSnapshot от не-хоста проигнорирован");
+                break;
+            }
+            if (IsValidTrainSnapshot(pay))
+            {
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::TrainSnapshot,
+                                                pay.data(), (uint32_t)pay.size()));
+            }
+            break;
+        }
+        // ---------------- E0 (v15): actor-сообщения ----------------
+    }
+}
+
+// Host-only actor relay phase (RelayHostOnly).
+void ActorRelayMessagesPhase(ClientSession& s,
+                             const std::vector<uint8_t>& pay, net::Msg msg)
+{
+    switch (msg)
+    {
+        case net::Msg::ActorSpawnBatch:
+        {
+            RelayHostOnly(s.sock, s.name, pay, (uint8_t)net::Msg::ActorSpawnBatch,
+                          IsValidActorSpawnBatch, "ActorSpawnBatch");
+            break;
+        }
+        case net::Msg::ActorFrames:
+        {
+            RelayHostOnly(s.sock, s.name, pay, (uint8_t)net::Msg::ActorFrames,
+                          IsValidActorFrames, "ActorFrames");
+            break;
+        }
+        case net::Msg::ActorDespawn:
+        {
+            RelayHostOnly(s.sock, s.name, pay, (uint8_t)net::Msg::ActorDespawn,
+                          IsValidActorDespawn, "ActorDespawn");
+            break;
+        }
+        case net::Msg::ActorEvent:
+        {
+            RelayHostOnly(s.sock, s.name, pay, (uint8_t)net::Msg::ActorEvent,
+                          IsValidActorEvent, "ActorEvent");
+            break;
+        }
+        case net::Msg::ActorOutfit:
+        {
+            RelayHostOnly(s.sock, s.name, pay, (uint8_t)net::Msg::ActorOutfit,
+                          IsValidActorOutfit, "ActorOutfit");
+            break;
+        }
+        case net::Msg::ActorAppearance:
+        {
+            // E2c-b (v16): точная внешность NPC — только хост -> гостям.
+            RelayHostOnly(s.sock, s.name, pay,
+                          (uint8_t)net::Msg::ActorAppearance,
+                          IsValidActorAppearance, "ActorAppearance");
+            break;
+        }
+    }
+}
+
+// Rate-limit/presence/traffic/misc phases (ActorDamage..Ping), без закрытия.
+void MiscMessagesPhase(ClientSession& s,
+                       const std::vector<uint8_t>& pay, net::Msg msg)
+{
+    switch (msg)
+    {
+        case net::Msg::ActorDamage:
+        {
+            // E5 (v17): урон по NPC — только гость -> сервер -> хосту.
+            // Хост урон не запрашивает (он его применяет), гостям не
+            // релеим; защита от флуда — не больше kMaxActorDamagePerSecond
+            // запросов в секунду от клиента (лишние молча дропаются).
+            if (!IsValidActorDamage(pay))
+                break;
+            bool senderIsHost = false;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                auto it = g_online.find(s.name);
+                if (it != g_online.end())
+                {
+                    senderIsHost = it->second.isHost;
+                    if (!senderIsHost &&
+                        AllowRate(it->second.damageRate,
+                                  kMaxActorDamagePerSecond, NowMs()))
+                    {
                         {
+                            const std::vector<uint8_t> msg = MakeMsg(
+                                (uint8_t)net::Msg::ActorDamage,
+                                pay.data(),
+                                static_cast<uint32_t>(pay.size()));
+                            for (auto& kv : g_online)
                             {
-                                const std::vector<uint8_t> msg = MakeMsg(
-                                    (uint8_t)net::Msg::ActorDamage,
-                                    pay.data(),
-                                    static_cast<uint32_t>(pay.size()));
-                                for (auto& kv : g_online)
+                                if (kv.second.isHost && kv.second.sock)
                                 {
-                                    if (kv.second.isHost && kv.second.sock)
-                                    {
-                                        SendTracked(kv.second.sock, msg.data(),
-                                                    (int)msg.size());
-                                        break;
-                                    }
+                                    SendTracked(kv.second.sock, msg.data(),
+                                                (int)msg.size());
+                                    break;
                                 }
                             }
                         }
                     }
                 }
-                if (senderIsHost)
-                    LogWarn("[!] " + name + ": ActorDamage от хоста проигнорирован");
-                break;
             }
-            case net::Msg::PlayerPresence:
+            if (senderIsHost)
+                LogWarn("[!] " + s.name + ": ActorDamage от хоста проигнорирован");
+            break;
+        }
+        case net::Msg::PlayerPresence:
+        {
+            // E6 (v18): UI-статус — любой клиент -> сервер -> ДРУГОМУ
+            // клиенту (без эха отправителю; при одном подключённом некому
+            // релеить). Защита от флуда: <= kMaxPlayerPresencePerSecond/с.
+            if (!IsValidPlayerPresence(pay))
+                break;
+            std::lock_guard<std::mutex> lk(g_mutex);
+            auto it = g_online.find(s.name);
+            if (it == g_online.end())
+                break;
+            if (!AllowRate(it->second.presenceRate,
+                           kMaxPlayerPresencePerSecond, NowMs()))
+                break; // rate-limited: молча дропаем
+            const std::vector<uint8_t> msg = MakeMsg(
+                (uint8_t)net::Msg::PlayerPresence,
+                pay.data(), static_cast<uint32_t>(pay.size()));
+            for (auto& kv : g_online)
             {
-                // E6 (v18): UI-статус — любой клиент -> сервер -> ДРУГОМУ
-                // клиенту (без эха отправителю; при одном подключённом некому
-                // релеить). Защита от флуда: <= kMaxPlayerPresencePerSecond/с.
-                if (!IsValidPlayerPresence(pay))
-                    break;
+                if (kv.second.sock && kv.second.sock != s.sock)
+                    SendTracked(kv.second.sock, msg.data(),
+                                (int)msg.size());
+            }
+            break;
+        }
+        case net::Msg::VehicleOccupants:
+        {
+            // E3d-c (v19): occupants — только хост -> сервер -> гостю,
+            // байт-в-байт; флуд-лимит kMaxVehicleOccupantsPerSecond/с.
+            RelayHostOnlyRate(s.sock, s.name, pay,
+                              (uint8_t)net::Msg::VehicleOccupants,
+                              IsValidVehicleOccupants,
+                              &OnlinePlayer::occupantsRate,
+                              kMaxVehicleOccupantsPerSecond,
+                              "VehicleOccupants");
+            break;
+        }
+        case net::Msg::TrainSnapshotV2:
+        {
+            // E3d-b (v19): поезд v2 — только хост -> сервер -> гостю,
+            // байт-в-байт; флуд-лимит kMaxTrainSnapshotV2PerSecond/с.
+            RelayHostOnlyRate(s.sock, s.name, pay,
+                              (uint8_t)net::Msg::TrainSnapshotV2,
+                              IsValidTrainSnapshotV2,
+                              &OnlinePlayer::trainV2Rate,
+                              kMaxTrainSnapshotV2PerSecond,
+                              "TrainSnapshotV2");
+            break;
+        }
+        case net::Msg::ActorResync:
+        {
+            // Запрос resync — только от гостя и только хосту (не broadcast).
+            if (!IsValidActorResync(pay))
+                break;
+            bool senderIsHost = false;
+            {
                 std::lock_guard<std::mutex> lk(g_mutex);
-                auto it = g_online.find(name);
-                if (it == g_online.end())
-                    break;
-                if (!AllowRate(it->second.presenceRate,
-                               kMaxPlayerPresencePerSecond, NowMs()))
-                    break; // rate-limited: молча дропаем
-                const std::vector<uint8_t> msg = MakeMsg(
-                    (uint8_t)net::Msg::PlayerPresence,
-                    pay.data(), static_cast<uint32_t>(pay.size()));
-                for (auto& kv : g_online)
+                auto it = g_online.find(s.name);
+                senderIsHost = it != g_online.end() && it->second.isHost;
+                if (!senderIsHost)
                 {
-                    if (kv.second.sock && kv.second.sock != sock)
-                        SendTracked(kv.second.sock, msg.data(),
-                                    (int)msg.size());
-                }
-                break;
-            }
-            case net::Msg::VehicleOccupants:
-            {
-                // E3d-c (v19): occupants — только хост -> сервер -> гостю,
-                // байт-в-байт; флуд-лимит kMaxVehicleOccupantsPerSecond/с.
-                RelayHostOnlyRate(sock, name, pay,
-                                  (uint8_t)net::Msg::VehicleOccupants,
-                                  IsValidVehicleOccupants,
-                                  &OnlinePlayer::occupantsRate,
-                                  kMaxVehicleOccupantsPerSecond,
-                                  "VehicleOccupants");
-                break;
-            }
-            case net::Msg::TrainSnapshotV2:
-            {
-                // E3d-b (v19): поезд v2 — только хост -> сервер -> гостю,
-                // байт-в-байт; флуд-лимит kMaxTrainSnapshotV2PerSecond/с.
-                RelayHostOnlyRate(sock, name, pay,
-                                  (uint8_t)net::Msg::TrainSnapshotV2,
-                                  IsValidTrainSnapshotV2,
-                                  &OnlinePlayer::trainV2Rate,
-                                  kMaxTrainSnapshotV2PerSecond,
-                                  "TrainSnapshotV2");
-                break;
-            }
-            case net::Msg::ActorResync:
-            {
-                // Запрос resync — только от гостя и только хосту (не broadcast).
-                if (!IsValidActorResync(pay))
-                    break;
-                bool senderIsHost = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    senderIsHost = it != g_online.end() && it->second.isHost;
-                    if (!senderIsHost)
+                    const std::vector<uint8_t> msg = MakeMsg(
+                        (uint8_t)net::Msg::ActorResync,
+                        pay.data(), static_cast<uint32_t>(pay.size()));
+                    for (auto& kv : g_online)
                     {
-                        const std::vector<uint8_t> msg = MakeMsg(
-                            (uint8_t)net::Msg::ActorResync,
-                            pay.data(), static_cast<uint32_t>(pay.size()));
-                        for (auto& kv : g_online)
+                        if (kv.second.isHost && kv.second.sock)
                         {
-                            if (kv.second.isHost && kv.second.sock)
-                            {
-                                SendTracked(kv.second.sock, msg.data(),
-                                            (int)msg.size());
-                                break;
-                            }
+                            SendTracked(kv.second.sock, msg.data(),
+                                        (int)msg.size());
+                            break;
                         }
                     }
                 }
-                if (senderIsHost)
-                    LogWarn("[!] " + name + ": ActorResync от хоста проигнорирован");
-                break;
             }
-            case net::Msg::HorseOutfit:
+            if (senderIsHost)
+                LogWarn("[!] " + s.name + ": ActorResync от хоста проигнорирован");
+            break;
+        }
+        case net::Msg::HorseOutfit:
+        {
+            // Снаряжение лошади — ретранслируем остальным (как Outfit).
+            if (pay.size() == sizeof(net::OutfitState))
             {
-                // Снаряжение лошади — ретранслируем остальным (как Outfit).
-                if (pay.size() == sizeof(net::OutfitState))
-                {
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::HorseOutfit,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::HorseOutfit,
+                                                pay.data(), (uint32_t)pay.size()));
             }
-            case net::Msg::Shot:
+            break;
+        }
+        case net::Msg::Shot:
+        {
+            // Событие выстрела — ретранслируем остальным.
+            if (pay.size() == sizeof(net::ShotPayload))
             {
-                // Событие выстрела — ретранслируем остальным.
-                if (pay.size() == sizeof(net::ShotPayload))
-                {
-                    net::ShotPayload sp{};
-                    std::memcpy(&sp, pay.data(), sizeof(sp));
-                    if (!IsFiniteCoord(sp.x) || !IsFiniteCoord(sp.y) ||
-                        !IsFiniteCoord(sp.z))
-                        break;
-                    BroadcastToOthers(sock, MakeMsg((uint8_t)net::Msg::Shot,
-                                                    pay.data(), (uint32_t)pay.size()));
-                }
-                break;
+                net::ShotPayload sp{};
+                std::memcpy(&sp, pay.data(), sizeof(sp));
+                if (!IsFiniteCoord(sp.x) || !IsFiniteCoord(sp.y) ||
+                    !IsFiniteCoord(sp.z))
+                    break;
+                BroadcastToOthers(s.sock, MakeMsg((uint8_t)net::Msg::Shot,
+                                                pay.data(), (uint32_t)pay.size()));
             }
-            case net::Msg::Ping:
+            break;
+        }
+        case net::Msg::Ping:
+        {
+            // Замер задержки: возвращаем ту же метку времени отправителю.
+            // Строгий лимит размера: произвольные до 64 КБ payload'ы
+            // больше не превращаются в очередь Pong'ов (анти-OOM).
+            if (pay.size() <= kMaxPingEchoBytes)
             {
-                // Замер задержки: возвращаем ту же метку времени отправителю.
-                // Строгий лимит размера: произвольные до 64 КБ payload'ы
-                // больше не превращаются в очередь Pong'ов (анти-OOM).
-                if (pay.size() <= kMaxPingEchoBytes)
-                {
-                    std::vector<uint8_t> pong = MakeMsg((uint8_t)net::Msg::Pong,
-                                                        pay.data(), (uint32_t)pay.size());
-                    SendTracked(sock, pong.data(), (int)pong.size());
-                }
-                break;
+                std::vector<uint8_t> pong = MakeMsg((uint8_t)net::Msg::Pong,
+                                                    pay.data(), (uint32_t)pay.size());
+                SendTracked(s.sock, pong.data(), (int)pong.size());
             }
-            default:
-                break;
+            break;
+        }
+        default:
+            break;
+
+    }
+}
+
+bool DispatchMessagesPhase(ClientSession& s, uint64_t nowMs)
+{
+    uint8_t type; std::vector<uint8_t> pay;
+    while (s.reader.Poll(type, pay))
+    {
+        const net::Msg msg = static_cast<net::Msg>(type);
+        // P0 (task-155): фактический входящий трафик (включая framing).
+        CountInboundTraffic(msg, pay.size());
+
+        // До JOIN разрешаем только JOIN и Ping. Остальное — закрываем:
+        // клиент, не прошедший регистрацию, не должен ретранслировать мир.
+        if (!s.registered && msg != net::Msg::Join && msg != net::Msg::Ping)
+        {
+            LogLine("[!] " + s.peerIp + ": сообщение type=" +
+                    std::to_string((unsigned)type) + " до JOIN — соединение закрыто");
+            s.sock->Close();
+            return false;
+        }
+
+        // Host liveness: игровые сообщения (не Ping!) продлевают жизнь
+        // хоста — по ним определяется, жив ли его игровой поток.
+        if (s.registered && IsGameThreadMessage(msg))
+        {
+            std::lock_guard<std::mutex> lk(g_mutex);
+            auto git = g_online.find(s.name);
+            if (git != g_online.end() && git->second.sock == s.sock)
+            {
+                git->second.lastGameMs = nowMs;
+                git->second.sawGameMsg = true;
             }
         }
 
-        // Host migration hardening: хост, который шлёт только Ping (или иной
-        // служебный трафик) и не присылает игровых сообщений дольше
-        // g_hostGameTimeoutMs, считается зависшим. Закрываем его сокет —
-        // обычный cleanup удалит игрока, разошлёт PlayerLeft и повысит
-        // оставшегося гостя (HostChanged 0x16). Ping не продлевает таймаут.
-        if (registered && !name.empty())
+        switch (msg)
         {
-            bool hostTimedOut = false;
-            uint64_t hostIdleMs = 0;
-            {
-                std::lock_guard<std::mutex> lk(g_mutex);
-                auto it = g_online.find(name);
-                if (it != g_online.end() && it->second.sock == sock &&
-                    it->second.isHost)
-                {
-                    if (!it->second.hostGraceDone)
-                    {
-                        // Грейс после JOIN/промоушена (промоушен выставляется
-                        // в cleanup'е другого потока).
-                        it->second.hostGraceDone = true;
-                        it->second.lastGameMs = nowMs;
-                    }
-                    else if (nowMs - it->second.lastGameMs >
-                             g_hostGameTimeoutMs)
-                    {
-                        hostTimedOut = true;
-                        hostIdleMs = nowMs - it->second.lastGameMs;
-                    }
-                }
-            }
-            if (hostTimedOut)
-            {
-                LogLine("[!] host game-timeout (" + std::to_string(hostIdleMs) +
-                        " ms), promoting remaining");
-                sock->Close();
-                break;
-            }
+        case net::Msg::Join:
+            if (!JoinRequestPhase(s, pay)) return false;
+            break;
+        case net::Msg::Frame:
+            FrameMessagesPhase(s, pay);
+            break;
+        case net::Msg::Leave:
+        case net::Msg::Died:
+        case net::Msg::Respawned:
+            if (!LifecycleMessagesPhase(s, pay, msg)) return false;
+            break;
+        case net::Msg::WorldState:
+        case net::Msg::WorldSnapshot:
+        case net::Msg::Outfit:
+        case net::Msg::ActionState:
+        case net::Msg::PlayerVehicle:
+        case net::Msg::MissionEvent:
+        case net::Msg::MissionState:
+        case net::Msg::MissionBarrier:
+        case net::Msg::TrainSnapshot:
+            WorldRelayMessagesPhase(s, pay, msg);
+            break;
+        case net::Msg::ActorSpawnBatch:
+        case net::Msg::ActorFrames:
+        case net::Msg::ActorDespawn:
+        case net::Msg::ActorEvent:
+        case net::Msg::ActorOutfit:
+        case net::Msg::ActorAppearance:
+            ActorRelayMessagesPhase(s, pay, msg);
+            break;
+        case net::Msg::ActorDamage:
+        case net::Msg::PlayerPresence:
+        case net::Msg::VehicleOccupants:
+        case net::Msg::TrainSnapshotV2:
+        case net::Msg::ActorResync:
+        case net::Msg::HorseOutfit:
+        case net::Msg::Shot:
+        case net::Msg::Ping:
+            MiscMessagesPhase(s, pay, msg);
+            break;
+        default:
+            break;
         }
     }
-done:
-    if (registered && !name.empty())
+
+    return true;
+}
+
+
+
+// Cleanup/disconnect: PlayerLeft, host promotion + HostChanged, SaveAll.
+// Идемпотентен: erase только при совпадении sock, повторный вызов no-op.
+void CleanupClient(ClientSession& s)
+{
+    if (s.registered && !s.name.empty())
     {
         bool erased = false;
         bool wasHost = false;
@@ -1807,8 +1978,8 @@ done:
             // HostChanged. Раньше HostChanged отправлялся после unlock по
             // сырым Socket* — возможен use-after-free при одновременном обрыве.
             std::lock_guard<std::mutex> lk(g_mutex);
-            auto it = g_online.find(name);
-            if (it != g_online.end() && it->second.sock == sock)
+            auto it = g_online.find(s.name);
+            if (it != g_online.end() && it->second.sock == s.sock)
             {
                 wasHost = it->second.isHost;
                 g_online.erase(it);
@@ -1818,7 +1989,7 @@ done:
             {
                 // остальным — что игрок ушёл
                 const std::vector<uint8_t> left =
-                    MakeNameMsg((uint8_t)net::Msg::PlayerLeft, name);
+                    MakeNameMsg((uint8_t)net::Msg::PlayerLeft, s.name);
                 for (auto& kv : g_online)
                 {
                     if (kv.second.sock)
@@ -1834,8 +2005,9 @@ done:
                     nit->second.isHost = true;
                     // Новому хосту — грейс-период: первый игровой пакет после
                     // промоушена может прийти не сразу.
-                    nit->second.hostGraceDone = false;
-                    nit->second.lastGameMs = NowMs();
+                    nit->second.joinMs = NowMs();
+                    nit->second.sawGameMsg = false;
+                    nit->second.lastGameMs = nit->second.joinMs;
                     for (auto& kv : g_online)
                     {
                         net::HostChangedPayload h{};
@@ -1852,7 +2024,7 @@ done:
         }
         if (erased)
         {
-            LogLine("[-] " + name + " отключился (" + peerIp + ")");
+            LogLine("[-] " + s.name + " отключился (" + s.peerIp + ")");
             if (!newHost.empty())
                 LogLine("[HOST] " + newHost + " повышен до хоста");
         }
@@ -1860,6 +2032,32 @@ done:
         // probe-подключения не должны перезаписывать players.txt.
         SaveAll();
     }
+}
+
+void HandleClient(netio::Socket* sock, const std::string& peerIp,
+                  bool& preJoinCounted, uint64_t acceptedAtMs)
+{
+    ClientSession s;
+    s.sock = sock;
+    s.peerIp = peerIp;
+    s.preJoinCounted = &preJoinCounted;
+    s.acceptedAtMs = acceptedAtMs;
+    s.connStartMs = NowMs();
+    s.lastRecvMs = s.connStartMs;
+
+    for (;;)
+    {
+        if (!ReadSocketPhase(s)) break;
+
+        const uint64_t nowMs = NowMs();
+        if (!CheckTimeoutPhase(s, nowMs)) break;
+
+        if (!DispatchMessagesPhase(s, nowMs)) break;
+
+        if (!CheckHostGameTimeoutPhase(s, nowMs)) break;
+    }
+done:
+    CleanupClient(s);
 }
 
 } // namespace
