@@ -4103,24 +4103,10 @@ bool ApplyRemoteFrameMountPhase(const net::FramePayload& f, Vec3 p,
     return false;
 }
 
-void ApplyRemoteFrame(const net::FramePayload& f)
+// ub-mode unit B3: position phase (air/walk/run/idle) ApplyRemoteFrame.
+bool ApplyRemoteFramePositionPhase(const net::FramePayload& f, Vec3 cur,
+                                   Vec3 p, uint8_t move, float teleportDist)
 {
-    if (ApplyRemoteFrameEarly(f))
-        return;
-
-    constexpr float LERP_FACTOR = 0.2f; // ~20% за тик при 60 Гц (плавно, без рывков)
-    constexpr float TELEPORT_DIST = 10.0f; // больше этой дистанции — телепорт
-
-    Vec3 cur = GetEntityCoords(s_ghost);
-    Vec3 p{f.x, f.y, f.z};
-
-    const uint8_t move = static_cast<uint8_t>(f.move);
-    const uint8_t rideState = static_cast<uint8_t>(coop::MoveState::RideHorse);
-    // Отсев мерцания: IS_PED_ON_MOUNT у отправителя может кратко дрожать,
-    // поэтому «не верхом» считаем только после kRideLossTicks подряд.
-    if (ApplyRemoteFrameMountPhase(f, p, move, rideState))
-        return;
-
     // Прыжок/падение/плавание: пед в воздухе или в воде — Z кадра валиден
     // (это «пояс» игрока на высоте прыжка). НЕ прижимаем к земле и НЕ даём
     // задач движения (TASK_GO_* в прыжке заставляют педа «бежать по земле»
@@ -4134,7 +4120,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         const float STEP_AIR = 0.13f; // ~8 м/с при 60 Гц (было 0.35 для 15 Гц)
         float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
         float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (dist > TELEPORT_DIST)
+        if (dist > teleportDist)
         {
             SetEntityCoords(s_ghost, p); // резкий перенос (спавн/загрузка)
         }
@@ -4148,7 +4134,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             SetEntityCoords(s_ghost, n);
         }
         ApplyPedStateToGhost(f);
-        return;
+        return true;
     }
 
     if (move == static_cast<uint8_t>(coop::MoveState::Walk) ||
@@ -4317,6 +4303,12 @@ void ApplyRemoteFrame(const net::FramePayload& f)
     // тела игрока может не совпадать с направлением камеры, и наш SetEntityHeading
     // каждый кадр разворачивал педа «строго вперёд», перебивая прицел
     // (задачу TASK_AIM_GUN_AT_COORD). Ориентацией управляет боевая задача.
+    return false;
+}
+
+// ub-mode unit B4: heading + pedState/outfit tail ApplyRemoteFrame.
+void ApplyRemoteFrameVisualTail(const net::FramePayload& f, float lerpFactor)
+{
     if (!s_combatActive && !GhostShotReplayActive())
     {
         float h = f.heading - GetEntityHeading(s_ghost);
@@ -4325,7 +4317,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         // Мёртвая зона 5°: мелкие колебания heading отправителя (стоя) не
         // должны каждый кадр доворачивать педа — это микро-дрожь в покое.
         if (std::fabs(h) > 5.0f)
-            SetEntityHeading(s_ghost, GetEntityHeading(s_ghost) + h * LERP_FACTOR);
+            SetEntityHeading(s_ghost, GetEntityHeading(s_ghost) + h * lerpFactor);
     }
 
     // Применить особое состояние (ragdoll/cover/swim), оружие (при смене).
@@ -4333,6 +4325,30 @@ void ApplyRemoteFrame(const net::FramePayload& f)
 
     // Применить мета-наряд удалённого игрока (внешний вид) — при смене хэша.
     ApplyPlayerOutfitToGhost(f.reserved[1]);
+}
+
+void ApplyRemoteFrame(const net::FramePayload& f)
+{
+    if (ApplyRemoteFrameEarly(f))
+        return;
+
+    constexpr float LERP_FACTOR = 0.2f; // ~20% за тик при 60 Гц (плавно, без рывков)
+    constexpr float TELEPORT_DIST = 10.0f; // больше этой дистанции — телепорт
+
+    Vec3 cur = GetEntityCoords(s_ghost);
+    Vec3 p{f.x, f.y, f.z};
+
+    const uint8_t move = static_cast<uint8_t>(f.move);
+    const uint8_t rideState = static_cast<uint8_t>(coop::MoveState::RideHorse);
+    // Отсев мерцания: IS_PED_ON_MOUNT у отправителя может кратко дрожать,
+    // поэтому «не верхом» считаем только после kRideLossTicks подряд.
+    if (ApplyRemoteFrameMountPhase(f, p, move, rideState))
+        return;
+
+    if (ApplyRemoteFramePositionPhase(f, cur, p, move, TELEPORT_DIST))
+        return;
+
+    ApplyRemoteFrameVisualTail(f, LERP_FACTOR);
 }
 
 // Физически удалить педа призрака из мира (без сброса имён/флагов —
@@ -5504,7 +5520,6 @@ void FinishPreviousRemoteAction(uint8_t mode, uint8_t scenarioMode,
         sh_log::Write("action: carry/loot finished -> stand still\n");
     }
 
-    // 2) Применяем текущее состояние.
 }
 
 void ApplyRemoteScenarioAction(const net::ActionStatePayload& a, uint8_t mode,
@@ -5611,10 +5626,11 @@ void ApplyRemoteActionV2(const net::ActionStatePayload& a)
     const uint8_t coverMode    = static_cast<uint8_t>(net::ActionMode::Cover);
     const uint8_t carryMode    = static_cast<uint8_t>(net::ActionMode::Carry);
     const uint8_t lootMode     = static_cast<uint8_t>(net::ActionMode::Loot);
-    const bool wasCover = (s_appliedActionMode == coverMode);
-
     FinishPreviousRemoteAction(mode, scenarioMode, coverMode, carryMode,
                                lootMode);
+    // P4: wasCover фиксируем ПОСЛЕ Finish; инвариант — Finish не меняет
+    // s_appliedActionMode (cover-фаза применяет уже вычисленный mode).
+    const bool wasCover = (s_appliedActionMode == coverMode);
     ApplyRemoteScenarioAction(a, mode, scenarioMode);
     ApplyRemoteCoverAction(mode, coverMode, wasCover);
     ApplyRemoteCarryLootAction(a, mode, carryMode, lootMode);
@@ -6275,7 +6291,6 @@ void TickWorldStateSync()
             Init(natives::GET_CLOCK_SECONDS); ws.second = static_cast<uint8_t>(Call());
             // Текущее состояние погоды: два типа + доля перехода.
             uint32_t w1 = 0, w2 = 0; float pct = 0.f;
-            void* a = nullptr, * b = nullptr;
             Init(natives::GET_CURR_WEATHER_STATE);
             Push(reinterpret_cast<unsigned long long>(&w1));
             Push(reinterpret_cast<unsigned long long>(&w2));
@@ -6347,7 +6362,6 @@ void TickJoinSubtitle()
         }
     }
 
-    // Редкий heartbeat-лог живого педа (раньше раз в 2 с засорял лог).
 }
 
 void TickRttHud()
@@ -6383,6 +6397,17 @@ void TickRttHud()
         // вызываем каждый тик с уже сформированным текстом (иначе моргает).
         if (s_rttHud[0])
             DrawHudLine(s_rttHud);
+    }
+}
+
+void TickPersistGhostPosition()
+{
+    if (s_ghost && s_pedName[0] && DoesEntityExist(s_ghost) &&
+        (s_tickCount % (5 * 60) == 1))
+    {
+        Vec3 gp = GetEntityCoords(s_ghost);
+        float hd = GetEntityHeading(s_ghost);
+        persist::SaveLastPosition(s_pedName, gp.x, gp.y, gp.z, hd);
     }
 }
 
@@ -7646,13 +7671,7 @@ void Tick()
     // Persist the ped's position regularly so a returning player spawns on
     // their last known coords. Write at a low frequency to avoid hammering
     // the file (every ~5s at 60 ticks/s).
-    if (s_ghost && s_pedName[0] && DoesEntityExist(s_ghost) &&
-        (s_tickCount % (5 * 60) == 1))
-    {
-        Vec3 gp = GetEntityCoords(s_ghost);
-        float hd = GetEntityHeading(s_ghost);
-        persist::SaveLastPosition(s_pedName, gp.x, gp.y, gp.z, hd);
-    }
+    TickPersistGhostPosition();
 
     // Отправка собственного GhostFrame на сервер (каждые ~4 тика, чтобы
     // сервер видел координаты игрока в таблице состояния и ретранслировал
@@ -7933,6 +7952,7 @@ void Tick()
     // показываем и для death/respawn/host-changed/connection-lost.
     TickJoinSubtitle();
 
+    // Редкий heartbeat-лог живого педа (раньше раз в 2 с засорял лог).
     if (s_tickCount % (30 * 60) == 1 && s_ghost && DoesEntityExist(s_ghost))
         sh_log::Write("coop: ghost ped alive, handle=%u\n", s_ghost);
 
