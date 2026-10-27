@@ -58,6 +58,64 @@ def require(cond, what):
         raise AssertionError(what)
 
 
+class IntegrationRunLock:
+    """Cross-process lock for the whole integration run.
+
+    INVARIANT: only one integration runner may allocate ephemeral ports and
+    start servers at a time. _pick_port() closes its probe socket before the
+    child server binds; without this lock two parallel runs can race for the
+    same port / hit WinError 10054 during JOIN. The OS releases the lock when
+    the process exits, so a crashed runner cannot leave a stale lock.
+    """
+
+    def __init__(self):
+        self.path = Path(tempfile.gettempdir()) / "rdr2coop-integration.lock"
+        self._fh = None
+        self._locked = False
+
+    def acquire(self):
+        self._fh = open(self.path, "a+b")
+        self._fh.seek(0, os.SEEK_END)
+        if self._fh.tell() == 0:
+            self._fh.write(b"\0")
+            self._fh.flush()
+        self._fh.seek(0)
+        waiting = False
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self._fh.fileno(),
+                                fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._locked = True
+                return self
+            except OSError:
+                if not waiting:
+                    log("integration: another runner is active; waiting for "
+                        "the serialized lock")
+                    waiting = True
+                time.sleep(0.2)
+
+    def release(self):
+        if self._fh is None:
+            return
+        try:
+            if self._locked:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._fh.close()
+            self._fh = None
+            self._locked = False
+
+
 def _proto_version():
     m = re.search(r"kProtocolVersion\s*=\s*(\d+)\s*;", _PROTO_SRC)
     if not m:
@@ -954,6 +1012,8 @@ class Server:
 
     # -- process lifecycle -------------------------------------------------
     def _pick_port(self):
+        # Protected by IntegrationRunLock: parallel integration runs are
+        # serialized, so the ephemeral probe cannot be stolen before _launch.
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             s.bind(("127.0.0.1", 0))
@@ -2194,17 +2254,24 @@ def test_host_migration(exe, tmp):
 
 
 def test_host_game_timeout_ping_only(exe, tmp):
-    log("[test] host game-timeout: Ping-only host removed, guest promoted")
-    # Быстрый join-pair + короткий host_game timeout (2 с): хост гарантированно
-    # живёт после setup, а Ping (сетевой поток) его НЕ продлевает.
+    log("[test] host game-timeout: soft migration (demote, no socket close)")
+    # NEW SEMANTICS (task-175): a host that stops sending game-thread messages is
+    # demoted and the other player is promoted. The server keeps the old host's
+    # socket open (no reconnect storm); only idle/connection cleanup may close it.
     with Server(exe, tmp / "host_game_timeout", host_game_ms=2000) as srv:
         host, guest = _fast_pair(srv)
+        # One game-thread message switches the host from join-grace to the normal
+        # timeout window. After this the host sends only Ping (network thread),
+        # which must NOT keep host liveness alive.
+        host.sendall(frame_bytes(TYPE_PLAYER_PRESENCE,
+                                 player_presence(epoch=1, flags=0)))
 
-        got_left = False
         promoted = None
+        demoted = None
+        got_left = False
         host_closed = False
-        deadline = time.time() + 6.0
-        while time.time() < deadline and not got_left:
+        deadline = time.time() + 10.0
+        while time.time() < deadline and promoted is None:
             if not host_closed:
                 try:
                     host.sendall(frame_bytes(TYPE_PING, struct.pack("<Q", 123)))
@@ -2215,36 +2282,47 @@ def test_host_game_timeout_ping_only(exe, tmp):
                     got_left = True
                 elif t == TYPE_HOST_CHANGED:
                     promoted = p
-        if promoted is None:
-            for t, p in recv_msgs(guest, 1.0):
-                if t == TYPE_PLAYER_LEFT:
-                    got_left = True
-                elif t == TYPE_HOST_CHANGED:
-                    promoted = p
-        require(got_left,
-                "Ping-only host must be removed by host game-timeout "
-                "(guest must get PlayerLeft)")
+            for t, p in recv_msgs(host, 0.05):
+                if t == TYPE_HOST_CHANGED:
+                    demoted = p
+
+        require(not host_closed,
+                "soft migration must not close the old host socket")
+        require(not got_left,
+                "soft migration must NOT remove the old host (no PlayerLeft)")
         require(promoted is not None and promoted[0] == 1,
                 f"guest must be promoted after host game-timeout, got {promoted}")
+        require(demoted is not None and demoted[0] == 0,
+                f"old host must receive HostChanged(isHost=0), got {demoted}")
         text = srv.wait_log_contains("host game-timeout", 3.0)
         require("host game-timeout" in text,
                 "server log must contain 'host game-timeout'")
-        # Сервер должен закрыть сокет зависшего хоста. В буфере могут быть
-        # невычитанные Pong-ответы — дочитываем до EOF/ошибки.
-        closed = False
-        try:
-            host.settimeout(0.5)
-            drain_end = time.time() + 2.0
-            while time.time() < drain_end:
-                try:
-                    if host.recv(4096) == b"":
-                        closed = True
-                        break
-                except socket.timeout:
-                    continue
-        except OSError:
-            closed = True
-        require(closed, "timed-out host socket must be closed by the server")
+        require("promoting remaining" in text,
+                "server log must contain 'promoting remaining'")
+        # Old host stays a connected regular client: Ping/Pong still works.
+        host.sendall(frame_bytes(TYPE_PING, struct.pack("<Q", 777)))
+        pong = recv_type(host, TYPE_PONG, 2.0)
+        require(pong == struct.pack("<Q", 777),
+                "demoted host must stay connected and answer Pings")
+        host.close()
+        guest.close()
+
+    # Presence is game-thread liveness: a host that sends no Frame but keeps
+    # PlayerPresence heartbeats must not be demoted.
+    with Server(exe, tmp / "host_game_presence", host_game_ms=2000) as srv:
+        host, guest = _fast_pair(srv)
+        end = time.time() + 5.0
+        changed = None
+        while time.time() < end and changed is None:
+            host.sendall(frame_bytes(TYPE_PLAYER_PRESENCE,
+                                     player_presence(epoch=1, flags=0)))
+            for t, p in recv_msgs(guest, 0.2):
+                if t == TYPE_HOST_CHANGED:
+                    changed = p
+        require(changed is None,
+                f"presence-only host must stay host, got HostChanged {changed}")
+        require("host game-timeout" not in srv.log_text(),
+                "presence-only host must not trigger host game-timeout")
         host.close()
         guest.close()
 
@@ -2901,6 +2979,8 @@ def main():
         return 2
 
     tmp = Path(tempfile.mkdtemp(prefix="rdr2coop-tests-"))
+    run_lock = IntegrationRunLock()
+    run_lock.acquire()
     failures = 0
     known_fails = 0
     passed = 0
@@ -3021,6 +3101,7 @@ def main():
             shutil.rmtree(tmp, ignore_errors=True)
         else:
             log(f"kept workdir: {tmp}")
+        run_lock.release()
 
 
 if __name__ == "__main__":

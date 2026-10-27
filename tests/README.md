@@ -264,12 +264,23 @@ powershell -File scripts\ci.ps1 -NoStrictQuality
 $env:DSH_CI_STRICT_QUALITY = "0"; powershell -File scripts\ci.ps1
 ```
 
-Baseline: `tools\quality_baseline.json` (текущий снимок: 45 файлов, 334
-функции, 4 функции CRAP>5000, 7 dup-групп count>=4, 0 TODO). Обновлять
-**осознанно после доказанной шлифовки** (build + CI + повторный scan):
-`python tools\quality_scan.py --json tools\quality_baseline.json --top 20`.
+Baseline: `tools\quality_baseline.json` (parser-fixed снимок: **45 файлов, 489
+функций, 4 функции CRAP>5000, 3 dup-группы count>=4, 0 TODO**; многострочные
+сигнатуры, включая `TickPerfWindow`/`HandleClient`, теперь учитываются).
+P3 parser self-check: `python tools\quality_scan.py --self-check` — проверяет
+многострочную функцию и отсутствие ложных `if`/call-функций. Baseline
+обновлять **осознанно после доказанной шлифовки** (build + CI + повторный
+scan): `python tools\quality_scan.py --json tools\quality_baseline.json --top 20`.
 CI-шаг не заменяет тесты: он ловит только регрессии метрик, а поведение
 проверяют C++/integration тесты ниже/выше.
+
+### Параллельные integration-прогоны
+
+`tests/integration_server.py` сериализует процессы через `IntegrationRunLock`
+(lock-файл в `%TEMP%\rdr2coop-integration.lock`; ОС снимает lock при выходе).
+Это закрывает гонку `_pick_port` (сокет закрывается до bind сервера): параллельные
+запуски ждут, а не падают с WinError 10054/10061. Запускать параллельно можно
+без ручного lock; второй прогон печатает «waiting for the serialized lock».
 
 ## Важно
 

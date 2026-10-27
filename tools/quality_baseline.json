@@ -137,6 +137,278 @@
           "lines": 7,
           "branches": 1,
           "params": 1
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "SetCurrentPedWeaponEntity",
+          "line": 580,
+          "lines": 13,
+          "branches": 0,
+          "params": 3
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "TaskShootAtCoordEntity",
+          "line": 659,
+          "lines": 12,
+          "branches": 0,
+          "params": 5
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "GetMetaPedAssetGuidsEntity",
+          "line": 726,
+          "lines": 20,
+          "branches": 0,
+          "params": 6
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "GetMetaPedAssetTintEntity",
+          "line": 747,
+          "lines": 20,
+          "branches": 0,
+          "params": 6
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "SetMetaPedTagEntity",
+          "line": 776,
+          "lines": 16,
+          "branches": 0,
+          "params": 2
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "StartScenarioAtPosition",
+          "line": 1012,
+          "lines": 18,
+          "branches": 0,
+          "params": 7
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "CreateScenarioPointHash",
+          "line": 1032,
+          "lines": 12,
+          "branches": 0,
+          "params": 5
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "UpdateTaskGoToCoord",
+          "line": 1199,
+          "lines": 12,
+          "branches": 0,
+          "params": 6
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "FollowNavmesh",
+          "line": 1212,
+          "lines": 14,
+          "branches": 0,
+          "params": 7
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "CreatePed",
+          "line": 1262,
+          "lines": 13,
+          "branches": 0,
+          "params": 5
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "LogAppearance",
+          "line": 1361,
+          "lines": 11,
+          "branches": 3,
+          "params": 4
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "LogOutfitResolved",
+          "line": 1374,
+          "lines": 6,
+          "branches": 0,
+          "params": 4
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "LogAssetCapture",
+          "line": 1388,
+          "lines": 7,
+          "branches": 0,
+          "params": 5
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "LogScenarioApply",
+          "line": 1436,
+          "lines": 13,
+          "branches": 3,
+          "params": 4
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "LogScenarioPoint",
+          "line": 1458,
+          "lines": 7,
+          "branches": 1,
+          "params": 5
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "LogWeaponDebug",
+          "line": 1500,
+          "lines": 13,
+          "branches": 6,
+          "params": 12
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "LogDamageSend",
+          "line": 1527,
+          "lines": 8,
+          "branches": 1,
+          "params": 4
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "BuildSpawn",
+          "line": 1855,
+          "lines": 59,
+          "branches": 9,
+          "params": 4
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "CreatePedWithSetup",
+          "line": 3484,
+          "lines": 23,
+          "branches": 2,
+          "params": 7
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "DeleteEntitySafe",
+          "line": 3510,
+          "lines": 16,
+          "branches": 2,
+          "params": 3
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "ProcessGuestHorseOutfits",
+          "line": 3882,
+          "lines": 263,
+          "branches": 83,
+          "params": 2
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "ComputeTrailTarget",
+          "line": 4258,
+          "lines": 78,
+          "branches": 11,
+          "params": 6
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "PushHostSample",
+          "line": 4349,
+          "lines": 21,
+          "branches": 5,
+          "params": 6
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "ComputeFarGoal",
+          "line": 4436,
+          "lines": 66,
+          "branches": 12,
+          "params": 6
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "IssueMarkerFollow",
+          "line": 4650,
+          "lines": 19,
+          "branches": 0,
+          "params": 4
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "QueueSpawnBatch",
+          "line": 6029,
+          "lines": 72,
+          "branches": 13,
+          "params": 3
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "SetActorSeated",
+          "line": 6895,
+          "lines": 14,
+          "branches": 1,
+          "params": 4
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "SetActorDraftAttached",
+          "line": 6921,
+          "lines": 13,
+          "branches": 1,
+          "params": 3
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "SendDamageToActor",
+          "line": 6963,
+          "lines": 38,
+          "branches": 14,
+          "params": 4
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "OnActorSpawnBatch",
+          "line": 7004,
+          "lines": 9,
+          "branches": 1,
+          "params": 2
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "OnActorFrames",
+          "line": 7014,
+          "lines": 11,
+          "branches": 1,
+          "params": 3
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "OnActorOutfit",
+          "line": 7053,
+          "lines": 18,
+          "branches": 6,
+          "params": 3
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "OnActorAppearance",
+          "line": 7073,
+          "lines": 12,
+          "branches": 2,
+          "params": 3
+        },
+        {
+          "file": "src/actor_sync.cpp",
+          "name": "OnActorDamageRequest",
+          "line": 7087,
+          "lines": 13,
+          "branches": 2,
+          "params": 4
         }
       ]
     },
@@ -277,8 +549,8 @@
     },
     {
       "path": "src/coop.cpp",
-      "loc": 8033,
-      "code_loc": 6354,
+      "loc": 8064,
+      "code_loc": 6375,
       "long_lines": 0,
       "magic": 430,
       "todos": [],
@@ -990,16 +1262,24 @@
         },
         {
           "file": "src/coop.cpp",
+          "name": "UpdateGhostCombatExit",
+          "line": 2817,
+          "lines": 26,
+          "branches": 4,
+          "params": 2
+        },
+        {
+          "file": "src/coop.cpp",
           "name": "ApplyActionToGhost",
-          "line": 2816,
-          "lines": 168,
-          "branches": 42,
+          "line": 2845,
+          "lines": 147,
+          "branches": 38,
           "params": 1
         },
         {
           "file": "src/coop.cpp",
           "name": "UpdateGhostWeaponAnim",
-          "line": 2989,
+          "line": 2997,
           "lines": 83,
           "branches": 29,
           "params": 0
@@ -1007,7 +1287,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyPedStateToGhost",
-          "line": 3076,
+          "line": 3084,
           "lines": 185,
           "branches": 35,
           "params": 1
@@ -1015,7 +1295,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyPlayerOutfitToGhost",
-          "line": 3266,
+          "line": 3274,
           "lines": 64,
           "branches": 15,
           "params": 1
@@ -1023,7 +1303,7 @@
         {
           "file": "src/coop.cpp",
           "name": "CollectLocalOutfit",
-          "line": 3336,
+          "line": 3344,
           "lines": 62,
           "branches": 7,
           "params": 2
@@ -1031,7 +1311,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ScrubGhostShopItems",
-          "line": 3407,
+          "line": 3415,
           "lines": 52,
           "branches": 8,
           "params": 0
@@ -1039,7 +1319,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SurgicalRemoveShopCategories",
-          "line": 3466,
+          "line": 3474,
           "lines": 29,
           "branches": 6,
           "params": 1
@@ -1047,7 +1327,7 @@
         {
           "file": "src/coop.cpp",
           "name": "CommitGhostVariation",
-          "line": 3500,
+          "line": 3508,
           "lines": 16,
           "branches": 2,
           "params": 0
@@ -1055,7 +1335,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyGhostWearableStates",
-          "line": 3522,
+          "line": 3530,
           "lines": 27,
           "branches": 8,
           "params": 1
@@ -1063,7 +1343,7 @@
         {
           "file": "src/coop.cpp",
           "name": "OutfitsEqual",
-          "line": 3557,
+          "line": 3565,
           "lines": 18,
           "branches": 9,
           "params": 2
@@ -1071,7 +1351,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyGhostOutfitComponents",
-          "line": 3581,
+          "line": 3589,
           "lines": 16,
           "branches": 3,
           "params": 2
@@ -1079,7 +1359,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyOutfitToGhost",
-          "line": 3599,
+          "line": 3607,
           "lines": 141,
           "branches": 26,
           "params": 1
@@ -1087,7 +1367,7 @@
         {
           "file": "src/coop.cpp",
           "name": "RefreshGhostComponents",
-          "line": 3746,
+          "line": 3754,
           "lines": 14,
           "branches": 4,
           "params": 0
@@ -1095,7 +1375,7 @@
         {
           "file": "src/coop.cpp",
           "name": "TryApplyPendingOutfit",
-          "line": 3763,
+          "line": 3771,
           "lines": 8,
           "branches": 5,
           "params": 0
@@ -1103,7 +1383,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyHorseOutfitToMount",
-          "line": 3776,
+          "line": 3784,
           "lines": 43,
           "branches": 8,
           "params": 1
@@ -1111,7 +1391,7 @@
         {
           "file": "src/coop.cpp",
           "name": "RespawnGhostPed",
-          "line": 3830,
+          "line": 3838,
           "lines": 106,
           "branches": 16,
           "params": 1
@@ -1119,7 +1399,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyRemoteFrameEarly",
-          "line": 3939,
+          "line": 3947,
           "lines": 17,
           "branches": 6,
           "params": 1
@@ -1127,7 +1407,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyRemoteFrameVisualTail",
-          "line": 4305,
+          "line": 4313,
           "lines": 18,
           "branches": 5,
           "params": 2
@@ -1135,7 +1415,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyRemoteFrame",
-          "line": 4325,
+          "line": 4333,
           "lines": 22,
           "branches": 3,
           "params": 1
@@ -1143,7 +1423,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DeleteGhostEntity",
-          "line": 4351,
+          "line": 4359,
           "lines": 27,
           "branches": 4,
           "params": 0
@@ -1151,7 +1431,7 @@
         {
           "file": "src/coop.cpp",
           "name": "CleanupGhost",
-          "line": 4381,
+          "line": 4389,
           "lines": 85,
           "branches": 3,
           "params": 0
@@ -1159,7 +1439,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalMoveState",
-          "line": 4471,
+          "line": 4479,
           "lines": 68,
           "branches": 10,
           "params": 1
@@ -1167,7 +1447,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalPedState",
-          "line": 4543,
+          "line": 4551,
           "lines": 18,
           "branches": 7,
           "params": 1
@@ -1175,7 +1455,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalFlags",
-          "line": 4564,
+          "line": 4572,
           "lines": 15,
           "branches": 4,
           "params": 1
@@ -1183,7 +1463,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalAction",
-          "line": 4585,
+          "line": 4593,
           "lines": 19,
           "branches": 7,
           "params": 1
@@ -1191,7 +1471,7 @@
         {
           "file": "src/coop.cpp",
           "name": "UpdateLocalActionState",
-          "line": 4620,
+          "line": 4628,
           "lines": 61,
           "branches": 17,
           "params": 1
@@ -1199,7 +1479,7 @@
         {
           "file": "src/coop.cpp",
           "name": "UpdateLocalAim",
-          "line": 4689,
+          "line": 4697,
           "lines": 50,
           "branches": 4,
           "params": 1
@@ -1207,7 +1487,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ResetLocalShotDetector",
-          "line": 4773,
+          "line": 4781,
           "lines": 13,
           "branches": 0,
           "params": 0
@@ -1215,7 +1495,7 @@
         {
           "file": "src/coop.cpp",
           "name": "NpcDamageForWeapon",
-          "line": 4792,
+          "line": 4800,
           "lines": 15,
           "branches": 7,
           "params": 1
@@ -1223,7 +1503,7 @@
         {
           "file": "src/coop.cpp",
           "name": "IsEntityHeadshot",
-          "line": 4812,
+          "line": 4820,
           "lines": 59,
           "branches": 15,
           "params": 2
@@ -1231,7 +1511,7 @@
         {
           "file": "src/coop.cpp",
           "name": "HandleLocalWeaponChange",
-          "line": 4912,
+          "line": 4920,
           "lines": 9,
           "branches": 1,
           "params": 1
@@ -1239,7 +1519,7 @@
         {
           "file": "src/coop.cpp",
           "name": "UpdateLocalShotEvents",
-          "line": 4977,
+          "line": 4985,
           "lines": 132,
           "branches": 34,
           "params": 1
@@ -1247,7 +1527,7 @@
         {
           "file": "src/coop.cpp",
           "name": "GetLocalHealth01",
-          "line": 5113,
+          "line": 5121,
           "lines": 11,
           "branches": 2,
           "params": 1
@@ -1255,7 +1535,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyMoveToGhost",
-          "line": 5130,
+          "line": 5138,
           "lines": 108,
           "branches": 14,
           "params": 3
@@ -1263,7 +1543,7 @@
         {
           "file": "src/coop.cpp",
           "name": "GetLocalWeaponHash",
-          "line": 5243,
+          "line": 5251,
           "lines": 15,
           "branches": 1,
           "params": 1
@@ -1271,7 +1551,7 @@
         {
           "file": "src/coop.cpp",
           "name": "GetLocalSelectedWeaponHash",
-          "line": 5263,
+          "line": 5271,
           "lines": 26,
           "branches": 5,
           "params": 1
@@ -1279,7 +1559,7 @@
         {
           "file": "src/coop.cpp",
           "name": "CheckRemoteModelChange",
-          "line": 5297,
+          "line": 5305,
           "lines": 123,
           "branches": 13,
           "params": 1
@@ -1287,7 +1567,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalActionV2",
-          "line": 5424,
+          "line": 5432,
           "lines": 75,
           "branches": 13,
           "params": 1
@@ -1295,7 +1575,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyRemoteCoverAction",
-          "line": 5562,
+          "line": 5570,
           "lines": 27,
           "branches": 5,
           "params": 3
@@ -1303,7 +1583,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyRemoteActionV2",
-          "line": 5632,
+          "line": 5640,
           "lines": 20,
           "branches": 3,
           "params": 1
@@ -1311,7 +1591,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DetectLocalPlayerVehicle",
-          "line": 5658,
+          "line": 5666,
           "lines": 36,
           "branches": 5,
           "params": 1
@@ -1319,7 +1599,7 @@
         {
           "file": "src/coop.cpp",
           "name": "DeleteRemotePlayerVehicle",
-          "line": 5696,
+          "line": 5704,
           "lines": 21,
           "branches": 2,
           "params": 0
@@ -1327,7 +1607,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyRemotePlayerVehicle",
-          "line": 5719,
+          "line": 5727,
           "lines": 67,
           "branches": 15,
           "params": 1
@@ -1335,7 +1615,7 @@
         {
           "file": "src/coop.cpp",
           "name": "PollHostMissions",
-          "line": 5790,
+          "line": 5798,
           "lines": 70,
           "branches": 14,
           "params": 0
@@ -1343,7 +1623,7 @@
         {
           "file": "src/coop.cpp",
           "name": "LogMissionRewardPlan",
-          "line": 5864,
+          "line": 5872,
           "lines": 27,
           "branches": 11,
           "params": 1
@@ -1351,7 +1631,7 @@
         {
           "file": "src/coop.cpp",
           "name": "ApplyMissionEventToGuest",
-          "line": 5894,
+          "line": 5902,
           "lines": 57,
           "branches": 12,
           "params": 1
@@ -1359,7 +1639,7 @@
         {
           "file": "src/coop.cpp",
           "name": "InitNetworkClient",
-          "line": 5957,
+          "line": 5965,
           "lines": 229,
           "branches": 11,
           "params": 0
@@ -1367,7 +1647,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendWorldSnapshot",
-          "line": 6192,
+          "line": 6200,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -1375,7 +1655,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendTrainSnapshotV2",
-          "line": 6206,
+          "line": 6214,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -1383,7 +1663,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendTrainSnapshot",
-          "line": 6212,
+          "line": 6220,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -1391,7 +1671,7 @@
         {
           "file": "src/coop.cpp",
           "name": "IsWorldSyncExcluded",
-          "line": 6219,
+          "line": 6227,
           "lines": 3,
           "branches": 2,
           "params": 1
@@ -1399,7 +1679,7 @@
         {
           "file": "src/coop.cpp",
           "name": "CollectLocalOutfitForActor",
-          "line": 6245,
+          "line": 6253,
           "lines": 3,
           "branches": 0,
           "params": 2
@@ -1407,7 +1687,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendPlayerPresence",
-          "line": 6258,
+          "line": 6266,
           "lines": 3,
           "branches": 0,
           "params": 2
@@ -1415,7 +1695,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendActorDespawn",
-          "line": 6269,
+          "line": 6277,
           "lines": 3,
           "branches": 0,
           "params": 1
@@ -1423,7 +1703,7 @@
         {
           "file": "src/coop.cpp",
           "name": "SendActorResync",
-          "line": 6274,
+          "line": 6282,
           "lines": 14,
           "branches": 3,
           "params": 3
@@ -1431,7 +1711,7 @@
         {
           "file": "src/coop.cpp",
           "name": "TickWorldStateSync",
-          "line": 6291,
+          "line": 6299,
           "lines": 67,
           "branches": 11,
           "params": 0
@@ -1439,7 +1719,7 @@
         {
           "file": "src/coop.cpp",
           "name": "TickJoinSubtitle",
-          "line": 6360,
+          "line": 6368,
           "lines": 17,
           "branches": 3,
           "params": 0
@@ -1447,7 +1727,7 @@
         {
           "file": "src/coop.cpp",
           "name": "TickRttHud",
-          "line": 6379,
+          "line": 6387,
           "lines": 34,
           "branches": 9,
           "params": 0
@@ -1455,18 +1735,186 @@
         {
           "file": "src/coop.cpp",
           "name": "TickPersistGhostPosition",
-          "line": 6415,
+          "line": 6423,
           "lines": 9,
           "branches": 4,
           "params": 0
         },
         {
           "file": "src/coop.cpp",
-          "name": "Tick",
-          "line": 6480,
-          "lines": 1551,
-          "branches": 339,
+          "name": "DrainLocalInbox",
+          "line": 6488,
+          "lines": 31,
+          "branches": 4,
           "params": 0
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "SendLocalPlayerFrame",
+          "line": 6522,
+          "lines": 172,
+          "branches": 41,
+          "params": 1
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "SyncLocalOutfit",
+          "line": 6697,
+          "lines": 95,
+          "branches": 26,
+          "params": 1
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "UpdateLocalActionSync",
+          "line": 6795,
+          "lines": 31,
+          "branches": 7,
+          "params": 1
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "Tick",
+          "line": 6828,
+          "lines": 1234,
+          "branches": 261,
+          "params": 0
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "SendMissionBarrier",
+          "line": 1411,
+          "lines": 10,
+          "branches": 0,
+          "params": 4
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "ShootGhostAt",
+          "line": 2785,
+          "lines": 14,
+          "branches": 2,
+          "params": 3
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "ApplyRemoteFrameMountPhase",
+          "line": 3967,
+          "lines": 141,
+          "branches": 31,
+          "params": 4
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "ApplyRemoteFramePositionPhase",
+          "line": 4110,
+          "lines": 201,
+          "branches": 46,
+          "params": 5
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "TrySendNpcDamage",
+          "line": 4884,
+          "lines": 34,
+          "branches": 9,
+          "params": 3
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "QueryLocalClipAmmo",
+          "line": 4931,
+          "lines": 19,
+          "branches": 4,
+          "params": 3
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "UpdateLocalAmmoDetector",
+          "line": 4951,
+          "lines": 33,
+          "branches": 7,
+          "params": 4
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "FinishPreviousRemoteAction",
+          "line": 5511,
+          "lines": 33,
+          "branches": 8,
+          "params": 5
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "ApplyRemoteScenarioAction",
+          "line": 5545,
+          "lines": 24,
+          "branches": 5,
+          "params": 3
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "ApplyRemoteCarryLootAction",
+          "line": 5599,
+          "lines": 40,
+          "branches": 11,
+          "params": 4
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "SendVehicleOccupants",
+          "line": 6206,
+          "lines": 6,
+          "branches": 0,
+          "params": 2
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "SendActorSpawnBatch",
+          "line": 6233,
+          "lines": 5,
+          "branches": 0,
+          "params": 2
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "SendActorAppearance",
+          "line": 6240,
+          "lines": 5,
+          "branches": 0,
+          "params": 3
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "SendActorOutfit",
+          "line": 6247,
+          "lines": 5,
+          "branches": 0,
+          "params": 3
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "SendActorDamage",
+          "line": 6259,
+          "lines": 5,
+          "branches": 0,
+          "params": 4
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "SendActorFrames",
+          "line": 6271,
+          "lines": 5,
+          "branches": 0,
+          "params": 3
+        },
+        {
+          "file": "src/coop.cpp",
+          "name": "TickPerfWindow",
+          "line": 6435,
+          "lines": 52,
+          "branches": 7,
+          "params": 3
         }
       ]
     },
@@ -1488,7 +1936,16 @@
       "magic": 0,
       "todos": [],
       "warn_disables": 0,
-      "funcs": []
+      "funcs": [
+        {
+          "file": "src/gen_metaped_outfits.h",
+          "name": "LookupMetaOutfits",
+          "line": 1485,
+          "lines": 20,
+          "branches": 4,
+          "params": 3
+        }
+      ]
     },
     {
       "path": "src/ghost_frame.h",
@@ -1596,6 +2053,30 @@
           "lines": 10,
           "branches": 4,
           "params": 2
+        },
+        {
+          "file": "src/mission_barrier_rules.cpp",
+          "name": "MatchesOffer",
+          "line": 27,
+          "lines": 7,
+          "branches": 2,
+          "params": 3
+        },
+        {
+          "file": "src/mission_barrier_rules.cpp",
+          "name": "IsHostEventAllowed",
+          "line": 35,
+          "lines": 8,
+          "branches": 1,
+          "params": 3
+        },
+        {
+          "file": "src/mission_barrier_rules.cpp",
+          "name": "IsGuestEventAllowed",
+          "line": 44,
+          "lines": 10,
+          "branches": 2,
+          "params": 3
         }
       ]
     },
@@ -1861,7 +2342,16 @@
       "magic": 0,
       "todos": [],
       "warn_disables": 0,
-      "funcs": []
+      "funcs": [
+        {
+          "file": "src/world_entity_budget.cpp",
+          "name": "SelectWorldCandidates",
+          "line": 8,
+          "lines": 44,
+          "branches": 9,
+          "params": 2
+        }
+      ]
     },
     {
       "path": "src/world_entity_budget.h",
@@ -1910,7 +2400,16 @@
       "magic": 0,
       "todos": [],
       "warn_disables": 0,
-      "funcs": []
+      "funcs": [
+        {
+          "file": "src/world_snapshot_parse.cpp",
+          "name": "ParseWorldSnapshot",
+          "line": 8,
+          "lines": 30,
+          "branches": 4,
+          "params": 2
+        }
+      ]
     },
     {
       "path": "src/world_snapshot_parse.h",
@@ -1986,6 +2485,126 @@
           "lines": 104,
           "branches": 9,
           "params": 0
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "FollowNavmesh",
+          "line": 231,
+          "lines": 14,
+          "branches": 0,
+          "params": 5
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "EnsureHostNetId",
+          "line": 331,
+          "lines": 12,
+          "branches": 2,
+          "params": 3
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "AppendOccupantEntry",
+          "line": 373,
+          "lines": 14,
+          "branches": 2,
+          "params": 5
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "OccupantsEqual",
+          "line": 388,
+          "lines": 16,
+          "branches": 7,
+          "params": 2
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "CollectVehicleOccupants",
+          "line": 407,
+          "lines": 75,
+          "branches": 14,
+          "params": 5
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "CollectActualTrainModels",
+          "line": 650,
+          "lines": 26,
+          "branches": 7,
+          "params": 3
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "ResolveTrainConfig",
+          "line": 678,
+          "lines": 96,
+          "branches": 27,
+          "params": 3
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "FindNearestTrain",
+          "line": 800,
+          "lines": 52,
+          "branches": 12,
+          "params": 7
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "SameTrainSnapshot",
+          "line": 853,
+          "lines": 9,
+          "branches": 11,
+          "params": 2
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "SendTrainOccupants",
+          "line": 866,
+          "lines": 106,
+          "branches": 31,
+          "params": 4
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "TickHostTrains",
+          "line": 973,
+          "lines": 168,
+          "branches": 38,
+          "params": 5
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "SendHostSnapshot",
+          "line": 1680,
+          "lines": 534,
+          "branches": 114,
+          "params": 9
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "AttachDraftNative",
+          "line": 2576,
+          "lines": 10,
+          "branches": 0,
+          "params": 3
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "OnVehicleOccupants",
+          "line": 3197,
+          "lines": 32,
+          "branches": 5,
+          "params": 2
+        },
+        {
+          "file": "src/world_sync.cpp",
+          "name": "Tick",
+          "line": 3398,
+          "lines": 66,
+          "branches": 14,
+          "params": 11
         }
       ]
     },
@@ -2615,6 +3234,142 @@
           "lines": 211,
           "branches": 37,
           "params": 0
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "ParseActorSpawnBatch",
+          "line": 202,
+          "lines": 23,
+          "branches": 6,
+          "params": 3
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "ParseActorFrames",
+          "line": 226,
+          "lines": 24,
+          "branches": 6,
+          "params": 4
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "ParseActorOutfit",
+          "line": 265,
+          "lines": 14,
+          "branches": 4,
+          "params": 4
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "ParseActorAppearance",
+          "line": 289,
+          "lines": 29,
+          "branches": 8,
+          "params": 4
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "ParseActorDamage",
+          "line": 321,
+          "lines": 9,
+          "branches": 4,
+          "params": 2
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "ParsePlayerPresence",
+          "line": 333,
+          "lines": 8,
+          "branches": 2,
+          "params": 2
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "ParseVehicleOccupants",
+          "line": 345,
+          "lines": 31,
+          "branches": 11,
+          "params": 3
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "ParseTrainSnapshotV2",
+          "line": 379,
+          "lines": 15,
+          "branches": 12,
+          "params": 2
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "SendFrameTracked",
+          "line": 421,
+          "lines": 14,
+          "branches": 3,
+          "params": 2
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "Start",
+          "line": 517,
+          "lines": 16,
+          "branches": 0,
+          "params": 4
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "SendActorFrames",
+          "line": 671,
+          "lines": 22,
+          "branches": 2,
+          "params": 3
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "SendActorOutfit",
+          "line": 708,
+          "lines": 11,
+          "branches": 0,
+          "params": 3
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "SendActorAppearance",
+          "line": 735,
+          "lines": 33,
+          "branches": 6,
+          "params": 3
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "SendActorDamage",
+          "line": 769,
+          "lines": 20,
+          "branches": 6,
+          "params": 4
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "SendVehicleOccupants",
+          "line": 806,
+          "lines": 23,
+          "branches": 3,
+          "params": 2
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleJoinOk",
+          "line": 903,
+          "lines": 33,
+          "branches": 8,
+          "params": 2
+        },
+        {
+          "file": "net/client.cpp",
+          "name": "HandleServerMessage",
+          "line": 1195,
+          "lines": 41,
+          "branches": 31,
+          "params": 3
         }
       ]
     },
@@ -3314,6 +4069,38 @@
           "lines": 30,
           "branches": 3,
           "params": 2
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "MakePlayerInfoMsg",
+          "line": 867,
+          "lines": 21,
+          "branches": 4,
+          "params": 8
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "RelayHostOnly",
+          "line": 940,
+          "lines": 19,
+          "branches": 3,
+          "params": 6
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "RelayHostOnlyRate",
+          "line": 963,
+          "lines": 26,
+          "branches": 5,
+          "params": 8
+        },
+        {
+          "file": "server/server.cpp",
+          "name": "HandleClient",
+          "line": 1082,
+          "lines": 782,
+          "branches": 158,
+          "params": 4
         }
       ]
     },
@@ -3419,6 +4206,14 @@
           "lines": 312,
           "branches": 55,
           "params": 0
+        },
+        {
+          "file": "tests/frame_reader_fuzz.cpp",
+          "name": "FeedAndPoll",
+          "line": 16,
+          "lines": 21,
+          "branches": 3,
+          "params": 4
         }
       ]
     },
@@ -3532,6 +4327,22 @@
           "lines": 61,
           "branches": 6,
           "params": 0
+        },
+        {
+          "file": "tests/world_entity_budget_test.cpp",
+          "name": "Reference",
+          "line": 30,
+          "lines": 25,
+          "branches": 9,
+          "params": 2
+        },
+        {
+          "file": "tests/world_entity_budget_test.cpp",
+          "name": "ValidateResult",
+          "line": 56,
+          "lines": 39,
+          "branches": 14,
+          "params": 3
         }
       ]
     },
@@ -3583,11 +4394,38 @@
     {
       "file": "src/coop.cpp",
       "name": "Tick",
-      "line": 6480,
-      "lines": 1551,
-      "branches": 339,
+      "line": 6828,
+      "lines": 1234,
+      "branches": 261,
       "params": 0,
-      "crap_proxy": 115940
+      "crap_proxy": 68906
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "HandleClient",
+      "line": 1082,
+      "lines": 782,
+      "branches": 158,
+      "params": 4,
+      "crap_proxy": 25440
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "SendHostSnapshot",
+      "line": 1680,
+      "lines": 534,
+      "branches": 114,
+      "params": 9,
+      "crap_proxy": 13340
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "ProcessGuestHorseOutfits",
+      "line": 3882,
+      "lines": 263,
+      "branches": 83,
+      "params": 2,
+      "crap_proxy": 7140
     },
     {
       "file": "tests/frame_reader_fuzz.cpp",
@@ -3600,12 +4438,39 @@
     },
     {
       "file": "src/coop.cpp",
-      "name": "ApplyActionToGhost",
-      "line": 2816,
-      "lines": 168,
-      "branches": 42,
+      "name": "ApplyRemoteFramePositionPhase",
+      "line": 4110,
+      "lines": 201,
+      "branches": 46,
+      "params": 5,
+      "crap_proxy": 2256
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendLocalPlayerFrame",
+      "line": 6522,
+      "lines": 172,
+      "branches": 41,
       "params": 1,
-      "crap_proxy": 1892
+      "crap_proxy": 1806
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ApplyActionToGhost",
+      "line": 2845,
+      "lines": 147,
+      "branches": 38,
+      "params": 1,
+      "crap_proxy": 1560
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "TickHostTrains",
+      "line": 973,
+      "lines": 168,
+      "branches": 38,
+      "params": 5,
+      "crap_proxy": 1560
     },
     {
       "file": "net/client.cpp",
@@ -3619,7 +4484,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyPedStateToGhost",
-      "line": 3076,
+      "line": 3084,
       "lines": 185,
       "branches": 35,
       "params": 1,
@@ -3628,7 +4493,7 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateLocalShotEvents",
-      "line": 4977,
+      "line": 4985,
       "lines": 132,
       "branches": 34,
       "params": 1,
@@ -3636,8 +4501,35 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyRemoteFrameMountPhase",
+      "line": 3967,
+      "lines": 141,
+      "branches": 31,
+      "params": 4,
+      "crap_proxy": 1056
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "SendTrainOccupants",
+      "line": 866,
+      "lines": 106,
+      "branches": 31,
+      "params": 4,
+      "crap_proxy": 1056
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleServerMessage",
+      "line": 1195,
+      "lines": 41,
+      "branches": 31,
+      "params": 3,
+      "crap_proxy": 1056
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "UpdateGhostWeaponAnim",
-      "line": 2989,
+      "line": 2997,
       "lines": 83,
       "branches": 29,
       "params": 0,
@@ -3653,6 +4545,15 @@
       "crap_proxy": 812
     },
     {
+      "file": "src/world_sync.cpp",
+      "name": "ResolveTrainConfig",
+      "line": 678,
+      "lines": 96,
+      "branches": 27,
+      "params": 3,
+      "crap_proxy": 812
+    },
+    {
       "file": "src/coop.cpp",
       "name": "UpdateVisitorMode",
       "line": 1192,
@@ -3664,8 +4565,17 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyOutfitToGhost",
-      "line": 3599,
+      "line": 3607,
       "lines": 141,
+      "branches": 26,
+      "params": 1,
+      "crap_proxy": 756
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SyncLocalOutfit",
+      "line": 6697,
+      "lines": 95,
       "branches": 26,
       "params": 1,
       "crap_proxy": 756
@@ -3754,7 +4664,7 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateLocalActionState",
-      "line": 4620,
+      "line": 4628,
       "lines": 61,
       "branches": 17,
       "params": 1,
@@ -3772,7 +4682,7 @@
     {
       "file": "src/coop.cpp",
       "name": "RespawnGhostPed",
-      "line": 3830,
+      "line": 3838,
       "lines": 106,
       "branches": 16,
       "params": 1,
@@ -3790,7 +4700,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyPlayerOutfitToGhost",
-      "line": 3266,
+      "line": 3274,
       "lines": 64,
       "branches": 15,
       "params": 1,
@@ -3799,7 +4709,7 @@
     {
       "file": "src/coop.cpp",
       "name": "IsEntityHeadshot",
-      "line": 4812,
+      "line": 4820,
       "lines": 59,
       "branches": 15,
       "params": 2,
@@ -3808,7 +4718,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemotePlayerVehicle",
-      "line": 5719,
+      "line": 5727,
       "lines": 67,
       "branches": 15,
       "params": 1,
@@ -3833,6 +4743,15 @@
       "crap_proxy": 272
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "SendDamageToActor",
+      "line": 6963,
+      "lines": 38,
+      "branches": 14,
+      "params": 4,
+      "crap_proxy": 240
+    },
+    {
       "file": "src/coop.cpp",
       "name": "UpdateLocalPresence",
       "line": 736,
@@ -3853,7 +4772,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyMoveToGhost",
-      "line": 5130,
+      "line": 5138,
       "lines": 108,
       "branches": 14,
       "params": 3,
@@ -3862,11 +4781,47 @@
     {
       "file": "src/coop.cpp",
       "name": "PollHostMissions",
-      "line": 5790,
+      "line": 5798,
       "lines": 70,
       "branches": 14,
       "params": 0,
       "crap_proxy": 240
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "CollectVehicleOccupants",
+      "line": 407,
+      "lines": 75,
+      "branches": 14,
+      "params": 5,
+      "crap_proxy": 240
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "Tick",
+      "line": 3398,
+      "lines": 66,
+      "branches": 14,
+      "params": 11,
+      "crap_proxy": 240
+    },
+    {
+      "file": "tests/world_entity_budget_test.cpp",
+      "name": "ValidateResult",
+      "line": 56,
+      "lines": 39,
+      "branches": 14,
+      "params": 3,
+      "crap_proxy": 240
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "QueueSpawnBatch",
+      "line": 6029,
+      "lines": 72,
+      "branches": 13,
+      "params": 3,
+      "crap_proxy": 210
     },
     {
       "file": "src/coop.cpp",
@@ -3880,7 +4835,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CheckRemoteModelChange",
-      "line": 5297,
+      "line": 5305,
       "lines": 123,
       "branches": 13,
       "params": 1,
@@ -3889,7 +4844,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalActionV2",
-      "line": 5424,
+      "line": 5432,
       "lines": 75,
       "branches": 13,
       "params": 1,
@@ -3905,6 +4860,15 @@
       "crap_proxy": 210
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "ComputeFarGoal",
+      "line": 4436,
+      "lines": 66,
+      "branches": 12,
+      "params": 6,
+      "crap_proxy": 182
+    },
+    {
       "file": "src/config.cpp",
       "name": "WarnDangerousCombos",
       "line": 319,
@@ -3916,7 +4880,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyMissionEventToGuest",
-      "line": 5894,
+      "line": 5902,
       "lines": 57,
       "branches": 12,
       "params": 1,
@@ -3932,12 +4896,30 @@
       "crap_proxy": 182
     },
     {
+      "file": "src/world_sync.cpp",
+      "name": "FindNearestTrain",
+      "line": 800,
+      "lines": 52,
+      "branches": 12,
+      "params": 7,
+      "crap_proxy": 182
+    },
+    {
       "file": "net/client.cpp",
       "name": "HandlePlayerJoined",
       "line": 1101,
       "lines": 30,
       "branches": 12,
       "params": 1,
+      "crap_proxy": 182
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseTrainSnapshotV2",
+      "line": 379,
+      "lines": 15,
+      "branches": 12,
+      "params": 2,
       "crap_proxy": 182
     },
     {
@@ -3948,6 +4930,15 @@
       "branches": 12,
       "params": 0,
       "crap_proxy": 182
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "ComputeTrailTarget",
+      "line": 4258,
+      "lines": 78,
+      "branches": 11,
+      "params": 6,
+      "crap_proxy": 156
     },
     {
       "file": "src/coop.cpp",
@@ -3970,7 +4961,7 @@
     {
       "file": "src/coop.cpp",
       "name": "LogMissionRewardPlan",
-      "line": 5864,
+      "line": 5872,
       "lines": 27,
       "branches": 11,
       "params": 1,
@@ -3979,7 +4970,7 @@
     {
       "file": "src/coop.cpp",
       "name": "InitNetworkClient",
-      "line": 5957,
+      "line": 5965,
       "lines": 229,
       "branches": 11,
       "params": 0,
@@ -3988,10 +4979,37 @@
     {
       "file": "src/coop.cpp",
       "name": "TickWorldStateSync",
-      "line": 6291,
+      "line": 6299,
       "lines": 67,
       "branches": 11,
       "params": 0,
+      "crap_proxy": 156
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ApplyRemoteCarryLootAction",
+      "line": 5599,
+      "lines": 40,
+      "branches": 11,
+      "params": 4,
+      "crap_proxy": 156
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "SameTrainSnapshot",
+      "line": 853,
+      "lines": 9,
+      "branches": 11,
+      "params": 2,
+      "crap_proxy": 156
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseVehicleOccupants",
+      "line": 345,
+      "lines": 31,
+      "branches": 11,
+      "params": 3,
       "crap_proxy": 156
     },
     {
@@ -4006,7 +5024,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalMoveState",
-      "line": 4471,
+      "line": 4479,
       "lines": 68,
       "branches": 10,
       "params": 1,
@@ -4049,6 +5067,15 @@
       "crap_proxy": 110
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "BuildSpawn",
+      "line": 1855,
+      "lines": 59,
+      "branches": 9,
+      "params": 4,
+      "crap_proxy": 110
+    },
+    {
       "file": "src/config.cpp",
       "name": "ApplyIntKey",
       "line": 166,
@@ -4078,7 +5105,7 @@
     {
       "file": "src/coop.cpp",
       "name": "OutfitsEqual",
-      "line": 3557,
+      "line": 3565,
       "lines": 18,
       "branches": 9,
       "params": 2,
@@ -4087,10 +5114,28 @@
     {
       "file": "src/coop.cpp",
       "name": "TickRttHud",
-      "line": 6379,
+      "line": 6387,
       "lines": 34,
       "branches": 9,
       "params": 0,
+      "crap_proxy": 110
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TrySendNpcDamage",
+      "line": 4884,
+      "lines": 34,
+      "branches": 9,
+      "params": 3,
+      "crap_proxy": 110
+    },
+    {
+      "file": "src/world_entity_budget.cpp",
+      "name": "SelectWorldCandidates",
+      "line": 8,
+      "lines": 44,
+      "branches": 9,
+      "params": 2,
       "crap_proxy": 110
     },
     {
@@ -4109,6 +5154,15 @@
       "lines": 60,
       "branches": 9,
       "params": 0,
+      "crap_proxy": 110
+    },
+    {
+      "file": "tests/world_entity_budget_test.cpp",
+      "name": "Reference",
+      "line": 30,
+      "lines": 25,
+      "branches": 9,
+      "params": 2,
       "crap_proxy": 110
     },
     {
@@ -4132,7 +5186,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ScrubGhostShopItems",
-      "line": 3407,
+      "line": 3415,
       "lines": 52,
       "branches": 8,
       "params": 0,
@@ -4141,7 +5195,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyGhostWearableStates",
-      "line": 3522,
+      "line": 3530,
       "lines": 27,
       "branches": 8,
       "params": 1,
@@ -4150,10 +5204,19 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyHorseOutfitToMount",
-      "line": 3776,
+      "line": 3784,
       "lines": 43,
       "branches": 8,
       "params": 1,
+      "crap_proxy": 90
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "FinishPreviousRemoteAction",
+      "line": 5511,
+      "lines": 33,
+      "branches": 8,
+      "params": 5,
       "crap_proxy": 90
     },
     {
@@ -4181,6 +5244,24 @@
       "lines": 19,
       "branches": 8,
       "params": 1,
+      "crap_proxy": 90
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseActorAppearance",
+      "line": 289,
+      "lines": 29,
+      "branches": 8,
+      "params": 4,
+      "crap_proxy": 90
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleJoinOk",
+      "line": 903,
+      "lines": 33,
+      "branches": 8,
+      "params": 2,
       "crap_proxy": 90
     },
     {
@@ -4285,7 +5366,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CollectLocalOutfit",
-      "line": 3336,
+      "line": 3344,
       "lines": 62,
       "branches": 7,
       "params": 2,
@@ -4294,7 +5375,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalPedState",
-      "line": 4543,
+      "line": 4551,
       "lines": 18,
       "branches": 7,
       "params": 1,
@@ -4303,7 +5384,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalAction",
-      "line": 4585,
+      "line": 4593,
       "lines": 19,
       "branches": 7,
       "params": 1,
@@ -4312,10 +5393,55 @@
     {
       "file": "src/coop.cpp",
       "name": "NpcDamageForWeapon",
-      "line": 4792,
+      "line": 4800,
       "lines": 15,
       "branches": 7,
       "params": 1,
+      "crap_proxy": 72
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "UpdateLocalActionSync",
+      "line": 6795,
+      "lines": 31,
+      "branches": 7,
+      "params": 1,
+      "crap_proxy": 72
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "UpdateLocalAmmoDetector",
+      "line": 4951,
+      "lines": 33,
+      "branches": 7,
+      "params": 4,
+      "crap_proxy": 72
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TickPerfWindow",
+      "line": 6435,
+      "lines": 52,
+      "branches": 7,
+      "params": 3,
+      "crap_proxy": 72
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "OccupantsEqual",
+      "line": 388,
+      "lines": 16,
+      "branches": 7,
+      "params": 2,
+      "crap_proxy": 72
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "CollectActualTrainModels",
+      "line": 650,
+      "lines": 26,
+      "branches": 7,
+      "params": 3,
       "crap_proxy": 72
     },
     {
@@ -4346,6 +5472,24 @@
       "crap_proxy": 72
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "LogWeaponDebug",
+      "line": 1500,
+      "lines": 13,
+      "branches": 6,
+      "params": 12,
+      "crap_proxy": 56
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorOutfit",
+      "line": 7053,
+      "lines": 18,
+      "branches": 6,
+      "params": 3,
+      "crap_proxy": 56
+    },
+    {
       "file": "src/coop.cpp",
       "name": "PresenceSuffix",
       "line": 785,
@@ -4366,7 +5510,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SurgicalRemoveShopCategories",
-      "line": 3466,
+      "line": 3474,
       "lines": 29,
       "branches": 6,
       "params": 1,
@@ -4375,7 +5519,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteFrameEarly",
-      "line": 3939,
+      "line": 3947,
       "lines": 17,
       "branches": 6,
       "params": 1,
@@ -4418,6 +5562,42 @@
       "crap_proxy": 56
     },
     {
+      "file": "net/client.cpp",
+      "name": "ParseActorSpawnBatch",
+      "line": 202,
+      "lines": 23,
+      "branches": 6,
+      "params": 3,
+      "crap_proxy": 56
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseActorFrames",
+      "line": 226,
+      "lines": 24,
+      "branches": 6,
+      "params": 4,
+      "crap_proxy": 56
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendActorAppearance",
+      "line": 735,
+      "lines": 33,
+      "branches": 6,
+      "params": 3,
+      "crap_proxy": 56
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendActorDamage",
+      "line": 769,
+      "lines": 20,
+      "branches": 6,
+      "params": 4,
+      "crap_proxy": 56
+    },
+    {
       "file": "net/socket.cpp",
       "name": "FlushLocked",
       "line": 115,
@@ -4454,6 +5634,15 @@
       "crap_proxy": 56
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "PushHostSample",
+      "line": 4349,
+      "lines": 21,
+      "branches": 5,
+      "params": 6,
+      "crap_proxy": 42
+    },
+    {
       "file": "src/config.cpp",
       "name": "PluginDir",
       "line": 22,
@@ -4483,7 +5672,7 @@
     {
       "file": "src/coop.cpp",
       "name": "TryApplyPendingOutfit",
-      "line": 3763,
+      "line": 3771,
       "lines": 8,
       "branches": 5,
       "params": 0,
@@ -4492,7 +5681,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteFrameVisualTail",
-      "line": 4305,
+      "line": 4313,
       "lines": 18,
       "branches": 5,
       "params": 2,
@@ -4501,7 +5690,7 @@
     {
       "file": "src/coop.cpp",
       "name": "GetLocalSelectedWeaponHash",
-      "line": 5263,
+      "line": 5271,
       "lines": 26,
       "branches": 5,
       "params": 1,
@@ -4510,7 +5699,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteCoverAction",
-      "line": 5562,
+      "line": 5570,
       "lines": 27,
       "branches": 5,
       "params": 3,
@@ -4519,10 +5708,19 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalPlayerVehicle",
-      "line": 5658,
+      "line": 5666,
       "lines": 36,
       "branches": 5,
       "params": 1,
+      "crap_proxy": 42
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ApplyRemoteScenarioAction",
+      "line": 5545,
+      "lines": 24,
+      "branches": 5,
+      "params": 3,
       "crap_proxy": 42
     },
     {
@@ -4532,6 +5730,15 @@
       "lines": 14,
       "branches": 5,
       "params": 0,
+      "crap_proxy": 42
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "OnVehicleOccupants",
+      "line": 3197,
+      "lines": 32,
+      "branches": 5,
+      "params": 2,
       "crap_proxy": 42
     },
     {
@@ -4568,6 +5775,15 @@
       "lines": 34,
       "branches": 5,
       "params": 1,
+      "crap_proxy": 42
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "RelayHostOnlyRate",
+      "line": 963,
+      "lines": 26,
+      "branches": 5,
+      "params": 8,
       "crap_proxy": 42
     },
     {
@@ -4608,8 +5824,17 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "UpdateGhostCombatExit",
+      "line": 2817,
+      "lines": 26,
+      "branches": 4,
+      "params": 2,
+      "crap_proxy": 30
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "RefreshGhostComponents",
-      "line": 3746,
+      "line": 3754,
       "lines": 14,
       "branches": 4,
       "params": 0,
@@ -4618,7 +5843,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DeleteGhostEntity",
-      "line": 4351,
+      "line": 4359,
       "lines": 27,
       "branches": 4,
       "params": 0,
@@ -4627,7 +5852,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalFlags",
-      "line": 4564,
+      "line": 4572,
       "lines": 15,
       "branches": 4,
       "params": 1,
@@ -4636,7 +5861,7 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateLocalAim",
-      "line": 4689,
+      "line": 4697,
       "lines": 50,
       "branches": 4,
       "params": 1,
@@ -4645,10 +5870,37 @@
     {
       "file": "src/coop.cpp",
       "name": "TickPersistGhostPosition",
-      "line": 6415,
+      "line": 6423,
       "lines": 9,
       "branches": 4,
       "params": 0,
+      "crap_proxy": 30
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "DrainLocalInbox",
+      "line": 6488,
+      "lines": 31,
+      "branches": 4,
+      "params": 0,
+      "crap_proxy": 30
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "QueryLocalClipAmmo",
+      "line": 4931,
+      "lines": 19,
+      "branches": 4,
+      "params": 3,
+      "crap_proxy": 30
+    },
+    {
+      "file": "src/gen_metaped_outfits.h",
+      "name": "LookupMetaOutfits",
+      "line": 1485,
+      "lines": 20,
+      "branches": 4,
+      "params": 3,
       "crap_proxy": 30
     },
     {
@@ -4665,6 +5917,15 @@
       "name": "IsPhaseAllowedForRole",
       "line": 15,
       "lines": 10,
+      "branches": 4,
+      "params": 2,
+      "crap_proxy": 30
+    },
+    {
+      "file": "src/world_snapshot_parse.cpp",
+      "name": "ParseWorldSnapshot",
+      "line": 8,
+      "lines": 30,
       "branches": 4,
       "params": 2,
       "crap_proxy": 30
@@ -4715,6 +5976,24 @@
       "crap_proxy": 30
     },
     {
+      "file": "net/client.cpp",
+      "name": "ParseActorOutfit",
+      "line": 265,
+      "lines": 14,
+      "branches": 4,
+      "params": 4,
+      "crap_proxy": 30
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseActorDamage",
+      "line": 321,
+      "lines": 9,
+      "branches": 4,
+      "params": 2,
+      "crap_proxy": 30
+    },
+    {
       "file": "server/server.cpp",
       "name": "IsSaneActorSpawnRecord",
       "line": 456,
@@ -4751,6 +6030,15 @@
       "crap_proxy": 30
     },
     {
+      "file": "server/server.cpp",
+      "name": "MakePlayerInfoMsg",
+      "line": 867,
+      "lines": 21,
+      "branches": 4,
+      "params": 8,
+      "crap_proxy": 30
+    },
+    {
       "file": "tests/client_reconnect_test.cpp",
       "name": "CreateListener",
       "line": 34,
@@ -4758,6 +6046,24 @@
       "branches": 4,
       "params": 1,
       "crap_proxy": 30
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogAppearance",
+      "line": 1361,
+      "lines": 11,
+      "branches": 3,
+      "params": 4,
+      "crap_proxy": 20
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogScenarioApply",
+      "line": 1436,
+      "lines": 13,
+      "branches": 3,
+      "params": 4,
+      "crap_proxy": 20
     },
     {
       "file": "src/coop.cpp",
@@ -4843,7 +6149,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyGhostOutfitComponents",
-      "line": 3581,
+      "line": 3589,
       "lines": 16,
       "branches": 3,
       "params": 2,
@@ -4852,7 +6158,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteFrame",
-      "line": 4325,
+      "line": 4333,
       "lines": 22,
       "branches": 3,
       "params": 1,
@@ -4861,7 +6167,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CleanupGhost",
-      "line": 4381,
+      "line": 4389,
       "lines": 85,
       "branches": 3,
       "params": 0,
@@ -4870,7 +6176,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteActionV2",
-      "line": 5632,
+      "line": 5640,
       "lines": 20,
       "branches": 3,
       "params": 1,
@@ -4879,7 +6185,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendActorResync",
-      "line": 6274,
+      "line": 6282,
       "lines": 14,
       "branches": 3,
       "params": 3,
@@ -4888,7 +6194,7 @@
     {
       "file": "src/coop.cpp",
       "name": "TickJoinSubtitle",
-      "line": 6360,
+      "line": 6368,
       "lines": 17,
       "branches": 3,
       "params": 0,
@@ -4971,6 +6277,24 @@
       "name": "HandleOutfitMsg",
       "line": 1167,
       "lines": 8,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendFrameTracked",
+      "line": 421,
+      "lines": 14,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendVehicleOccupants",
+      "line": 806,
+      "lines": 23,
       "branches": 3,
       "params": 2,
       "crap_proxy": 20
@@ -5066,12 +6390,30 @@
       "crap_proxy": 20
     },
     {
+      "file": "server/server.cpp",
+      "name": "RelayHostOnly",
+      "line": 940,
+      "lines": 19,
+      "branches": 3,
+      "params": 6,
+      "crap_proxy": 20
+    },
+    {
       "file": "tests/client_reconnect_test.cpp",
       "name": "FakeServer",
       "line": 66,
       "lines": 30,
       "branches": 3,
       "params": 1,
+      "crap_proxy": 20
+    },
+    {
+      "file": "tests/frame_reader_fuzz.cpp",
+      "name": "FeedAndPoll",
+      "line": 16,
+      "lines": 21,
+      "branches": 3,
+      "params": 4,
       "crap_proxy": 20
     },
     {
@@ -5126,6 +6468,42 @@
       "lines": 8,
       "branches": 2,
       "params": 0,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "CreatePedWithSetup",
+      "line": 3484,
+      "lines": 23,
+      "branches": 2,
+      "params": 7,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "DeleteEntitySafe",
+      "line": 3510,
+      "lines": 16,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorAppearance",
+      "line": 7073,
+      "lines": 12,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorDamageRequest",
+      "line": 7087,
+      "lines": 13,
+      "branches": 2,
+      "params": 4,
       "crap_proxy": 12
     },
     {
@@ -5257,7 +6635,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CommitGhostVariation",
-      "line": 3500,
+      "line": 3508,
       "lines": 16,
       "branches": 2,
       "params": 0,
@@ -5266,7 +6644,7 @@
     {
       "file": "src/coop.cpp",
       "name": "GetLocalHealth01",
-      "line": 5113,
+      "line": 5121,
       "lines": 11,
       "branches": 2,
       "params": 1,
@@ -5275,7 +6653,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DeleteRemotePlayerVehicle",
-      "line": 5696,
+      "line": 5704,
       "lines": 21,
       "branches": 2,
       "params": 0,
@@ -5284,10 +6662,19 @@
     {
       "file": "src/coop.cpp",
       "name": "IsWorldSyncExcluded",
-      "line": 6219,
+      "line": 6227,
       "lines": 3,
       "branches": 2,
       "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ShootGhostAt",
+      "line": 2785,
+      "lines": 14,
+      "branches": 2,
+      "params": 3,
       "crap_proxy": 12
     },
     {
@@ -5300,12 +6687,48 @@
       "crap_proxy": 12
     },
     {
+      "file": "src/mission_barrier_rules.cpp",
+      "name": "MatchesOffer",
+      "line": 27,
+      "lines": 7,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/mission_barrier_rules.cpp",
+      "name": "IsGuestEventAllowed",
+      "line": 44,
+      "lines": 10,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
       "file": "src/mission_catalog.h",
       "name": "FindMission",
       "line": 125,
       "lines": 8,
       "branches": 2,
       "params": 1,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "EnsureHostNetId",
+      "line": 331,
+      "lines": 12,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "AppendOccupantEntry",
+      "line": 373,
+      "lines": 14,
+      "branches": 2,
+      "params": 5,
       "crap_proxy": 12
     },
     {
@@ -5543,6 +6966,24 @@
       "crap_proxy": 12
     },
     {
+      "file": "net/client.cpp",
+      "name": "ParsePlayerPresence",
+      "line": 333,
+      "lines": 8,
+      "branches": 2,
+      "params": 2,
+      "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendActorFrames",
+      "line": 671,
+      "lines": 22,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
       "file": "net/frame.cpp",
       "name": "Feed",
       "line": 7,
@@ -5702,6 +7143,60 @@
       "lines": 7,
       "branches": 1,
       "params": 1,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogScenarioPoint",
+      "line": 1458,
+      "lines": 7,
+      "branches": 1,
+      "params": 5,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogDamageSend",
+      "line": 1527,
+      "lines": 8,
+      "branches": 1,
+      "params": 4,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "SetActorSeated",
+      "line": 6895,
+      "lines": 14,
+      "branches": 1,
+      "params": 4,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "SetActorDraftAttached",
+      "line": 6921,
+      "lines": 13,
+      "branches": 1,
+      "params": 3,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorSpawnBatch",
+      "line": 7004,
+      "lines": 9,
+      "branches": 1,
+      "params": 2,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorFrames",
+      "line": 7014,
+      "lines": 11,
+      "branches": 1,
+      "params": 3,
       "crap_proxy": 6
     },
     {
@@ -5869,7 +7364,7 @@
     {
       "file": "src/coop.cpp",
       "name": "HandleLocalWeaponChange",
-      "line": 4912,
+      "line": 4920,
       "lines": 9,
       "branches": 1,
       "params": 1,
@@ -5878,7 +7373,7 @@
     {
       "file": "src/coop.cpp",
       "name": "GetLocalWeaponHash",
-      "line": 5243,
+      "line": 5251,
       "lines": 15,
       "branches": 1,
       "params": 1,
@@ -5900,6 +7395,15 @@
       "lines": 8,
       "branches": 1,
       "params": 0,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/mission_barrier_rules.cpp",
+      "name": "IsHostEventAllowed",
+      "line": 35,
+      "lines": 8,
+      "branches": 1,
+      "params": 3,
       "crap_proxy": 6
     },
     {
@@ -6164,6 +7668,123 @@
       "crap_proxy": 2
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "SetCurrentPedWeaponEntity",
+      "line": 580,
+      "lines": 13,
+      "branches": 0,
+      "params": 3,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "TaskShootAtCoordEntity",
+      "line": 659,
+      "lines": 12,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "GetMetaPedAssetGuidsEntity",
+      "line": 726,
+      "lines": 20,
+      "branches": 0,
+      "params": 6,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "GetMetaPedAssetTintEntity",
+      "line": 747,
+      "lines": 20,
+      "branches": 0,
+      "params": 6,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "SetMetaPedTagEntity",
+      "line": 776,
+      "lines": 16,
+      "branches": 0,
+      "params": 2,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "StartScenarioAtPosition",
+      "line": 1012,
+      "lines": 18,
+      "branches": 0,
+      "params": 7,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "CreateScenarioPointHash",
+      "line": 1032,
+      "lines": 12,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "UpdateTaskGoToCoord",
+      "line": 1199,
+      "lines": 12,
+      "branches": 0,
+      "params": 6,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "FollowNavmesh",
+      "line": 1212,
+      "lines": 14,
+      "branches": 0,
+      "params": 7,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "CreatePed",
+      "line": 1262,
+      "lines": 13,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogOutfitResolved",
+      "line": 1374,
+      "lines": 6,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogAssetCapture",
+      "line": 1388,
+      "lines": 7,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "IssueMarkerFollow",
+      "line": 4650,
+      "lines": 19,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
+    },
+    {
       "file": "src/config.cpp",
       "name": "IniPath",
       "line": 46,
@@ -6481,7 +8102,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ResetLocalShotDetector",
-      "line": 4773,
+      "line": 4781,
       "lines": 13,
       "branches": 0,
       "params": 0,
@@ -6490,7 +8111,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendWorldSnapshot",
-      "line": 6192,
+      "line": 6200,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -6499,7 +8120,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendTrainSnapshotV2",
-      "line": 6206,
+      "line": 6214,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -6508,7 +8129,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendTrainSnapshot",
-      "line": 6212,
+      "line": 6220,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -6517,7 +8138,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CollectLocalOutfitForActor",
-      "line": 6245,
+      "line": 6253,
       "lines": 3,
       "branches": 0,
       "params": 2,
@@ -6526,7 +8147,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendPlayerPresence",
-      "line": 6258,
+      "line": 6266,
       "lines": 3,
       "branches": 0,
       "params": 2,
@@ -6535,10 +8156,73 @@
     {
       "file": "src/coop.cpp",
       "name": "SendActorDespawn",
-      "line": 6269,
+      "line": 6277,
       "lines": 3,
       "branches": 0,
       "params": 1,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendMissionBarrier",
+      "line": 1411,
+      "lines": 10,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendVehicleOccupants",
+      "line": 6206,
+      "lines": 6,
+      "branches": 0,
+      "params": 2,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorSpawnBatch",
+      "line": 6233,
+      "lines": 5,
+      "branches": 0,
+      "params": 2,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorAppearance",
+      "line": 6240,
+      "lines": 5,
+      "branches": 0,
+      "params": 3,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorOutfit",
+      "line": 6247,
+      "lines": 5,
+      "branches": 0,
+      "params": 3,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorDamage",
+      "line": 6259,
+      "lines": 5,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorFrames",
+      "line": 6271,
+      "lines": 5,
+      "branches": 0,
+      "params": 3,
       "crap_proxy": 2
     },
     {
@@ -6665,6 +8349,24 @@
       "lines": 5,
       "branches": 0,
       "params": 1,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "FollowNavmesh",
+      "line": 231,
+      "lines": 14,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "AttachDraftNative",
+      "line": 2576,
+      "lines": 10,
+      "branches": 0,
+      "params": 3,
       "crap_proxy": 2
     },
     {
@@ -6875,6 +8577,24 @@
       "crap_proxy": 2
     },
     {
+      "file": "net/client.cpp",
+      "name": "Start",
+      "line": 517,
+      "lines": 16,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendActorOutfit",
+      "line": 708,
+      "lines": 11,
+      "branches": 0,
+      "params": 3,
+      "crap_proxy": 2
+    },
+    {
       "file": "net/frame.cpp",
       "name": "Reset",
       "line": 46,
@@ -7077,11 +8797,29 @@
     {
       "file": "src/coop.cpp",
       "name": "Tick",
-      "line": 6480,
-      "lines": 1551,
-      "branches": 339,
+      "line": 6828,
+      "lines": 1234,
+      "branches": 261,
       "params": 0,
-      "crap_proxy": 115940
+      "crap_proxy": 68906
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "HandleClient",
+      "line": 1082,
+      "lines": 782,
+      "branches": 158,
+      "params": 4,
+      "crap_proxy": 25440
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "SendHostSnapshot",
+      "line": 1680,
+      "lines": 534,
+      "branches": 114,
+      "params": 9,
+      "crap_proxy": 13340
     },
     {
       "file": "tests/frame_reader_fuzz.cpp",
@@ -7102,9 +8840,18 @@
       "crap_proxy": 272
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "ProcessGuestHorseOutfits",
+      "line": 3882,
+      "lines": 263,
+      "branches": 83,
+      "params": 2,
+      "crap_proxy": 7140
+    },
+    {
       "file": "src/coop.cpp",
       "name": "InitNetworkClient",
-      "line": 5957,
+      "line": 5965,
       "lines": 229,
       "branches": 11,
       "params": 0,
@@ -7121,8 +8868,17 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyRemoteFramePositionPhase",
+      "line": 4110,
+      "lines": 201,
+      "branches": 46,
+      "params": 5,
+      "crap_proxy": 2256
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "ApplyPedStateToGhost",
-      "line": 3076,
+      "line": 3084,
       "lines": 185,
       "branches": 35,
       "params": 1,
@@ -7130,17 +8886,35 @@
     },
     {
       "file": "src/coop.cpp",
-      "name": "ApplyActionToGhost",
-      "line": 2816,
-      "lines": 168,
-      "branches": 42,
+      "name": "SendLocalPlayerFrame",
+      "line": 6522,
+      "lines": 172,
+      "branches": 41,
       "params": 1,
-      "crap_proxy": 1892
+      "crap_proxy": 1806
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "TickHostTrains",
+      "line": 973,
+      "lines": 168,
+      "branches": 38,
+      "params": 5,
+      "crap_proxy": 1560
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ApplyActionToGhost",
+      "line": 2845,
+      "lines": 147,
+      "branches": 38,
+      "params": 1,
+      "crap_proxy": 1560
     },
     {
       "file": "src/coop.cpp",
       "name": "ApplyOutfitToGhost",
-      "line": 3599,
+      "line": 3607,
       "lines": 141,
       "branches": 26,
       "params": 1,
@@ -7148,8 +8922,17 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "ApplyRemoteFrameMountPhase",
+      "line": 3967,
+      "lines": 141,
+      "branches": 31,
+      "params": 4,
+      "crap_proxy": 1056
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "UpdateLocalShotEvents",
-      "line": 4977,
+      "line": 4985,
       "lines": 132,
       "branches": 34,
       "params": 1,
@@ -7167,7 +8950,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CheckRemoteModelChange",
-      "line": 5297,
+      "line": 5305,
       "lines": 123,
       "branches": 13,
       "params": 1,
@@ -7194,7 +8977,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyMoveToGhost",
-      "line": 5130,
+      "line": 5138,
       "lines": 108,
       "branches": 14,
       "params": 3,
@@ -7203,11 +8986,20 @@
     {
       "file": "src/coop.cpp",
       "name": "RespawnGhostPed",
-      "line": 3830,
+      "line": 3838,
       "lines": 106,
       "branches": 16,
       "params": 1,
       "crap_proxy": 306
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "SendTrainOccupants",
+      "line": 866,
+      "lines": 106,
+      "branches": 31,
+      "params": 4,
+      "crap_proxy": 1056
     },
     {
       "file": "src/world_sync.cpp",
@@ -7217,6 +9009,24 @@
       "branches": 9,
       "params": 0,
       "crap_proxy": 110
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "ResolveTrainConfig",
+      "line": 678,
+      "lines": 96,
+      "branches": 27,
+      "params": 3,
+      "crap_proxy": 812
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SyncLocalOutfit",
+      "line": 6697,
+      "lines": 95,
+      "branches": 26,
+      "params": 1,
+      "crap_proxy": 756
     },
     {
       "file": "src/coop.cpp",
@@ -7248,7 +9058,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CleanupGhost",
-      "line": 4381,
+      "line": 4389,
       "lines": 85,
       "branches": 3,
       "params": 0,
@@ -7257,7 +9067,7 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateGhostWeaponAnim",
-      "line": 2989,
+      "line": 2997,
       "lines": 83,
       "branches": 29,
       "params": 0,
@@ -7282,6 +9092,15 @@
       "crap_proxy": 156
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "ComputeTrailTarget",
+      "line": 4258,
+      "lines": 78,
+      "branches": 11,
+      "params": 6,
+      "crap_proxy": 156
+    },
+    {
       "file": "server/server.cpp",
       "name": "PrintStatus",
       "line": 991,
@@ -7293,11 +9112,20 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalActionV2",
-      "line": 5424,
+      "line": 5432,
       "lines": 75,
       "branches": 13,
       "params": 1,
       "crap_proxy": 210
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "CollectVehicleOccupants",
+      "line": 407,
+      "lines": 75,
+      "branches": 14,
+      "params": 5,
+      "crap_proxy": 240
     },
     {
       "file": "tests/mission_barrier_rules_fuzz.cpp",
@@ -7318,9 +9146,18 @@
       "crap_proxy": 20
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "QueueSpawnBatch",
+      "line": 6029,
+      "lines": 72,
+      "branches": 13,
+      "params": 3,
+      "crap_proxy": 210
+    },
+    {
       "file": "src/coop.cpp",
       "name": "PollHostMissions",
-      "line": 5790,
+      "line": 5798,
       "lines": 70,
       "branches": 14,
       "params": 0,
@@ -7338,7 +9175,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalMoveState",
-      "line": 4471,
+      "line": 4479,
       "lines": 68,
       "branches": 10,
       "params": 1,
@@ -7347,7 +9184,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemotePlayerVehicle",
-      "line": 5719,
+      "line": 5727,
       "lines": 67,
       "branches": 15,
       "params": 1,
@@ -7356,11 +9193,29 @@
     {
       "file": "src/coop.cpp",
       "name": "TickWorldStateSync",
-      "line": 6291,
+      "line": 6299,
       "lines": 67,
       "branches": 11,
       "params": 0,
       "crap_proxy": 156
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "ComputeFarGoal",
+      "line": 4436,
+      "lines": 66,
+      "branches": 12,
+      "params": 6,
+      "crap_proxy": 182
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "Tick",
+      "line": 3398,
+      "lines": 66,
+      "branches": 14,
+      "params": 11,
+      "crap_proxy": 240
     },
     {
       "file": "src/world_scan.cpp",
@@ -7374,7 +9229,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyPlayerOutfitToGhost",
-      "line": 3266,
+      "line": 3274,
       "lines": 64,
       "branches": 15,
       "params": 1,
@@ -7392,7 +9247,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CollectLocalOutfit",
-      "line": 3336,
+      "line": 3344,
       "lines": 62,
       "branches": 7,
       "params": 2,
@@ -7401,7 +9256,7 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateLocalActionState",
-      "line": 4620,
+      "line": 4628,
       "lines": 61,
       "branches": 17,
       "params": 1,
@@ -7426,9 +9281,18 @@
       "crap_proxy": 110
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "BuildSpawn",
+      "line": 1855,
+      "lines": 59,
+      "branches": 9,
+      "params": 4,
+      "crap_proxy": 110
+    },
+    {
       "file": "src/coop.cpp",
       "name": "IsEntityHeadshot",
-      "line": 4812,
+      "line": 4820,
       "lines": 59,
       "branches": 15,
       "params": 2,
@@ -7437,7 +9301,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyMissionEventToGuest",
-      "line": 5894,
+      "line": 5902,
       "lines": 57,
       "branches": 12,
       "params": 1,
@@ -7455,11 +9319,29 @@
     {
       "file": "src/coop.cpp",
       "name": "ScrubGhostShopItems",
-      "line": 3407,
+      "line": 3415,
       "lines": 52,
       "branches": 8,
       "params": 0,
       "crap_proxy": 90
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TickPerfWindow",
+      "line": 6435,
+      "lines": 52,
+      "branches": 7,
+      "params": 3,
+      "crap_proxy": 72
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "FindNearestTrain",
+      "line": 800,
+      "lines": 52,
+      "branches": 12,
+      "params": 7,
+      "crap_proxy": 182
     },
     {
       "file": "src/coop.cpp",
@@ -7482,7 +9364,7 @@
     {
       "file": "src/coop.cpp",
       "name": "UpdateLocalAim",
-      "line": 4689,
+      "line": 4697,
       "lines": 50,
       "branches": 4,
       "params": 1,
@@ -7561,13 +9443,31 @@
       "crap_proxy": 90
     },
     {
+      "file": "src/world_entity_budget.cpp",
+      "name": "SelectWorldCandidates",
+      "line": 8,
+      "lines": 44,
+      "branches": 9,
+      "params": 2,
+      "crap_proxy": 110
+    },
+    {
       "file": "src/coop.cpp",
       "name": "ApplyHorseOutfitToMount",
-      "line": 3776,
+      "line": 3784,
       "lines": 43,
       "branches": 8,
       "params": 1,
       "crap_proxy": 90
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleServerMessage",
+      "line": 1195,
+      "lines": 41,
+      "branches": 31,
+      "params": 3,
+      "crap_proxy": 1056
     },
     {
       "file": "src/coop.cpp",
@@ -7576,6 +9476,15 @@
       "lines": 40,
       "branches": 11,
       "params": 1,
+      "crap_proxy": 156
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ApplyRemoteCarryLootAction",
+      "line": 5599,
+      "lines": 40,
+      "branches": 11,
+      "params": 4,
       "crap_proxy": 156
     },
     {
@@ -7595,6 +9504,24 @@
       "branches": 27,
       "params": 0,
       "crap_proxy": 812
+    },
+    {
+      "file": "tests/world_entity_budget_test.cpp",
+      "name": "ValidateResult",
+      "line": 56,
+      "lines": 39,
+      "branches": 14,
+      "params": 3,
+      "crap_proxy": 240
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "SendDamageToActor",
+      "line": 6963,
+      "lines": 38,
+      "branches": 14,
+      "params": 4,
+      "crap_proxy": 240
     },
     {
       "file": "src/persist.cpp",
@@ -7635,7 +9562,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalPlayerVehicle",
-      "line": 5658,
+      "line": 5666,
       "lines": 36,
       "branches": 5,
       "params": 1,
@@ -7653,10 +9580,19 @@
     {
       "file": "src/coop.cpp",
       "name": "TickRttHud",
-      "line": 6379,
+      "line": 6387,
       "lines": 34,
       "branches": 9,
       "params": 0,
+      "crap_proxy": 110
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "TrySendNpcDamage",
+      "line": 4884,
+      "lines": 34,
+      "branches": 9,
+      "params": 3,
       "crap_proxy": 110
     },
     {
@@ -7676,6 +9612,51 @@
       "branches": 9,
       "params": 3,
       "crap_proxy": 110
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "UpdateLocalAmmoDetector",
+      "line": 4951,
+      "lines": 33,
+      "branches": 7,
+      "params": 4,
+      "crap_proxy": 72
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "FinishPreviousRemoteAction",
+      "line": 5511,
+      "lines": 33,
+      "branches": 8,
+      "params": 5,
+      "crap_proxy": 90
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendActorAppearance",
+      "line": 735,
+      "lines": 33,
+      "branches": 6,
+      "params": 3,
+      "crap_proxy": 56
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "HandleJoinOk",
+      "line": 903,
+      "lines": 33,
+      "branches": 8,
+      "params": 2,
+      "crap_proxy": 90
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "OnVehicleOccupants",
+      "line": 3197,
+      "lines": 32,
+      "branches": 5,
+      "params": 2,
+      "crap_proxy": 42
     },
     {
       "file": "net/client.cpp",
@@ -7703,6 +9684,42 @@
       "branches": 5,
       "params": 2,
       "crap_proxy": 42
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "DrainLocalInbox",
+      "line": 6488,
+      "lines": 31,
+      "branches": 4,
+      "params": 0,
+      "crap_proxy": 30
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "UpdateLocalActionSync",
+      "line": 6795,
+      "lines": 31,
+      "branches": 7,
+      "params": 1,
+      "crap_proxy": 72
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseVehicleOccupants",
+      "line": 345,
+      "lines": 31,
+      "branches": 11,
+      "params": 3,
+      "crap_proxy": 156
+    },
+    {
+      "file": "src/world_snapshot_parse.cpp",
+      "name": "ParseWorldSnapshot",
+      "line": 8,
+      "lines": 30,
+      "branches": 4,
+      "params": 2,
+      "crap_proxy": 30
     },
     {
       "file": "net/client.cpp",
@@ -7743,7 +9760,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SurgicalRemoveShopCategories",
-      "line": 3466,
+      "line": 3474,
       "lines": 29,
       "branches": 6,
       "params": 1,
@@ -7757,6 +9774,15 @@
       "branches": 6,
       "params": 2,
       "crap_proxy": 56
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseActorAppearance",
+      "line": 289,
+      "lines": 29,
+      "branches": 8,
+      "params": 4,
+      "crap_proxy": 90
     },
     {
       "file": "net/frame.cpp",
@@ -7815,7 +9841,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyGhostWearableStates",
-      "line": 3522,
+      "line": 3530,
       "lines": 27,
       "branches": 8,
       "params": 1,
@@ -7824,7 +9850,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DeleteGhostEntity",
-      "line": 4351,
+      "line": 4359,
       "lines": 27,
       "branches": 4,
       "params": 0,
@@ -7833,7 +9859,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteCoverAction",
-      "line": 5562,
+      "line": 5570,
       "lines": 27,
       "branches": 5,
       "params": 3,
@@ -7842,7 +9868,7 @@
     {
       "file": "src/coop.cpp",
       "name": "LogMissionRewardPlan",
-      "line": 5864,
+      "line": 5872,
       "lines": 27,
       "branches": 11,
       "params": 1,
@@ -7877,12 +9903,30 @@
     },
     {
       "file": "src/coop.cpp",
+      "name": "UpdateGhostCombatExit",
+      "line": 2817,
+      "lines": 26,
+      "branches": 4,
+      "params": 2,
+      "crap_proxy": 30
+    },
+    {
+      "file": "src/coop.cpp",
       "name": "GetLocalSelectedWeaponHash",
-      "line": 5263,
+      "line": 5271,
       "lines": 26,
       "branches": 5,
       "params": 1,
       "crap_proxy": 42
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "CollectActualTrainModels",
+      "line": 650,
+      "lines": 26,
+      "branches": 7,
+      "params": 3,
+      "crap_proxy": 72
     },
     {
       "file": "server/server.cpp",
@@ -7892,6 +9936,15 @@
       "branches": 18,
       "params": 2,
       "crap_proxy": 380
+    },
+    {
+      "file": "server/server.cpp",
+      "name": "RelayHostOnlyRate",
+      "line": 963,
+      "lines": 26,
+      "branches": 5,
+      "params": 8,
+      "crap_proxy": 42
     },
     {
       "file": "src/script_hook.cpp",
@@ -7912,6 +9965,15 @@
       "crap_proxy": 56
     },
     {
+      "file": "tests/world_entity_budget_test.cpp",
+      "name": "Reference",
+      "line": 30,
+      "lines": 25,
+      "branches": 9,
+      "params": 2,
+      "crap_proxy": 110
+    },
+    {
       "file": "src/coop.cpp",
       "name": "DismountAndRemoveMount",
       "line": 2364,
@@ -7919,6 +9981,24 @@
       "branches": 2,
       "params": 0,
       "crap_proxy": 12
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ApplyRemoteScenarioAction",
+      "line": 5545,
+      "lines": 24,
+      "branches": 5,
+      "params": 3,
+      "crap_proxy": 42
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseActorFrames",
+      "line": 226,
+      "lines": 24,
+      "branches": 6,
+      "params": 4,
+      "crap_proxy": 56
     },
     {
       "file": "server/server.cpp",
@@ -7939,6 +10019,15 @@
       "crap_proxy": 6
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "CreatePedWithSetup",
+      "line": 3484,
+      "lines": 23,
+      "branches": 2,
+      "params": 7,
+      "crap_proxy": 12
+    },
+    {
       "file": "src/coop.cpp",
       "name": "DrawHudLine",
       "line": 346,
@@ -7955,6 +10044,24 @@
       "branches": 5,
       "params": 0,
       "crap_proxy": 42
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseActorSpawnBatch",
+      "line": 202,
+      "lines": 23,
+      "branches": 6,
+      "params": 3,
+      "crap_proxy": 56
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendVehicleOccupants",
+      "line": 806,
+      "lines": 23,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
     },
     {
       "file": "server/server.cpp",
@@ -7986,7 +10093,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteFrame",
-      "line": 4325,
+      "line": 4333,
       "lines": 22,
       "branches": 3,
       "params": 1,
@@ -8000,6 +10107,15 @@
       "branches": 8,
       "params": 2,
       "crap_proxy": 90
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendActorFrames",
+      "line": 671,
+      "lines": 22,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
     },
     {
       "file": "server/server.cpp",
@@ -8020,9 +10136,18 @@
       "crap_proxy": 90
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "PushHostSample",
+      "line": 4349,
+      "lines": 21,
+      "branches": 5,
+      "params": 6,
+      "crap_proxy": 42
+    },
+    {
       "file": "src/coop.cpp",
       "name": "DeleteRemotePlayerVehicle",
-      "line": 5696,
+      "line": 5704,
       "lines": 21,
       "branches": 2,
       "params": 0,
@@ -8047,12 +10172,48 @@
       "crap_proxy": 56
     },
     {
+      "file": "server/server.cpp",
+      "name": "MakePlayerInfoMsg",
+      "line": 867,
+      "lines": 21,
+      "branches": 4,
+      "params": 8,
+      "crap_proxy": 30
+    },
+    {
+      "file": "tests/frame_reader_fuzz.cpp",
+      "name": "FeedAndPoll",
+      "line": 16,
+      "lines": 21,
+      "branches": 3,
+      "params": 4,
+      "crap_proxy": 20
+    },
+    {
       "file": "src/actor_sync.cpp",
       "name": "ResetPerfWindow",
       "line": 6692,
       "lines": 20,
       "branches": 0,
       "params": 0,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "GetMetaPedAssetGuidsEntity",
+      "line": 726,
+      "lines": 20,
+      "branches": 0,
+      "params": 6,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "GetMetaPedAssetTintEntity",
+      "line": 747,
+      "lines": 20,
+      "branches": 0,
+      "params": 6,
       "crap_proxy": 2
     },
     {
@@ -8085,20 +10246,56 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteActionV2",
-      "line": 5632,
+      "line": 5640,
       "lines": 20,
       "branches": 3,
       "params": 1,
       "crap_proxy": 20
     },
     {
+      "file": "src/gen_metaped_outfits.h",
+      "name": "LookupMetaOutfits",
+      "line": 1485,
+      "lines": 20,
+      "branches": 4,
+      "params": 3,
+      "crap_proxy": 30
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendActorDamage",
+      "line": 769,
+      "lines": 20,
+      "branches": 6,
+      "params": 4,
+      "crap_proxy": 56
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "IssueMarkerFollow",
+      "line": 4650,
+      "lines": 19,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
+    },
+    {
       "file": "src/coop.cpp",
       "name": "DetectLocalAction",
-      "line": 4585,
+      "line": 4593,
       "lines": 19,
       "branches": 7,
       "params": 1,
       "crap_proxy": 72
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "QueryLocalClipAmmo",
+      "line": 4931,
+      "lines": 19,
+      "branches": 4,
+      "params": 3,
+      "crap_proxy": 30
     },
     {
       "file": "net/client.cpp",
@@ -8119,6 +10316,15 @@
       "crap_proxy": 12
     },
     {
+      "file": "server/server.cpp",
+      "name": "RelayHostOnly",
+      "line": 940,
+      "lines": 19,
+      "branches": 3,
+      "params": 6,
+      "crap_proxy": 20
+    },
+    {
       "file": "src/actor_sync.cpp",
       "name": "SetOccupantPendingActors",
       "line": 6874,
@@ -8126,6 +10332,24 @@
       "branches": 7,
       "params": 1,
       "crap_proxy": 72
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "StartScenarioAtPosition",
+      "line": 1012,
+      "lines": 18,
+      "branches": 0,
+      "params": 7,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorOutfit",
+      "line": 7053,
+      "lines": 18,
+      "branches": 6,
+      "params": 3,
+      "crap_proxy": 56
     },
     {
       "file": "src/coop.cpp",
@@ -8139,7 +10363,7 @@
     {
       "file": "src/coop.cpp",
       "name": "OutfitsEqual",
-      "line": 3557,
+      "line": 3565,
       "lines": 18,
       "branches": 9,
       "params": 2,
@@ -8148,7 +10372,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteFrameVisualTail",
-      "line": 4305,
+      "line": 4313,
       "lines": 18,
       "branches": 5,
       "params": 2,
@@ -8157,7 +10381,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalPedState",
-      "line": 4543,
+      "line": 4551,
       "lines": 18,
       "branches": 7,
       "params": 1,
@@ -8202,7 +10426,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyRemoteFrameEarly",
-      "line": 3939,
+      "line": 3947,
       "lines": 17,
       "branches": 6,
       "params": 1,
@@ -8211,7 +10435,7 @@
     {
       "file": "src/coop.cpp",
       "name": "TickJoinSubtitle",
-      "line": 6360,
+      "line": 6368,
       "lines": 17,
       "branches": 3,
       "params": 0,
@@ -8254,6 +10478,24 @@
       "crap_proxy": 210
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "SetMetaPedTagEntity",
+      "line": 776,
+      "lines": 16,
+      "branches": 0,
+      "params": 2,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "DeleteEntitySafe",
+      "line": 3510,
+      "lines": 16,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
       "file": "src/coop.cpp",
       "name": "SetGhostStaminaFull",
       "line": 2414,
@@ -8274,7 +10516,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CommitGhostVariation",
-      "line": 3500,
+      "line": 3508,
       "lines": 16,
       "branches": 2,
       "params": 0,
@@ -8283,11 +10525,29 @@
     {
       "file": "src/coop.cpp",
       "name": "ApplyGhostOutfitComponents",
-      "line": 3581,
+      "line": 3589,
       "lines": 16,
       "branches": 3,
       "params": 2,
       "crap_proxy": 20
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "OccupantsEqual",
+      "line": 388,
+      "lines": 16,
+      "branches": 7,
+      "params": 2,
+      "crap_proxy": 72
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "Start",
+      "line": 517,
+      "lines": 16,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
     },
     {
       "file": "net/socket.cpp",
@@ -8337,7 +10597,7 @@
     {
       "file": "src/coop.cpp",
       "name": "DetectLocalFlags",
-      "line": 4564,
+      "line": 4572,
       "lines": 15,
       "branches": 4,
       "params": 1,
@@ -8346,7 +10606,7 @@
     {
       "file": "src/coop.cpp",
       "name": "NpcDamageForWeapon",
-      "line": 4792,
+      "line": 4800,
       "lines": 15,
       "branches": 7,
       "params": 1,
@@ -8355,7 +10615,7 @@
     {
       "file": "src/coop.cpp",
       "name": "GetLocalWeaponHash",
-      "line": 5243,
+      "line": 5251,
       "lines": 15,
       "branches": 1,
       "params": 1,
@@ -8369,6 +10629,15 @@
       "branches": 3,
       "params": 1,
       "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseTrainSnapshotV2",
+      "line": 379,
+      "lines": 15,
+      "branches": 12,
+      "params": 2,
+      "crap_proxy": 182
     },
     {
       "file": "net/frame.cpp",
@@ -8387,6 +10656,24 @@
       "branches": 2,
       "params": 2,
       "crap_proxy": 12
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "FollowNavmesh",
+      "line": 1212,
+      "lines": 14,
+      "branches": 0,
+      "params": 7,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "SetActorSeated",
+      "line": 6895,
+      "lines": 14,
+      "branches": 1,
+      "params": 4,
+      "crap_proxy": 6
     },
     {
       "file": "src/config.cpp",
@@ -8436,7 +10723,7 @@
     {
       "file": "src/coop.cpp",
       "name": "RefreshGhostComponents",
-      "line": 3746,
+      "line": 3754,
       "lines": 14,
       "branches": 4,
       "params": 0,
@@ -8445,11 +10732,20 @@
     {
       "file": "src/coop.cpp",
       "name": "SendActorResync",
-      "line": 6274,
+      "line": 6282,
       "lines": 14,
       "branches": 3,
       "params": 3,
       "crap_proxy": 20
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "ShootGhostAt",
+      "line": 2785,
+      "lines": 14,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
     },
     {
       "file": "src/persist.cpp",
@@ -8461,6 +10757,24 @@
       "crap_proxy": 42
     },
     {
+      "file": "src/world_sync.cpp",
+      "name": "FollowNavmesh",
+      "line": 231,
+      "lines": 14,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "AppendOccupantEntry",
+      "line": 373,
+      "lines": 14,
+      "branches": 2,
+      "params": 5,
+      "crap_proxy": 12
+    },
+    {
       "file": "net/client.cpp",
       "name": "SendPlayerPresence",
       "line": 790,
@@ -8468,6 +10782,24 @@
       "branches": 2,
       "params": 2,
       "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseActorOutfit",
+      "line": 265,
+      "lines": 14,
+      "branches": 4,
+      "params": 4,
+      "crap_proxy": 30
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendFrameTracked",
+      "line": 421,
+      "lines": 14,
+      "branches": 3,
+      "params": 2,
+      "crap_proxy": 20
     },
     {
       "file": "server/server.cpp",
@@ -8486,6 +10818,60 @@
       "branches": 4,
       "params": 2,
       "crap_proxy": 30
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "SetCurrentPedWeaponEntity",
+      "line": 580,
+      "lines": 13,
+      "branches": 0,
+      "params": 3,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "CreatePed",
+      "line": 1262,
+      "lines": 13,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogScenarioApply",
+      "line": 1436,
+      "lines": 13,
+      "branches": 3,
+      "params": 4,
+      "crap_proxy": 20
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogWeaponDebug",
+      "line": 1500,
+      "lines": 13,
+      "branches": 6,
+      "params": 12,
+      "crap_proxy": 56
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "SetActorDraftAttached",
+      "line": 6921,
+      "lines": 13,
+      "branches": 1,
+      "params": 3,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorDamageRequest",
+      "line": 7087,
+      "lines": 13,
+      "branches": 2,
+      "params": 4,
+      "crap_proxy": 12
     },
     {
       "file": "src/coop.cpp",
@@ -8508,7 +10894,7 @@
     {
       "file": "src/coop.cpp",
       "name": "ResetLocalShotDetector",
-      "line": 4773,
+      "line": 4781,
       "lines": 13,
       "branches": 0,
       "params": 0,
@@ -8533,6 +10919,42 @@
       "crap_proxy": 6
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "TaskShootAtCoordEntity",
+      "line": 659,
+      "lines": 12,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "CreateScenarioPointHash",
+      "line": 1032,
+      "lines": 12,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "UpdateTaskGoToCoord",
+      "line": 1199,
+      "lines": 12,
+      "branches": 0,
+      "params": 6,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorAppearance",
+      "line": 7073,
+      "lines": 12,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
       "file": "src/coop.cpp",
       "name": "AimGhostForward",
       "line": 2754,
@@ -8549,6 +10971,15 @@
       "branches": 0,
       "params": 0,
       "crap_proxy": 2
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "EnsureHostNetId",
+      "line": 331,
+      "lines": 12,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
     },
     {
       "file": "net/client.cpp",
@@ -8587,6 +11018,24 @@
       "crap_proxy": 2
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "LogAppearance",
+      "line": 1361,
+      "lines": 11,
+      "branches": 3,
+      "params": 4,
+      "crap_proxy": 20
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorFrames",
+      "line": 7014,
+      "lines": 11,
+      "branches": 1,
+      "params": 3,
+      "crap_proxy": 6
+    },
+    {
       "file": "src/coop.cpp",
       "name": "GetGroundZForCoord",
       "line": 257,
@@ -8598,7 +11047,7 @@
     {
       "file": "src/coop.cpp",
       "name": "GetLocalHealth01",
-      "line": 5113,
+      "line": 5121,
       "lines": 11,
       "branches": 2,
       "params": 1,
@@ -8612,6 +11061,15 @@
       "branches": 3,
       "params": 0,
       "crap_proxy": 20
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "SendActorOutfit",
+      "line": 708,
+      "lines": 11,
+      "branches": 0,
+      "params": 3,
+      "crap_proxy": 2
     },
     {
       "file": "net/socket.cpp",
@@ -8695,6 +11153,15 @@
       "crap_proxy": 20
     },
     {
+      "file": "src/coop.cpp",
+      "name": "SendMissionBarrier",
+      "line": 1411,
+      "lines": 10,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
+    },
+    {
       "file": "src/mission_barrier_rules.cpp",
       "name": "IsPhaseAllowedForRole",
       "line": 15,
@@ -8702,6 +11169,24 @@
       "branches": 4,
       "params": 2,
       "crap_proxy": 30
+    },
+    {
+      "file": "src/mission_barrier_rules.cpp",
+      "name": "IsGuestEventAllowed",
+      "line": 44,
+      "lines": 10,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
+    },
+    {
+      "file": "src/world_sync.cpp",
+      "name": "AttachDraftNative",
+      "line": 2576,
+      "lines": 10,
+      "branches": 0,
+      "params": 3,
+      "crap_proxy": 2
     },
     {
       "file": "net/socket.cpp",
@@ -8776,6 +11261,15 @@
       "crap_proxy": 6
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "OnActorSpawnBatch",
+      "line": 7004,
+      "lines": 9,
+      "branches": 1,
+      "params": 2,
+      "crap_proxy": 6
+    },
+    {
       "file": "src/coop.cpp",
       "name": "RequestModel",
       "line": 176,
@@ -8814,7 +11308,7 @@
     {
       "file": "src/coop.cpp",
       "name": "HandleLocalWeaponChange",
-      "line": 4912,
+      "line": 4920,
       "lines": 9,
       "branches": 1,
       "params": 1,
@@ -8823,7 +11317,7 @@
     {
       "file": "src/coop.cpp",
       "name": "TickPersistGhostPosition",
-      "line": 6415,
+      "line": 6423,
       "lines": 9,
       "branches": 4,
       "params": 0,
@@ -8839,6 +11333,15 @@
       "crap_proxy": 6
     },
     {
+      "file": "src/world_sync.cpp",
+      "name": "SameTrainSnapshot",
+      "line": 853,
+      "lines": 9,
+      "branches": 11,
+      "params": 2,
+      "crap_proxy": 156
+    },
+    {
       "file": "net/client.cpp",
       "name": "HandlePong",
       "line": 956,
@@ -8846,6 +11349,15 @@
       "branches": 2,
       "params": 1,
       "crap_proxy": 12
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParseActorDamage",
+      "line": 321,
+      "lines": 9,
+      "branches": 4,
+      "params": 2,
+      "crap_proxy": 30
     },
     {
       "file": "server/server.cpp",
@@ -8920,6 +11432,15 @@
       "crap_proxy": 12
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "LogDamageSend",
+      "line": 1527,
+      "lines": 8,
+      "branches": 1,
+      "params": 4,
+      "crap_proxy": 6
+    },
+    {
       "file": "src/coop.cpp",
       "name": "GetDistanceBetweenCoords",
       "line": 447,
@@ -8958,7 +11479,7 @@
     {
       "file": "src/coop.cpp",
       "name": "TryApplyPendingOutfit",
-      "line": 3763,
+      "line": 3771,
       "lines": 8,
       "branches": 5,
       "params": 0,
@@ -8980,6 +11501,15 @@
       "lines": 8,
       "branches": 1,
       "params": 0,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/mission_barrier_rules.cpp",
+      "name": "IsHostEventAllowed",
+      "line": 35,
+      "lines": 8,
+      "branches": 1,
+      "params": 3,
       "crap_proxy": 6
     },
     {
@@ -9017,6 +11547,15 @@
       "branches": 5,
       "params": 1,
       "crap_proxy": 42
+    },
+    {
+      "file": "net/client.cpp",
+      "name": "ParsePlayerPresence",
+      "line": 333,
+      "lines": 8,
+      "branches": 2,
+      "params": 2,
+      "crap_proxy": 12
     },
     {
       "file": "net/socket.cpp",
@@ -9070,6 +11609,24 @@
       "lines": 7,
       "branches": 1,
       "params": 1,
+      "crap_proxy": 6
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogAssetCapture",
+      "line": 1388,
+      "lines": 7,
+      "branches": 0,
+      "params": 5,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/actor_sync.cpp",
+      "name": "LogScenarioPoint",
+      "line": 1458,
+      "lines": 7,
+      "branches": 1,
+      "params": 5,
       "crap_proxy": 6
     },
     {
@@ -9224,6 +11781,15 @@
       "branches": 4,
       "params": 1,
       "crap_proxy": 30
+    },
+    {
+      "file": "src/mission_barrier_rules.cpp",
+      "name": "MatchesOffer",
+      "line": 27,
+      "lines": 7,
+      "branches": 2,
+      "params": 3,
+      "crap_proxy": 12
     },
     {
       "file": "net/client.cpp",
@@ -9415,6 +11981,15 @@
       "crap_proxy": 6
     },
     {
+      "file": "src/actor_sync.cpp",
+      "name": "LogOutfitResolved",
+      "line": 1374,
+      "lines": 6,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
+    },
+    {
       "file": "src/config.cpp",
       "name": "Trim",
       "line": 38,
@@ -9548,6 +12123,15 @@
       "branches": 1,
       "params": 2,
       "crap_proxy": 6
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendVehicleOccupants",
+      "line": 6206,
+      "lines": 6,
+      "branches": 0,
+      "params": 2,
+      "crap_proxy": 2
     },
     {
       "file": "src/native_call.h",
@@ -9844,6 +12428,51 @@
       "lines": 5,
       "branches": 0,
       "params": 1,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorSpawnBatch",
+      "line": 6233,
+      "lines": 5,
+      "branches": 0,
+      "params": 2,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorAppearance",
+      "line": 6240,
+      "lines": 5,
+      "branches": 0,
+      "params": 3,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorOutfit",
+      "line": 6247,
+      "lines": 5,
+      "branches": 0,
+      "params": 3,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorDamage",
+      "line": 6259,
+      "lines": 5,
+      "branches": 0,
+      "params": 4,
+      "crap_proxy": 2
+    },
+    {
+      "file": "src/coop.cpp",
+      "name": "SendActorFrames",
+      "line": 6271,
+      "lines": 5,
+      "branches": 0,
+      "params": 3,
       "crap_proxy": 2
     },
     {
@@ -10380,7 +13009,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendWorldSnapshot",
-      "line": 6192,
+      "line": 6200,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -10389,7 +13018,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendTrainSnapshotV2",
-      "line": 6206,
+      "line": 6214,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -10398,7 +13027,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendTrainSnapshot",
-      "line": 6212,
+      "line": 6220,
       "lines": 3,
       "branches": 0,
       "params": 1,
@@ -10407,7 +13036,7 @@
     {
       "file": "src/coop.cpp",
       "name": "IsWorldSyncExcluded",
-      "line": 6219,
+      "line": 6227,
       "lines": 3,
       "branches": 2,
       "params": 1,
@@ -10416,7 +13045,7 @@
     {
       "file": "src/coop.cpp",
       "name": "CollectLocalOutfitForActor",
-      "line": 6245,
+      "line": 6253,
       "lines": 3,
       "branches": 0,
       "params": 2,
@@ -10425,7 +13054,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendPlayerPresence",
-      "line": 6258,
+      "line": 6266,
       "lines": 3,
       "branches": 0,
       "params": 2,
@@ -10434,7 +13063,7 @@
     {
       "file": "src/coop.cpp",
       "name": "SendActorDespawn",
-      "line": 6269,
+      "line": 6277,
       "lines": 3,
       "branches": 0,
       "params": 1,

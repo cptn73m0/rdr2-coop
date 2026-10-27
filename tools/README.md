@@ -10,6 +10,9 @@ Read-only аудит: функции/длина/CRAP-прокси, дублир�
 # отчёт: пишет build/quality_latest.json, печатает md в stdout
 python tools\quality_scan.py --json build\quality_latest.json --top 20
 
+# honest self-check: многострочные заголовки + отсутствие ложных функций
+python tools\quality_scan.py --self-check
+
 # обновить baseline только после доказанной шлифовки (build + CI):
 python tools\quality_scan.py --json tools\quality_baseline.json --top 20
 ```
@@ -32,24 +35,24 @@ CRAP-прокси >5000, dup-группы `count>=4`, число TODO/FIXME. Del
 latest − baseline; отрицательная — улучшение. Baseline обновляйте
 осознанно, а не для «позеленения» CI.
 
-**Финальный delta после `0a4cc48` + `c3dc018` + `6295e6b` + `5799ea7` + `0e64a22`; сборка/снапшот `npc-e16`:**
+**Финальный delta (parser-fixed; HEAD `2a58ee8`, база `npc-e16`):**
 
-| метрика | initial baseline | после e16 | delta |
+| метрика | initial baseline (old scanner) | corrected baseline | delta |
 |---|---:|---:|---:|
 | files | 45 | 45 | 0 |
-| functions | 334 | 388 | +54 |
-| CRAP>5000 | 4 | 1 | -3 |
-| dup>=4 | 7 | 3 | **-4** |
+| functions | 334 | **489** | +155 (скрытые функции) |
+| CRAP>5000 | 4 | **4** | 0 (вскрыты HandleClient/SendHostSnapshot/ProcessGuestHorseOutfits) |
+| dup>=4 | 7 | **3** | **-4** |
 | TODO | 0 | 0 | 0 |
 
-Топ CRAP после: `Tick` 115940 (1551 строк), `main` frame_reader_fuzz 3192,
-`ApplyActionToGhost` 1892, `RunOnce` 1482, `ApplyPedStateToGhost` 1332;
-`ApplyOutfitToGhost` 165→141 (CRAP 1122→756). `ApplyRemoteFrame` 8010→20,
-`ApplyLine` 7656→506, `RunOnce` 24492→1482; 3 dup≥4 — оставшиеся
-native-обёртки `actor_sync`/`world_sync`. **Baseline осознанно обновлён
-после 0e64a22** до 45/388/1/3/0, strict теперь ловит регрессии относительно
-нового лучшего состояния. `npc-e16` (ASI `C4E4CF70`, server без изменений
-`1BE28084`) задеплоен локально и на ARINA; визуальная 2-ПК приёмка ещё нужна.
+Топ CRAP после: `Tick` 68906 (1234 строк), `HandleClient` 25440 (782),
+`SendHostSnapshot` 13340 (534), `ProcessGuestHorseOutfits` 7140 (263),
+`main` frame_reader_fuzz 3192 (312). **P3-фикс многострочных сигнатур** вскрыл
+скрытые функции — это не регрессия кода; baseline regenerated after parser
+fix (45/489/4/3/0). **P2:** `integration_server.py` сериализует прогоны
+`IntegrationRunLock`; 3 последовательных + параллельный прогон — 0 флейков.
+`npc-e16` (ASI `C4E4CF70`, server без изменений `1BE28084`) задеплоен
+локально и на ARINA; визуальная 2-ПК приёмка ещё нужна.
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 

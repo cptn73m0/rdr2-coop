@@ -12,9 +12,10 @@ Read-only static audit for the RDR2 co-op codebase:
 Usage:
   python tools/quality_scan.py [--root E:/rdr2-coop] [--json out.json]
                                [--md docs/UB_MODE_BASELINE.md]
-                               [--top 25] [--min-lines 25]
+                               [--top 25] [--self-check]
 
-Exit code: 0 always (report tool), 2 on hard error.
+Exit code: 0 always for scan (report tool), 1 on failed self-check,
+2 on hard scan error.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 
@@ -39,6 +41,13 @@ FUNC_START = re.compile(
     r"struct|class|enum|typename|friend|template\b[^{;]*|[\w:]+(?:<[^;{]*>)?[\s*&:]+)+)"
     r"([A-Za-z_]\w*)\s*\(([^{;]*)\)\s*(?:const)?\s*(?:noexcept)?\s*\{?\s*$"
 )
+# Prefix of a declaration whose parameter list may continue on later lines.
+FUNC_HEAD_START = re.compile(
+    r"^\s*(?:(?:static|inline|virtual|explicit|constexpr|const|extern|unsigned|signed|"
+    r"struct|class|enum|typename|friend|template\b[^{;]*|[\w:]+(?:<[^;{]*>)?[\s*&:]+)+)"
+    r"([A-Za-z_]\w*)\s*\("
+)
+FUNC_HEAD_MAX_LINES = 10
 TODO_RE = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b")
 WARN_DISABLE_RE = re.compile(r"#pragma\s+warning\s*\(\s*disable")
 NUMBER_RE = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?f?)(?![\w.])")
@@ -147,7 +156,140 @@ def scan_cpp(root: str, path: str, top: int) -> FileStats:
             fs.funcs.append(cur)
             cur = None
             cur_entered = False
+    existing = {(fn.name, fn.line) for fn in fs.funcs}
+    fs.funcs.extend(scan_multiline_functions(rel, lines, existing))
     return fs
+
+
+def scan_multiline_functions(rel: str, lines: list[str],
+                             existing: set[tuple[str, int]]) -> list[Func]:
+    """Find function headers whose parameter list spans multiple lines.
+
+    The line-oriented scanner above deliberately only matches complete
+    one-line headers. This second pass handles declarations like:
+
+        void TickPerfWindow(unsigned long long perfFrameStart,
+                            unsigned long long perfWorldUs,
+                            unsigned long long perfActorUs)
+        {
+            ...
+        }
+
+    It only starts from a declaration prefix (not if/for/calls), accumulates
+    at most FUNC_HEAD_MAX_LINES, requires a balanced ')' and a real body, and
+    skips functions already found by the main scanner.
+    """
+    found: list[Func] = []
+    control = ("if", "for", "while", "switch", "else", "case", "return",
+               "throw", "sizeof", "decltype", "new", "delete", "catch")
+    i = 0
+    while i < len(lines):
+        code = strip_comments_for_norm(lines[i])
+        if (not code or "(" not in code or ")" in code or
+                code.startswith(control) or
+                FUNC_HEAD_START.match(code) is None):
+            i += 1
+            continue
+
+        parts = [code]
+        balance = code.count("(") - code.count(")")
+        j = i
+        while balance > 0 and j + 1 < len(lines) and \
+                (j - i + 1) < FUNC_HEAD_MAX_LINES:
+            j += 1
+            next_code = strip_comments_for_norm(lines[j])
+            if not next_code:
+                continue
+            parts.append(next_code)
+            balance += next_code.count("(") - next_code.count(")")
+        if balance != 0:
+            i += 1
+            continue
+
+        # A body brace may be on the next line after the closing ')'.
+        joined = " ".join(parts)
+        if "{" not in joined:
+            k = j + 1
+            while k < len(lines):
+                next_code = strip_comments_for_norm(lines[k])
+                if not next_code:
+                    k += 1
+                    continue
+                if next_code.startswith("{"):
+                    parts.append(next_code)
+                    j = k
+                break
+            joined = " ".join(parts)
+
+        match = FUNC_START.match(joined)
+        if match is None or (match.group(1), i + 1) in existing:
+            i += 1
+            continue
+
+        end = None
+        depth = 0
+        started = False
+        for k in range(i, len(lines)):
+            line_code = strip_comments_for_norm(lines[k])
+            if "{" in line_code:
+                started = True
+            depth += line_code.count("{") - line_code.count("}")
+            if started and depth <= 0:
+                end = k
+                break
+        if end is None:
+            i += 1
+            continue
+
+        branches = sum(len(BRANCH_TOKEN.findall(
+            strip_comments_for_norm(lines[k]))) for k in range(i, end + 1))
+        params = [p for p in match.group(2).split(",") if p.strip()]
+        found.append(Func(file=rel, name=match.group(1), line=i + 1,
+                          lines=end - i + 1, branches=branches,
+                          params=len(params)))
+        i = end + 1
+    return found
+
+
+def run_self_check() -> int:
+    """Honest parser self-check: multiline function is found, calls are not."""
+    sample = """\
+static int Single(int x)
+{
+    return x + 1;
+}
+
+int Multi(
+    int a,
+    int b)
+{
+    if (a && b) { return a + b; }
+    return 0;
+}
+
+void Caller()
+{
+    Multi(1, 2);
+}
+"""
+    with tempfile.TemporaryDirectory(prefix="quality-scan-selfcheck-") as tmp:
+        path = os.path.join(tmp, "sample.cpp")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(sample)
+        stats = scan_cpp(tmp, path, 20)
+    names = {fn.name: fn for fn in stats.funcs}
+    if set(names) != {"Single", "Multi", "Caller"}:
+        print(f"quality_scan self-check FAIL: functions={sorted(names)}")
+        return 1
+    multi = names["Multi"]
+    if multi.lines != 7 or multi.params != 2 or multi.branches < 2:
+        print(f"quality_scan self-check FAIL: Multi={multi}")
+        return 1
+    if "if" in names or "Multi" not in names:
+        print("quality_scan self-check FAIL: control/call false positive")
+        return 1
+    print("quality_scan self-check: PASS")
+    return 0
 
 
 def inventory(root: str, top: int):
@@ -295,7 +437,12 @@ def main(argv) -> int:
     ap.add_argument("--json", default="")
     ap.add_argument("--md", default="")
     ap.add_argument("--top", type=int, default=25)
+    ap.add_argument("--self-check", action="store_true",
+                    help="verify multiline function detection on a synthetic source")
     args = ap.parse_args(argv)
+
+    if args.self_check:
+        return run_self_check()
 
     root = os.path.abspath(args.root)
     files = inventory(root, args.top)
