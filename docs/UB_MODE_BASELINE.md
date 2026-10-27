@@ -6,27 +6,27 @@
 
 | файл | LOC | code LOC | строк>120 | magic | TODO | warning-disable | функций |
 |---|---|---|---|---|---|---|---|
-| `src/coop.cpp` | 7939 | 6282 | 0 | 430 | 0 | 0 | 139 |
-| `src/actor_sync.cpp` | 7132 | 6225 | 0 | 381 | 0 | 0 | 16 |
-| `src/world_sync.cpp` | 3481 | 3151 | 0 | 114 | 0 | 0 | 7 |
-| `server/server.cpp` | 2119 | 1795 | 0 | 84 | 0 | 0 | 44 |
-| `src/gen_metaped_outfits.h` | 1506 | 1494 | 0 | 0 | 0 | 0 | 0 |
-| `net/client.cpp` | 1455 | 1274 | 0 | 63 | 0 | 0 | 45 |
+| `src/coop.cpp` | 8118 | 6403 | 0 | 429 | 0 | 0 | 175 |
+| `src/actor_sync.cpp` | 7178 | 6259 | 0 | 382 | 0 | 0 | 50 |
+| `src/world_sync.cpp` | 3554 | 3207 | 0 | 114 | 0 | 0 | 22 |
+| `server/server.cpp` | 2338 | 1942 | 0 | 83 | 0 | 0 | 71 |
+| `src/gen_metaped_outfits.h` | 1506 | 1494 | 0 | 0 | 0 | 0 | 1 |
+| `net/client.cpp` | 1450 | 1234 | 0 | 59 | 0 | 0 | 93 |
 | `net/protocol.h` | 669 | 474 | 0 | 129 | 0 | 0 | 0 |
-| `src/natives.h` | 413 | 293 | 0 | 0 | 0 | 0 | 0 |
-| `tests/frame_reader_fuzz.cpp` | 373 | 332 | 0 | 40 | 0 | 0 | 2 |
-| `src/config.cpp` | 337 | 311 | 0 | 36 | 0 | 0 | 11 |
-| `net/client.h` | 305 | 217 | 0 | 2 | 0 | 0 | 0 |
-| `tests/config_test.cpp` | 248 | 207 | 0 | 22 | 0 | 0 | 4 |
+| `src/natives.h` | 425 | 296 | 0 | 0 | 0 | 0 | 0 |
+| `tests/frame_reader_fuzz.cpp` | 405 | 360 | 0 | 44 | 0 | 0 | 3 |
+| `net/client.h` | 341 | 250 | 0 | 2 | 0 | 0 | 0 |
+| `src/config.cpp` | 340 | 309 | 0 | 27 | 0 | 0 | 13 |
+| `tests/config_test.cpp` | 326 | 276 | 0 | 43 | 0 | 0 | 4 |
 | `src/world_scan.cpp` | 227 | 191 | 0 | 16 | 0 | 0 | 1 |
 | `net/socket.cpp` | 210 | 179 | 0 | 1 | 0 | 0 | 16 |
-| `tests/world_entity_budget_test.cpp` | 173 | 155 | 0 | 14 | 0 | 0 | 4 |
+| `tests/world_entity_budget_test.cpp` | 188 | 168 | 0 | 17 | 0 | 0 | 6 |
+| `tests/mission_barrier_rules_fuzz.cpp` | 176 | 147 | 0 | 21 | 0 | 0 | 3 |
+| `tests/world_snapshot_parse_test.cpp` | 167 | 138 | 0 | 20 | 0 | 0 | 4 |
 | `src/persist.cpp` | 166 | 136 | 0 | 5 | 0 | 0 | 4 |
 | `tests/client_reconnect_test.cpp` | 160 | 137 | 0 | 11 | 0 | 0 | 3 |
-| `tests/world_snapshot_parse_test.cpp` | 138 | 115 | 0 | 18 | 0 | 0 | 4 |
 | `src/mission_catalog.h` | 136 | 122 | 0 | 7 | 0 | 0 | 2 |
-| `tests/mission_barrier_rules_fuzz.cpp` | 135 | 112 | 0 | 5 | 0 | 0 | 3 |
-| `src/config.h` | 128 | 48 | 0 | 9 | 0 | 0 | 0 |
+| `src/config.h` | 132 | 49 | 0 | 9 | 0 | 0 | 0 |
 | `tests/mission_catalog_test.cpp` | 117 | 96 | 0 | 13 | 0 | 0 | 3 |
 | `net/socket.h` | 113 | 56 | 0 | 6 | 0 | 0 | 0 |
 | `src/native_call.h` | 101 | 70 | 0 | 0 | 0 | 0 | 11 |
@@ -35,13 +35,13 @@
 | `net/frame.cpp` | 74 | 58 | 0 | 9 | 0 | 0 | 5 |
 | `src/mission_rewards.h` | 63 | 49 | 2 | 4 | 0 | 0 | 0 |
 | `src/script_hook.h` | 63 | 32 | 0 | 0 | 0 | 0 | 0 |
-| `src/coop.h` | 59 | 29 | 0 | 0 | 0 | 0 | 0 |
-| `src/mission_barrier_rules.cpp` | 56 | 47 | 0 | 0 | 0 | 0 | 2 |
+| `src/coop.h` | 61 | 30 | 0 | 0 | 0 | 0 | 0 |
+| `src/mission_barrier_rules.cpp` | 56 | 47 | 0 | 0 | 0 | 0 | 5 |
 | `src/world_sync.h` | 56 | 23 | 0 | 1 | 0 | 0 | 0 |
-| `src/world_entity_budget.cpp` | 54 | 48 | 0 | 0 | 0 | 0 | 0 |
+| `src/world_entity_budget.cpp` | 54 | 48 | 0 | 0 | 0 | 0 | 1 |
 | `src/main.cpp` | 51 | 35 | 0 | 0 | 0 | 0 | 3 |
 | `src/log.cpp` | 46 | 35 | 0 | 0 | 0 | 0 | 2 |
-| `src/world_snapshot_parse.cpp` | 40 | 32 | 0 | 0 | 0 | 0 | 0 |
+| `src/world_snapshot_parse.cpp` | 40 | 32 | 0 | 0 | 0 | 0 | 1 |
 | `net/frame.h` | 39 | 17 | 0 | 0 | 0 | 0 | 0 |
 | `src/world_entity_budget.h` | 38 | 28 | 0 | 3 | 0 | 0 | 0 |
 | `src/mission_barrier_rules.h` | 34 | 20 | 0 | 0 | 0 | 0 | 0 |
@@ -52,114 +52,84 @@
 | `src/persist.h` | 18 | 5 | 0 | 0 | 0 | 0 | 0 |
 | `src/log.h` | 16 | 5 | 0 | 0 | 0 | 0 | 0 |
 
-## Топ 30 функций по CRAP-прокси
+## Топ 20 функций по CRAP-прокси
 
 | CRAP | branches | lines | params | функция |
 |---|---|---|---|---|
-| 140250 | 373 | 1712 | 0 | `src/coop.cpp:6225` Tick` |
-| 24492 | 155 | 574 | 0 | `net/client.cpp:879` RunOnce` |
-| 8010 | 88 | 386 | 1 | `src/coop.cpp:3943` ApplyRemoteFrame` |
-| 7656 | 86 | 129 | 2 | `src/config.cpp:150` ApplyLine` |
-| 2550 | 49 | 280 | 0 | `tests/frame_reader_fuzz.cpp:93` main` |
-| 2352 | 47 | 181 | 1 | `src/coop.cpp:4893` UpdateLocalShotEvents` |
-| 1892 | 42 | 168 | 1 | `src/coop.cpp:2816` ApplyActionToGhost` |
-| 1332 | 35 | 185 | 1 | `src/coop.cpp:3076` ApplyPedStateToGhost` |
-| 1122 | 32 | 165 | 1 | `src/coop.cpp:3580` ApplyOutfitToGhost` |
-| 1122 | 32 | 122 | 1 | `src/coop.cpp:5467` ApplyRemoteActionV2` |
-| 1122 | 32 | 209 | 2 | `server/server.cpp:1910` main` |
-| 930 | 29 | 83 | 0 | `src/coop.cpp:2989` UpdateGhostWeaponAnim` |
-| 812 | 27 | 39 | 0 | `src/coop.cpp:694` DetectLocalPresenceUi` |
-| 756 | 26 | 109 | 0 | `src/coop.cpp:1192` UpdateVisitorMode` |
-| 650 | 24 | 125 | 2 | `src/coop.cpp:2234` MoveMountTo` |
-| 600 | 23 | 49 | 1 | `src/coop.cpp:1526` ProcessGuestMissionBarrier` |
-| 600 | 23 | 29 | 1 | `server/server.cpp:114` TrafficBucketFor` |
-| 552 | 22 | 74 | 2 | `tests/mission_barrier_rules_fuzz.cpp:25` Worker` |
-| 462 | 20 | 28 | 1 | `server/server.cpp:266` IsGameThreadMessage` |
-| 420 | 19 | 108 | 0 | `src/coop.cpp:1581` EnsureGuestSaveBackup` |
-| 380 | 18 | 50 | 1 | `src/coop.cpp:1423` UpdateHostMissionBarrier` |
-| 380 | 18 | 26 | 2 | `server/server.cpp:685` ParseSavedLine` |
-| 342 | 17 | 61 | 1 | `src/coop.cpp:4602` UpdateLocalActionState` |
-| 342 | 17 | 86 | 0 | `tests/mission_catalog_test.cpp:31` main` |
-| 306 | 16 | 106 | 1 | `src/coop.cpp:3835` RespawnGhostPed` |
-| 272 | 15 | 47 | 1 | `src/coop.cpp:1476` ProcessHostMissionBarrier` |
-| 272 | 15 | 64 | 1 | `src/coop.cpp:3266` ApplyPlayerOutfitToGhost` |
-| 272 | 15 | 59 | 2 | `src/coop.cpp:4794` IsEntityHeadshot` |
-| 272 | 15 | 67 | 1 | `src/coop.cpp:5654` ApplyRemotePlayerVehicle` |
-| 272 | 15 | 65 | 2 | `src/world_scan.cpp:159` Tick` |
+| 66306 | 256 | 1222 | 0 | `src/coop.cpp:6889` Tick` |
+| 15750 | 124 | 578 | 9 | `src/world_sync.cpp:1685` SendHostSnapshot` |
+| 7140 | 83 | 263 | 2 | `src/actor_sync.cpp:3911` ProcessGuestHorseOutfits` |
+| 3192 | 55 | 312 | 0 | `tests/frame_reader_fuzz.cpp:93` main` |
+| 2256 | 46 | 201 | 5 | `src/coop.cpp:4131` ApplyRemoteFramePositionPhase` |
+| 1806 | 41 | 172 | 1 | `src/coop.cpp:6543` SendLocalPlayerFrame` |
+| 1560 | 38 | 147 | 1 | `src/coop.cpp:2866` ApplyActionToGhost` |
+| 1560 | 38 | 168 | 5 | `src/world_sync.cpp:978` TickHostTrains` |
+| 1560 | 38 | 80 | 2 | `server/server.cpp:1883` DispatchMessagesPhase` |
+| 1482 | 37 | 211 | 0 | `net/client.cpp:1237` RunOnce` |
+| 1332 | 35 | 185 | 1 | `src/coop.cpp:3105` ApplyPedStateToGhost` |
+| 1332 | 35 | 168 | 3 | `server/server.cpp:1714` MiscMessagesPhase` |
+| 1260 | 34 | 132 | 1 | `src/coop.cpp:5006` UpdateLocalShotEvents` |
+| 1260 | 34 | 179 | 3 | `server/server.cpp:1486` WorldRelayMessagesPhase` |
+| 1122 | 32 | 168 | 2 | `server/server.cpp:1246` JoinRequestPhase` |
+| 1056 | 31 | 141 | 4 | `src/coop.cpp:3988` ApplyRemoteFrameMountPhase` |
+| 1056 | 31 | 106 | 4 | `src/world_sync.cpp:871` SendTrainOccupants` |
+| 1056 | 31 | 41 | 3 | `net/client.cpp:1195` HandleServerMessage` |
+| 930 | 29 | 83 | 0 | `src/coop.cpp:3018` UpdateGhostWeaponAnim` |
+| 812 | 27 | 39 | 0 | `src/coop.cpp:715` DetectLocalPresenceUi` |
 
-## Топ 30 функций по длине
+## Топ 20 функций по длине
 
 | lines | branches | CRAP | функция |
 |---|---|---|---|
-| 1712 | 373 | 140250 | `src/coop.cpp:6225` Tick` |
-| 574 | 155 | 24492 | `net/client.cpp:879` RunOnce` |
-| 386 | 88 | 8010 | `src/coop.cpp:3943` ApplyRemoteFrame` |
-| 280 | 49 | 2550 | `tests/frame_reader_fuzz.cpp:93` main` |
-| 229 | 11 | 156 | `src/coop.cpp:5892` InitNetworkClient` |
-| 209 | 32 | 1122 | `server/server.cpp:1910` main` |
-| 200 | 15 | 272 | `tests/config_test.cpp:48` main` |
-| 185 | 35 | 1332 | `src/coop.cpp:3076` ApplyPedStateToGhost` |
-| 181 | 47 | 2352 | `src/coop.cpp:4893` UpdateLocalShotEvents` |
-| 168 | 42 | 1892 | `src/coop.cpp:2816` ApplyActionToGhost` |
-| 165 | 32 | 1122 | `src/coop.cpp:3580` ApplyOutfitToGhost` |
-| 129 | 86 | 7656 | `src/config.cpp:150` ApplyLine` |
-| 125 | 24 | 650 | `src/coop.cpp:2234` MoveMountTo` |
-| 123 | 13 | 210 | `src/coop.cpp:5262` CheckRemoteModelChange` |
-| 122 | 32 | 1122 | `src/coop.cpp:5467` ApplyRemoteActionV2` |
-| 109 | 26 | 756 | `src/coop.cpp:1192` UpdateVisitorMode` |
-| 108 | 19 | 420 | `src/coop.cpp:1581` EnsureGuestSaveBackup` |
-| 108 | 14 | 240 | `src/coop.cpp:5095` ApplyMoveToGhost` |
-| 106 | 16 | 306 | `src/coop.cpp:3835` RespawnGhostPed` |
-| 104 | 9 | 110 | `src/world_sync.cpp:3307` Reset` |
-| 92 | 13 | 210 | `src/coop.cpp:2659` EnsureGhostWeaponInHands` |
-| 88 | 1 | 6 | `src/config.cpp:51` WriteDefaultIni` |
-| 86 | 17 | 342 | `tests/mission_catalog_test.cpp:31` main` |
-| 85 | 3 | 20 | `src/coop.cpp:4363` CleanupGhost` |
-| 83 | 29 | 930 | `src/coop.cpp:2989` UpdateGhostWeaponAnim` |
-| 79 | 11 | 156 | `src/coop.cpp:2065` RequestMountModel` |
-| 76 | 7 | 72 | `server/server.cpp:960` PrintStatus` |
-| 75 | 13 | 210 | `src/coop.cpp:5389` DetectLocalActionV2` |
-| 74 | 22 | 552 | `tests/mission_barrier_rules_fuzz.cpp:25` Worker` |
-| 70 | 14 | 240 | `src/coop.cpp:5725` PollHostMissions` |
+| 1222 | 256 | 66306 | `src/coop.cpp:6889` Tick` |
+| 578 | 124 | 15750 | `src/world_sync.cpp:1685` SendHostSnapshot` |
+| 312 | 55 | 3192 | `tests/frame_reader_fuzz.cpp:93` main` |
+| 278 | 15 | 272 | `tests/config_test.cpp:48` main` |
+| 263 | 83 | 7140 | `src/actor_sync.cpp:3911` ProcessGuestHorseOutfits` |
+| 229 | 11 | 156 | `src/coop.cpp:5986` InitNetworkClient` |
+| 211 | 37 | 1482 | `net/client.cpp:1237` RunOnce` |
+| 201 | 46 | 2256 | `src/coop.cpp:4131` ApplyRemoteFramePositionPhase` |
+| 185 | 35 | 1332 | `src/coop.cpp:3105` ApplyPedStateToGhost` |
+| 179 | 34 | 1260 | `server/server.cpp:1486` WorldRelayMessagesPhase` |
+| 172 | 41 | 1806 | `src/coop.cpp:6543` SendLocalPlayerFrame` |
+| 168 | 38 | 1560 | `src/world_sync.cpp:978` TickHostTrains` |
+| 168 | 32 | 1122 | `server/server.cpp:1246` JoinRequestPhase` |
+| 168 | 35 | 1332 | `server/server.cpp:1714` MiscMessagesPhase` |
+| 147 | 38 | 1560 | `src/coop.cpp:2866` ApplyActionToGhost` |
+| 141 | 26 | 756 | `src/coop.cpp:3628` ApplyOutfitToGhost` |
+| 141 | 31 | 1056 | `src/coop.cpp:3988` ApplyRemoteFrameMountPhase` |
+| 132 | 34 | 1260 | `src/coop.cpp:5006` UpdateLocalShotEvents` |
+| 125 | 24 | 650 | `src/coop.cpp:2255` MoveMountTo` |
+| 123 | 13 | 210 | `src/coop.cpp:5326` CheckRemoteModelChange` |
 
-## Дублирование (6-строчные шинглы, топ 30)
+## Дублирование (6-строчные шинглы, топ 20)
 
 | повторений | места |
 |---|---|
-| 4 | `src/actor_sync.cpp:2689` |
-| 4 | `src/actor_sync.cpp:2691` |
-| 4 | `src/world_sync.cpp:1738` |
-| 4 | `src/world_sync.cpp:1739` |
-| 4 | `src/world_sync.cpp:1741` |
-| 4 | `src/world_sync.cpp:1742` |
-| 4 | `src/world_sync.cpp:1744` |
-| 3 | `src/actor_sync.cpp:1103`, `src/world_sync.cpp:168` |
-| 3 | `src/actor_sync.cpp:1104`, `src/world_sync.cpp:169` |
-| 3 | `src/actor_sync.cpp:2030`, `src/world_sync.cpp:1721` |
-| 3 | `src/actor_sync.cpp:2039` |
-| 3 | `src/actor_sync.cpp:2040` |
-| 3 | `src/actor_sync.cpp:2041` |
-| 3 | `src/actor_sync.cpp:2042` |
-| 3 | `src/actor_sync.cpp:2682` |
-| 3 | `src/actor_sync.cpp:2683` |
-| 3 | `src/actor_sync.cpp:2684` |
-| 3 | `src/actor_sync.cpp:2685` |
-| 3 | `src/actor_sync.cpp:2686` |
-| 3 | `src/actor_sync.cpp:2687` |
-| 3 | `src/actor_sync.cpp:557`, `src/coop.cpp:2678` |
-| 3 | `src/actor_sync.cpp:558`, `src/coop.cpp:2679` |
-| 3 | `src/actor_sync.cpp:559`, `src/coop.cpp:2680` |
-| 3 | `src/actor_sync.cpp:5812` |
-| 3 | `src/actor_sync.cpp:5813` |
-| 3 | `src/coop.cpp:3451` |
-| 3 | `src/world_sync.cpp:260` |
-| 3 | `src/world_sync.cpp:261` |
-| 2 | `net/client.h:160`, `src/coop.h:44` |
-| 2 | `net/client.h:161`, `src/coop.h:45` |
+| 4 | `src/actor_sync.cpp:2718` |
+| 4 | `src/actor_sync.cpp:2720` |
+| 4 | `src/world_sync.cpp:1756` |
+| 3 | `src/actor_sync.cpp:1108`, `src/world_sync.cpp:173` |
+| 3 | `src/actor_sync.cpp:1109`, `src/world_sync.cpp:174` |
+| 3 | `src/actor_sync.cpp:2035`, `src/world_sync.cpp:1739` |
+| 3 | `src/actor_sync.cpp:2044` |
+| 3 | `src/actor_sync.cpp:2045` |
+| 3 | `src/actor_sync.cpp:2046` |
+| 3 | `src/actor_sync.cpp:2047` |
+| 3 | `src/actor_sync.cpp:2711` |
+| 3 | `src/actor_sync.cpp:2712` |
+| 3 | `src/actor_sync.cpp:2713` |
+| 3 | `src/actor_sync.cpp:2714` |
+| 3 | `src/actor_sync.cpp:2715` |
+| 3 | `src/actor_sync.cpp:2716` |
+| 3 | `src/actor_sync.cpp:557`, `src/coop.cpp:2699` |
+| 3 | `src/actor_sync.cpp:558`, `src/coop.cpp:2700` |
+| 3 | `src/actor_sync.cpp:559`, `src/coop.cpp:2701` |
+| 3 | `src/actor_sync.cpp:5841` |
 
 ## natives.h
 
-- объявлений: 285
+- объявлений: 288
 - групп с одинаковым хешем: 0
 - групп с одинаковым именем: 0
 
