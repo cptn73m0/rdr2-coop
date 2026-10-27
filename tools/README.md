@@ -30,8 +30,23 @@ $env:DSH_CI_STRICT_QUALITY = "0"; powershell -File scripts\ci.ps1
 Strict падает только при росте относительно baseline: функции с
 CRAP-прокси >5000, dup-группы `count>=4`, число TODO/FIXME. Delta в логе =
 latest − baseline; отрицательная — улучшение. Baseline обновляйте
-осознанно, а не для «позеленения» CI (baseline numbers: 45 files / 334
-functions / 4 CRAP>5000 / 7 dup>=4 / 0 TODO).
+осознанно, а не для «позеленения» CI.
+
+**Финальный delta после `0a4cc48` (net/server) + `c3dc018` (src):**
+
+| метрика | baseline | после | delta |
+|---|---:|---:|---:|
+| files | 45 | 45 | 0 |
+| functions | 334 | 384 | +50 |
+| CRAP>5000 | 4 | 1 | -3 |
+| dup>=4 | 7 | 7 | 0 |
+| TODO | 0 | 0 | 0 |
+
+Топ CRAP после: `Tick` 123552 (1602 строк), `main` frame_reader_fuzz 3192,
+`ApplyRemoteFrame` 2970, `UpdateLocalShotEvents` 2352, `ApplyActionToGhost`
+1892. `RunOnce` (24492) и `ApplyLine` (7656) из top-5 ушли; `Tick` остаётся
+единственным CRAP>5000 и следующим кандидатом. Baseline не перезаписан:
+strict-гейт продолжает ловить регрессии.
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 

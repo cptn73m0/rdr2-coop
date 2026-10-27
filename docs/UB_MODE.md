@@ -20,23 +20,41 @@ Make it Right → Practice». Установлен как обязательны
 дублирование), роль mutator — тесты `tests/` + CI (там, где честный тест возможен; для
 игровых нативов — smoke/2-ПК сценарии). Не пишем «плохие» тесты ради покрытия.
 
-## Метрики: baseline → текущий скан
+## Метрики: baseline → после рефакторингов 0a4cc48/c3dc018
 
-Baseline (снимок `tools/quality_baseline.json`, из `docs/UB_MODE_BASELINE.md`):
-45 файлов, 334 функции, **4** функции с CRAP-прокси >5000, **30** групп
-дублирования (в отчёте top-25; **7** групп с `count>=4`), **0** TODO/FIXME,
-warning-disable = 0. Топ CRAP baseline: `coop.cpp Tick` 140250 (1712 строк),
-`net/client.cpp RunOnce` 24492 (574), `coop.cpp ApplyRemoteFrame` 8010 (386),
-`config.cpp ApplyLine` 7656 (129).
+Источник baseline — `tools/quality_baseline.json` (снимок из
+`docs/UB_MODE_BASELINE.md`); финальный скан —
+`python tools\quality_scan.py --json build\quality_final.json --top 20`.
+Baseline зафиксирован до шлифовки и **не перезаписывается** автоматически.
 
-Текущий скан после задачи-166 (на фоне параллельных рефакторингов
-`net/client.cpp` / `src/config.cpp` / `src/coop.cpp`): 45 файлов,
-**381** функция, **2** функции CRAP>5000, **7** dup-групп `count>=4`,
-**0** TODO; топ: `Tick` 123552, `ApplyRemoteFrame` 8010,
-`main` frame_reader_fuzz 3192, `UpdateLocalShotEvents` 2352,
-`ApplyActionToGhost` 1892. Цифры меняются при каждом скане — их источник
-`build/quality_latest.json` и summary CI (baseline не перезаписывается
-автоматически).
+| метрика | baseline | после 0a4cc48/c3dc018 | delta |
+|---|---:|---:|---:|
+| файлов | 45 | 45 | 0 |
+| функций | 334 | 384 | +50 |
+| функций с CRAP-прокси >5000 | **4** | **1** | **-3** |
+| dup-групп `count>=4` | **7** | **7** | 0 |
+| TODO/FIXME | **0** | **0** | 0 |
+| warning-disable | 0 | 0 | 0 |
+
+Рост числа функций — выделенные helpers при разбиении `RunOnce`/`Tick`/
+`ApplyRemoteFrame`/`ApplyLine` и добавленные behavior-тесты; рост ожидаемый,
+CRAP>5000 при этом снизился.
+
+Топ-5 CRAP:
+
+| # | baseline | после |
+|---|---|---|
+| 1 | `coop.cpp Tick` **140250** (1712) | `coop.cpp Tick` **123552** (1602) |
+| 2 | `net/client.cpp RunOnce` 24492 (574) | `tests/frame_reader_fuzz.cpp main` 3192 (312) |
+| 3 | `coop.cpp ApplyRemoteFrame` 8010 (386) | `coop.cpp ApplyRemoteFrame` **2970** (230) |
+| 4 | `config.cpp ApplyLine` 7656 (129) | `coop.cpp UpdateLocalShotEvents` 2352 (181) |
+| 5 | `tests/frame_reader_fuzz.cpp main` 2550 (280) | `coop.cpp ApplyActionToGhost` 1892 (168) |
+
+**Остаточные hotspots:** `coop.cpp Tick` всё ещё единственная функция
+CRAP>5000 (123552, 1602 строк) — следующий кандидат; 7 dup-групп
+`count>=4` без изменений (`src/actor_sync.cpp`, `src/world_sync.cpp`);
+`RunOnce`/`ApplyLine` из top-5 ушли, `ApplyRemoteFrame` 8010→2970.
+Baseline оставлен прежним, чтобы strict-гейт продолжал ловить регрессии.
 
 ## Quality gate в CI
 
@@ -93,8 +111,8 @@ docs/UB_MODE_BASELINE.md`). Каждая единица шлифовки офо�
 |---|---|---|---|
 | 0 | Установка навыка и директива «always» | DSH + AGENTS.md | done |
 | 1 | `quality_scan.py` + baseline | tools/docs | done |
-| 2 | Шлифовка `net/` и `server/` | net-review | planned |
-| 3 | Шлифовка `src/` (кооп-логика, actor_sync, world_sync) | client-review | planned |
+| 2 | Шлифовка `net/` и `server/` | net-review | done — **0a4cc48** |
+| 3 | Шлифовка `src/` (кооп-логика, actor_sync, world_sync) | client-review | done — **c3dc018** |
 | 4 | Шлифовка тестов/скриптов/доков + quality-гейт в CI | qa-tests-review | done |
 | 5 | Независимое ревью шлифовки по чек-листу ub-mode | worldsync-architect | planned |
 
@@ -107,6 +125,7 @@ docs/UB_MODE_BASELINE.md`). Каждая единица шлифовки офо�
 | 3 | Честные behavior-тесты вместо «покрытия» | расширены `mission_barrier_rules_fuzz`, `world_entity_budget_test`, `world_snapshot_parse_test`, `config_test`, `frame_reader_fuzz` | C++ tests PASS (см. `tests/README.md`) |
 | 4 | Не допустить регрессии | strict-гейт: CRAP>5000 не растёт, dup>=4 не растёт, TODO не растёт | CI quality PASS; baseline delta |
 | 5 | Документировать | `docs/UB_MODE.md`, `tests/README.md`, `tools/README.md` | `git diff --check`, CI |
+| 6 | Финальный quality-delta после 0a4cc48/c3dc018 | `quality_scan.py --json build\quality_final.json --top 20`; обновлены числа «до/после» | 45/334/4/7/0 → 45/384/1/7/0; top-5 таблица; canonical CI 41/41 strict PASS |
 
 
 ## Правила безопасного рефакторинга
