@@ -5,9 +5,9 @@
 
 **Актуально на:** 27.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** **v19** (actor-репликация NPC E1–E18,
+**Текущий протокол:** **v19** (actor-репликация NPC E1–E19,
 0x18–0x22: ActorDamage 0x1F + PlayerPresence 0x20 + VehicleOccupants 0x21 +
-TrainSnapshotV2 0x22; e18 не меняет провод). v18↔v19 несовместимы; откат v18 —
+TrainSnapshotV2 0x22; e18/e19 не меняют провод). v18↔v19 несовместимы; откат v18 —
 ASI `C9BFA565`/server `BEC3428B`, v17 — `35163CC2`/`B7AAABAE`, v16 —
 `63388AD3`/`4EDAE4B6`, v15 — `dist\npc-e2c-v15\`.
 Рабочая база/игровой стабильный тег — **stable-v14** (пед-призрак, лошадь,
@@ -24,14 +24,15 @@ src: ammo helpers, host-netId dedupe, Tick/ApplyOutfit/ApplyRemoteFrame фазы
 drain-inbox/combat-exit; протокол и поведение не менялись), **E18 — soft host
 migration** (game-timeout демотирует хоста без закрытия сокета, join grace
 15 с, presence-liveness; клиентский loading heartbeat; vendor dedupe у гостя;
-server `HandleClient` phases; integration run lock).
-CI **41/41** + 7 C++ (в этой задаче +1 honest grace-тест → после мержа
-**42/42**); HEAD `6772c8a`; тег **npc-e18**; теги `npc-e0`…`npc-e18`.
-`npc_actor=0` по умолчанию; локальная пара v19 — ASI `E3FAB30F`/server
-`DD9BD9D8`, снапшот `dist\npc-e18`, **оба ПК задеплоены** (local + ARINA,
-хеши сверены). Двух-ПК приёмка e18 pending; **в работе e19** (client-polish2:
-имя на карте/blip, кучер/лошади повозки, колёса; wheel-ключ INI → 28) —
-**ждём полный тест e19**.
+server `HandleClient` phases; integration run lock), **E19 — blip name, кучер/
+тягловые лошади повозки (occupant-first + полный allowlist), opt-in wheel
+A/B `npc_vehicle_wheels=0`, SET_ENTITY_COORDS арность 8**.
+CI **42/42** + 7 C++; HEAD `ef49ac8`; тег **npc-e19**; теги `npc-e0`…`npc-e19`.
+`npc_actor=0` по умолчанию; локальная пара v19 — ASI `DD0EE210`/server
+`DD9BD9D8`, снапшот `dist\npc-e19`, **оба ПК задеплоены** (local + ARINA,
+хеши сверены), canonical CI 42/42 + quality strict PASS. Двух-ПК приёмка e19
+pending — **ждём полный тест e19** (low/info: blip label, плотный трафик,
+wheel A/B).
 
 ---
 
@@ -88,7 +89,7 @@ CI **41/41** + 7 C++ (в этой задаче +1 honest grace-тест → по
 
 ## Фаза 5 — P1: репликация мира/NPC
 
-### NPC-репликация — E1–E18 реализованы; 2-ПК/визуал pending
+### NPC-репликация — E1–E19 реализованы; 2-ПК/визуал pending
 - [x] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (22% NPC имеют
       metaOutfit hash; сценарии/модели/лошади/оружие)
 - [x] E0: протокол actor-сообщения 0x18–0x1E, `kMaxActors=12`,
@@ -240,9 +241,22 @@ CI **41/41** + 7 C++ (в этой задаче +1 honest grace-тест → по
       integration run lock; honest grace-тест host-migration; ASI
       `E3FAB30F`, server `DD9BD9D8`; snapshot `dist\npc-e18`; **оба ПК
       задеплоены**, canonical CI 41/41 + C++7
-- [ ] Backlog: **2-ПК приёмка e18** (F1–F4/soft migration, S31),
-      **полный тест e19** (client-polish2: blip name, кучер/лошади повозки,
-      колёса; wheel-ключ INI → 28), visual E2c-b/E5/E6/E7/E3d/E9/E10,
+- [x] **E19 (npc-e19, v19 без bump):** **имя игрока на карте/blip** —
+      `MakeLiteralString` + `_SET_BLIP_NAME` (0x9CB1A1623062F402) +
+      VAR_STRING, `SetBlipName`/`UpdateBlipName`, лог `coop: blip name '%s'`
+      (резерв `BLIP_REMOVE_MODIFIER`, если останется «Спутник»);
+      **occupant-first roster + полный allowlist** occupants всех vehicle в
+      occ-радиусе — кучер и draft-лошади повозки у гостя (без T-pose/дублей);
+      **opt-in wheel A/B** `npc_vehicle_wheels=0` (`SET_VEHICLE_FORWARD_SPEED`
+      SIGNATURE-ONLY, лог `world: vehicle wheels speed=`); `SET_ENTITY_COORDS`
+      арность 8 (clearArea=0, поведение не менялось); ASI `DD0EE210`
+      (779 264 B), server `DD9BD9D8`; snapshot `dist/npc-e19`; **оба ПК
+      задеплоены**, canonical CI **42/42** + C++7 + quality strict PASS;
+      независимая проверка `architect-verify2` — «можно тестировать/деплоить»
+      (low/info: blip label, плотный трафик, wheel A/B)
+- [ ] Backlog: **2-ПК приёмка e19** (S31 soft migration, S22/S25
+      occupants, S20 vendors, blip label, wheel A/B отдельным прогоном
+      `npc_vehicle_wheels=1`→0), visual E2c-b/E5/E6/E7/E3d/E9/E10,
       ambient-trains cleanup, mission-aware visitor, adaptive 15 Гц,
       host migration/resync под нагрузкой, Tick p95/FPS;
       `npc_actor` не включать в рабочую сборку до приёмки
@@ -339,8 +353,8 @@ CI **41/41** + 7 C++ (в этой задаче +1 honest grace-тест → по
 
 - [x] Сервер: keepalive/timeouts, лимиты очередей, атомарный players.txt,
       защита от пустых/повторных JOIN, host-only сообщения
-- [x] Headless-тесты протокола/сервера (41 integration test, без игры;
-      e18 + новый grace-тест → после мержа 42)
+- [x] Headless-тесты протокола/сервера (**42 integration test**, без игры;
+      e18/e19: grace-тест host-migration + soft-семантика)
 - [x] Лимит одновременных соединений сервера (32) + flood-тест
 - [x] Mission catalog/rewards validation test (80 миссий, 23 записи/17)
 - [x] Idle timeout сервера (настраивается 2-м аргументом, по умолчанию 30 с)

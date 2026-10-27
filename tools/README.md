@@ -35,42 +35,44 @@ CRAP-прокси >5000, dup-группы `count>=4`, число TODO/FIXME. Del
 latest − baseline; отрицательная — улучшение. Baseline обновляйте
 осознанно, а не для «позеленения» CI.
 
-**Финальный delta (parser-fixed; база `2a58ee8`, скан npc-e18 `6772c8a`):**
+**Финальный delta (parser-fixed; база `2a58ee8`, скан npc-e19 `ef49ac8`):**
 
-| метрика | initial baseline (old scanner) | parser-fixed baseline (`2a58ee8`) | скан e18 (`6772c8a`) |
+| метрика | initial baseline (old scanner) | parser-fixed baseline (`2a58ee8`) | скан e19 (`ef49ac8`) |
 |---|---:|---:|---:|
 | files | 45 | 45 | 45 |
-| functions | 334 | **489** | **502** (+13 phase/helper) |
+| functions | 334 | **489** | **505** (+16: e18 +13 phase/helper; e19 +3 blip-name) |
 | CRAP>5000 | 4 | **4** | **3** (`HandleClient` ушёл) |
 | dup>=4 | 7 | **3** | **3** |
 | TODO | 0 | 0 | 0 |
 
-Топ CRAP после e18: `Tick` 66306 (1218 строк), `SendHostSnapshot` 13340 (534),
-`ProcessGuestHorseOutfits` 7140 (263), `main` frame_reader_fuzz 3192 (312),
-`ApplyRemoteFramePositionPhase` 2256 (201). **P3-фикс многострочных сигнатур**
-вскрыл скрытые функции — это не регрессия кода; baseline regenerated after
-parser fix (45/489/4/3/0). **P2:** `integration_server.py` сериализует прогоны
-`IntegrationRunLock`; 3 последовательных + параллельный прогон — 0 флейков.
-`npc-e18` (ASI `E3FAB30F`, server `DD9BD9D8`, protocol v19) задеплоен **на
-обоих ПК** (local + ARINA, хеши сверены); визуальная 2-ПК приёмка e18 ещё
-нужна. **Baseline для e18 НЕ обновлялся** (45/502/3/3/0 — в отчёте, а в
+Топ CRAP после e19: `Tick` 66306 (1222 строки), `SendHostSnapshot` **15750**
+(578), `ProcessGuestHorseOutfits` 7140 (263), `main` frame_reader_fuzz 3192
+(312), `ApplyRemoteFramePositionPhase` 2256 (201). **P3-фикс многострочных
+сигнатур** вскрыл скрытые функции — это не регрессия кода; baseline
+regenerated after parser fix (45/489/4/3/0). **P2:** `integration_server.py`
+сериализует прогоны `IntegrationRunLock`; 3 последовательных + параллельный
+прогон — 0 флейков. `npc-e19` (ASI `DD0EE210`, server `DD9BD9D8`,
+protocol v19) задеплоен **на обоих ПК** (local + ARINA, хеши сверены),
+snapshot `dist/npc-e19`, тег `npc-e19`, canonical CI **42/42** + C++7 +
+quality strict PASS; визуальная 2-ПК приёмка e19 ещё нужна. **Baseline для
+e19 НЕ обновлялся** (45/505/3/3/0 — в отчёте, а в
 `tools/quality_baseline.json` остаётся 45/489/4/3/0 до сигнала Lead).
 
-Скан «чистого» коммита без WIP-изменений worktree (как в e18-отчёте):
+Скан «чистого» коммита без WIP-изменений worktree (как в e19-отчёте):
 
 ```powershell
-git worktree add --detach "$env:TEMP\qa-e18" 6772c8a
-python tools\quality_scan.py --root "$env:TEMP\qa-e18" --json build\quality_scan_qa_e18.json --top 20
-git worktree remove --force "$env:TEMP\qa-e18"
+git worktree add --detach "$env:TEMP\qa-e19" ef49ac8
+python tools\quality_scan.py --root "$env:TEMP\qa-e19" --json build\quality_scan_qa_e19.json --top 20
+git worktree remove --force "$env:TEMP\qa-e19"
 ```
 
-Новые native-разведочные документы (read-only, в npc-e18 не реализованы):
-`docs/NATIVE_RESEARCH_INTERACT.md` (blip name, wheel-spin candidates,
-guest→host vehicle interactivity), дизайн v20 — `docs/INTERACTIVITY.md`.
+Новые native-разведочные документы (read-only; blip name/wheel spin
+реализованы opt-in в e19, guest→host interactivity — v20):
+`docs/NATIVE_RESEARCH_INTERACT.md`, дизайн v20 — `docs/INTERACTIVITY.md`.
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 
-Заменяет второй ПК при тестировании E1–E16/E2c (actor-репликация NPC) на
+Заменяет второй ПК при тестировании E1–E19/E2c (actor-репликация NPC) на
 одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v19;
 игра запускается только на одном ПК.
 
@@ -614,8 +616,8 @@ npc_visitor_pause_scenes = 1
   по S23/S31 в `docs/NPC_E1_TESTING.md` и F1–F4 в `docs/ACCEPTANCE_2PC.md`.
 - **Mission-aware:** в миссии/катсцене толпа гостя не удаляется
   (`actor: visitor scene pause on`), после выхода cleanup продолжается.
-- Локальная пара v19/npc-e18: ASI `E3FAB30F`, server `DD9BD9D8` (задеплоено
-  на обоих ПК); двух-ПК прогон e18 — pending.
+- Локальная пара v19/npc-e19: ASI `DD0EE210`, server `DD9BD9D8` (задеплоено
+  на обоих ПК); двух-ПК прогон e19 — pending.
 
 ### E8: occupants и mission-train (игровые)
 
@@ -668,14 +670,16 @@ npc_debug = 1
   ```
 - `npc_animal_appearance=0` → животные/лошади снова random (не залипают);
   при расхождении INI host/guest поведение несимметрично — не допускается.
-- Локальная пара npc-e18/v19: ASI `E3FAB30F`, server `DD9BD9D8` (оба ПК).
+- Локальная пара npc-e19/v19: ASI `DD0EE210`, server `DD9BD9D8` (оба ПК).
   Чек-лист — `docs/NPC_E1_TESTING.md` S27.
 
 ### E18: soft host migration + loading heartbeat + vendor dedupe (игровые)
 
 Fake tool **не эмулирует** роль-миграцию/загрузку — проверяется игрой
 (S23/S31 в `docs/NPC_E1_TESTING.md`, F1–F4 в `docs/ACCEPTANCE_2PC.md`).
-INI на обоих ПК: обычный (27 приёмочных ключей, e18 новых не добавляет).
+INI на обоих ПК: обычный (**28 приёмочных ключей** с e19: 27 + новый
+`npc_vehicle_wheels`, всего 38 строк = 28 + 6 служебных + 4 подключения;
+e18 новых ключей не добавлял).
 
 - **Soft host game-timeout:** хост шлёт только Ping / «зависает» → через 4 с
   `[!] host game-timeout (N ms), promoting remaining`; гость HOST, старый
@@ -700,6 +704,43 @@ INI на обоих ПК: обычный (27 приёмочных ключей, 
   Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
     -Pattern "coop: role change|visitor vendor skip"
   ```
+
+### E19: blip name + wagon occupants/draft + wheel A/B (игровые)
+
+Fake tool **не эмулирует** blip-подпись, wagon occupant-first roster и
+wheel-spin — проверяется игрой (ACCEPTANCE A12/B5/C6/G5, NPC_E1_TESTING S32).
+INI на обоих ПК: **28 приёмочных ключей**, новый ключ —
+`npc_vehicle_wheels = 0` (по умолчанию; `1` — только отдельный A/B-прогон,
+синхронно на обоих ПК).
+
+- **Имя на карте/blip (e19):** на карте/легенде у второго игрока подпись —
+  его `player_name`, а не дефолтная «Спутник»/«Companion». Клиент зовёт
+  `_SET_BLIP_NAME` (0x9CB1A1623062F402) с VAR_STRING-строкой
+  (`MakeLiteralString`/`SetBlipName`; обновление в Tick/после rejoin —
+  `UpdateBlipName`), лог `coop: blip name '%s'`. Если подпись осталась
+  «Спутник» — записать в отчёт (есть резерв `BLIP_REMOVE_MODIFIER`).
+- **Кучер/тягловые лошади повозки (e19):** occupant-first roster + полный
+  allowlist occupants всех vehicle в occ-радиусе — кучер и draft-лошади
+  повозки должны быть видны у гостя сидящими/в упряжке (логи
+  `world: occupants vehicle=`, `actor: seat attach … ok=`,
+  `actor: draft attach … ok=`). Проверить и **плотный трафик**: low/info
+  замечание архитектора — возможен гость-«driver без машины» (водитель
+  привязан к транспорту, которого ещё/уже нет) — смотреть, не остаётся ли
+  висящего водителя.
+- **Wheel A/B (e19, opt-in):** `npc_vehicle_wheels=0` → колёса guest
+  vehicle-прокси статичны (исходное поведение); отдельный прогон
+  `npc_vehicle_wheels=1` на **обоих** ПК → `world: vehicle wheels speed=…`
+  (SET_VEHICLE_FORWARD_SPEED, SIGNATURE-ONLY; может конфликтовать с
+  интерполяцией — колёса крутятся, но возможен дрейф/рывки). После A/B
+  вернуть `0`.
+- Быстрый фильтр логов:
+  ```powershell
+  Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
+    -Pattern "coop: blip name|world: occupants|draft attach|world: vehicle wheels"
+  ```
+- Локальная пара npc-e19/v19: ASI `DD0EE210`, server `DD9BD9D8` (оба ПК);
+  snapshot `dist/npc-e19`, canonical CI 42/42. Чек-лист — ACCEPTANCE A12/B5/
+  C6/G5 и `docs/NPC_E1_TESTING.md` S32.
 
 ### npc-e12/e13: перф/трафик + config warnings (grep-команды)
 
@@ -733,7 +774,7 @@ Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
   ~10 с; G3: приращение `bytes_out` / 1024 / секунды = КБ/с.
 - client `perf: net tx=… KB/s rx=… KB/s msgs_tx=… msgs_rx=…` ≥10 с;
   типично ≤10–12 КБ/с, worst ≤15 КБ/с.
-- `config: warn …` — E13-валидатор; в обычном прогоне с 27 ключами быть
+- `config: warn …` — E13-валидатор; в обычном прогоне с 28 ключами (e19) быть
   не должно. Остаточные тиковые таймеры (corpse hold/action poll/motion/
   attach/vehicle-scan TTL/train cache) — известное ограничение; при 144 FPS
   их окна короче.
@@ -789,8 +830,8 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e18
-ASI `E3FAB30F`/server `DD9BD9D8`, оба ПК задеплоены) — pending. Для дымового
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e19
+ASI `DD0EE210`/server `DD9BD9D8`, оба ПК задеплоены) — pending. Для дымового
 теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
@@ -964,8 +1005,8 @@ Windows PowerShell / PS 5.1 (скрипт сохранён с UTF-8 BOM):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\snapshot_build.ps1 `
-  -Label npc-e18 -Features "soft host migration + loading presence + vendor dedupe" `
-  -Tag npc-e18
+  -Label npc-e19 -Features "map blip player name + wagon occupant/draft allowlist + opt-in wheel spin" `
+  -Tag npc-e19
 ```
 
 - `-Label` — имя папки `dist\<label>` (обязательно).
@@ -1010,9 +1051,9 @@ dist\<label>\
 Деплой на ARINA: `rdr2_coop.asi` →
 `\\ARINA\Red Dead Redemption 2\scripts\rdr2_coop.asi`, сервер (если нужен
 на ARINA) → `\\ARINA\Red Dead Redemption 2\coop-server\rdr2_coop_server.exe`,
-INI — по разделу INI снапшота. Для npc-e18 **оба ПК уже задеплоены** (ASI
-`E3FAB30F`/server `DD9BD9D8`, хеши сверены) — повторный деплой только при
-смене сборки (e19).
+INI — по разделу INI снапшота. Для npc-e19 **оба ПК уже задеплоены** (ASI
+`DD0EE210`/server `DD9BD9D8`, хеши сверены) — повторный деплой только при
+смене сборки (следующая e-сборка).
 
 ### Сделанные снапшоты
 
@@ -1025,6 +1066,7 @@ INI — по разделу INI снапшота. Для npc-e18 **оба ПК �
 | `npc-e9` | v19 | `DC0C4AB7` | `E26C715A` | `1543622` / npc-e9 |
 | `npc-e10` | v19 | `B8BA1B93` | `E26C715A` | `ff7cfc4` / npc-e10 |
 | `npc-e11` | v19 | `785B2D05` | `E26C715A` | `b2e5525` / npc-e11 |
+| `npc-e19` | v19 | `DD0EE210` | `DD9BD9D8` | `ef49ac8` / npc-e19 |
 | `npc-e18` | v19 | `E3FAB30F` | `DD9BD9D8` | `6772c8a` / npc-e18 |
 | `npc-e17` | v19 | `217F8E31` | `1BE28084` | `37ef206` / npc-e17 |
 | `npc-e16` | v19 | `C4E4CF70` | `1BE28084` | `0e64a22` / npc-e16 |

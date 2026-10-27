@@ -1,26 +1,26 @@
-# Финальная приёмка 2-ПК — RDR2 CO-OP v19 / npc-e18
+# Финальная приёмка 2-ПК — RDR2 CO-OP v19 / npc-e19
 
 **Назначение:** пошаговый приёмочный сценарий для пользователя + ARINA (второй
 ПК) после деплоя v19. Проверяем не отдельные unit-тесты, а связку
 «игра-хост + игра-гость» в реальном мире: NPC, visitor, транспорт, поезда,
 внешность, миграцию хоста и 30–40 минут стабильной игры.
 
-**Версия:** protocol **v19**, **финальная сборка npc-e18** (HEAD `6772c8a`,
-тег `npc-e18`): ASI
-`E3FAB30F8DEBC3E0CF7A9A210E548A24798F65DAB5A998CD0793079904FC99D7` (776 704 B),
+**Версия:** protocol **v19**, **финальная сборка npc-e19** (HEAD `ef49ac8`,
+тег `npc-e19`): ASI
+`DD0EE210A06B0F4F61FF01EB1032D3E0C8DB8221702219FE4258D93C2233C5B9` (779 264 B),
 server `DD9BD9D818CB5ADF9063A35CE8CDF7C0D54468D9711212A782411BD0D54781FC`
-(410 112 B); оба ПК — **одна и та же** сборка/снапшот `dist\npc-e18`.
-**27 INI-ключей приёмки не менялись** — e18 новых ключей не вводит (сверено с
-`src/config.cpp` на 6772c8a: всего 37 строк в INI снапшота = 27 приёмочных +
-6 служебных P2/P3 + 4 подключения; `npc_motion_status_p2` поддержан в config
-default 1, но в INI снапшота не выписан). **e19** (client-polish2: имя на
-карте/blip, кучер/лошади повозки, колёса) планирует wheel-ключ → 28 и в эту
-приёмку **не входит**. E11 (точные пассажиры поездов через 0x21 carIndex)
-входит в базу и проверяется в D3. E13 делает интервалы wall-clock (ms)
-**FPS-independent**; E14–E17 — ub-mode refactor-only (протокол/поведение не
-менялись); пороги G2/G3 не меняются.
+(410 112 B); оба ПК — **одна и та же** сборка/снапшот `dist\npc-e19`.
+**28 INI-ключей приёмки** (было 27; e19 добавляет 28-й —
+`npc_vehicle_wheels = 0`, A/B, default 0) — всего **38 строк** в INI
+= 28 приёмочных + 6 служебных P2/P3 + 4 подключения (сверено с
+`dist\npc-e19\rdr2-coop.ini.local`, живым INI ARINA и `src/config.cpp` на
+`ef49ac8`; нюанс `.ini.arina` в снапшоте — §0.2).
+E11 (точные пассажиры поездов через 0x21 carIndex) входит в базу и
+проверяется в D3. E13 делает интервалы wall-clock (ms) **FPS-independent**;
+E14–E17 — ub-mode refactor-only (протокол/поведение не менялись); пороги
+G2/G3 не меняются.
 
-**Что изменилось в npc-e18 (проверяется в блоке F):**
+**Что изменилось в npc-e18 (проверяется в блоке F/S31):**
 
 - host game-timeout — теперь **мягкая миграция**: хост демотируется, второй
   повышается, **сокет старого хоста НЕ закрывается** (нет reconnect-шторма и
@@ -35,21 +35,39 @@ default 1, но в INI снапшота не выписан). **e19** (client-po
   heartbeat ~2 с (с появлением педа обычная presence-логика берёт верх,
   дублей нет);
 - гость в visitor mode **не спавнит host-прокси продавца** — продавцы больше
-  не дублируются (throttled-лог `actor: visitor vendor skip`);
-- серверный `HandleClient` разбит на фазы (`ReadSocketPhase`,
-  `CheckTimeoutPhase`, `CheckHostGameTimeoutPhase`, dispatch/relay-фазы) —
-  поведение и провод не менялись; новый тест host-timeout переписан под soft
-  семантику;
-- `IntegrationRunLock` — параллельные integration-прогоны сериализуются
-  (больше нет ложных WinError 10054/10061).
+  не дублируются (throttled-лог `actor: visitor vendor skip`).
 
-**Текущий статус:** **оба ПК задеплоены npc-e18** — локальный ПК и ARINA
+**Что изменилось в npc-e19 (проверяется в A12/B5/C6/G5):**
+
+- **имя игрока на карте/blip:** подпись метки — `player_name`, а не дефолтная
+  «Спутник»/«Companion» (`MakeLiteralString` + `_SET_BLIP_NAME` 0x9CB1A1623062F402
+  + VAR_STRING, `SetBlipName`/`UpdateBlipName`, лог `coop: blip name '%s'`);
+  если подпись осталась «Спутник» — FAIL (резерв `BLIP_REMOVE_MODIFIER`);
+- **occupant-first roster + полный allowlist** occupants всех vehicle в
+  occ-радиусе: у гостя видны **кучер и тягловые лошади повозки** (seated /
+  в упряжке, без T-pose/дублей); low/info — на плотном трафике возможен
+  «driver без машины» (проверить, что водитель не висит без транспорта);
+- **opt-in wheel A/B:** `npc_vehicle_wheels = 0` по умолчанию (исходное
+  поведение); отдельный прогон `npc_vehicle_wheels = 1` на **обоих** ПК —
+  колёса guest vehicle-прокси крутятся (`SET_VEHICLE_FORWARD_SPEED`
+  SIGNATURE-ONLY, лог `world: vehicle wheels speed=`; возможен дрейф/рывки —
+  это A/B, не fail) → вернуть `0`;
+- `SET_ENTITY_COORDS` арность 8 подтверждена (clearArea=0, поведение не
+  менялось);
+- серверный `HandleClient` фазы, `IntegrationRunLock` и grace-тест (e18)
+  остаются; новый тест host-timeout — soft-семантика.
+- **E20/v20 (guest→host interactivity, `docs/INTERACTIVITY.md`) в npc-e19
+  не входит** — не проверять в этом прогоне.
+
+**Текущий статус:** **оба ПК задеплоены npc-e19** — локальный ПК и ARINA
 (`\\ARINA\Red Dead Redemption 2\...`) имеют одинаковые хеши ASI/server,
-сверено `Get-FileHash`. Canonical CI на момент снапшота: **41/41**
-integration + C++ 7/7 (`build-server-ci`); в этой задаче добавлен ещё один
-honest grace-тест (после мержа — **42/42**, см. `tests/README.md`). Полный
-двух-ПК игровой прогон A–G ещё **не пройден** — ждём его. Без одинаковой пары
-на обоих ПК приёмка не начинается.
+сверено `Get-FileHash`. Canonical CI на момент снапшота: **42/42**
+integration + C++ 7/7 + restore + quality strict PASS (`build-server-ci`);
+независимая проверка `architect-verify2`: fresh build 0 warnings, хеши
+canonical/`dist\npc-e19` совпали, вердикт «можно тестировать/деплоить».
+Полный двух-ПК игровой прогон A–G ещё **не пройден** — пользователь запускает
+его сейчас. Замечания low/info: подпись blip, плотный трафик, wheel A/B.
+Без одинаковой пары на обоих ПК приёмка не начинается.
 
 ---
 
@@ -68,17 +86,17 @@ Get-FileHash "E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe" -Algorithm
 
 | Компонент | Версия/хеш | Где |
 |---|---|---|
-| ASI | npc-e18, `E3FAB30F…` (SHA256 как в `dist\npc-e18\README.md`) | оба ПК: `...\scripts\rdr2_coop.asi` |
-| Server | v19, `DD9BD9D8…` (soft host migration, HandleClient phases) | ПК-хост: `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` (ARINA: `coop-server\`) |
+| ASI | npc-e19, `DD0EE210…` (SHA256 как в `dist\npc-e19\README.md`) | оба ПК: `...\scripts\rdr2_coop.asi` |
+| Server | v19, `DD9BD9D8…` (без изменений с e18: soft host migration, HandleClient phases) | ПК-хост: `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` (ARINA: `coop-server\`) |
 | Protocol | **v19** (`kProtocolVersion=19`) | `net/protocol.h` / JOIN в логе |
-| INI | `dist\npc-e18\rdr2-coop.ini.local` как эталон; **27 ключей** приёмки (37 строк) | оба ПК |
+| INI | `dist\npc-e19\rdr2-coop.ini.local` как эталон; **28 ключей** приёмки (38 строк) | оба ПК |
 
-Если хеш/протокол не совпал — **стоп**, откатиться на `dist\npc-e18`
+Если хеш/протокол не совпал — **стоп**, откатиться на `dist\npc-e19`
 (см. блок H, §8) и не начинать прогон.
 
-### 0.2. INI: 27 ключей приёмки
+### 0.2. INI: 28 ключей приёмки
 
-Ключи подключения/идентичности (задаются отдельно, **не входят** в 27
+Ключи подключения/идентичности (задаются отдельно, **не входят** в 28
 игровых):
 
 ```ini
@@ -88,7 +106,7 @@ player_name = Player1         ; на втором ПК — Player2 (ники р�
 ped_model   = 0xCF7E73BE
 ```
 
-**27 ключей игровых настроек — выставить на обоих ПК одинаково:**
+**28 ключей игровых настроек — выставить на обоих ПК одинаково:**
 
 | # | Ключ | Значение | Зачем |
 |---|---|---|---|
@@ -119,16 +137,22 @@ ped_model   = 0xCF7E73BE
 | 25 | `npc_motion_marker` | `0` | E7.2 marker fallback (A2) |
 | 26 | `player_frame_hz` | `20` | P0: Player Frame 10..60 Гц |
 | 27 | `player_frame_change_only` | `1` | P0: покой heartbeat 5 Гц |
+| 28 | `npc_vehicle_wheels` | `0` | **e19:** A/B спин колёс guest vehicle-прокси (SIGNATURE-ONLY); `1` — только отдельный прогон, потом вернуть `0` |
 
-Дополнительно (не входят в 27): `action_sync=0`, `vehicle_sync=0`,
+Дополнительно (не входят в 28): `action_sync=0`, `vehicle_sync=0`,
 `mission_sync=0`, `mission_credit=0`, `save_backup=1`,
 `mission_reward_log=1` — как в снапшоте.
 
-**Проверка e18:** INI-ключи не менялись (`dist\npc-e18\rdr2-coop.ini.local` и
-`rdr2-coop.ini.arina` — те же 37 строк, 27 приёмочных + 6 служебных +
-4 ключа подключения). `npc_motion_status_p2` в файле не выписан, но поддержан
-`src/config.cpp` (default 1) — это не новый ключ. **e19** добавит wheel-ключ →
-28: до e19 ничего не добавлять, после — сверить по config и INI снапшота e19.
+**Проверка e19:** живые INI на **обоих** ПК — **38 строк** = 28 приёмочных +
+6 служебных + 4 ключа подключения; новый ключ — `npc_vehicle_wheels = 0`
+(default; `1` — только для A/B в G5/отдельном прогоне), проверено на local и
+ARINA. `dist\npc-e19\rdr2-coop.ini.local` — эталон (38 строк);
+⚠️ `dist\npc-e19\rdr2-coop.ini.arina` в снапшоте **37 строк** (снят до
+wheel-правки) — как эталон для ARINA не использовать: там живой INI уже с
+`npc_vehicle_wheels = 0`, при откате/передеплое дописать ключ. Остальные
+ключи не менялись; `npc_motion_status_p2` в файле не выписан, но поддержан
+`src/config.cpp` (default 1) — это не новый ключ. Сверено с `src/config.cpp`
+на `ef49ac8`: новых ключей, кроме wheel, нет.
 
 После правки INI **перезапустить игру** на обоих ПК (конфиг читается при
 старте). Если меняли `world_trains`/`npc_animal_appearance`/
@@ -162,7 +186,7 @@ ped_model   = 0xCF7E73BE
 
 ---
 
-## 1. Блок A — базовый мир/NPC (S1–S21 кратко)
+## 1. Блок A — базовый мир/NPC (S1–S21 + e19 blip A12)
 
 Общее: оба игрока в городе/у поселения, `npc_debug=1`. На каждую строку —
 действие, ожидаемый результат, что смотреть, что прислать при fail.
@@ -180,6 +204,7 @@ ped_model   = 0xCF7E73BE
 | A9 (S19) | Гость открывает карту/паузу/сатчель/магазин, затем закрывает | У имени хоста суффикс `in map`/`pause menu`/`in satchel`/`in shop`; после закрытия/12 с исчезает | host `ui: pause=…`, суффикс имени; presence heartbeat | скрины A/B, host log |
 | A10 (S0/S9) | Baseline gating: `npc_actor=0` на обоих, рестарт; затем 1 | При 0 — **0** строк `actor:`/`probe:` и прежний FPS; при 1 — NPC снова есть | `npc_actor=0` логи/сервер | оба лога, `scan: fps` |
 | A11 (S21) | 1–2 мин наблюдать движение NPC/прокси у хоста и гостя | Нет snap/телепортов (кроме respawn), движение плавное, стоп/старт без рывков | `actor: motion`, `actor: teleport` (только respawn) | видео 20–30 с, `actor:`-строки |
+| A12 (e19) | Открыть карту/легенду: у второго игрока подпись метки | Подпись — **имя игрока** (`player_name`), а не «Спутник»/«Companion»; метка/цвет остаются friendly; после rejoin/respawn подпись не пропадает | guest/host `coop: blip name '<имя>'`; скрин карты/легенды; визуально | скрин host+guest карты, `coop: blip name` строки |
 
 ---
 
@@ -194,6 +219,7 @@ ped_model   = 0xCF7E73BE
 | B2 | Подойти к продавцу/квестовому/событийному NPC | Эти NPC остаются, не удаляются cleanup | `visitor cleanup`, `npc_visitor_preserve_events` | guest log, видео |
 | B3 | Войти в миссию/катсцену, затем выйти | Cleanup толпы **паузится** (`visitor scene pause on`), density/road suppression продолжаются; после выхода cleanup возобновляется | `actor: visitor scene pause on/off mission=… cutscene=…` | guest log, видео |
 | B4 | `npc_visitor=0` на обоих, рестарт | Возвращается прежняя локальная толпа/трафик | guest `actor: visitor mode off` (или нет on) | guest log, видео |
+| B5 (S20/e18) | Подойти к продавцу (vendor) в городе; сравнить host/guest | У продавца **одна** копия: гость не спавнит host-прокси продавца (e18 dedupe), локальный продавец сохранён | guest throttled `actor: visitor vendor skip id=… model=0x…` (не ошибка); визуально нет дубля/мерцания | guest/host log, видео продавца |
 
 ---
 
@@ -210,6 +236,7 @@ ped_model   = 0xCF7E73BE
 | C3 | Повозка с тягловыми лошадьми | Draft-лошади прицеплены, не спавнятся отдельными прокси | `actor: draft attach … ok=`, `occupants errors=0` | логи, видео |
 | C4 | Движение транспорта/повороты | Плавно (60 Гц interpolation), adaptive 15 Гц при движении; нет рывков/сквозного телепорта | `actor:`/`world:` без warnings; сравнить визуально | видео 20–30 с |
 | C5 | `npc_occupants=0` на обоих, рестарт | Старое E3d-a: машины без водителей/пассажиров, без ошибок | `npc_occupants=0`, `world: occupants` отсутствует | guest log |
+| C6 (S25/e19) | Повозка с кучером и тягловыми лошадьми; плотный трафик | У гостя **кучер** и **draft-лошади** видны seated/в упряжке, без T-pose/дублей; на плотном трафике нет висящего «driver без машины» | `world: occupants vehicle=…`, `actor: seat attach … ok=`, `actor: draft attach … ok=`, `actor: occupants errors=0` | host/guest log, видео повозки и плотной улицы |
 
 ---
 
@@ -244,12 +271,13 @@ ped_model   = 0xCF7E73BE
 
 ---
 
-## 6. Блок F — host migration (S23) + soft migration e18
+## 6. Блок F — host migration (S23) + soft migration e18/e19
 
 Условия: активны транспорт/occupants/поезд (если проверяли) и visitor;
 `npc_debug=1`. С e18 миграция по game-timeout **мягкая** (без закрытия
 сокета старого хоста); обычный выход хоста (Alt+F4/quit) — по-прежнему
-Leave → PlayerLeft → promote.
+Leave → PlayerLeft → promote. Логика сервера в e19 **не менялась** (server
+`DD9BD9D8` тот же, что в e18) — блок F проверяет её на e19-паре.
 
 | # | Действие | Ожидаемый результат | Логи/проверка | При fail прислать |
 |---|---|---|---|---|
@@ -289,7 +317,8 @@ Leave → PlayerLeft → promote.
 | G1 | 30–40 мин игры без рестарта | FPS host/guest стабилен относительно baseline; без длинных фризов/утечек | FPS-скрины/лог; `perf: frame host tick=… p95=… max=…`; `perf: frame guest …` каждые ~5 с | FPS-замеры, оба лога |
 | G2 | Проверить бюджет полного кадра | `perf: frame host` p95 **≤4.0 мс**, max **≤10.0 мс**; guest p95/max — те же; `actor` p95 ≤**2.0 мс**; `perf: npc warn` = 0; guest timeouts ≤0.5%, appearance failed ≤1% | grep `perf: frame`, `perf: npc`; снять 5–10 строк за 30–40 мин | host/guest `perf: frame` выдержки, `perf: npc warn` |
 | G3 | Проверить трафик (server + client) | Типично **≤10–12 КБ/с** на клиента, worst **≤15 КБ/с**; нет роста `bytes_in/out` вне нормы; `bytes=`/`proxies` не копятся | server `net: bytes_in=… bytes_out=… | frame=… actor=… world=…` каждые ~10 с; client `perf: net tx=… KB/s rx=… KB/s msgs_tx=…` | 2–3 heartbeat server, 2–3 `perf: net`, FPS |
-| G4 | Ошибки/десинк | Нет `ERROR`, `warn`, `VersionMismatch`, «вечных» `ok=0`; трупы/прокси не копятся. В e18 допустимо: одна пара `host game-timeout`/`promoting remaining` (только если F2 инъецировали), `actor: visitor vendor skip` (ожидаемый skip host-прокси продавца, не ошибка) | grep `actor:|world:|coop:|perf: net|host game-timeout|vendor skip` | проблемные строки + видео |
+| G4 | Ошибки/десинк | Нет `ERROR`, `warn`, `VersionMismatch`, «вечных» `ok=0`; трупы/прокси не копятся. Допустимо/ожидаемо: одна пара `host game-timeout`/`promoting remaining` (только если F2 инъецировали), `actor: visitor vendor skip` (e18 dedupe, не ошибка), `coop: blip name` (e19), `world: vehicle wheels speed=` (только A/B с `npc_vehicle_wheels=1`), `world: occupants`/`seat attach`/`draft attach` (e19) | grep `actor:|world:|coop:|perf: net|host game-timeout|vendor skip|blip name|wheel` | проблемные строки + видео |
+| G5 (e19 regression sweep) | В длинном прогоне (G1) прогнать по разу: **S31** (реконнект/загрузка хоста — свернуть/развернуть игру хоста, не должно быть reconnect-шторма), **S22** (`world: vehicles send`, vehicle-прокси в радиусе), **S25/C6** (occupants/кучер/draft), **S20/B5** (vendors без дублей), **A12** (blip label), а затем отдельный прогон **wheel A/B**: `npc_vehicle_wheels=1` на обоих ПК (колёса крутятся, дрейф допустим) → вернуть `0` (колёса статичны, без регрессий) | Соответствующие логи из G4 + скрины/видео; после A/B — чистое `npc_vehicle_wheels=0` на обоих и рестарт игры | video/S31-логи, `coop: blip name`, `world: occupants`, `world: vehicle wheels speed=` |
 
 **Как снимать G2/G3:**
 
@@ -334,22 +363,25 @@ Select-String -Path server_console.log -Pattern "net: bytes_in=" | Select-Object
 Если блок A–G даёт FAIL, не «лечить» на ходу:
 
 1. Закрыть игры на обоих ПК и остановить сервер.
-2. Открыть `dist\npc-e18\README.md` (или `dist\npc-e17\README.md`, если
+2. Открыть `dist\npc-e19\README.md` (или `dist\npc-e18\README.md`, если
    откат на предыдущую) — там SHA256, INI и порядок восстановления.
-3. ASI: `dist\npc-e18\rdr2_coop.asi` → `E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi`.
-4. Server: `dist\npc-e18\rdr2_coop_server.exe` → `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe`
+3. ASI: `dist\npc-e19\rdr2_coop.asi` → `E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi`.
+4. Server: `dist\npc-e19\rdr2_coop_server.exe` → `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe`
    (и на ARINA в `coop-server\`, если сервер поднимается там).
-5. INI: привести к разделу INI снапшота; протокол должен быть v19 на обоих
+5. INI: привести к разделу INI снапшота (e19 — **28 ключей, включая
+   `npc_vehicle_wheels`**); протокол должен быть v19 на обоих
    ПК; v18↔v19 несовместимы (`VersionMismatch`).
 6. Запустить сервер в видимом окне, проверить `Host game-timeout: 4 s`, затем
    зайти хостом/гость и убедиться, что JOIN/FRAME идут.
 7. Зафиксировать в отчёте: label снапшота, оба хеша, причину отката.
 
-**Откат e18 → e17/e16** (если soft migration дала регрессию): сервер и ASI —
-**только из одного снапшота** (`dist\npc-e17` — refactor-only без серверных
-изменений; `dist\npc-e16` — пара `C4E4CF70`/`1BE28084`). e18 менял и ASI
-(loading heartbeat/vendor skip), и server (soft migration) — смешивать пары
-нельзя.
+**Откат e19 → e18/e17/e16** (если e19-фиксы дали регрессию): сервер и ASI —
+**только из одного снапшота**. У e19 server **тот же** (`DD9BD9D8`), менялся
+только ASI (blip/occupants/wheels) и INI (28-й ключ) — поэтому откат e19→e18
+безопасен по серверу, но INI нужно привести к 37 строкам (убрать
+`npc_vehicle_wheels`); ASI — из `dist\npc-e18` (`E3FAB30F`). `dist\npc-e17` —
+refactor-only без серверных изменений; `dist\npc-e16` — пара
+`C4E4CF70`/`1BE28084`. Смешивать пары нельзя.
 
 ---
 
@@ -365,7 +397,8 @@ Select-String -Path server_console.log -Pattern "net: bytes_in=" | Select-Object
 - FPS/скриншоты или OBS-видео 20–30 с (что именно видно);
 - точное время, локация, блок/пункт (A1…H), ожидаемое/фактическое;
 - `Select-String` выдержки: `actor:`, `world:`, `perf: frame`, `perf: net`,
-  `perf: npc`, `coop:`, `host game-timeout`, `visitor vendor skip`; для
+  `perf: npc`, `coop:`, `host game-timeout`, `visitor vendor skip`,
+  `coop: blip name`, `world: occupants`, `world: vehicle wheels`; для
   server — строки `net: bytes_in=`; при проверке конфига — `config: warn`
   (в нормальном прогоне быть не должно);
 - если откатывались — `dist\<label>` и хеши восстановленной пары.
@@ -376,31 +409,34 @@ Select-String -Path server_console.log -Pattern "net: bytes_in=" | Select-Object
 
 | Блок | Пункты | PASS/FAIL | Комментарий/время |
 |---|---|---|---|
-| A — базовый NPC | A1–A11 |  |  |
-| B — visitor | B1–B4 |  |  |
-| C — транспорт/occupants | C1–C5 |  |  |
+| A — базовый NPC (+blip e19) | A1–A12 |  |  |
+| B — visitor (+vendors e18) | B1–B5 |  |  |
+| C — транспорт/occupants (+wagon e19) | C1–C6 |  |  |
 | D — поезда | D1–D4 |  |  |
 | E — внешность E9/E10 | E1–E4 |  |  |
-| F — host migration (soft e18) | F1–F4 |  |  |
-| G — производительность | G1–G4 |  |  |
+| F — host migration (soft e18/e19) | F1–F4 |  |  |
+| G — производительность + e19 sweep | G1–G5 |  |  |
 | H — откат (если был) | — |  |  |
 
 **Критерий общего PASS:** все блоки PASS, нет FAIL по G2/G3 и F; E11
 точные пассажиры поездов проверяются в D3 (входит в базу). Обязательное
 условие PASS: F2/F3 подтверждают мягкую миграцию без reconnect-шторма и без
-демоции хоста во время загрузки. Пара уже задеплоена на оба ПК; если хеши на
-ARINA/local не совпали — приёмка не начата, таблица не заполняется.
+демоции хоста во время загрузки; G5 — blip label корректный, кучер/draft
+повозки без дублей/T-pose, vendors без дублей, wheel A/B выполнен
+(`npc_vehicle_wheels=1`→`0`, после — статичные колёса). Пара уже задеплоена
+на оба ПК; если хеши на ARINA/local не совпали — приёмка не начата, таблица
+не заполняется.
 
 ---
 
 ## 11. Связанные документы
 
-- [NPC_E1_TESTING.md](NPC_E1_TESTING.md) — детальные S0–S31 и методики.
+- [NPC_E1_TESTING.md](NPC_E1_TESTING.md) — детальные S0–S32 и методики.
 - [PERF.md](PERF.md) — пороги/разбор `perf: npc`.
 - [TRAINS.md](TRAINS.md) — mission-train S26.
 - [INTERACTIVITY.md](INTERACTIVITY.md) — v20 design guest influence (P0–P4;
-  в npc-e18 не реализовано — только для планирования e19+).
+  в npc-e19 не реализовано — только для планирования e20+).
 - [NATIVE_RESEARCH_INTERACT.md](NATIVE_RESEARCH_INTERACT.md) — native R&D
-  (blip name, wheel spin, vehicle interactivity).
+  (blip name и opt-in wheel spin реализованы в e19; vehicle interactivity — v20).
 - [../README.md](../README.md#откат-на-предыдущую-сборку) — снапшоты/откат.
 - [../tools/README.md](../tools/README.md#снапшоты-сборокоткат) — `snapshot_build.ps1`.

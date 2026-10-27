@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 `--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
 `KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто (28 базовых сценариев + новый e18 grace-тест + 13 actor/presence-тестов v19)
+## Что покрыто (28 базовых сценариев + grace-тест host-migration + 13 actor/presence-тестов v19)
 
 | Тест | Проверка |
 |---|---|
@@ -145,8 +145,8 @@ damage 16 B, presence 8 B, occupants ≤72 B, train 48 B, 28 базовых + gr
 Клиентская логика NPC/E2c-b/E5/E6/E7/E3d/E9 проверена на **одном ПК** с fake
 host/guest и реальным хостом (`tools/fake_actor_client.py`, см.
 `tools/README.md`); E5/E5.1 подтверждены игровым гостем («выстрелы убивают,
-хэдшот ваншотит»); двух-ПК приёмка e18 pending. Локальная пара npc-e18/v19 —
-ASI `E3FAB30F`/server `DD9BD9D8` (оба ПК задеплоены).
+хэдшот ваншотит»); двух-ПК приёмка e19 pending. Локальная пара npc-e19/v19 —
+ASI `DD0EE210`/server `DD9BD9D8` (оба ПК задеплоены, snapshot `dist\npc-e19`).
 
 - **E1 (human-only):** discovery/roster, spawn heartbeat/frames/despawn,
   guest-прокси, resync, gating `npc_actor=0` → 0 `actor:`/`probe:` строк.
@@ -295,8 +295,9 @@ $env:DSH_CI_STRICT_QUALITY = "0"; powershell -File scripts\ci.ps1
 Baseline: `tools\quality_baseline.json` (parser-fixed снимок: **45 файлов, 489
 функций, 4 функции CRAP>5000, 3 dup-группы count>=4, 0 TODO**; многострочные
 сигнатуры, включая `TickPerfWindow`/`HandleClient`, теперь учитываются).
-Скан **e18** (`6772c8a`): **45/502/3/3/0** — CRAP>5000 4→3 (`HandleClient`
-782→25 строк через phase-хелперы), +13 функций-хелперов; baseline **не
+Скан **e19** (`ef49ac8`): **45/505/3/3/0** — CRAP>5000 4→3 (`HandleClient`
+782→25 строк через phase-хелперы), +16 функций (e18 +13 phase/helper;
+e19 +3 `MakeLiteralString`/`SetBlipName`/`UpdateBlipName`); baseline **не
 обновлялся** (ждём сигнал Lead). P3 parser self-check:
 `python tools\quality_scan.py --self-check` — проверяет
 многострочную функцию и отсутствие ложных `if`/call-функций. Baseline

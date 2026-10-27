@@ -11,7 +11,7 @@ Make it Right → Practice». Установлен как обязательны
 | Инструмент | Назначение |
 |---|---|
 | `tools/quality_scan.py` | read-only аудит: длина/сложность функций (CRAP-прокси), дублирование (6-строчные шинглы), magic numbers, дубликаты в `natives.h`, TODO/FIXME/warning-disable |
-| `scripts/ci.ps1` | proof gate: build ASI + build server + integration (e18: 41/41; после мержа grace-теста — 42/42) + C++ тесты; quality gate strict по умолчанию (`-NoStrictQuality`/`DSH_CI_STRICT_QUALITY=0` — report-only) |
+| `scripts/ci.ps1` | proof gate: build ASI + build server + integration (**npc-e19: 42/42**) + C++ тесты; quality gate strict по умолчанию (`-NoStrictQuality`/`DSH_CI_STRICT_QUALITY=0` — report-only) |
 | `tools/snapshot_build.ps1` | сохранить сборку в `dist/<tag>/` для отката |
 | `tools/perf_report.py`, server `net:` heartbeat | измеримые перф/трафик-гейты (G2/G3) |
 
@@ -20,7 +20,7 @@ Make it Right → Practice». Установлен как обязательны
 дублирование), роль mutator — тесты `tests/` + CI (там, где честный тест возможен; для
 игровых нативов — smoke/2-ПК сценарии). Не пишем «плохие» тесты ради покрытия.
 
-## Метрики: initial baseline → parser-fixed scan → e18 (HEAD 6772c8a)
+## Метрики: initial baseline → parser-fixed scan → e19 (HEAD ef49ac8)
 
 Старый сканер не видел функции с многострочной сигнатурой (например
 `TickPerfWindow`); P3-фикс `tools/quality_scan.py` вскрыл **скрытые функции**
@@ -29,28 +29,29 @@ Make it Right → Practice». Установлен как обязательны
 перегенерирован после P3-фикса: `tools/quality_baseline.json` =
 45/**489**/**4**/**3**/0 (снимок чистого `2a58ee8`, база `npc-e16`).
 
-Скан **npc-e18** (чистый архив `6772c8a`, `python tools\quality_scan.py
---root <clean-6772c8a> --json build\quality_scan_qa_e18.json --top 20`):
-**45 файлов / 502 функции / CRAP>5000 = 3 / dup≥4 = 3 / TODO = 0**. Рост
-функций 489→502 — это новые phase-хелперы `server.cpp` (HandleClient 782→25
-строк) и клиентские loading-heartbeat/vendor-dedupe хелперы, а не дублирование
+Скан **npc-e19** (чистый архив `ef49ac8`, `python tools\quality_scan.py
+--root <clean-ef49ac8> --json build\quality_scan_qa_e19.json --top 20`):
+**45 файлов / 505 функций / CRAP>5000 = 3 / dup≥4 = 3 / TODO = 0**. Рост
+функций 489→505: **e18 +13** (phase-хелперы `server.cpp`, HandleClient
+782→25 строк; loading-heartbeat/vendor-dedupe хелперы) и **e19 +3**
+(`MakeLiteralString`, `SetBlipName`, `UpdateBlipName`), а не дублирование
 логики; CRAP>5000 **4→3** (HandleClient перестал быть hotspot'ом).
 
-| метрика | initial baseline (old scanner) | parser-fixed baseline (`2a58ee8`) | скан e18 (`6772c8a`) | delta e18 |
+| метрика | initial baseline (old scanner) | parser-fixed baseline (`2a58ee8`) | скан e19 (`ef49ac8`) | delta e19 |
 |---|---:|---:|---:|---:|
 | файлов | 45 | 45 | 45 | 0 |
-| функций | 334 | 489 | **502** | +13 (phase/helper-функции, код распилен) |
+| функций | 334 | 489 | **505** | +16 (e18 +13 phase/helper; e19 +3 blip-name) |
 | функций с CRAP-прокси >5000 | **4** | **4** | **3** | **−1** (`HandleClient`) |
 | dup-групп `count>=4` | **7** | **3** | **3** | 0 |
 | TODO/FIXME | **0** | **0** | **0** | 0 |
 | warning-disable | 0 | 0 | 0 | 0 |
 
-Топ-5 CRAP (e18):
+Топ-5 CRAP (e19):
 
 | # | hotspot | значение |
 |---|---|---|
-| 1 | `coop.cpp Tick` | **66306** (1218 строк) |
-| 2 | `world_sync.cpp SendHostSnapshot` | 13340 (534) |
+| 1 | `coop.cpp Tick` | **66306** (1222 строки) |
+| 2 | `world_sync.cpp SendHostSnapshot` | **15750** (578) |
 | 3 | `actor_sync.cpp ProcessGuestHorseOutfits` | 7140 (263) |
 | 4 | `tests/frame_reader_fuzz.cpp main` | 3192 (312) |
 | 5 | `coop.cpp ApplyRemoteFramePositionPhase` | 2256 (201) |
@@ -59,17 +60,18 @@ Make it Right → Practice». Установлен как обязательны
 теперь учитываются; `--self-check` проверяет многострочную функцию и
 отсутствие ложных `if`/call-функций.
 
-**Остаточные hotspot'ы (следующие цели):** `Tick` — главный (66306, 1218
-строк); `SendHostSnapshot` 13340 (534); `ProcessGuestHorseOutfits` 7140 (263);
+**Остаточные hotspot'ы (следующие цели):** `Tick` — главный (66306, 1222
+строки); `SendHostSnapshot` 15750 (578; вырос в e19 из-за wagon/wheel-кода —
+тот же класс CRAP, что и раньше); `ProcessGuestHorseOutfits` 7140 (263);
 дальше `ApplyRemoteFramePositionPhase` 2256, `SendLocalPlayerFrame` 1806,
 `ApplyActionToGhost` 1560, `TickHostTrains` 1560. 3 dup-группы `count>=4` —
 нативные обёртки `actor_sync`/`world_sync`.
 
 **Baseline note:** baseline **обновлён на e16** (45/388/1/3/0) и затем
 перегенерирован после P3-фикса парсера (45/489/4/3/0 на `2a58ee8`).
-**e18-скан (45/502/3/3/0) в baseline НЕ залит** — обновится осознанно только
-после сигнала Lead (строгий гейт и так не падает: CRAP>5000/dup>=4/TODO не
-выросли).
+**e18-скан (45/502/3/3/0) и e19-скан (45/505/3/3/0) в baseline НЕ залиты** —
+обновятся осознанно только после сигнала Lead (строгий гейт и так не падает:
+CRAP>5000/dup>=4/TODO не растут).
 
 ## Quality gate в CI
 
@@ -133,7 +135,7 @@ dups/CRAP>5000/TODO + top-5). Strict-режим сравнивает тольк�
 docs/UB_MODE_BASELINE.md`). Каждая единица шлифовки оформляется отдельным коммитом:
 - **why** — какое нарушение ub-mode закрывает (CRAP/длина/дублирование/мёртвый код/границы);
 - **what changed** — структурные изменения без изменения поведения;
-- **proof** — build + `scripts/ci.ps1` (e18: 41/41; +новый grace-тест → 42/42) + C++ + повторный `quality_scan` с дельтой.
+- **proof** — build + `scripts/ci.ps1` (**npc-e19: 42/42**) + C++ + повторный `quality_scan` с дельтой.
 
 | # | Единица | Зона | Статус |
 |---|---|---|---|
@@ -159,6 +161,7 @@ docs/UB_MODE_BASELINE.md`). Каждая единица шлифовки офо�
 | 9 | e16-delta после 0e64a22 (npc-e16) + **lowered baseline** | скан чистого архива 0e64a22; `tools/quality_baseline.json` = 45/388/1/3/0; docs/tools/README | 45/388/1/3/0 → baseline; strict CI PASS; e16 local+ARINA, ASI C4E4CF70 |
 | 10 | P2/P3 independent-proof fixes (task-173) | P3: multiline parser + `--self-check`; P2: `IntegrationRunLock`; baseline regenerated at `2a58ee8` | scan 45/489/4/3/0; 3 integration runs + parallel PASS; strict CI 41/41 |
 | 11 | e18: native research + server soft timeout + client heartbeat/vendor + parser/run-lock + v20 docs (task-174/175/176/180) | `server/`, `src/`, `tests/`, `tools/`, `docs/` | e18 scan 45/**502**/**3**/**3**/0; canonical CI 41/41 + C++7; деплой local+ARINA (ASI `E3FAB30F`, server `DD9BD9D8`); baseline после 341164e = 45/489/4/3/0, e18-скан в baseline НЕ залит (ждём сигнал Lead) |
+| 12 | e19: blip name + occupant-first roster/full allowlist + opt-in wheel spin + SET_ENTITY_COORDS arity (df02bec); docs/test e18+e19, join-grace 42/42, quality journal (ef49ac8) | `src/`, `docs/`, `tests/` | e19 scan 45/**505**/**3**/**3**/0 (+3 функции: `MakeLiteralString`/`SetBlipName`/`UpdateBlipName`; Tick 66306, SendHostSnapshot **15750**); canonical CI **42/42** + C++7 + quality strict PASS; деплой local+ARINA (ASI `DD0EE210`, server `DD9BD9D8`), snapshot `dist/npc-e19`, тег npc-e19 |
 
 ### Action log npc-e18 (task-174/175/176/180)
 
@@ -171,6 +174,14 @@ docs/UB_MODE_BASELINE.md`). Каждая единица шлифовки офо�
 | 5 | зафиксировать дизайн v20 и журнал/метрики | **6772c8a** `docs/INTERACTIVITY.md` (P0–P4), журнал/числа в `docs/UB_MODE.md`, README-ссылки | docs-only; CI не затрагивается |
 | 6 | приёмка e18 (эта задача) | `docs/ACCEPTANCE_2PC.md` → npc-e18 (soft migration, F1–F4, INI 27, хеши), `docs/NPC_E1_TESTING.md` S31, README/ROADMAP/tools/tests README, +1 honest grace-тест | `tests/integration_server.py` на `build-server-ci`: **42/42** (41 e18 + grace-тест, 0 failed); `scripts\ci.ps1 -NoClient -NoServer`: quality strict PASS (crap>5000 4→3, dup 3, TODO 0) + C++7 + restore + 42/42; e18-скан 45/502/3/3/0; e18-пара сверена на local+ARINA |
 
+
+### Action log npc-e19
+
+| шаг | зачем | что | proof |
+|---|---|---|---|
+| 1 | закрыть игровые жалобы: «Спутник» на карте, кучер/лошади повозки у гостя, статичные колёса | **df02bec** `src/`: имя игрока на карте (`MakeLiteralString` + `_SET_BLIP_NAME` 0x9CB1A1623062F402, `SetBlipName`/`UpdateBlipName`, лог `coop: blip name '%s'`, `BLIP_REMOVE_MODIFIER` — резерв); occupant-first roster + полный allowlist occupants всех vehicle в occ-радиусе (кучер/draft-лошади повозки); opt-in `npc_vehicle_wheels=0` (A/B, `SET_VEHICLE_FORWARD_SPEED` SIGNATURE-ONLY, лог `world: vehicle wheels speed=`); `SET_ENTITY_COORDS` арность 8 (clearArea=0 — поведение не менялось) | build 0 warnings; canonical CI **42/42** + C++7; in-game A/B — S31/S32/ACCEPTANCE G5 |
+| 2 | снапшот/деплой/доки под e19 | **ef49ac8**: acceptance A–H (e18/e19), S31, e19 wheel INI note, join-grace тест (42/42), журнал; снапшот `dist/npc-e19`, тег npc-e19, деплой local+ARINA (ASI `DD0EE210`, server `DD9BD9D8`); независимая проверка `architect-verify2`: fresh build 0 warnings, 42/42, C++7, restore PASS, quality strict PASS, low/info — blip label/плотный трафик/wheel A/B | хеши local+ARINA совпали; docs scan **45/505/3/3/0** |
+| 3 | number-блоки e19 (этот unit) | `docs/UB_MODE.md`, `tools/README.md`, `README.md`, `ROADMAP.md` → e19-числа; `docs/ACCEPTANCE_2PC.md` → e19-пара/28-й INI `npc_vehicle_wheels`, S31+occupants/vendors/blip/wheel A/B в чек-лист | scan 45/505/3/3/0, Tick 66306/1222, SendHostSnapshot 15750/578; baseline не меняется (45/489/4/3/0) |
 
 ## Правила безопасного рефакторинга
 
