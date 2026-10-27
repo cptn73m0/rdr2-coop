@@ -121,6 +121,15 @@ void WriteDefaultIni()
     fputs("# v20 (A/B, default 0): спин колёс guest vehicle-прокси через\n"
           "# SET_VEHICLE_FORWARD_SPEED (может конфликтовать с интерполяцией).\n", f);
     fputs("npc_vehicle_wheels = 0\n", f);
+    fputs("# v20 P1: guest->host интерактивность транспорта (0 = off; требует\n"
+          "# npc_actor=1; включать на ОБОИХ ПК после 2-ПК приёмки).\n", f);
+    fputs("vehicle_interaction = 0\n", f);
+    fputs("# v20 P1: damage/hijack по mission-vehicle (default 0 = reject).\n", f);
+    fputs("vehicle_interaction_mission = 0\n", f);
+    fputs("# v20 P1: damage/hijack по vehicle, на которой едет хост (default 0).\n", f);
+    fputs("vehicle_interaction_host_vehicle = 0\n", f);
+    fputs("# v20 P1: подробный лог интентов/apply/mirror (default 0).\n", f);
+    fputs("vehicle_interaction_debug = 0\n", f);
     fputs("# E9: внешность животных/лошадей (0 = random variation).\n", f);
     fputs("npc_animal_appearance = 0\n", f);
     fputs("# E10: внешность лошади под NPC-всадником (0 = random).\n", f);
@@ -225,6 +234,11 @@ bool ApplyBoolKey(const std::string& key, const std::string& val, Config& out)
         {"npc_visitor_pause_scenes", &Config::npcVisitorPauseScenes},
         {"npc_occupants", &Config::npcOccupants},
         {"npc_vehicle_wheels", &Config::npcVehicleWheels},
+        {"vehicle_interaction", &Config::vehicleInteraction},
+        {"vehicle_interaction_mission", &Config::vehicleInteractionMission},
+        {"vehicle_interaction_host_vehicle",
+         &Config::vehicleInteractionHostVehicle},
+        {"vehicle_interaction_debug", &Config::vehicleInteractionDebug},
         {"npc_animal_appearance", &Config::npcAnimalAppearance},
         {"npc_mount_appearance", &Config::npcMountAppearance},
         {"npc_frame_adaptive", &Config::npcFrameAdaptive},
@@ -335,6 +349,18 @@ void WarnDangerousCombos()
     if (!c.npcActor && (c.worldVehicles || c.npcVisitor))
         sh_log::Write("config: warn npc_actor=0 with world_vehicles/npc_visitor=1: "
                       "vehicle/visitor-режим не активируется.\n");
+    // v20 P1: интенты невозможны без epoch акторов (npc_actor=0) и без
+    // реплицированного транспорта (world_vehicles=0).
+    if (c.vehicleInteraction && !c.npcActor)
+        sh_log::Write("config: warn vehicle_interaction=1 requires npc_actor=1: "
+                      "интенты транспорта не отправляются без actor-epoch.\n");
+    if (c.vehicleInteraction && !c.worldVehicles)
+        sh_log::Write("config: warn vehicle_interaction=1 with "
+                      "world_vehicles=0: нет vehicle-прокси у гостя.\n");
+    if (c.vehicleInteractionMission)
+        sh_log::Write("config: warn vehicle_interaction_mission=1: "
+                      "damage/hijack по mission-vehicle может ломать миссии "
+                      "(A/B, default 0).\n");
 }
 
 } // namespace coopcfg

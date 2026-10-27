@@ -62,6 +62,12 @@ int main()
         Check(cfg.saveBackup, "default save_backup = 1");
         Check(cfg.missionRewardLog, "default mission_reward_log = 1");
         Check(!cfg.worldTrains && !cfg.trainDebug, "defaults: R&D trains off");
+        // v20 P1: интерактивность транспорта — по умолчанию ВЫКЛ (off), чтобы
+        // деплой без 2-ПК приёмки не менял поведение.
+        Check(!cfg.vehicleInteraction && !cfg.vehicleInteractionMission &&
+              !cfg.vehicleInteractionHostVehicle &&
+              !cfg.vehicleInteractionDebug,
+              "defaults: vehicle_interaction flags off");
     }
 
     // 1) Full parse, comments/whitespace/unknown keys, hex model.
@@ -99,6 +105,23 @@ int main()
         Check(!cfg.missionRewardLog, "mission_reward_log off");
         Check(cfg.worldTrains, "world_trains");
         Check(cfg.trainDebug, "train_debug");
+    }
+
+    // 1b) v20 P1: vehicle interaction keys (0/1) parse; defaults off.
+    Write(path,
+        "vehicle_interaction = 1\n"
+        "vehicle_interaction_mission = 1\n"
+        "vehicle_interaction_host_vehicle = 0\n"
+        "vehicle_interaction_debug = on\n");
+    {
+        coopcfg::Config cfg;
+        Check(coopcfg::LoadFromFile(path.string(), cfg),
+              "vehicle interaction file loads");
+        Check(cfg.vehicleInteraction, "vehicle_interaction=1");
+        Check(cfg.vehicleInteractionMission, "vehicle_interaction_mission=1");
+        Check(!cfg.vehicleInteractionHostVehicle,
+              "vehicle_interaction_host_vehicle=0");
+        Check(cfg.vehicleInteractionDebug, "vehicle_interaction_debug=on");
     }
 
     // 2) False variants and decimal model (documented lowercase forms).

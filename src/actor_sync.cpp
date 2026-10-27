@@ -6879,6 +6879,18 @@ void Reset()
     sh_log::Write("actor: reset (session=%u)\n", g_sessionCounter);
 }
 
+// v20 P1: эпохи акторов для интерактивности транспорта (host apply/guest
+// capture). 0 = ещё не назначена (интенты не применять/не слать).
+uint32_t HostEpoch()
+{
+    return g_hostEpoch;
+}
+
+uint32_t GuestEpoch()
+{
+    return g_guestEpoch;
+}
+
 bool GetHandleForActorId(uint32_t actorId, unsigned int& handle)
 {
     auto it = g_proxies.find(actorId);

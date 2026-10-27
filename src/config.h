@@ -90,6 +90,16 @@ struct Config {
     // повторять SET_VEHICLE_FORWARD_SPEED со скоростью из дельты снапшота.
     // default 0: натив SIGNATURE-ONLY, может конфликтовать с интерполяцией.
     bool npcVehicleWheels = false;
+    // v20 P1: guest->host интерактивность транспорта (событийные интенты, без
+    // вождения). default 0 (off) — включать на обоих ПК после 2-ПК приёмки;
+    // требует npc_actor=1 (иначе нет epoch и интенты не уходят).
+    bool vehicleInteraction = false;           // vehicle_interaction
+    // Разрешить damage/hijack по mission-vehicle. default 0 (reject).
+    bool vehicleInteractionMission = false;    // vehicle_interaction_mission
+    // Разрешить damage/hijack по vehicle, на которой едет сам хост. default 0.
+    bool vehicleInteractionHostVehicle = false; // vehicle_interaction_host_vehicle
+    // Подробный лог интентов/apply/mirror (throttled). default 0.
+    bool vehicleInteractionDebug = false;      // vehicle_interaction_debug
     // E9 (task-142): внешность животных/лошадей (asset/tint 0x1E + horse tack
     // 0x1C). default 0 — текущий random variation (host+guest должны совпадать).
     bool npcAnimalAppearance = false;

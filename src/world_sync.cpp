@@ -322,6 +322,9 @@ struct HostIdState
     uint64_t netId = 0;
     unsigned int model = 0;
     unsigned int lastSeenTick = 0;
+    // v20 P1: тип сущности (net::kEntityKind*) — интенты транспорта ищут
+    // только vehicle-netId (не actor/object).
+    uint8_t kind = 0;
 };
 
 struct Candidate
@@ -334,13 +337,15 @@ struct Candidate
 std::unordered_map<unsigned int, HostIdState> g_hostIds;
 uint64_t g_nextNetId = 1;
 uint32_t EnsureHostNetId(unsigned int handle, unsigned int model,
-                         unsigned int tickCount)
+                         unsigned int tickCount,
+                         uint8_t kind = net::kEntityKindPed)
 {
     HostIdState& state = g_hostIds[handle];
-    if (state.netId == 0 || state.model != model)
+    if (state.netId == 0 || state.model != model || state.kind != kind)
     {
         state.netId = g_nextNetId++;
         state.model = model;
+        state.kind = kind;
     }
     state.lastSeenTick = tickCount;
     return static_cast<uint32_t>(state.netId);
@@ -367,6 +372,22 @@ bool FindHostHandleByNetId(uint32_t netId, unsigned int& handle)
     for (const auto& kv : g_hostIds)
     {
         if (kv.second.netId == netId && kv.first && DoesExist(kv.first))
+        {
+            handle = kv.first;
+            return true;
+        }
+    }
+    return false;
+}
+
+// v20 P1: netId -> handle только для vehicle (интенты транспорта).
+bool FindHostVehicleHandleByNetId(uint32_t netId, unsigned int& handle)
+{
+    for (const auto& kv : g_hostIds)
+    {
+        if (kv.second.netId == netId &&
+            kv.second.kind == net::kEntityKindVehicle && kv.first &&
+            DoesExist(kv.first))
         {
             handle = kv.first;
             return true;
@@ -1753,7 +1774,8 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
         if (!model)
             continue;
 
-        const uint32_t netId = EnsureHostNetId(handle, model, tickCount);
+        const uint32_t netId = EnsureHostNetId(handle, model, tickCount,
+                                            net::kEntityKindPed);
         net::WorldEntity e{};
         e.netId = netId;
         e.model = model;
@@ -1822,7 +1844,8 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             if (!model)
                 return false;
 
-            const uint32_t netId = EnsureHostNetId(handle, model, tickCount);
+            const uint32_t netId = EnsureHostNetId(handle, model, tickCount,
+                                            net::kEntityKindVehicle);
             net::WorldEntity e{};
             e.netId = netId;
             e.model = model;
@@ -1900,7 +1923,8 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
                 }
             }
 
-            const uint32_t netId = EnsureHostNetId(handle, model, tickCount);
+            const uint32_t netId = EnsureHostNetId(handle, model, tickCount,
+                                            net::kEntityKindVehicle);
             net::WorldEntity e{};
             e.netId = netId;
             e.model = model;
@@ -2030,7 +2054,8 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
             if (!model)
                 continue;
 
-            const uint32_t netId = EnsureHostNetId(handle, model, tickCount);
+            const uint32_t netId = EnsureHostNetId(handle, model, tickCount,
+                                            net::kEntityKindObject);
             net::WorldEntity e{};
             e.netId = netId;
             e.model = model;
@@ -2261,6 +2286,1127 @@ void SendHostSnapshot(unsigned int localPlayerPed, unsigned int tickCount,
     }
 }
 
+// ================= v20 P1: host apply (vehicle interactions) =================
+// Гость шлёт интент 0x23; хост валидирует (docs/INTERACTIVITY_P1.md §4.2),
+// применяет ОДНУ натив-группу, читает state (docs/NATIVE_RESEARCH_V20_HEALTH.md
+// §6) и отвечает 0x24 + 0x26. Всё — только игровой поток; сетевой поток лишь
+// копирует payload в очередь под mutex.
+constexpr int kHostIntentQueueCap = 8;
+constexpr int kHostIntentOverflowCap = 4;
+constexpr int kHostIntentsPerTick = 2; // perf-гейт: <=2 интента/тик
+constexpr unsigned long long kIntentCooldownMs = 250ull;
+constexpr unsigned long long kIntentCooldownUrgentMs = 100ull;
+constexpr unsigned long long kIntentIdempotencyMs = 2000ull;
+constexpr std::size_t kIntentResultCacheCap = 32;
+constexpr std::size_t kTrackedVehicleStates = 4;
+constexpr uint32_t kDamageBudgetPerSec = 200; // HP/с на vehicle
+constexpr unsigned long long kStateHeartbeatMs = 1000ull;
+constexpr unsigned int kStateSendWindowCap = 8; // <=10/с лимит сервера
+constexpr float kInteractionDamageRadius = 12.f;
+constexpr float kInteractionSeatRadius = 6.f;
+constexpr float kInteractionDoorRadius = 5.f;
+constexpr float kInteractionDraftRadius = 5.f;
+constexpr float kInteractionHeightLimit = 3.f;
+constexpr uint16_t kDoorBreakDamageThreshold = 200; // A/B: damage -> broken
+// A/B-гейты: lock enum/поведение не подтверждены -> lock/unlock в P1 всегда
+// NotAllowed; setter'ы не вызываются до A/B (§4.2/R&D §4.2, D8).
+constexpr bool kVehicleInteractionLocksEnabled = false;
+
+const char* VehicleActionName(uint8_t action)
+{
+    switch (static_cast<net::VehicleAction>(action))
+    {
+    case net::VehicleAction::Damage: return "damage";
+    case net::VehicleAction::DoorOpen: return "door_open";
+    case net::VehicleAction::DoorClose: return "door_close";
+    case net::VehicleAction::DoorLock: return "door_lock";
+    case net::VehicleAction::DoorUnlock: return "door_unlock";
+    case net::VehicleAction::DoorBreak: return "door_break";
+    case net::VehicleAction::Enter: return "enter";
+    case net::VehicleAction::Exit: return "exit";
+    case net::VehicleAction::Hijack: return "hijack";
+    case net::VehicleAction::Loot: return "loot";
+    case net::VehicleAction::Hitch: return "hitch";
+    case net::VehicleAction::Unhitch: return "unhitch";
+    default: return "none";
+    }
+}
+
+const char* VehicleResultName(uint8_t result)
+{
+    switch (static_cast<net::VehicleResult>(result))
+    {
+    case net::VehicleResult::Applied: return "applied";
+    case net::VehicleResult::NotAllowed: return "not_allowed";
+    case net::VehicleResult::StaleEpoch: return "stale_epoch";
+    case net::VehicleResult::NotFound: return "not_found";
+    case net::VehicleResult::OutOfRange: return "out_of_range";
+    case net::VehicleResult::SeatOccupied: return "seat_occupied";
+    case net::VehicleResult::Locked: return "locked";
+    case net::VehicleResult::RateLimited: return "rate_limited";
+    case net::VehicleResult::Timeout: return "timeout";
+    case net::VehicleResult::Correction: return "correction";
+    default: return "unknown";
+    }
+}
+
+float VehicleIntentRadius(uint8_t action)
+{
+    switch (static_cast<net::VehicleAction>(action))
+    {
+    case net::VehicleAction::Damage: return kInteractionDamageRadius;
+    case net::VehicleAction::Enter:
+    case net::VehicleAction::Exit:
+    case net::VehicleAction::Hijack: return kInteractionSeatRadius;
+    case net::VehicleAction::Hitch:
+    case net::VehicleAction::Unhitch: return kInteractionDraftRadius;
+    default: return kInteractionDoorRadius;
+    }
+}
+
+// Host-кеш per vehicle: последний state, cooldown/budget, dirty для 0x26.
+struct HostVehicleRuntime
+{
+    net::VehicleStatePayload lastState{};
+    bool hasState = false;
+    bool dirty = false;
+    bool hijacked = false;
+    bool hijackSeatPending = false;
+    unsigned long long lastSentStateMs = 0;
+    unsigned long long lastActionMs[13] = {}; // индекс = VehicleAction 1..12
+    unsigned long long damageWindowMs = 0;
+    uint32_t damageBudgetUsed = 0;
+    uint16_t stateSeq = 0;
+};
+
+std::map<uint32_t, HostVehicleRuntime> g_hostVehicleRuntime;
+
+// 0x23 inbox: сетевой поток -> очередь; overflow -> RateLimited.
+std::mutex g_vehicleIntentsMutex;
+std::vector<net::VehicleInteractionPayload> g_vehicleIntents;
+std::vector<net::VehicleInteractionPayload> g_vehicleIntentOverflow;
+
+// Idempotency: тот же (epoch,netId,seq) в пределах 2 с -> тот же result.
+struct CachedIntentResult
+{
+    uint32_t epoch = 0;
+    uint32_t netId = 0;
+    uint16_t seq = 0;
+    unsigned long long ms = 0;
+    net::VehicleInteractionResultPayload result{};
+};
+std::vector<CachedIntentResult> g_intentResultCache;
+unsigned long long g_vehicleInteractionLastLogMs = 0;
+
+// ---------------- host native helpers (readback/apply) ----------------
+float GetVehicleBodyHealthNative(unsigned int veh)
+{
+    using namespace natives_api;
+    Init(natives::GET_VEHICLE_BODY_HEALTH);
+    Push(veh);
+    return CallFloat();
+}
+
+float GetVehicleEngineHealthNative(unsigned int veh)
+{
+    using namespace natives_api;
+    Init(natives::GET_VEHICLE_ENGINE_HEALTH);
+    Push(veh);
+    return CallFloat();
+}
+
+bool IsEntityAVehicleNative(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::IS_ENTITY_A_VEHICLE);
+    Push(handle);
+    return Call() != 0;
+}
+
+bool IsEntityDeadNative(unsigned int handle)
+{
+    using namespace natives_api;
+    Init(natives::IS_ENTITY_DEAD);
+    Push(handle);
+    return Call() != 0;
+}
+
+bool IsVehicleWreckedNative(unsigned int veh)
+{
+    using namespace natives_api;
+    Init(natives::IS_VEHICLE_WRECKED);
+    Push(veh);
+    return Call() != 0;
+}
+
+bool IsVehicleDoorFullyOpenNative(unsigned int veh, int door)
+{
+    using namespace natives_api;
+    Init(natives::IS_VEHICLE_DOOR_FULLY_OPEN);
+    Push(veh);
+    Push(door);
+    return Call() != 0;
+}
+
+bool IsVehicleDoorBrokenNative(unsigned int veh, int door)
+{
+    using namespace natives_api;
+    Init(natives::_IS_VEHICLE_DOOR_BROKEN);
+    Push(veh);
+    Push(door);
+    return Call() != 0;
+}
+
+bool IsVehicleWheelDestroyedNative(unsigned int veh, int wheel)
+{
+    using namespace natives_api;
+    Init(natives::_IS_VEHICLE_WHEEL_DESTROYED);
+    Push(veh);
+    Push(wheel);
+    return Call() != 0;
+}
+
+bool AreAnyVehicleWheelsDestroyedNative(unsigned int veh)
+{
+    using namespace natives_api;
+    Init(natives::_ARE_ANY_VEHICLE_WHEELS_DESTROYED);
+    Push(veh);
+    return Call() != 0;
+}
+
+bool IsVehicleSeatFreeNative(unsigned int veh, int seat)
+{
+    using namespace natives_api;
+    Init(natives::IS_VEHICLE_SEAT_FREE);
+    Push(veh);
+    Push(static_cast<unsigned long long>(static_cast<long long>(seat)));
+    return Call() != 0;
+}
+
+unsigned int GetPedInVehicleSeatNative(unsigned int veh, int seat)
+{
+    using namespace natives_api;
+    Init(natives::GET_PED_IN_VEHICLE_SEAT);
+    Push(veh);
+    Push(static_cast<unsigned long long>(static_cast<long long>(seat)));
+    return static_cast<unsigned int>(Call());
+}
+
+int GetVehicleMaxPassengersNative(unsigned int veh)
+{
+    using namespace natives_api;
+    Init(natives::GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS);
+    Push(veh);
+    int maxPass = static_cast<int>(Call());
+    if (maxPass < 0) maxPass = 0;
+    if (maxPass > net::kMaxVehicleSeat + 1) maxPass = net::kMaxVehicleSeat + 1;
+    return maxPass;
+}
+
+unsigned int GetDriverOfVehicleNative(unsigned int veh)
+{
+    using namespace natives_api;
+    Init(natives::GET_DRIVER_OF_VEHICLE);
+    Push(veh);
+    return static_cast<unsigned int>(Call());
+}
+
+unsigned int GetVehiclePedIsUsingNative(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::GET_VEHICLE_PED_IS_USING);
+    Push(ped);
+    return static_cast<unsigned int>(Call());
+}
+
+bool IsPedDeadOrDyingNative(unsigned int ped)
+{
+    using namespace natives_api;
+    Init(natives::IS_PED_DEAD_OR_DYING);
+    Push(ped);
+    return Call() != 0;
+}
+
+bool GetHarnessPedNative(unsigned int veh, int harness, unsigned int& horse)
+{
+    using namespace natives_api;
+    Init(natives::_GET_PED_IN_DRAFT_HARNESS);
+    Push(veh);
+    Push(static_cast<unsigned long long>(static_cast<long long>(harness)));
+    horse = static_cast<unsigned int>(Call());
+    return horse != 0;
+}
+
+bool GetDraftAnimalCountsNative(unsigned int veh, int& expected, int& actual)
+{
+    using namespace natives_api;
+    expected = 0;
+    actual = 0;
+    Init(natives::GET_DRAFT_ANIMAL_COUNT);
+    Push(veh);
+    Push(reinterpret_cast<unsigned long long>(&expected));
+    Push(reinterpret_cast<unsigned long long>(&actual));
+    return Call() != 0;
+}
+
+// Хост real vehicle: минимальный набор флагов, чтобы damage/door проходили
+// (R&D §2.5; mission-vehicle по умолчанию reject'ится политикой).
+void PrepareHostVehicleForDamage(unsigned int veh)
+{
+    using namespace natives_api;
+    SetInvincible(veh, false);
+    Init(natives::SET_ENTITY_CAN_BE_DAMAGED);
+    Push(veh);
+    Push(true);
+    Call();
+    Init(natives::SET_VEHICLE_CAN_BE_VISIBLY_DAMAGED);
+    Push(veh);
+    Push(true);
+    Call();
+    Init(natives::SET_VEHICLE_CAN_BREAK);
+    Push(veh);
+    Push(true);
+    Call();
+    Init(natives::SET_VEHICLE_STRONG);
+    Push(veh);
+    Push(false);
+    Call();
+}
+
+int FindSeatForPedNative(unsigned int veh, unsigned int ped)
+{
+    if (!veh || !ped || GetVehiclePedIsUsingNative(ped) != veh)
+        return net::kVehicleSeatNone;
+    const int maxPass = GetVehicleMaxPassengersNative(veh);
+    for (int s = -1; s < maxPass; ++s)
+    {
+        if (GetPedInVehicleSeatNative(veh, s) == ped)
+            return s;
+    }
+    return net::kVehicleSeatNone;
+}
+
+// Локальные (модельные) offset'ы для SET_VEHICLE_DAMAGE. A/B: у wagon своя
+// геометрия; стартовые значения — body/engine из R&D, door/wheel — приближение.
+void DoorDamageOffset(uint8_t door, float& x, float& y, float& z)
+{
+    const bool rightSide = door >= 5;
+    y = rightSide ? 0.9f : -0.9f;
+    x = (static_cast<float>(door % 5) - 2.f) * 0.55f;
+    z = 0.4f;
+}
+
+void WheelDamageOffset(uint8_t part, float& x, float& y, float& z)
+{
+    const bool right = (part == net::kVehiclePartWheelFR ||
+                        part == net::kVehiclePartWheelRR);
+    const bool front = (part == net::kVehiclePartWheelFL ||
+                        part == net::kVehiclePartWheelFR);
+    x = front ? 1.2f : -1.2f;
+    y = right ? 0.8f : -0.8f;
+    z = -0.35f;
+}
+
+net::VehicleStatePayload BuildVehicleState(uint32_t netId, unsigned int veh,
+                                           unsigned int localPlayerPed,
+                                           unsigned int ghost,
+                                           HostVehicleRuntime& rt);
+
+void SendInteractionResult(const net::VehicleInteractionPayload& p,
+                           uint8_t result, uint32_t detail)
+{
+    net::VehicleInteractionResultPayload r{};
+    r.epoch = p.epoch;
+    r.vehicleNetId = p.vehicleNetId;
+    r.seq = p.seq;
+    r.action = p.action;
+    r.result = result;
+    r.detail = detail;
+    coop::SendVehicleInteractionResult(r);
+    CachedIntentResult c;
+    c.epoch = p.epoch;
+    c.netId = p.vehicleNetId;
+    c.seq = p.seq;
+    c.ms = GetTickCount64();
+    c.result = r;
+    g_intentResultCache.push_back(c);
+    if (g_intentResultCache.size() > kIntentResultCacheCap)
+        g_intentResultCache.erase(g_intentResultCache.begin());
+}
+
+const net::VehicleInteractionResultPayload* FindCachedIntentResult(
+    const net::VehicleInteractionPayload& p)
+{
+    const unsigned long long now = GetTickCount64();
+    for (std::size_t i = g_intentResultCache.size(); i-- > 0;)
+    {
+        CachedIntentResult& c = g_intentResultCache[i];
+        if (now - c.ms > kIntentIdempotencyMs)
+        {
+            g_intentResultCache.erase(g_intentResultCache.begin() +
+                                      static_cast<std::ptrdiff_t>(i));
+            continue;
+        }
+        if (c.epoch == p.epoch && c.netId == p.vehicleNetId && c.seq == p.seq)
+            return &c.result;
+    }
+    return nullptr;
+}
+
+uint32_t NotAllowedDetail(uint8_t reason)
+{
+    return static_cast<uint32_t>(reason) << 8;
+}
+
+void MarkVehicleStateDirty(uint32_t netId)
+{
+    HostVehicleRuntime& rt = g_hostVehicleRuntime[netId];
+    rt.dirty = true;
+    while (g_hostVehicleRuntime.size() > kTrackedVehicleStates)
+    {
+        // Вытесняем самый давний tracked vehicle (кроме текущего).
+        auto oldest = g_hostVehicleRuntime.end();
+        for (auto it = g_hostVehicleRuntime.begin();
+             it != g_hostVehicleRuntime.end(); ++it)
+        {
+            if (it->first == netId) continue;
+            if (oldest == g_hostVehicleRuntime.end() ||
+                it->second.lastSentStateMs < oldest->second.lastSentStateMs)
+                oldest = it;
+        }
+        if (oldest == g_hostVehicleRuntime.end()) break;
+        g_hostVehicleRuntime.erase(oldest);
+    }
+}
+
+// Damage: SET_VEHICLE_DAMAGE + fallback health write; Applied только по
+// фактическому readback (следующий тик для двери не ждём — openInstantly=true).
+uint8_t ApplyDamageIntent(unsigned int veh, const net::VehicleInteractionPayload& p,
+                          HostVehicleRuntime& rt, unsigned long long nowMs)
+{
+    using namespace natives_api;
+    // budget 200 HP/с на vehicle
+    if (rt.damageWindowMs == 0 || nowMs - rt.damageWindowMs >= 1000ull)
+    {
+        rt.damageWindowMs = nowMs;
+        rt.damageBudgetUsed = 0;
+    }
+    if (rt.damageBudgetUsed + p.param > kDamageBudgetPerSec)
+        return static_cast<uint8_t>(net::VehicleResult::RateLimited);
+    rt.damageBudgetUsed += p.param;
+
+    PrepareHostVehicleForDamage(veh);
+    const uint16_t amount = p.param;
+    const uint8_t part = p.door;
+    if (part == net::kVehiclePartBody || part == net::kVehiclePartEngine)
+    {
+        const float beforeBody = GetVehicleBodyHealthNative(veh);
+        const float beforeEngine = GetVehicleEngineHealthNative(veh);
+        float ox = 0.f, oy = 0.f, oz = 0.5f;
+        if (part == net::kVehiclePartEngine)
+            oz = 1.0f;
+        Init(natives::SET_VEHICLE_DAMAGE);
+        Push(veh);
+        Push(ox);
+        Push(oy);
+        Push(oz);
+        Push(static_cast<float>(amount));
+        Push(0.6f); // radius
+        Push(false); // p6 UNCERTAIN -> false (A/B)
+        Call();
+        const float afterBody = GetVehicleBodyHealthNative(veh);
+        const float afterEngine = GetVehicleEngineHealthNative(veh);
+        if (part == net::kVehiclePartBody)
+        {
+            if (std::isfinite(afterBody) && afterBody < beforeBody - 0.5f)
+                return static_cast<uint8_t>(net::VehicleResult::Applied);
+            // fallback exact health write (SIGNATURE-ONLY range 0..1000 A/B)
+            const float target = std::max(0.f, beforeBody - static_cast<float>(amount));
+            Init(natives::SET_VEHICLE_BODY_HEALTH);
+            Push(veh);
+            Push(std::isfinite(beforeBody) ? target : 500.f);
+            Call();
+            const float written = GetVehicleBodyHealthNative(veh);
+            return (std::isfinite(written) && written < beforeBody - 0.5f)
+                       ? static_cast<uint8_t>(net::VehicleResult::Applied)
+                       : static_cast<uint8_t>(net::VehicleResult::Correction);
+        }
+        if (std::isfinite(afterEngine) && afterEngine < beforeEngine - 0.5f)
+            return static_cast<uint8_t>(net::VehicleResult::Applied);
+        const float target = std::isfinite(beforeEngine)
+                                 ? std::clamp(beforeEngine -
+                                                  static_cast<float>(amount),
+                                              -4000.f, 1000.f)
+                                 : 500.f;
+        Init(natives::SET_VEHICLE_ENGINE_HEALTH);
+        Push(veh);
+        Push(target);
+        Call();
+        const float written = GetVehicleEngineHealthNative(veh);
+        return (std::isfinite(written) && written < beforeEngine - 0.5f)
+                   ? static_cast<uint8_t>(net::VehicleResult::Applied)
+                   : static_cast<uint8_t>(net::VehicleResult::Correction);
+    }
+    if (part <= 7) // дверь
+    {
+        const bool beforeOpen = IsVehicleDoorFullyOpenNative(veh, part);
+        const bool beforeBroken = IsVehicleDoorBrokenNative(veh, part);
+        float ox = 0.f, oy = 0.f, oz = 0.f;
+        DoorDamageOffset(part, ox, oy, oz);
+        Init(natives::SET_VEHICLE_DAMAGE);
+        Push(veh);
+        Push(ox);
+        Push(oy);
+        Push(oz);
+        Push(static_cast<float>(amount));
+        Push(0.5f);
+        Push(false);
+        Call();
+        const bool broken = IsVehicleDoorBrokenNative(veh, part);
+        const bool open = !broken && IsVehicleDoorFullyOpenNative(veh, part);
+        if (broken != beforeBroken || open != beforeOpen)
+            return static_cast<uint8_t>(net::VehicleResult::Applied);
+        if (amount >= kDoorBreakDamageThreshold)
+        {
+            Init(natives::SET_DOOR_ALLOWED_TO_BE_BROKEN_OFF);
+            Push(veh);
+            Push(static_cast<unsigned long long>(part));
+            Push(true);
+            Call();
+            Init(natives::SET_VEHICLE_DOOR_BROKEN);
+            Push(veh);
+            Push(static_cast<unsigned long long>(part));
+            Push(false); // deleteDoor=false: keep part (A/B)
+            Call();
+            if (IsVehicleDoorBrokenNative(veh, part))
+                return static_cast<uint8_t>(net::VehicleResult::Applied);
+        }
+        return static_cast<uint8_t>(net::VehicleResult::Correction);
+    }
+    if (part >= net::kVehiclePartWheelFL && part <= net::kVehiclePartWheelRR)
+    {
+        const int wheel = static_cast<int>(part - net::kVehiclePartWheelFL);
+        const bool before = IsVehicleWheelDestroyedNative(veh, wheel);
+        float ox = 0.f, oy = 0.f, oz = 0.f;
+        WheelDamageOffset(part, ox, oy, oz);
+        Init(natives::SET_VEHICLE_DAMAGE);
+        Push(veh);
+        Push(ox);
+        Push(oy);
+        Push(oz);
+        Push(static_cast<float>(amount));
+        Push(0.4f);
+        Push(false);
+        Call();
+        if (!before && IsVehicleWheelDestroyedNative(veh, wheel))
+            return static_cast<uint8_t>(net::VehicleResult::Applied);
+        // detach — отдельный натив (mapping wheelIndex UNCERTAIN, A/B 0..5)
+        Init(natives::_BREAK_OFF_VEHICLE_WHEEL);
+        Push(veh);
+        Push(static_cast<unsigned long long>(wheel));
+        Call();
+        return IsVehicleWheelDestroyedNative(veh, wheel)
+                   ? static_cast<uint8_t>(net::VehicleResult::Applied)
+                   : static_cast<uint8_t>(net::VehicleResult::Correction);
+    }
+    return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+}
+
+uint8_t ApplyDoorIntent(unsigned int veh,
+                        const net::VehicleInteractionPayload& p)
+{
+    using namespace natives_api;
+    const int door = p.door;
+    switch (static_cast<net::VehicleAction>(p.action))
+    {
+    case net::VehicleAction::DoorOpen:
+        Init(natives::SET_VEHICLE_DOOR_OPEN);
+        Push(veh);
+        Push(static_cast<unsigned long long>(door));
+        Push(false); // loose
+        Push(true);  // openInstantly: детерминированный mirror
+        Call();
+        return IsVehicleDoorFullyOpenNative(veh, door)
+                   ? static_cast<uint8_t>(net::VehicleResult::Applied)
+                   : static_cast<uint8_t>(net::VehicleResult::Correction);
+    case net::VehicleAction::DoorClose:
+        Init(natives::SET_VEHICLE_DOOR_SHUT);
+        Push(veh);
+        Push(static_cast<unsigned long long>(door));
+        Push(true); // closeInstantly
+        Call();
+        // false = closed ИЛИ ajar (R&D §2.3); точнее не читается.
+        return IsVehicleDoorFullyOpenNative(veh, door)
+                   ? static_cast<uint8_t>(net::VehicleResult::Correction)
+                   : static_cast<uint8_t>(net::VehicleResult::Applied);
+    case net::VehicleAction::DoorBreak:
+        Init(natives::SET_DOOR_ALLOWED_TO_BE_BROKEN_OFF);
+        Push(veh);
+        Push(static_cast<unsigned long long>(door));
+        Push(true);
+        Call();
+        Init(natives::SET_VEHICLE_DOOR_BROKEN);
+        Push(veh);
+        Push(static_cast<unsigned long long>(door));
+        Push(true); // deleteDoor (d1: one-way)
+        Call();
+        return IsVehicleDoorBrokenNative(veh, door)
+                   ? static_cast<uint8_t>(net::VehicleResult::Applied)
+                   : static_cast<uint8_t>(net::VehicleResult::Correction);
+    default:
+        break;
+    }
+    return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+}
+
+uint8_t ApplySeatIntent(unsigned int veh,
+                        const net::VehicleInteractionPayload& p,
+                        unsigned int ghost, unsigned int localPlayerPed,
+                        HostVehicleRuntime& rt)
+{
+    using namespace natives_api;
+    switch (static_cast<net::VehicleAction>(p.action))
+    {
+    case net::VehicleAction::Enter:
+    {
+        int seat = p.seat;
+        if (seat == net::kVehicleSeatNone)
+        {
+            // 127 = first free passenger (driver -1 в P1 только по политике).
+            const int maxPass = GetVehicleMaxPassengersNative(veh);
+            seat = net::kVehicleSeatNone;
+            for (int s = 0; s < maxPass; ++s)
+            {
+                if (IsVehicleSeatFreeNative(veh, s))
+                {
+                    seat = s;
+                    break;
+                }
+            }
+            if (seat == net::kVehicleSeatNone)
+                return static_cast<uint8_t>(net::VehicleResult::SeatOccupied);
+        }
+        else if (seat >= 0)
+        {
+            if (seat >= GetVehicleMaxPassengersNative(veh))
+                return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+            if (!IsVehicleSeatFreeNative(veh, seat))
+                return static_cast<uint8_t>(net::VehicleResult::SeatOccupied);
+        }
+        else // seat == -1 (driver): host-vehicle policy проверена выше
+        {
+            if (!IsVehicleSeatFreeNative(veh, net::kVehicleSeatDriver))
+                return static_cast<uint8_t>(net::VehicleResult::SeatOccupied);
+        }
+        Init(natives::SET_PED_INTO_VEHICLE);
+        Push(ghost);
+        Push(veh);
+        Push(static_cast<unsigned long long>(static_cast<long long>(seat)));
+        Call();
+        const bool ok = GetPedInVehicleSeatNative(veh, seat) == ghost;
+        return ok ? static_cast<uint8_t>(net::VehicleResult::Applied)
+                  : static_cast<uint8_t>(net::VehicleResult::Correction);
+    }
+    case net::VehicleAction::Exit:
+    {
+        // Ghost должен быть в этом vehicle (иначе Exit — bad_param).
+        if (GetVehiclePedIsUsingNative(ghost) != veh)
+            return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+        Init(natives::TASK_LEAVE_VEHICLE);
+        Push(ghost);
+        Push(veh);
+        Push(static_cast<unsigned long long>(0)); // flags
+        Push(static_cast<unsigned long long>(0)); // unkPed (arity 4, R&D §2.7)
+        Call();
+        return static_cast<uint8_t>(net::VehicleResult::Applied);
+    }
+    case net::VehicleAction::Hijack:
+    {
+        const unsigned int driver = GetDriverOfVehicleNative(veh);
+        if (!driver || driver == localPlayerPed)
+            return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+        if (driver == ghost) // уже наш пед за рулём
+            return static_cast<uint8_t>(net::VehicleResult::Applied);
+        Init(natives::TASK_LEAVE_VEHICLE);
+        Push(driver);
+        Push(veh);
+        Push(static_cast<unsigned long long>(0));
+        Push(static_cast<unsigned long long>(0));
+        Call();
+        rt.hijackSeatPending = true;
+        rt.hijacked = true;
+        return static_cast<uint8_t>(net::VehicleResult::Applied);
+    }
+    default:
+        break;
+    }
+    (void)localPlayerPed;
+    return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+}
+
+uint8_t ApplyDraftIntent(unsigned int veh,
+                         const net::VehicleInteractionPayload& p)
+{
+    using namespace natives_api;
+    using namespace net;
+    Init(natives::IS_DRAFT_VEHICLE);
+    Push(veh);
+    const bool isDraft = Call() != 0;
+    if (static_cast<VehicleAction>(p.action) != VehicleAction::Hitch &&
+        static_cast<VehicleAction>(p.action) != VehicleAction::Unhitch)
+        return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+    if (!isDraft)
+        return static_cast<uint8_t>(net::VehicleResult::NotAllowed); // bad_param
+    const int harness = p.door; // 0..5 (eDraftHarness)
+    if (static_cast<VehicleAction>(p.action) == VehicleAction::Hitch)
+    {
+        unsigned int horse = 0;
+        if (!p.targetId ||
+            !FindHostHandleByNetId(p.targetId, horse) || !horse ||
+            !DoesExist(horse) || IsEntityAVehicleNative(horse))
+            return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+        unsigned int occupied = 0;
+        if (GetHarnessPedNative(veh, harness, occupied))
+            return static_cast<uint8_t>(net::VehicleResult::SeatOccupied);
+        int expected = 0, beforeActual = 0;
+        GetDraftAnimalCountsNative(veh, expected, beforeActual);
+        Init(natives::_ATTACH_DRAFT_VEHICLE_HARNESS_PED);
+        Push(horse);
+        Push(veh);
+        Push(static_cast<unsigned long long>(harness));
+        const bool ok = Call() != 0;
+        unsigned int after = 0;
+        int expected2 = 0, afterActual = 0;
+        GetDraftAnimalCountsNative(veh, expected2, afterActual);
+        const bool attached = ok && GetHarnessPedNative(veh, harness, after) &&
+                              after == horse && afterActual >= beforeActual;
+        return attached ? static_cast<uint8_t>(net::VehicleResult::Applied)
+                        : static_cast<uint8_t>(net::VehicleResult::Correction);
+    }
+    unsigned int horse = 0;
+    if (!GetHarnessPedNative(veh, harness, horse))
+        return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+    Init(natives::_DETACH_DRAFT_VEHICLE_HARNESS_PED);
+    Push(veh);
+    Push(horse);
+    const bool ok = Call() != 0;
+    unsigned int after = 0;
+    const bool detached = ok && !GetHarnessPedNative(veh, harness, after);
+    return detached ? static_cast<uint8_t>(net::VehicleResult::Applied)
+                    : static_cast<uint8_t>(net::VehicleResult::Correction);
+}
+
+bool IsIntentAllowedByPolicy(const net::VehicleInteractionPayload& p,
+                             unsigned int veh, unsigned int localPlayerPed,
+                             uint8_t& result, uint32_t& detail)
+{
+    const auto action = static_cast<net::VehicleAction>(p.action);
+    const bool dangerous = action == net::VehicleAction::Damage ||
+                           action == net::VehicleAction::Hijack ||
+                           action == net::VehicleAction::DoorBreak ||
+                           action == net::VehicleAction::DoorLock ||
+                           action == net::VehicleAction::DoorUnlock;
+    if (IsMissionEntity(veh) && !coopcfg::Get().vehicleInteractionMission &&
+        dangerous)
+    {
+        result = static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+        detail = NotAllowedDetail(net::kResultReasonMissionProtected);
+        return false;
+    }
+    const unsigned int hostVehicle = GetVehiclePedIsUsingNative(localPlayerPed);
+    if (hostVehicle && hostVehicle == veh &&
+        !coopcfg::Get().vehicleInteractionHostVehicle && dangerous)
+    {
+        result = static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+        detail = NotAllowedDetail(net::kResultReasonHostVehicle);
+        return false;
+    }
+    if (p.action > 12)
+    {
+        result = static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+        detail = NotAllowedDetail(net::kResultReasonBadParam);
+        return false;
+    }
+    // Поезда/вагоны идут отдельным путём 0x22 (mission-train) — P1 интерактив
+    // по ним не применяем.
+    if (IsTrainModel(GetModel(veh)))
+    {
+        result = static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+        detail = NotAllowedDetail(net::kResultReasonPolicy);
+        return false;
+    }
+    return true;
+}
+
+// Один интент: validates + apply + result + dirty state. Возвращает true,
+// если был вызван натив (per-tick budget считает только такие).
+bool ApplyOneIntent(const net::VehicleInteractionPayload& p,
+                    unsigned int localPlayerPed, unsigned int ghost,
+                    bool ghostAlive, unsigned int tickCount)
+{
+    const unsigned long long nowMs = GetTickCount64();
+    auto reject = [&](uint8_t result, uint32_t detail) {
+        SendInteractionResult(p, result, detail);
+        if (coopcfg::Get().vehicleInteractionDebug &&
+            (g_vehicleInteractionLastLogMs == 0 ||
+             nowMs - g_vehicleInteractionLastLogMs >= 1000ull))
+        {
+            g_vehicleInteractionLastLogMs = nowMs;
+            sh_log::Write("vehicle: interaction action=%s net=%u seq=%u "
+                          "result=%s guest=%u\n",
+                          VehicleActionName(p.action), p.vehicleNetId, p.seq,
+                          VehicleResultName(result), ghost);
+        }
+        return false;
+    };
+
+    if (!coopcfg::Get().vehicleInteraction)
+        return false; // конфиг выключен: молча drop (не спамим гостю)
+    if (!ghost || !ghostAlive)
+        return reject(static_cast<uint8_t>(net::VehicleResult::NotAllowed),
+                      NotAllowedDetail(net::kResultReasonDeadGuest));
+    if (p.epoch == 0 || p.epoch != actor_sync::HostEpoch())
+        return reject(static_cast<uint8_t>(net::VehicleResult::StaleEpoch), 0);
+    if (const net::VehicleInteractionResultPayload* cached =
+            FindCachedIntentResult(p))
+    {
+        coop::SendVehicleInteractionResult(*cached); // идемпотентный повтор
+        return false;
+    }
+
+    unsigned int veh = 0;
+    if (!FindHostVehicleHandleByNetId(p.vehicleNetId, veh) || !veh ||
+        !DoesExist(veh) || !IsEntityAVehicleNative(veh))
+        return reject(static_cast<uint8_t>(net::VehicleResult::NotFound), 0);
+
+    uint8_t policyResult = static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+    uint32_t policyDetail = 0;
+    if (!IsIntentAllowedByPolicy(p, veh, localPlayerPed, policyResult,
+                                 policyDetail))
+        return reject(policyResult, policyDetail);
+
+    if (IsVehicleWreckedNative(veh) || IsEntityDeadNative(veh))
+        return reject(static_cast<uint8_t>(net::VehicleResult::NotAllowed),
+                      NotAllowedDetail(net::kResultReasonBadParam));
+
+    // Дистанция: vehicle vs ghost (горизонталь) + высота <=3 м.
+    const Vec3 vc = GetCoords(veh);
+    const Vec3 gc = GetCoords(ghost);
+    const float dx = vc.x - gc.x;
+    const float dy = vc.y - gc.y;
+    const float dz = vc.z - gc.z;
+    const float radius = VehicleIntentRadius(p.action);
+    if (dx * dx + dy * dy > radius * radius ||
+        std::fabs(dz) > kInteractionHeightLimit)
+        return reject(static_cast<uint8_t>(net::VehicleResult::OutOfRange), 0);
+
+    HostVehicleRuntime& rt = g_hostVehicleRuntime[p.vehicleNetId];
+    // cooldown per (vehicle,action): 250 мс, Urgent — 100 мс.
+    const unsigned long long cooldownMs =
+        (p.flags & net::kInteractionUrgent) ? kIntentCooldownUrgentMs
+                                            : kIntentCooldownMs;
+    const unsigned long long lastMs = rt.lastActionMs[p.action];
+    if (lastMs != 0 && nowMs - lastMs < cooldownMs)
+        return reject(static_cast<uint8_t>(net::VehicleResult::RateLimited),
+                      static_cast<uint32_t>(cooldownMs - (nowMs - lastMs)));
+
+    const auto action = static_cast<net::VehicleAction>(p.action);
+    if (action == net::VehicleAction::DoorLock ||
+        action == net::VehicleAction::DoorUnlock)
+    {
+        // enum lockStatus НЕ подтверждён (R&D §4.2) -> gated/NotAllowed.
+        if (!kVehicleInteractionLocksEnabled)
+            return reject(static_cast<uint8_t>(net::VehicleResult::NotAllowed),
+                          NotAllowedDetail(net::kResultReasonPolicy));
+    }
+    if (action == net::VehicleAction::Loot)
+    {
+        // Generic vehicle inventory ABSENT (R&D §4.4): wire/fake-ready, P1.1.
+        if (coopcfg::Get().vehicleInteractionDebug)
+            sh_log::Write("vehicle: loot intent net=%u target=%u (P1.1)\n",
+                          p.vehicleNetId, p.targetId);
+        return reject(static_cast<uint8_t>(net::VehicleResult::NotAllowed),
+                      NotAllowedDetail(net::kResultReasonPolicy));
+    }
+
+    uint8_t result = static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+    switch (action)
+    {
+    case net::VehicleAction::Damage:
+        result = ApplyDamageIntent(veh, p, rt, nowMs);
+        break;
+    case net::VehicleAction::DoorOpen:
+    case net::VehicleAction::DoorClose:
+    case net::VehicleAction::DoorBreak:
+        result = ApplyDoorIntent(veh, p);
+        break;
+    case net::VehicleAction::Enter:
+    case net::VehicleAction::Exit:
+    case net::VehicleAction::Hijack:
+        result = ApplySeatIntent(veh, p, ghost, localPlayerPed, rt);
+        break;
+    case net::VehicleAction::Hitch:
+    case net::VehicleAction::Unhitch:
+        result = ApplyDraftIntent(veh, p);
+        break;
+    default:
+        result = static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+        break;
+    }
+
+    rt.lastActionMs[p.action] = nowMs;
+    if (result == static_cast<uint8_t>(net::VehicleResult::Applied) ||
+        result == static_cast<uint8_t>(net::VehicleResult::Correction))
+    {
+        MarkVehicleStateDirty(p.vehicleNetId);
+    }
+    SendInteractionResult(p, result, 0);
+    if (coopcfg::Get().vehicleInteractionDebug)
+        sh_log::Write("vehicle: interaction action=%s net=%u seq=%u result=%s "
+                      "guest=%u\n",
+                      VehicleActionName(p.action), p.vehicleNetId, p.seq,
+                      VehicleResultName(result), ghost);
+    return true;
+}
+
+// v20 P1: сетевой поток -> host inbox (без нативов; лимит очереди 8, overflow
+// помечается RateLimited при разборе).
+void EnqueueVehicleInteraction(const net::VehicleInteractionPayload& intent)
+{
+    std::lock_guard<std::mutex> lk(g_vehicleIntentsMutex);
+    if (g_vehicleIntents.size() <
+        static_cast<std::size_t>(kHostIntentQueueCap))
+    {
+        g_vehicleIntents.push_back(intent);
+        return;
+    }
+    if (g_vehicleIntentOverflow.size() <
+        static_cast<std::size_t>(kHostIntentOverflowCap))
+        g_vehicleIntentOverflow.push_back(intent);
+}
+
+net::VehicleStatePayload BuildVehicleState(uint32_t netId, unsigned int veh,
+                                           unsigned int localPlayerPed,
+                                           unsigned int ghost,
+                                           HostVehicleRuntime& rt)
+{
+    net::VehicleStatePayload s{};
+    s.epoch = actor_sync::HostEpoch();
+    s.vehicleNetId = netId;
+    if (!veh || !DoesExist(veh) || !IsEntityAVehicleNative(veh))
+        return s; // flags=0, seats=127
+    const float body = GetVehicleBodyHealthNative(veh);
+    const float engine = GetVehicleEngineHealthNative(veh);
+    if (std::isfinite(body) && std::isfinite(engine))
+    {
+        s.bodyHealth = static_cast<uint16_t>(
+            std::lround(std::clamp(body, 0.f, 1000.f)));
+        s.engineHealth = static_cast<int16_t>(
+            std::lround(std::clamp(engine, -4000.f, 1000.f)));
+        s.flags |= net::kVehicleStateFlagDamageValid;
+    }
+    s.flags |= net::kVehicleStateFlagDoorValid;
+    for (int d = 0; d < 8; ++d)
+    {
+        // 3 = unknown (readback failed/нет двери) не выставляем: P1 без per-door
+        // статуса; broken=2, fullyOpen=1, closed/ajar=0 (R&D §2.3).
+        const bool broken = IsVehicleDoorBrokenNative(veh, d);
+        const bool open = !broken && IsVehicleDoorFullyOpenNative(veh, d);
+        const uint16_t st = broken ? 2u : (open ? 1u : 0u);
+        s.doorBits |= static_cast<uint16_t>(st << (2 * d));
+    }
+    for (int w = 0; w < 4; ++w)
+    {
+        if (IsVehicleWheelDestroyedNative(veh, w))
+            s.wheelsBits |= static_cast<uint8_t>(2u << (2 * w));
+    }
+    if (AreAnyVehicleWheelsDestroyedNative(veh) && s.wheelsBits == 0)
+        s.wheelsBits = 0xFF; // mapping/readback mismatch -> unknown
+    if (IsMissionEntity(veh))
+        s.flags |= net::kVehicleStateFlagMissionProtected;
+    if (IsVehicleWreckedNative(veh) || IsEntityDeadNative(veh))
+        s.flags |= net::kVehicleStateFlagDead;
+    {
+        using namespace natives_api;
+        Init(natives::GET_VEHICLE_DOOR_LOCK_STATUS);
+        Push(veh);
+        // SIGNATURE-ONLY enum: raw != 0 — диагностический флаг (A/B).
+        if (Call() != 0)
+            s.flags |= net::kVehicleStateFlagLocked;
+    }
+    const int hostSeat = FindSeatForPedNative(veh, localPlayerPed);
+    if (hostSeat != net::kVehicleSeatNone)
+    {
+        s.hostSeat = static_cast<int8_t>(hostSeat);
+        s.flags |= net::kVehicleStateFlagHostSeatValid;
+    }
+    const int guestSeat = FindSeatForPedNative(veh, ghost);
+    if (guestSeat != net::kVehicleSeatNone)
+    {
+        s.guestSeat = static_cast<int8_t>(guestSeat);
+        s.flags |= net::kVehicleStateFlagGuestSeatValid;
+    }
+    if (rt.hijacked)
+        s.flags |= net::kVehicleStateFlagHijacked;
+    s.seq = ++rt.stateSeq;
+    return s;
+}
+
+// Разбор host-очереди: ≤2 нативных интента/тик, остаток — в следующий тик.
+void ApplyVehicleInteractionIntents(unsigned int localPlayerPed,
+                                    unsigned int tickCount)
+{
+    std::vector<net::VehicleInteractionPayload> intents;
+    std::vector<net::VehicleInteractionPayload> overflow;
+    {
+        std::lock_guard<std::mutex> lk(g_vehicleIntentsMutex);
+        intents.swap(g_vehicleIntents);
+        overflow.swap(g_vehicleIntentOverflow);
+    }
+    // Конфиг выключен: интенты молча дропаем (не спамим result'ами, §4.2).
+    if (!coopcfg::Get().vehicleInteraction)
+        return;
+    for (const auto& p : overflow)
+        SendInteractionResult(p,
+                              static_cast<uint8_t>(net::VehicleResult::RateLimited),
+                              0);
+
+    const unsigned int ghost = coop::PartnerGhostHandle();
+    const bool ghostAlive =
+        ghost && DoesExist(ghost) && !IsPedDeadOrDyingNative(ghost);
+    int applied = 0;
+    for (std::size_t i = 0; i < intents.size(); ++i)
+    {
+        if (applied >= kHostIntentsPerTick)
+        {
+            std::lock_guard<std::mutex> lk(g_vehicleIntentsMutex);
+            for (std::size_t j = intents.size(); j-- > i;)
+                g_vehicleIntents.insert(g_vehicleIntents.begin(), intents[j]);
+            break;
+        }
+        if (ApplyOneIntent(intents[i], localPlayerPed, ghost, ghostAlive,
+                           tickCount))
+            ++applied;
+    }
+
+    // Hijack follow-through: водитель вышел -> следующим тиком сажаем ghost.
+    for (auto& kv : g_hostVehicleRuntime)
+    {
+        if (!kv.second.hijackSeatPending)
+            continue;
+        unsigned int veh = 0;
+        if (!FindHostVehicleHandleByNetId(kv.first, veh) || !veh ||
+            !DoesExist(veh))
+        {
+            kv.second.hijackSeatPending = false;
+            continue;
+        }
+        const unsigned int driver = GetDriverOfVehicleNative(veh);
+        if (driver && driver == ghost)
+        {
+            kv.second.hijackSeatPending = false;
+            continue;
+        }
+        if (driver && DoesExist(driver))
+            continue; // NPC ещё не вышел — ждём следующий тик
+        using namespace natives_api;
+        Init(natives::SET_PED_INTO_VEHICLE);
+        Push(ghost);
+        Push(veh);
+        Push(static_cast<unsigned long long>(
+            static_cast<long long>(net::kVehicleSeatDriver)));
+        Call();
+        kv.second.hijackSeatPending = false;
+        MarkVehicleStateDirty(kv.first);
+        sh_log::Write("vehicle: hijack seat net=%u driver-assigned ok=%d\n",
+                      kv.first,
+                      GetPedInVehicleSeatNative(veh, net::kVehicleSeatDriver) ==
+                              ghost
+                          ? 1
+                          : 0);
+    }
+}
+
+// 0x26: dirty при изменении + heartbeat 1/с; окно <=8/с (сервер <=10/с).
+void SendVehicleInteractionStates(unsigned int localPlayerPed,
+                                  unsigned int tickCount)
+{
+    (void)tickCount;
+    if (!coopcfg::Get().vehicleInteraction)
+        return;
+    const uint32_t epoch = actor_sync::HostEpoch();
+    if (!epoch)
+        return;
+    const unsigned int ghost = coop::PartnerGhostHandle();
+    if (!ghost)
+        return;
+    const unsigned long long nowMs = GetTickCount64();
+    static unsigned long long windowMs = 0;
+    static unsigned int windowCount = 0;
+    if (windowMs == 0 || nowMs - windowMs >= 1000ull)
+    {
+        windowMs = nowMs;
+        windowCount = 0;
+    }
+    for (auto it = g_hostVehicleRuntime.begin();
+         it != g_hostVehicleRuntime.end();)
+    {
+        HostVehicleRuntime& rt = it->second;
+        const bool heartbeat =
+            rt.hasState && nowMs - rt.lastSentStateMs >= kStateHeartbeatMs;
+        if (!rt.dirty && !heartbeat)
+        {
+            ++it;
+            continue;
+        }
+        unsigned int veh = 0;
+        if (!FindHostVehicleHandleByNetId(it->first, veh) || !veh ||
+            !DoesExist(veh))
+        {
+            it = g_hostVehicleRuntime.erase(it);
+            continue;
+        }
+        if (windowCount >= kStateSendWindowCap)
+        {
+            ++it;
+            continue;
+        }
+        net::VehicleStatePayload state =
+            BuildVehicleState(it->first, veh, localPlayerPed, ghost, rt);
+        if (!coop::SendVehicleState(state))
+        {
+            ++it;
+            continue;
+        }
+        rt.lastState = state;
+        rt.hasState = true;
+        rt.dirty = false;
+        rt.lastSentStateMs = nowMs;
+        ++windowCount;
+        if (coopcfg::Get().vehicleInteractionDebug)
+            sh_log::Write("vehicle: state net=%u body=%u engine=%d door=0x%04X "
+                          "wheels=0x%02X flags=0x%02X hostSeat=%d guestSeat=%d\n",
+                          it->first, state.bodyHealth,
+                          static_cast<int>(state.engineHealth), state.doorBits,
+                          state.wheelsBits, state.flags,
+                          static_cast<int>(state.hostSeat),
+                          static_cast<int>(state.guestSeat));
+        ++it;
+    }
+}
+
+void ResetHostVehicleInteraction()
+{
+    {
+        std::lock_guard<std::mutex> lk(g_vehicleIntentsMutex);
+        g_vehicleIntents.clear();
+        g_vehicleIntentOverflow.clear();
+    }
+    g_intentResultCache.clear();
+    g_hostVehicleRuntime.clear();
+    g_vehicleInteractionLastLogMs = 0;
+}
+
 // ---------------- гость: прокси и подавление мира ----------------
 
 struct Proxy
@@ -2284,6 +3430,14 @@ struct Proxy
     float vehCurX = 0.f, vehCurY = 0.f, vehCurZ = 0.f, vehCurH = 0.f;
     unsigned long long vehCurMs = 0;
     bool vehSnapWarp = false;
+    // v20 P1: интерактивность/зеркало транспорта у гостя (near <=20 м).
+    bool interactive = false;
+    bool mirrorStateValid = false;
+    uint16_t mirrorStateSeq = 0;
+    uint16_t mirrorDoorBits = 0;
+    uint8_t mirrorWheelsBits = 0;
+    uint16_t mirrorBodyHealth = net::kVehicleBodyHealthUnknown;
+    int16_t mirrorEngineHealth = net::kVehicleEngineHealthUnknown;
 };
 
 std::map<uint64_t, Proxy> g_proxies;
@@ -2945,6 +4099,546 @@ void ApplyPendingOccupants(unsigned int tickCount)
     actor_sync::SetOccupantPendingActors(pendingHide);
 }
 
+// ================= v20 P1: guest mirror/interactive proxy =================
+// Гость: 0x24 (результаты интентов) и 0x26 (authoritative state) -> зеркало
+// локального прокси; near-proxy (<=20 м) становится "осязаемым"; пока guest
+// сидит в прокси, vehicle-контролы подавлены (§4.5-§4.6).
+constexpr float kVehicleInteractionProxyRadius = 20.f;
+std::mutex g_viInboxMutex;
+std::vector<net::VehicleInteractionResultPayload> g_viResultsInbox;
+std::map<uint32_t, net::VehicleStatePayload> g_viStatesInbox;
+bool g_guestControlsDisabled = false;
+unsigned long long g_guestVehicleLogMs = 0;
+
+// Сетевой поток -> inbox (без нативов/логов).
+void EnqueueVehicleInteractionResult(
+    const net::VehicleInteractionResultPayload& result)
+{
+    std::lock_guard<std::mutex> lk(g_viInboxMutex);
+    if (g_viResultsInbox.size() < 16)
+        g_viResultsInbox.push_back(result);
+}
+
+void EnqueueVehicleState(const net::VehicleStatePayload& state)
+{
+    std::lock_guard<std::mutex> lk(g_viInboxMutex);
+    // Храним последний state на vehicle (дубли/старые перетираются).
+    g_viStatesInbox[state.vehicleNetId] = state;
+    while (g_viStatesInbox.size() > 16)
+        g_viStatesInbox.erase(g_viStatesInbox.begin());
+}
+
+bool FindVehicleProxyNetId(unsigned int handle, uint32_t& netId)
+{
+    if (!handle) return false;
+    for (const auto& kv : g_proxies)
+    {
+        if (kv.second.kind == net::kEntityKindVehicle &&
+            kv.second.handle == handle)
+        {
+            netId = static_cast<uint32_t>(kv.first);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Гость: водитель-NPC из последнего 0x21 (для выбора Enter vs Hijack).
+bool FindProxyOccupantDriver(uint32_t netId, uint32_t& actorId)
+{
+    actorId = 0;
+    const auto it = g_occupantVehicles.find(netId);
+    if (it == g_occupantVehicles.end())
+        return false;
+    for (const SeatAttempt& e : it->second.entries)
+    {
+        if (e.flags & net::kOccupantFlagDriver)
+        {
+            actorId = e.actorId;
+            return actorId != 0;
+        }
+    }
+    return false;
+}
+
+// Позиция vehicle-прокси без лишних нативов: интерполированная цель снапшота,
+// fallback — GET_ENTITY_COORDS (только при первом спавне).
+Vec3 ProxyPos(const Proxy& p)
+{
+    if (p.vehHasTarget)
+        return Vec3{p.vehCurX, p.vehCurY, p.vehCurZ};
+    if (p.handle && DoesExist(p.handle))
+        return GetCoords(p.handle);
+    return Vec3{0.f, 0.f, 0.f};
+}
+
+// Гость: ближайший интерактивный vehicle-прокси в радиусе (capture C3).
+bool FindNearestVehicleProxy(unsigned int localPed, float radius,
+                            uint32_t& netId, unsigned int& handle)
+{
+    netId = 0;
+    handle = 0;
+    if (!localPed || !DoesExist(localPed))
+        return false;
+    const Vec3 pc = GetCoords(localPed);
+    float best = radius * radius;
+    for (const auto& kv : g_proxies)
+    {
+        const Proxy& p = kv.second;
+        if (p.kind != net::kEntityKindVehicle || !p.handle ||
+            p.trainAttached)
+            continue;
+        const Vec3 vc = ProxyPos(p);
+        const float dx = vc.x - pc.x;
+        const float dy = vc.y - pc.y;
+        const float d2 = dx * dx + dy * dy;
+        if (d2 > best)
+            continue;
+        best = d2;
+        netId = static_cast<uint32_t>(kv.first);
+        handle = p.handle;
+    }
+    return handle != 0;
+}
+
+// v20 P1: есть ли рядом (near) интерактивный vehicle-прокси. Без нативов —
+// дешёвый gate для control-poll (C3): не дёргаем IS_CONTROL_*, пока мимо.
+bool HasInteractiveProxyImpl()
+{
+    for (const auto& kv : g_proxies)
+    {
+        if (kv.second.kind == net::kEntityKindVehicle &&
+            kv.second.interactive)
+            return true;
+    }
+    return false;
+}
+
+Proxy* FindProxyByNetId(uint32_t netId)
+{
+    const auto it = g_proxies.find(static_cast<uint64_t>(netId));
+    if (it == g_proxies.end() || !it->second.handle)
+        return nullptr;
+    return &it->second;
+}
+
+int FindLocalSeatInVehicle(unsigned int veh, unsigned int ped)
+{
+    using namespace natives_api;
+    for (int s = -1; s <= net::kMaxVehicleSeat; ++s)
+    {
+        Init(natives::GET_PED_IN_VEHICLE_SEAT);
+        Push(veh);
+        Push(static_cast<unsigned long long>(static_cast<long long>(s)));
+        if (static_cast<unsigned int>(Call()) == ped)
+            return s;
+    }
+    return net::kVehicleSeatNone;
+}
+
+// Гость: локальный игрок в vehicle-прокси -> netId/handle/seat.
+bool FindLocalProxyVehicle(unsigned int localPed, uint32_t& netId,
+                          unsigned int& handle, int& seat)
+{
+    netId = 0;
+    handle = 0;
+    seat = net::kVehicleSeatNone;
+    if (!localPed)
+        return false;
+    using namespace natives_api;
+    unsigned int veh = 0;
+    Init(natives::GET_VEHICLE_PED_IS_IN);
+    Push(localPed);
+    Push(false);
+    veh = static_cast<unsigned int>(Call());
+    if (!veh)
+    {
+        Init(natives::GET_VEHICLE_PED_IS_ENTERING);
+        Push(localPed);
+        veh = static_cast<unsigned int>(Call());
+    }
+    if (!veh)
+        return false;
+    if (!FindVehicleProxyNetId(veh, netId))
+        return false; // локальный (не реплицированный) транспорт — не наш случай
+    handle = veh;
+    // Seat читается перебором (<=10 нативов) — кэшируем по (ped,vehicle):
+    // каждый тик нужен только факт "в proxy", seat пересчитываем при смене.
+    static unsigned int cachedVeh = 0;
+    static unsigned int cachedPed = 0;
+    static int cachedSeat = net::kVehicleSeatNone;
+    if (veh != cachedVeh || localPed != cachedPed)
+    {
+        cachedVeh = veh;
+        cachedPed = localPed;
+        cachedSeat = FindLocalSeatInVehicle(veh, localPed);
+    }
+    seat = cachedSeat;
+    return true;
+}
+
+void SetProxyInteractive(Proxy& p, bool on, uint32_t netId)
+{
+    using namespace natives_api;
+    // SetNoCollision(handle,false) => collision ON (см. хелпер выше).
+    SetNoCollision(p.handle, !on);
+    Init(natives::SET_VEHICLE_IS_CONSIDERED_BY_PLAYER);
+    Push(p.handle);
+    Push(on ? 1 : 0);
+    Call();
+    p.interactive = on;
+    if (coopcfg::Get().vehicleInteractionDebug)
+        sh_log::Write("vehicle: proxy interactive net=%u on=%d\n", netId,
+                      on ? 1 : 0);
+}
+
+// v20 P1: near-proxy tangibility (<=20 м): collision on/off + enter prompt.
+void UpdateInteractiveProxy(unsigned int localPed, unsigned int tickCount)
+{
+    (void)tickCount;
+    if (!coopcfg::Get().vehicleInteraction || !localPed || !DoesExist(localPed))
+        return;
+    const Vec3 pc = GetCoords(localPed);
+    const float r2 = kVehicleInteractionProxyRadius *
+                     kVehicleInteractionProxyRadius;
+    for (auto& kv : g_proxies)
+    {
+        Proxy& p = kv.second;
+        if (p.kind != net::kEntityKindVehicle || !p.handle ||
+            !DoesExist(p.handle))
+            continue;
+        if (p.vehSnapWarp)
+        {
+            // Жёсткий warp/снап: на этот тик collision off, чтобы не толкать
+            // игрока; флаг снимаем (остальные потребители уже отработали).
+            if (p.interactive)
+                SetProxyInteractive(p, false, static_cast<uint32_t>(kv.first));
+            p.vehSnapWarp = false;
+            continue;
+        }
+        const Vec3 vc = ProxyPos(p);
+        const float dx = vc.x - pc.x;
+        const float dy = vc.y - pc.y;
+        // near/far — legacy-макросы Windows-заголовков, поэтому isNear.
+        const bool isNear = !p.trainAttached && (dx * dx + dy * dy) <= r2;
+        if (isNear != p.interactive)
+            SetProxyInteractive(p, isNear, static_cast<uint32_t>(kv.first));
+    }
+}
+
+// v20 P1: guest controls gate — пока локальный игрок в proxy, вождение
+// подавлено (DISABLE_CONTROL_ACTION на vehicle-actions; restore на exit/reset).
+void SetGuestVehicleControls(bool disabled)
+{
+    using namespace natives_api;
+    static const unsigned long long kActions[] = {
+        natives::input::INPUT_VEH_ACCELERATE,
+        natives::input::INPUT_VEH_BRAKE,
+        natives::input::INPUT_VEH_MOVE_LR,
+        natives::input::INPUT_VEH_MOVE_UD,
+        natives::input::INPUT_VEH_HANDBRAKE,
+    };
+    for (unsigned long long action : kActions)
+    {
+        if (disabled)
+        {
+            Init(natives::DISABLE_CONTROL_ACTION);
+            Push(0); // control type 0 = vehicle context (R&D §3)
+            Push(action);
+            Push(true); // disableRelatedActions
+        }
+        else
+        {
+            Init(natives::ENABLE_CONTROL_ACTION);
+            Push(0);
+            Push(action);
+            Push(true);
+        }
+        Call();
+    }
+    g_guestControlsDisabled = disabled;
+}
+
+void UpdateGuestVehicleControls(unsigned int localPed)
+{
+    if (!coopcfg::Get().vehicleInteraction)
+    {
+        if (g_guestControlsDisabled)
+            SetGuestVehicleControls(false);
+        return;
+    }
+    uint32_t netId = 0;
+    unsigned int handle = 0;
+    int seat = net::kVehicleSeatNone;
+    const bool inProxy = FindLocalProxyVehicle(localPed, netId, handle, seat);
+    if (inProxy)
+        SetGuestVehicleControls(true); // каждый тик, пока в proxy (R&D §3.2)
+    else if (g_guestControlsDisabled)
+        SetGuestVehicleControls(false);
+}
+
+// Mirror health: временно снять invincible и записать точные значения (самый
+// детерминированный путь; SET_VEHICLE_DAMAGE для зеркала не нужен).
+void MirrorVehicleHealth(Proxy& p, const net::VehicleStatePayload& st)
+{
+    using namespace natives_api;
+    const bool bodyChanged =
+        st.bodyHealth != net::kVehicleBodyHealthUnknown &&
+        st.bodyHealth != p.mirrorBodyHealth;
+    const bool engineChanged =
+        st.engineHealth != net::kVehicleEngineHealthUnknown &&
+        st.engineHealth != p.mirrorEngineHealth;
+    if (!bodyChanged && !engineChanged)
+        return;
+    SetInvincible(p.handle, false);
+    Init(natives::SET_ENTITY_CAN_BE_DAMAGED);
+    Push(p.handle);
+    Push(true);
+    Call();
+    Init(natives::SET_VEHICLE_CAN_BE_VISIBLY_DAMAGED);
+    Push(p.handle);
+    Push(true);
+    Call();
+    Init(natives::SET_VEHICLE_CAN_BREAK);
+    Push(p.handle);
+    Push(true);
+    Call();
+    Init(natives::SET_VEHICLE_STRONG);
+    Push(p.handle);
+    Push(false);
+    Call();
+    if (bodyChanged)
+    {
+        Init(natives::SET_VEHICLE_BODY_HEALTH);
+        Push(p.handle);
+        Push(static_cast<float>(st.bodyHealth));
+        Call();
+        p.mirrorBodyHealth = st.bodyHealth;
+    }
+    if (engineChanged)
+    {
+        Init(natives::SET_VEHICLE_ENGINE_HEALTH);
+        Push(p.handle);
+        Push(static_cast<float>(st.engineHealth));
+        Call();
+        p.mirrorEngineHealth = st.engineHealth;
+    }
+    SetInvincible(p.handle, true);
+    if (coopcfg::Get().vehicleInteractionDebug)
+        sh_log::Write("vehicle: mirror health net=%u body=%u engine=%d\n",
+                      st.vehicleNetId, st.bodyHealth,
+                      static_cast<int>(st.engineHealth));
+}
+
+// 0x26 -> локальный прокси: двери/колёса/health/seat (best-effort mirror).
+void ApplyVehicleStateToProxy(Proxy& p, const net::VehicleStatePayload& st,
+                              unsigned int localPed)
+{
+    using namespace natives_api;
+    if (!p.handle || !DoesExist(p.handle))
+        return;
+    // Stale seq guard (монотонный per-vehicle seq).
+    if (p.mirrorStateValid && st.seq != 0 && p.mirrorStateSeq != 0 &&
+        static_cast<int16_t>(st.seq - p.mirrorStateSeq) <= 0)
+        return;
+    p.mirrorStateValid = true;
+    p.mirrorStateSeq = st.seq;
+    if (st.flags & net::kVehicleStateFlagDoorValid)
+    {
+        for (int d = 0; d < 8; ++d)
+        {
+            const uint8_t want =
+                static_cast<uint8_t>((st.doorBits >> (2 * d)) & 3u);
+            const uint8_t had = static_cast<uint8_t>(
+                (p.mirrorDoorBits >> (2 * d)) & 3u);
+            if (want == had) continue;
+            if (want == 2)
+            {
+                Init(natives::SET_DOOR_ALLOWED_TO_BE_BROKEN_OFF);
+                Push(p.handle);
+                Push(static_cast<unsigned long long>(d));
+                Push(true);
+                Call();
+                Init(natives::SET_VEHICLE_DOOR_BROKEN);
+                Push(p.handle);
+                Push(static_cast<unsigned long long>(d));
+                Push(false); // deleteDoor=false: только визуал mirror
+                Call();
+            }
+            else if (want == 1)
+            {
+                Init(natives::SET_VEHICLE_DOOR_OPEN);
+                Push(p.handle);
+                Push(static_cast<unsigned long long>(d));
+                Push(false); // loose
+                Push(true);  // openInstantly
+                Call();
+            }
+            else if (had == 1)
+            {
+                Init(natives::SET_VEHICLE_DOOR_SHUT);
+                Push(p.handle);
+                Push(static_cast<unsigned long long>(d));
+                Push(true); // closeInstantly
+                Call();
+            }
+        }
+        p.mirrorDoorBits = st.doorBits;
+    }
+    if (st.wheelsBits != 0)
+    {
+        for (int w = 0; w < 4; ++w)
+        {
+            const uint8_t want =
+                static_cast<uint8_t>((st.wheelsBits >> (2 * w)) & 3u);
+            const uint8_t had = static_cast<uint8_t>(
+                (p.mirrorWheelsBits >> (2 * w)) & 3u);
+            if (want == 2 && had != 2)
+            {
+                // wheelIndex mapping UNCERTAIN: P1 использует wire-порядок 0..3
+                // (A/B на wagon; см. §10.3).
+                Init(natives::_BREAK_OFF_VEHICLE_WHEEL);
+                Push(p.handle);
+                Push(static_cast<unsigned long long>(w));
+                Call();
+            }
+        }
+        p.mirrorWheelsBits = st.wheelsBits;
+    }
+    if (st.flags & net::kVehicleStateFlagDamageValid)
+        MirrorVehicleHealth(p, st);
+    // Seat reconcile: host state — источник истины для guestSeat.
+    if ((st.flags & net::kVehicleStateFlagGuestSeatValid) && localPed)
+    {
+        uint32_t curNet = 0;
+        unsigned int curHandle = 0;
+        int curSeat = net::kVehicleSeatNone;
+        if (FindLocalProxyVehicle(localPed, curNet, curHandle, curSeat) &&
+            curNet == st.vehicleNetId)
+        {
+            const int wantSeat = st.guestSeat;
+            if (wantSeat != net::kVehicleSeatNone && curSeat != wantSeat)
+            {
+                Init(natives::SET_PED_INTO_VEHICLE);
+                Push(localPed);
+                Push(curHandle);
+                Push(static_cast<unsigned long long>(
+                    static_cast<long long>(wantSeat)));
+                Call();
+                sh_log::Write("vehicle: seat correction net=%u %d -> %d\n",
+                              st.vehicleNetId, curSeat, wantSeat);
+            }
+        }
+    }
+    if (coopcfg::Get().vehicleInteractionDebug)
+    {
+        sh_log::Write("vehicle: state apply net=%u door=0x%04X wheels=0x%02X "
+                      "flags=0x%02X guestSeat=%d seq=%u\n",
+                      st.vehicleNetId, st.doorBits, st.wheelsBits, st.flags,
+                      static_cast<int>(st.guestSeat), st.seq);
+    }
+}
+
+// v20 P1: guest Tick — разобрать 0x24/0x26: зеркало + rollback + логи.
+void ApplyPendingVehicleInteraction(unsigned int localPed,
+                                    unsigned int tickCount)
+{
+    (void)tickCount;
+    std::vector<net::VehicleInteractionResultPayload> results;
+    std::vector<net::VehicleStatePayload> states;
+    {
+        std::lock_guard<std::mutex> lk(g_viInboxMutex);
+        results.swap(g_viResultsInbox);
+        for (auto& kv : g_viStatesInbox)
+            states.push_back(kv.second);
+        g_viStatesInbox.clear();
+    }
+    const unsigned long long nowMs = GetTickCount64();
+    const bool debug = coopcfg::Get().vehicleInteractionDebug;
+    const uint32_t guestEpoch = actor_sync::GuestEpoch();
+    for (const auto& r : results)
+    {
+        // Stale epoch (смена хоста/сессии): результат чужой эпохи не применяем.
+        if (guestEpoch == 0 || r.epoch != guestEpoch)
+        {
+            if (debug)
+                sh_log::Write("vehicle: drop stale result epoch=%u (own=%u)\n",
+                              r.epoch, guestEpoch);
+            continue;
+        }
+        if (debug)
+            sh_log::Write("vehicle: interaction action=%s result=%s net=%u "
+                          "seq=%u detail=%u\n",
+                          VehicleActionName(r.action), VehicleResultName(r.result),
+                          r.vehicleNetId, r.seq, r.detail);
+        if (r.result == static_cast<uint8_t>(net::VehicleResult::Applied))
+            continue;
+        // Reject посадки/хайджека: гость выходит из локального proxy.
+        const bool seatAction =
+            r.action == static_cast<uint8_t>(net::VehicleAction::Enter) ||
+            r.action == static_cast<uint8_t>(net::VehicleAction::Hijack);
+        if (seatAction && localPed)
+        {
+            uint32_t netId = 0;
+            unsigned int handle = 0;
+            int seat = net::kVehicleSeatNone;
+            if (FindLocalProxyVehicle(localPed, netId, handle, seat) &&
+                netId == r.vehicleNetId)
+            {
+                using namespace natives_api;
+                Init(natives::TASK_LEAVE_VEHICLE);
+                Push(localPed);
+                Push(handle);
+                Push(static_cast<unsigned long long>(0));
+                Push(static_cast<unsigned long long>(0));
+                Call();
+                sh_log::Write("vehicle: proxy exit after result=%s net=%u\n",
+                              VehicleResultName(r.result), r.vehicleNetId);
+            }
+        }
+    }
+    for (const auto& st : states)
+    {
+        if (guestEpoch == 0 || st.epoch != guestEpoch)
+            continue; // stale epoch state
+        Proxy* p = FindProxyByNetId(st.vehicleNetId);
+        if (!p)
+            continue;
+        ApplyVehicleStateToProxy(*p, st, localPed);
+    }
+    if (!results.empty() && debug &&
+        (g_guestVehicleLogMs == 0 || nowMs - g_guestVehicleLogMs >= 1000ull))
+        g_guestVehicleLogMs = nowMs;
+}
+
+// Сброс guest-состояния (роль/leave/disable): controls restore + inbox/caches.
+void ResetGuestVehicleInteraction()
+{
+    if (g_guestControlsDisabled)
+        SetGuestVehicleControls(false);
+    // Вернуть considered-by-player флаги на живых прокси до их удаления.
+    for (auto& kv : g_proxies)
+    {
+        Proxy& p = kv.second;
+        if (p.kind != net::kEntityKindVehicle || !p.handle ||
+            !DoesExist(p.handle) || !p.interactive)
+            continue;
+        using namespace natives_api;
+        Init(natives::SET_VEHICLE_IS_CONSIDERED_BY_PLAYER);
+        Push(p.handle);
+        Push(0);
+        Call();
+        SetNoCollision(p.handle, true);
+        p.interactive = false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_viInboxMutex);
+        g_viResultsInbox.clear();
+        g_viStatesInbox.clear();
+    }
+    g_guestVehicleLogMs = 0;
+}
+
 // v20 (opt-in npc_vehicle_wheels=1): колёса guest vehicle-прокси не крутятся —
 // позицию задаёт интерполяция, значит физическая скорость прокси = 0. Публичного
 // натива «задать вращение колёс» в 1491.50 нет; единственный кандидат —
@@ -3267,6 +4961,52 @@ void ApplyPendingTrainSnapshot(unsigned int tickCount)
 
 } // namespace
 
+// ================= v20 P1: публичный API интерактивности транспорта =========
+// Внутренние реализации — в anonymous namespace (inbox без нативов/мутаций
+// движка); публичные обёртки дают внешнюю линковку для coop.cpp/net callbacks.
+void OnVehicleInteraction(const net::VehicleInteractionPayload& intent)
+{
+    EnqueueVehicleInteraction(intent);
+}
+
+void OnVehicleInteractionResult(
+    const net::VehicleInteractionResultPayload& result)
+{
+    EnqueueVehicleInteractionResult(result);
+}
+
+void OnVehicleState(const net::VehicleStatePayload& state)
+{
+    EnqueueVehicleState(state);
+}
+
+bool GetVehicleProxyNetId(unsigned int handle, uint32_t& netId)
+{
+    return FindVehicleProxyNetId(handle, netId);
+}
+
+bool GetLocalProxyVehicle(unsigned int localPed, uint32_t& netId,
+                          unsigned int& handle, int& seat)
+{
+    return FindLocalProxyVehicle(localPed, netId, handle, seat);
+}
+
+bool GetProxyOccupantDriver(uint32_t netId, uint32_t& actorId)
+{
+    return FindProxyOccupantDriver(netId, actorId);
+}
+
+bool GetNearestVehicleProxy(unsigned int localPed, float radius,
+                            uint32_t& netId, unsigned int& handle)
+{
+    return FindNearestVehicleProxy(localPed, radius, netId, handle);
+}
+
+bool HasInteractiveVehicleProxy()
+{
+    return HasInteractiveProxyImpl();
+}
+
 // E7.1: публичная обёртка visitor mode (вызывается из coop::Tick гостя).
 void SuppressAmbientForVisitor(bool suppressVehicles)
 {
@@ -3379,6 +5119,8 @@ bool GetHandleForNetId(uint64_t netId, unsigned int& handle)
 
 void Reset()
 {
+    // v20 P1: guest — вернуть контролы/considerd-флаги до удаления прокси.
+    ResetGuestVehicleInteraction();
     // task-143 P3: снять occupants/draft ДО DeleteProxy (handle ещё валиден).
     for (auto& kv : g_occupantVehicles)
     {
@@ -3477,6 +5219,8 @@ void Reset()
     g_snapshotSeq = 0;
     g_hostIds.clear();
     g_lastHostScanTick = 0;
+    // v20 P1: host — очередь интентов, idempotency-кеш, runtime states.
+    ResetHostVehicleInteraction();
 
     if (removed > 0)
         sh_log::Write("world: reset, removed %u proxies\n",
@@ -3520,6 +5264,9 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
         // (actor discovery идёт после world_sync::Tick).
         if (coopcfg::Get().npcActor && coopcfg::Get().npcOccupants)
             actor_sync::SetOccupantHandles(g_hostOccHandles);
+        // v20 P1: применить интенты гостя (<=2/тик) и разослать 0x24/0x26.
+        ApplyVehicleInteractionIntents(localPlayerPed, tickCount);
+        SendVehicleInteractionStates(localPlayerPed, tickCount);
         return;
     }
 
@@ -3532,6 +5279,10 @@ void Tick(unsigned int localPlayerPed, unsigned int tickCount,
     ApplyPendingOccupants(tickCount);
     TickGuestTrains(tickCount);
     ProcessTrainOccupants(tickCount);
+    // v20 P1: зеркало 0x24/0x26, осязаемый near-proxy и подавление контролов.
+    ApplyPendingVehicleInteraction(localPlayerPed, tickCount);
+    UpdateInteractiveProxy(localPlayerPed, tickCount);
+    UpdateGuestVehicleControls(localPlayerPed);
 
     const unsigned long long last = g_lastSnapshotMs.load();
     if (last == 0)

@@ -511,6 +511,18 @@ void Client::SetActorDamageRequest(OnActorDamageRequest cb) { onActorDamageReque
 void Client::SetPlayerPresence(OnPlayerPresence cb) { onPlayerPresence_ = std::move(cb); }
 void Client::SetVehicleOccupants(OnVehicleOccupants cb) { onVehicleOccupants_ = std::move(cb); }
 void Client::SetTrainSnapshotV2(OnTrainSnapshotV2 cb) { onTrainSnapshotV2_ = std::move(cb); }
+void Client::SetVehicleInteraction(OnVehicleInteraction cb)
+{
+    onVehicleInteraction_ = std::move(cb);
+}
+void Client::SetVehicleInteractionResult(OnVehicleInteractionResult cb)
+{
+    onVehicleInteractionResult_ = std::move(cb);
+}
+void Client::SetVehicleState(OnVehicleState cb)
+{
+    onVehicleState_ = std::move(cb);
+}
 
 ClientState Client::State() const { return state_.load(); }
 
@@ -835,6 +847,44 @@ void Client::SendTrainSnapshotV2(const net::TrainSnapshotV2Payload& payload)
                       static_cast<uint32_t>(sizeof(payload))));
 }
 
+// v20 P1: клиентский транспорт интерактивности транспорта. Payload один раз
+// валидируется общим net-контрактом (server использует те же IsValid*), чтобы
+// невалидное сообщение не уходило в сокет (сервер всё равно дропнет).
+bool Client::SendVehicleInteraction(
+    const net::VehicleInteractionPayload& intent)
+{
+    // 0x23 — только гость -> сервер -> хосту.
+    if (!joined_.load() || isHost_.load()) return false;
+    std::vector<uint8_t> pay(sizeof(intent));
+    std::memcpy(pay.data(), &intent, sizeof(intent));
+    if (!net::IsValidVehicleInteraction(pay)) return false;
+    return SendRaw(MakeFrame((uint8_t)net::Msg::VehicleInteraction,
+                             pay.data(), static_cast<uint32_t>(pay.size())));
+}
+
+bool Client::SendVehicleInteractionResult(
+    const net::VehicleInteractionResultPayload& result)
+{
+    // 0x24 — только хост -> сервер -> гостям.
+    if (!joined_.load() || !isHost_.load()) return false;
+    std::vector<uint8_t> pay(sizeof(result));
+    std::memcpy(pay.data(), &result, sizeof(result));
+    if (!net::IsValidVehicleInteractionResult(pay)) return false;
+    return SendRaw(MakeFrame((uint8_t)net::Msg::VehicleInteractionResult,
+                             pay.data(), static_cast<uint32_t>(pay.size())));
+}
+
+bool Client::SendVehicleState(const net::VehicleStatePayload& state)
+{
+    // 0x26 — только хост -> сервер -> гостям.
+    if (!joined_.load() || !isHost_.load()) return false;
+    std::vector<uint8_t> pay(sizeof(state));
+    std::memcpy(pay.data(), &state, sizeof(state));
+    if (!net::IsValidVehicleState(pay)) return false;
+    return SendRaw(MakeFrame((uint8_t)net::Msg::VehicleState,
+                             pay.data(), static_cast<uint32_t>(pay.size())));
+}
+
 void Client::SendShot(const net::ShotPayload& sp)
 {
     std::vector<uint8_t> pay(reinterpret_cast<const uint8_t*>(&sp),
@@ -1098,6 +1148,38 @@ void Client::HandleTrainSnapshotV2(const std::vector<uint8_t>& p)
         onTrainSnapshotV2_(ts);
 }
 
+// v20 P1: 0x23 приходит только хосту (сервер релеит guest->host).
+void Client::HandleVehicleInteraction(const std::vector<uint8_t>& p)
+{
+    if (!isHost_.load()) return;
+    if (!net::IsValidVehicleInteraction(p) || !onVehicleInteraction_) return;
+    net::VehicleInteractionPayload msg{};
+    std::memcpy(&msg, p.data(), sizeof(msg));
+    onVehicleInteraction_(msg);
+}
+
+// v20 P1: 0x24 приходит только гостю (сервер релеит host->guest).
+void Client::HandleVehicleInteractionResult(const std::vector<uint8_t>& p)
+{
+    if (isHost_.load()) return;
+    if (!net::IsValidVehicleInteractionResult(p) ||
+        !onVehicleInteractionResult_)
+        return;
+    net::VehicleInteractionResultPayload msg{};
+    std::memcpy(&msg, p.data(), sizeof(msg));
+    onVehicleInteractionResult_(msg);
+}
+
+// v20 P1: 0x26 (state) приходит только гостю.
+void Client::HandleVehicleState(const std::vector<uint8_t>& p)
+{
+    if (isHost_.load()) return;
+    if (!net::IsValidVehicleState(p) || !onVehicleState_) return;
+    net::VehicleStatePayload msg{};
+    std::memcpy(&msg, p.data(), sizeof(msg));
+    onVehicleState_(msg);
+}
+
 void Client::HandlePlayerJoined(const std::vector<uint8_t>& p)
 {
     PlayerJoinInfo ji;
@@ -1219,6 +1301,12 @@ Client::MsgEffect Client::HandleServerMessage(uint8_t type,
     case net::Msg::PlayerPresence: HandlePlayerPresence(p); break;
     case net::Msg::VehicleOccupants: HandleVehicleOccupants(p); break;
     case net::Msg::TrainSnapshotV2: HandleTrainSnapshotV2(p); break;
+    // v20 P1: 0x23 (host), 0x24/0x26 (guest); проверка роли внутри handler'ов.
+    case net::Msg::VehicleInteraction: HandleVehicleInteraction(p); break;
+    case net::Msg::VehicleInteractionResult:
+        HandleVehicleInteractionResult(p);
+        break;
+    case net::Msg::VehicleState: HandleVehicleState(p); break;
     case net::Msg::PlayerJoined: HandlePlayerJoined(p); break;
     case net::Msg::Frame: HandleFrame(p); break;
     case net::Msg::PlayerLeft: HandlePlayerLeft(p); break;

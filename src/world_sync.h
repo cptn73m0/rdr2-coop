@@ -38,6 +38,29 @@ void OnTrainSnapshotV2(const net::TrainSnapshotV2Payload& payload);
 // R&D: TrainSnapshot от хоста (payload уже проверен client).
 void OnTrainSnapshot(const std::vector<uint8_t>& payload);
 
+// v20 P1: сетевой поток -> inbox интерактивности транспорта. Только копия под
+// mutex (нативы/логи не вызываются). 0x23 — хосту, 0x24/0x26 — гостю.
+void OnVehicleInteraction(const net::VehicleInteractionPayload& intent);
+void OnVehicleInteractionResult(
+    const net::VehicleInteractionResultPayload& result);
+void OnVehicleState(const net::VehicleStatePayload& state);
+
+// v20 P1 (гость): handle vehicle-прокси -> netId (false — не vehicle-прокси).
+bool GetVehicleProxyNetId(unsigned int handle, uint32_t& netId);
+// v20 P1 (гость): локальный игрок сейчас в vehicle-прокси? (для capture C2).
+bool GetLocalProxyVehicle(unsigned int localPed, uint32_t& netId,
+                          unsigned int& handle, int& seat);
+// v20 P1 (гость): водитель-NPC из последнего 0x21 для vehicle (actorId;
+// 0 = водителя нет/неизвестен) — выбор Enter vs Hijack.
+bool GetProxyOccupantDriver(uint32_t netId, uint32_t& actorId);
+// v20 P1 (гость): ближайший интерактивный vehicle-прокси в радиусе (capture
+// дверей controls, §4.4 C3). false — рядом нет.
+bool GetNearestVehicleProxy(unsigned int localPed, float radius,
+                            uint32_t& netId, unsigned int& handle);
+// v20 P1 (гость): есть near-интерактивный vehicle-прокси (дешёвый gate для
+// control-poll: не дёргать IS_CONTROL_* вне зоны).
+bool HasInteractiveVehicleProxy();
+
 // Убрать прокси/сбросить состояние (выход из сессии, смена роли, disable).
 void Reset();
 

@@ -422,4 +422,77 @@ constexpr unsigned long long SET_PED_CAN_BE_TARGETTED          = 0x63F58F7C80513
 constexpr unsigned long long SET_MODEL_AS_NO_LONGER_NEEDED     = 0x4AD96EF928BD4F9Aull;
 constexpr unsigned long long IS_PED_IN_COMBAT                  = 0x4859F1FC66A6278Eull;
 
+// ============ v20 P1: vehicle interaction (guest->host) ============
+// Хэши/арности — docs/NATIVE_RESEARCH_V20_HEALTH.md (NativeDecl 1491.50 + latest
+// nativedb). SIGNATURE-ONLY/UNCERTAIN нативы вызываются только по A/B-политике
+// (lock enum/wheel mapping/p6 — см. world_sync.cpp комментарии).
+//
+// Health: readback возвращает FLOAT (body 0..1000, engine -4000..1000);
+// invalid entity -> 1000, поэтому сначала DoesEntityExist/IS_ENTITY_A_VEHICLE.
+constexpr unsigned long long GET_VEHICLE_BODY_HEALTH          = 0x42113B857E33C16Eull;
+constexpr unsigned long long GET_VEHICLE_ENGINE_HEALTH        = 0x90DBFFAC43B22081ull;
+constexpr unsigned long long SET_VEHICLE_BODY_HEALTH          = 0x55CCAAE4F28C67A0ull;
+constexpr unsigned long long SET_VEHICLE_ENGINE_HEALTH        = 0x8BDC5B998B4654EFull;
+// SET_VEHICLE_DAMAGE: offset — локальная модель; p6 UNCERTAIN -> всегда false.
+constexpr unsigned long long SET_VEHICLE_DAMAGE               = 0x1D7678F81452BB41ull;
+// Damage-флаги host real (R&D §2.5): снять invincible/strong, разрешить урон.
+constexpr unsigned long long SET_ENTITY_CAN_BE_DAMAGED        = 0x0D06D522B90E861Full;
+constexpr unsigned long long _GET_ENTITY_CAN_BE_DAMAGED       = 0x75DF9E73F2F005FDull;
+constexpr unsigned long long SET_VEHICLE_CAN_BE_VISIBLY_DAMAGED = 0x4BF8131AE811541Cull;
+constexpr unsigned long long SET_VEHICLE_CAN_BREAK            = 0xC5ED9D59B4646611ull;
+constexpr unsigned long long SET_VEHICLE_STRONG               = 0xAB315515C9F8803Dull;
+constexpr unsigned long long IS_ENTITY_A_VEHICLE              = 0xC3D96AF45FCCEC4Cull;
+constexpr unsigned long long IS_ENTITY_DEAD                   = 0x7D5B1F88E7504BBAull;
+// Двери: openInstantly/closeInstantly=true — детерминированный mirror.
+constexpr unsigned long long SET_VEHICLE_DOOR_OPEN            = 0x550CE392A4672412ull;
+constexpr unsigned long long SET_VEHICLE_DOOR_SHUT            = 0x6A3C24B91FD0EA09ull;
+constexpr unsigned long long SET_VEHICLE_DOOR_BROKEN          = 0x9666CF20A1C6D780ull;
+constexpr unsigned long long SET_DOOR_ALLOWED_TO_BE_BROKEN_OFF = 0x081FB9D6422F804Cull;
+constexpr unsigned long long IS_VEHICLE_DOOR_FULLY_OPEN       = 0x7AE191143C7A9107ull;
+constexpr unsigned long long _IS_VEHICLE_DOOR_BROKEN          = 0xE979BB5602AD3402ull;
+// Locks: enum НЕ подтверждён -> setter'ы в P1 не вызываются (gated);
+// GET_* только raw-диагностика для 0x26 (host cache важнее).
+constexpr unsigned long long GET_VEHICLE_DOOR_LOCK_STATUS     = 0xC867FD144F2469D3ull;
+// Колёса: destroyed readback CONFIRMED, mapping wheelIndex UNCERTAIN (A/B).
+constexpr unsigned long long _IS_VEHICLE_WHEEL_DESTROYED      = 0xCB2CA620C48BC875ull;
+constexpr unsigned long long _ARE_ANY_VEHICLE_WHEELS_DESTROYED = 0x18714953CCED17D3ull;
+constexpr unsigned long long _BREAK_OFF_VEHICLE_WHEEL         = 0xD4F5EFB55769D272ull;
+// Seats/occupancy (draft natives уже есть выше в E3d-c блоке).
+constexpr unsigned long long IS_VEHICLE_SEAT_FREE             = 0xE052C1B1CAA4ECE4ull;
+constexpr unsigned long long GET_VEHICLE_PED_IS_ENTERING      = 0xF92691AED837A5FCull;
+// TASK_LEAVE_VEHICLE — arity 4 (Ped,Vehicle,flags,unkPed); unkPed=0.
+constexpr unsigned long long TASK_LEAVE_VEHICLE                = 0xD3DBCE61A490BE02ull;
+constexpr unsigned long long TASK_ENTER_VEHICLE                = 0xC20E50AA46D09CA8ull;
+constexpr unsigned long long TASK_BREAK_VEHICLE_DOOR_LOCK      = 0xBB28D1BC9EA8A6A5ull;
+// Draft harness verify/attach (attach/detach/get уже есть в E3d-c блоке).
+constexpr unsigned long long GET_DRAFT_ANIMAL_COUNT            = 0xA19447D83294E29Full;
+constexpr unsigned long long _DETACH_DRAFT_VEHICLE_HARNESS_FROM_INDEX = 0x4402960666000E62ull;
+// Host real: hijack/enter для non-local ped (GET_DRIVER_OF_VEHICLE уже есть;
+// SET_PED_INTO_VEHICLE — в E3d-c блоке выше).
+// Guest proxy tangibility (near <=20 м): collision on/off + enter prompt.
+constexpr unsigned long long SET_VEHICLE_IS_CONSIDERED_BY_PLAYER = 0x54800D386C5825E5ull;
+constexpr unsigned long long SET_VEHICLE_NOT_STEALABLE_AMBIENTLY = 0x09C970AE59ABF6B2ull;
+// v20 P1 controls (R&D §3: PRESENT), control type 0 = vehicle context.
+constexpr unsigned long long IS_CONTROL_ENABLED               = 0x1CEA6BFDF248E5D9ull;
+constexpr unsigned long long IS_CONTROL_PRESSED               = 0xF3A21BCD95725A4Aull;
+constexpr unsigned long long IS_CONTROL_JUST_PRESSED          = 0x580417101DDB492Full;
+constexpr unsigned long long IS_CONTROL_RELEASED              = 0x648EE3E7F38877DDull;
+constexpr unsigned long long IS_CONTROL_JUST_RELEASED         = 0x50F940259D3841E6ull;
+constexpr unsigned long long DISABLE_CONTROL_ACTION           = 0xFE99B66D079CF6BCull;
+constexpr unsigned long long ENABLE_CONTROL_ACTION            = 0x351220255D64C155ull;
+
+// v20 P1: input action hashes (rdr3-discoveries Controls/README).
+namespace input {
+constexpr unsigned long long INPUT_ATTACK         = 0x07CE1E61ull;
+constexpr unsigned long long INPUT_ATTACK2        = 0x0283C582ull;
+constexpr unsigned long long INPUT_ENTER          = 0xCEFD9220ull;
+constexpr unsigned long long INPUT_VEH_EXIT       = 0xFEFAB9B4ull;
+constexpr unsigned long long INPUT_VEH_ATTACK     = 0xF4330038ull;
+constexpr unsigned long long INPUT_VEH_ACCELERATE = 0x5B9FD4E2ull;
+constexpr unsigned long long INPUT_VEH_BRAKE      = 0x6E1F639Bull;
+constexpr unsigned long long INPUT_VEH_MOVE_LR    = 0xF1E2852Cull;
+constexpr unsigned long long INPUT_VEH_MOVE_UD    = 0x8A81C00Cull;
+constexpr unsigned long long INPUT_VEH_HANDBRAKE  = 0x65D24C98ull;
+} // namespace input
+
 } // namespace natives

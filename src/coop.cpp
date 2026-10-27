@@ -4937,6 +4937,304 @@ void TrySendNpcDamage(unsigned int localPed, unsigned long long weapon,
                                   headshot);
 }
 
+// ================= v20 P1: guest capture (vehicle interaction) =================
+// Гость ловит локальные действия и отправляет интенты 0x23 хосту:
+// C1 damage (из shot-пайплайна), C2 enter/exit/hijack (посадка в proxy),
+// C3 двери (controls near proxy). Хост — авторитет; локальный прокси только
+// зеркалится по 0x24/0x26 (см. world_sync.cpp).
+bool s_viInProxy = false;
+uint32_t s_viProxyNetId = 0;
+unsigned int s_viProxyHandle = 0;
+int s_viSeat = net::kVehicleSeatNone;
+unsigned long long s_viLastTransitionMs = 0;
+unsigned long long s_viLastDoorMs = 0;
+unsigned long long s_viLastDamageMs = 0;
+unsigned long long s_viDamageWindowMs = 0;
+int s_viDamageWindowCount = 0;
+uint16_t s_viIntentSeq = 1;
+
+// A/B-гейты capture (§4.4/§4.7): двери через controls default on; door-break
+// capture выключен до A/B I2 (lock capture не включаем вовсе).
+constexpr bool kVehicleInteractionCaptureDoors = true;
+constexpr bool kVehicleInteractionCaptureDoorBreak = false;
+constexpr float kVehicleDamageCaptureRadius = 12.f;
+constexpr float kVehicleDoorCaptureRadius = 5.f;
+constexpr int kVehicleDamageCapturePerSec = 4;
+
+uint16_t NextVehicleIntentSeq()
+{
+    uint16_t seq = s_viIntentSeq++;
+    if (seq == 0)
+        seq = s_viIntentSeq++; // seq=0 невалиден на проводе
+    return seq;
+}
+
+bool SendVehicleIntent(uint32_t netId, uint8_t action, int seat, uint8_t door,
+                       uint8_t flags, uint16_t param, uint32_t targetId,
+                       uint32_t weaponHash)
+{
+    net::VehicleInteractionPayload p{};
+    p.epoch = actor_sync::GuestEpoch();
+    p.vehicleNetId = netId;
+    p.targetId = targetId;
+    p.seq = NextVehicleIntentSeq();
+    p.action = action;
+    p.seat = static_cast<int8_t>(seat);
+    p.door = door;
+    p.flags = flags;
+    p.param = param;
+    p.weaponHash = weaponHash;
+    const bool ok = coop::SendVehicleInteraction(p);
+    if (coopcfg::Get().vehicleInteractionDebug)
+        sh_log::Write("vehicle: intent action=%s net=%u seq=%u seat=%d "
+                      "door=%u target=%u ok=%d\n",
+                      [action]() {
+                          switch (static_cast<net::VehicleAction>(action))
+                          {
+                          case net::VehicleAction::Damage: return "damage";
+                          case net::VehicleAction::DoorOpen: return "door_open";
+                          case net::VehicleAction::DoorClose: return "door_close";
+                          case net::VehicleAction::DoorBreak: return "door_break";
+                          case net::VehicleAction::Enter: return "enter";
+                          case net::VehicleAction::Exit: return "exit";
+                          case net::VehicleAction::Hijack: return "hijack";
+                          default: return "other";
+                          }
+                      }(),
+                      netId, p.seq, seat, door, targetId, ok ? 1 : 0);
+    return ok;
+}
+
+// Часть vehicle по точке попадания (локальная модель; A/B-приближение).
+uint8_t ClassifyVehicleDamagePart(unsigned int veh, const Vec3& point)
+{
+    const Vec3 vc = GetEntityCoords(veh);
+    const float headingRad = GetEntityHeading(veh) * 3.14159265f / 180.f;
+    const float dx = point.x - vc.x;
+    const float dy = point.y - vc.y;
+    const float dz = point.z - vc.z;
+    const float lx = dx * std::sin(headingRad) + dy * std::cos(headingRad);
+    const float ly = dx * std::cos(headingRad) - dy * std::sin(headingRad);
+    if (dz > 1.0f) return net::kVehiclePartEngine; // капот/двигатель
+    if (dz > 0.5f) return net::kVehiclePartBody;
+    if (std::fabs(ly) > 0.8f) return ly > 0.f ? 5 : 0; // PSIDE_F / DSIDE_F
+    if (dz < -0.1f && std::fabs(ly) > 0.4f)
+    {
+        if (lx > 0.2f)
+            return ly > 0.f ? net::kVehiclePartWheelFR
+                            : net::kVehiclePartWheelFL;
+        return ly > 0.f ? net::kVehiclePartWheelRR
+                        : net::kVehiclePartWheelRL;
+    }
+    return net::kVehiclePartBody;
+}
+
+// C1: выстрел по vehicle-прокси -> Damage-интент (rate <=4/с, 150 мс/vehicle).
+void TrySendVehicleDamage(unsigned int localPed, unsigned long long weapon,
+                          const Vec3* impact)
+{
+    if (!coopcfg::Get().vehicleInteraction || !coopcfg::Get().npcActor)
+        return;
+    if (s_amHost.load())
+        return;
+    if (actor_sync::GuestEpoch() == 0)
+        return;
+    using namespace natives_api;
+    Init(natives::GET_PLAYER_INDEX);
+    const int player = static_cast<int>(Call());
+    if (player < 0) return;
+    unsigned long long entityBuf = 0;
+    Init(natives::GET_ENTITY_PLAYER_IS_FREE_AIMING_AT);
+    Push(static_cast<unsigned long long>(player));
+    Push(reinterpret_cast<unsigned long long>(&entityBuf));
+    if (!Call()) return;
+    const unsigned int target = static_cast<unsigned int>(entityBuf);
+    if (!target) return;
+    uint32_t netId = 0;
+    if (!world_sync::GetVehicleProxyNetId(target, netId))
+        return;
+    const Vec3 a = GetEntityCoords(localPed);
+    const Vec3 b = GetEntityCoords(target);
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float dz = b.z - a.z;
+    if (dx * dx + dy * dy + dz * dz > kVehicleDamageCaptureRadius *
+                                        kVehicleDamageCaptureRadius)
+        return;
+    const unsigned long long nowMs = GetTickCount64();
+    if (s_viDamageWindowMs == 0 || nowMs - s_viDamageWindowMs >= 1000ull)
+    {
+        s_viDamageWindowMs = nowMs;
+        s_viDamageWindowCount = 0;
+    }
+    if (s_viDamageWindowCount >= kVehicleDamageCapturePerSec ||
+        (s_viLastDamageMs != 0 && nowMs - s_viLastDamageMs < 150ull))
+        return;
+    s_viDamageWindowMs = nowMs;
+    ++s_viDamageWindowCount;
+    s_viLastDamageMs = nowMs;
+    const uint8_t part = impact ? ClassifyVehicleDamagePart(target, *impact)
+                                : net::kVehiclePartBody;
+    uint16_t amount = NpcDamageForWeapon(weapon);
+    if (amount < 1) amount = 1;
+    if (amount > 1000) amount = 1000;
+    SendVehicleIntent(netId, static_cast<uint8_t>(net::VehicleAction::Damage),
+                      net::kVehicleSeatNone, part, 0, amount,
+                      0, static_cast<uint32_t>(weapon));
+}
+
+bool IsVehicleDoorFullyOpenGuest(unsigned int veh, int door)
+{
+    using namespace natives_api;
+    Init(natives::IS_VEHICLE_DOOR_FULLY_OPEN);
+    Push(veh);
+    Push(door);
+    return Call() != 0;
+}
+
+bool IsVehicleDoorBrokenGuest(unsigned int veh, int door)
+{
+    using namespace natives_api;
+    Init(natives::_IS_VEHICLE_DOOR_BROKEN);
+    Push(veh);
+    Push(door);
+    return Call() != 0;
+}
+
+bool IsControlJustPressedGuest(unsigned int control, unsigned long long action)
+{
+    using namespace natives_api;
+    Init(natives::IS_CONTROL_JUST_PRESSED);
+    Push(control);
+    Push(action);
+    return Call() != 0;
+}
+
+// C3: двери через controls у near-proxy (on foot; <=5 м), не чаще 250 мс.
+void UpdateVehicleDoorCapture(unsigned int pedal)
+{
+    if (!kVehicleInteractionCaptureDoors)
+        return;
+    uint32_t netId = 0;
+    unsigned int handle = 0;
+    if (!world_sync::GetNearestVehicleProxy(pedal, kVehicleDoorCaptureRadius,
+                                            netId, handle))
+        return;
+    const unsigned long long nowMs = GetTickCount64();
+    if (s_viLastDoorMs != 0 && nowMs - s_viLastDoorMs < 250ull)
+        return;
+    const bool attack = IsControlJustPressedGuest(0, natives::input::INPUT_ATTACK);
+    const bool attack2 =
+        kVehicleInteractionCaptureDoorBreak &&
+        IsControlJustPressedGuest(0, natives::input::INPUT_ATTACK2);
+    if (!attack && !attack2)
+        return;
+    // Дверь по позиции игрока относительно модели (A/B-приближение).
+    const Vec3 pc = GetEntityCoords(pedal);
+    uint8_t part = ClassifyVehicleDamagePart(handle, pc);
+    int door = part <= 7 ? static_cast<int>(part) : 0;
+    if (attack2)
+    {
+        SendVehicleIntent(netId,
+                          static_cast<uint8_t>(net::VehicleAction::DoorBreak),
+                          net::kVehicleSeatNone, static_cast<uint8_t>(door),
+                          0, 0, 0, 0);
+        s_viLastDoorMs = nowMs;
+        return;
+    }
+    const bool open = IsVehicleDoorFullyOpenGuest(handle, door) &&
+                      !IsVehicleDoorBrokenGuest(handle, door);
+    SendVehicleIntent(netId,
+                      static_cast<uint8_t>(open ? net::VehicleAction::DoorClose
+                                                : net::VehicleAction::DoorOpen),
+                      net::kVehicleSeatNone, static_cast<uint8_t>(door), 0, 0,
+                      0, 0);
+    s_viLastDoorMs = nowMs;
+}
+
+// C2: переходы локальной посадки в vehicle-прокси -> Enter/Exit/Hijack.
+void UpdateLocalVehicleInteraction(unsigned int ped)
+{
+    if (s_amHost.load())
+        return;
+    if (!coopcfg::Get().vehicleInteraction || !coopcfg::Get().npcActor)
+        return;
+    if (actor_sync::GuestEpoch() == 0)
+        return;
+    // Perf-гейт (§5.6): переходы посадки опрашиваем ~20 Гц (каждый 3-й тик),
+    // doors controls — только когда есть near-proxy и ~10 Гц.
+    static unsigned int lastPollTick = 0;
+    const bool pollTransitions =
+        s_tickCount - lastPollTick >= 3 || lastPollTick == 0;
+    if (pollTransitions)
+        lastPollTick = s_tickCount;
+    const bool pollDoors =
+        pollTransitions && (s_tickCount % 6) == 0 &&
+        world_sync::HasInteractiveVehicleProxy();
+    if (!pollTransitions)
+        return;
+    const unsigned long long nowMs = GetTickCount64();
+    uint32_t netId = 0;
+    unsigned int handle = 0;
+    int seat = net::kVehicleSeatNone;
+    const bool inProxy =
+        world_sync::GetLocalProxyVehicle(ped, netId, handle, seat);
+    if (inProxy)
+    {
+        if (!s_viInProxy)
+        {
+            if (nowMs - s_viLastTransitionMs >= 500ull)
+            {
+                s_viLastTransitionMs = nowMs;
+                uint32_t driverActor = 0;
+                const bool hijack =
+                    seat == net::kVehicleSeatDriver &&
+                    world_sync::GetProxyOccupantDriver(netId, driverActor);
+                SendVehicleIntent(
+                    netId,
+                    static_cast<uint8_t>(hijack ? net::VehicleAction::Hijack
+                                                : net::VehicleAction::Enter),
+                    seat, net::kVehicleDoorNone,
+                    hijack ? static_cast<uint8_t>(net::kInteractionTargetActor)
+                           : static_cast<uint8_t>(0),
+                    0, hijack ? driverActor : 0, 0);
+            }
+            s_viInProxy = true;
+            s_viProxyNetId = netId;
+            s_viProxyHandle = handle;
+        }
+        s_viSeat = seat;
+        return; // в машине door-capture не делаем (controls подавлены)
+    }
+    if (s_viInProxy)
+    {
+        SendVehicleIntent(s_viProxyNetId,
+                          static_cast<uint8_t>(net::VehicleAction::Exit),
+                          net::kVehicleSeatNone, net::kVehicleDoorNone, 0, 0, 0,
+                          0);
+        s_viInProxy = false;
+        s_viProxyNetId = 0;
+        s_viProxyHandle = 0;
+        s_viSeat = net::kVehicleSeatNone;
+        s_viLastTransitionMs = nowMs;
+    }
+    if (pollDoors)
+        UpdateVehicleDoorCapture(ped);
+}
+
+void ResetLocalVehicleInteraction()
+{
+    s_viInProxy = false;
+    s_viProxyNetId = 0;
+    s_viProxyHandle = 0;
+    s_viSeat = net::kVehicleSeatNone;
+    s_viLastTransitionMs = 0;
+    s_viLastDoorMs = 0;
+    s_viLastDamageMs = 0;
+    s_viDamageWindowMs = 0;
+    s_viDamageWindowCount = 0;
+}
+
 // ub-mode unit C2-1: независимые шаги детектора выстрелов.
 void HandleLocalWeaponChange(unsigned long long weapon)
 {
@@ -5134,7 +5432,11 @@ void UpdateLocalShotEvents(unsigned int ped)
     // E5 (v17): реальный выстрел в NPC-прокси -> запрос урона хосту.
     // E5.1: передаём точку попадания для headshot-детекта.
     if (sentAmmo > 0 || fallback)
+    {
         TrySendNpcDamage(ped, weapon, haveImpact ? &impact : nullptr);
+        // v20 P1: выстрел по vehicle-прокси -> Damage-интент хосту.
+        TrySendVehicleDamage(ped, weapon, haveImpact ? &impact : nullptr);
+    }
 }
 
 // Здоровье локального педа 0..1 (GET_ENTITY_HEALTH / max примерно 100..200 —
@@ -6196,6 +6498,19 @@ void InitNetworkClient()
         [](const net::TrainSnapshotV2Payload& payload) {
             world_sync::OnTrainSnapshotV2(payload);
         });
+    // v20 P1: интерактивность транспорта. Сетевой поток только копирует payload
+    // в inbox world_sync (mutex, без нативов); применяет игровой поток в Tick.
+    g_netClient.SetVehicleInteraction(
+        [](const net::VehicleInteractionPayload& intent) {
+            world_sync::OnVehicleInteraction(intent);
+        });
+    g_netClient.SetVehicleInteractionResult(
+        [](const net::VehicleInteractionResultPayload& result) {
+            world_sync::OnVehicleInteractionResult(result);
+        });
+    g_netClient.SetVehicleState([](const net::VehicleStatePayload& state) {
+        world_sync::OnVehicleState(state);
+    });
 
     // E6 (v18): UI-статус другого игрока (карта/пауза/сатчель/магазин).
     g_netClient.SetPlayerPresence([](uint32_t epoch, uint16_t flags) {
@@ -6235,6 +6550,30 @@ void SendVehicleOccupants(
 void SendTrainSnapshotV2(const net::TrainSnapshotV2Payload& payload)
 {
     g_netClient.SendTrainSnapshotV2(payload);
+}
+
+// v20 P1: интерактивность транспорта. Интенты шлёт только гость, результат/
+// состояние — только хост; net/client сам проверяет роль/JOIN_OK/payload.
+bool SendVehicleInteraction(const net::VehicleInteractionPayload& intent)
+{
+    return g_netClient.SendVehicleInteraction(intent);
+}
+
+bool SendVehicleInteractionResult(
+    const net::VehicleInteractionResultPayload& result)
+{
+    return g_netClient.SendVehicleInteractionResult(result);
+}
+
+bool SendVehicleState(const net::VehicleStatePayload& state)
+{
+    return g_netClient.SendVehicleState(state);
+}
+
+// v20 P1: хост — ped удалённого игрока (для Enter/Exit/Hijack).
+unsigned int PartnerGhostHandle()
+{
+    return s_ghost;
 }
 
 // R&D: TrainSnapshot от хоста. Гость пока только логирует.
@@ -6952,6 +7291,8 @@ void Tick()
         UpdateLocalActionState(playerPed);
         UpdateLocalAim(playerPed);
         UpdateLocalShotEvents(playerPed);
+        // v20 P1: guest capture — посадка/выход/хайджека/двери -> интенты 0x23.
+        UpdateLocalVehicleInteraction(playerPed);
         // E6 (v18): детект/отправка локального UI-статуса.
         UpdateLocalPresence();
         // E7.1: гость подавляет локальную ambient-популяцию (visitor mode).
@@ -7249,6 +7590,8 @@ void Tick()
         // E7.1-hardening (task-131): полный клиентский сброс при HostChanged.
         // world_sync: все world/vehicle-прокси и snapshots старого хоста.
         world_sync::Reset();
+        // v20 P1: сброс guest capture (переходы/seq/rates).
+        ResetLocalVehicleInteraction();
         // Visitor cleanup: очередь удаления старого мира/сцены не тащим.
         s_visitorCleanupCount = 0;
         s_visitorCleanupRanOnce = false;
@@ -7353,6 +7696,7 @@ void Tick()
         // E1: связь потеряна — удалить прокси/roster акторов.
         actor_sync::Reset();
         world_sync::Reset(); // E3d-b: снять mission-train + restore random trains
+        ResetLocalVehicleInteraction(); // v20 P1: guest capture сброс
     }
     if (ev.leave)
     {
@@ -7366,6 +7710,7 @@ void Tick()
         // E1: игрок вышел — акторы устарели.
         actor_sync::Reset();
         world_sync::Reset(); // E3d-b: снять mission-train + restore random trains
+        ResetLocalVehicleInteraction(); // v20 P1: guest capture сброс
     }
     if (ev.playerJoined)
     {

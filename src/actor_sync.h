@@ -42,6 +42,11 @@ struct TickContext
 // Вызывается из coop::Tick() в конце, после базовой обработки (до persist).
 void Tick(const TickContext& ctx);
 
+// v20 P1: эпохи акторов (0 = ещё не назначена). Хост применяет 0x23 только
+// при совпадении p.epoch с HostEpoch(); гость шлёт интенты с GuestEpoch().
+uint32_t HostEpoch();
+uint32_t GuestEpoch();
+
 // Полный сброс: прокси гостя удаляются, roster/очереди/epoch хоста чистятся.
 // Вызывается при leave/reconnect/смене роли/disable.
 void Reset();

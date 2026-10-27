@@ -53,6 +53,15 @@ void SendVehicleOccupants(
     const std::vector<net::VehicleOccupantEntry>& entries);
 // E3d-b (v19): снапшот поезда/состава (хост -> сервер -> гость).
 void SendTrainSnapshotV2(const net::TrainSnapshotV2Payload& payload);
+// v20 P1: интерактивность транспорта (0x23/0x24/0x26). Интенты шлёт только
+// гость, результат/состояние — только хост; невалидные/не по роли не уходят.
+bool SendVehicleInteraction(const net::VehicleInteractionPayload& intent);
+bool SendVehicleInteractionResult(
+    const net::VehicleInteractionResultPayload& result);
+bool SendVehicleState(const net::VehicleStatePayload& state);
+// v20 P1: handle педа удалённого игрока на этой машине (s_ghost; 0 = нет).
+// Хост использует его для Enter/Exit/Hijack (non-local ped).
+unsigned int PartnerGhostHandle();
 // E1: запрос resync от гостя. ВАЖНО: в net/client пока есть только приём
 // ActorResync, но НЕ отправка (Client::SendActorResync отсутствует) — заглушка
 // до правки net-слоя (net-review), игровой слой вызывает безопасно.

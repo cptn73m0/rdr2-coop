@@ -102,6 +102,14 @@ public:
     // E3d-b (v19): снимок поезда/состава v2 от хоста (гость).
     using OnTrainSnapshotV2 = std::function<void(
         const net::TrainSnapshotV2Payload& payload)>;
+    // v20 P1: интерактивность транспорта. 0x23 — интент гостя для хоста;
+    // 0x24/0x26 — результат/состояние от хоста для гостя.
+    using OnVehicleInteraction = std::function<void(
+        const net::VehicleInteractionPayload& intent)>;
+    using OnVehicleInteractionResult = std::function<void(
+        const net::VehicleInteractionResultPayload& result)>;
+    using OnVehicleState = std::function<void(
+        const net::VehicleStatePayload& state)>;
 
     Client();
     ~Client();
@@ -170,6 +178,15 @@ public:
         const std::vector<net::VehicleOccupantEntry>& entries);
     // E3d-b (v19): отправить снимок поезда/состава v2 (хост).
     void SendTrainSnapshotV2(const net::TrainSnapshotV2Payload& payload);
+    // v20 P1: 0x23 — интент гостя хосту (гость -> сервер -> хосту). Payload
+    // проверяется net::IsValidVehicleInteraction; false — не гость/нет JOIN_OK/
+    // невалидные поля (натив/мир не трогается).
+    bool SendVehicleInteraction(const net::VehicleInteractionPayload& intent);
+    // v20 P1: 0x24 — результат интента (хост -> сервер -> гостю).
+    bool SendVehicleInteractionResult(
+        const net::VehicleInteractionResultPayload& result);
+    // v20 P1: 0x26 — состояние vehicle (хост -> сервер -> гостю).
+    bool SendVehicleState(const net::VehicleStatePayload& state);
     // Текущее состояние роли по мнению сервера (обновляется HostChanged).
     bool IsHost() const { return isHost_.load(); }
     // Последний измеренный RTT до сервера (мс), 0 = ещё не измерен.
@@ -223,6 +240,9 @@ public:
     void SetPlayerPresence(OnPlayerPresence cb);
     void SetVehicleOccupants(OnVehicleOccupants cb);
     void SetTrainSnapshotV2(OnTrainSnapshotV2 cb);
+    void SetVehicleInteraction(OnVehicleInteraction cb);
+    void SetVehicleInteractionResult(OnVehicleInteractionResult cb);
+    void SetVehicleState(OnVehicleState cb);
 
     ClientState State() const;
 
@@ -266,6 +286,9 @@ private:
     void HandlePlayerPresence(const std::vector<uint8_t>& p);
     void HandleVehicleOccupants(const std::vector<uint8_t>& p);
     void HandleTrainSnapshotV2(const std::vector<uint8_t>& p);
+    void HandleVehicleInteraction(const std::vector<uint8_t>& p);
+    void HandleVehicleInteractionResult(const std::vector<uint8_t>& p);
+    void HandleVehicleState(const std::vector<uint8_t>& p);
     void HandlePlayerJoined(const std::vector<uint8_t>& p);
     void HandleFrame(const std::vector<uint8_t>& p);
     void HandlePlayerLeft(const std::vector<uint8_t>& p);
@@ -324,6 +347,9 @@ private:
     OnPlayerPresence onPlayerPresence_;
     OnVehicleOccupants onVehicleOccupants_;
     OnTrainSnapshotV2 onTrainSnapshotV2_;
+    OnVehicleInteraction onVehicleInteraction_;
+    OnVehicleInteractionResult onVehicleInteractionResult_;
+    OnVehicleState onVehicleState_;
     std::atomic<bool> joined_{false};
     std::atomic<bool> isHost_{false};
     std::atomic<uint32_t> rttMs_{0};
