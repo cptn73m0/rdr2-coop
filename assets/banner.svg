@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-label="RDR2 Story Mode Co-op">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14100d"/>
+      <stop offset="0.55" stop-color="#241712"/>
+      <stop offset="1" stop-color="#3a1f14"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff7a3d" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ff7a3d" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e8502a"/>
+      <stop offset="1" stop-color="#ffb36b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="480" fill="url(#bg)"/>
+  <circle cx="1050" cy="120" r="220" fill="url(#glow)"/>
+  <circle cx="1050" cy="120" r="64" fill="#ffb36b" opacity="0.16"/>
+  <path d="M0 372 L170 300 L320 344 L520 262 L700 330 L900 272 L1080 336 L1280 286 L1280 480 L0 480 Z" fill="#0d0a08"/>
+  <path d="M0 404 L200 352 L420 396 L640 330 L860 392 L1080 348 L1280 386 L1280 480 L0 480 Z" fill="#090706"/>
+  <g stroke="#ff7a3d" stroke-opacity="0.18" stroke-width="1">
+    <line x1="0" y1="120" x2="1280" y2="120"/>
+    <line x1="0" y1="360" x2="1280" y2="360"/>
+  </g>
+  <text x="72" y="150" font-family="Segoe UI, Arial, Helvetica, sans-serif" font-size="26" font-weight="700" letter-spacing="14" fill="#ffb36b">RED DEAD REDEMPTION 2</text>
+  <text x="64" y="272" font-family="Segoe UI, Arial, Helvetica, sans-serif" font-size="112" font-weight="800" letter-spacing="2" fill="#f6efe6">CO-OP</text>
+  <text x="72" y="330" font-family="Segoe UI, Arial, Helvetica, sans-serif" font-size="30" font-weight="400" fill="#d9c7b4">Story Mode co-op replication · two players, one living world</text>
+  <g font-family="Segoe UI, Arial, Helvetica, sans-serif" font-size="21" font-weight="600">
+    <rect x="72" y="366" width="214" height="44" rx="22" fill="#ff7a3d" opacity="0.14" stroke="#ff7a3d" stroke-opacity="0.5"/>
+    <text x="96" y="395" fill="#ffb36b">NPC · animals · horses</text>
+    <rect x="304" y="366" width="224" height="44" rx="22" fill="#ff7a3d" opacity="0.14" stroke="#ff7a3d" stroke-opacity="0.5"/>
+    <text x="328" y="395" fill="#ffb36b">vehicles · trains</text>
+    <rect x="546" y="366" width="214" height="44" rx="22" fill="#ff7a3d" opacity="0.14" stroke="#ff7a3d" stroke-opacity="0.5"/>
+    <text x="570" y="395" fill="#ffb36b">damage · presence</text>
+    <rect x="778" y="366" width="238" height="44" rx="22" fill="#ff7a3d" opacity="0.14" stroke="#ff7a3d" stroke-opacity="0.5"/>
+    <text x="802" y="395" fill="#ffb36b">host migration</text>
+  </g>
+  <text x="1208" y="446" text-anchor="end" font-family="Segoe UI, Arial, Helvetica, sans-serif" font-size="20" fill="#8f7a68">protocol v19 · build npc-e19 · 42/42 integration tests</text>
+  <rect x="0" y="0" width="1280" height="8" fill="url(#accent)"/>
+</svg>

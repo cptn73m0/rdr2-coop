@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="300" viewBox="0 0 1240 300" role="img" aria-label="Engineering pipeline: task board, implementation, proof gate, independent proof, commit and snapshot, deploy">
+  <defs>
+    <linearGradient id="stage" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1713"/>
+      <stop offset="1" stop-color="#14100d"/>
+    </linearGradient>
+    <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#ff7a3d"/>
+    </marker>
+  </defs>
+  <rect width="1240" height="300" fill="#0d0a08"/>
+  <text x="40" y="50" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700" fill="#f6efe6">Engineering pipeline</text>
+  <text x="40" y="80" font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#b9a493">Every change travels the same road — small units, automated proof, independent verification.</text>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <rect x="40" y="120" width="170" height="120" rx="14" fill="url(#stage)" stroke="#3a2a20"/>
+    <text x="56" y="150" font-size="15" fill="#ffb36b">01 · PLAN</text>
+    <text x="56" y="178" font-size="16" font-weight="600" fill="#f6efe6">Task board</text>
+    <text x="56" y="202" font-size="13" fill="#b9a493">scoped units</text>
+    <text x="56" y="220" font-size="13" fill="#b9a493">disjoint write scopes</text>
+
+    <rect x="240" y="120" width="170" height="120" rx="14" fill="url(#stage)" stroke="#3a2a20"/>
+    <text x="256" y="150" font-size="15" fill="#ffb36b">02 · BUILD</text>
+    <text x="256" y="178" font-size="16" font-weight="600" fill="#f6efe6">Implement</text>
+    <text x="256" y="202" font-size="13" fill="#b9a493">smallest edit first</text>
+    <text x="256" y="220" font-size="13" fill="#b9a493">ub-mode discipline</text>
+
+    <rect x="440" y="120" width="170" height="120" rx="14" fill="url(#stage)" stroke="#3a2a20"/>
+    <text x="456" y="150" font-size="15" fill="#ffb36b">03 · PROVE</text>
+    <text x="456" y="178" font-size="16" font-weight="600" fill="#f6efe6">Proof gate</text>
+    <text x="456" y="202" font-size="13" fill="#b9a493">build + 42/42 tests</text>
+    <text x="456" y="220" font-size="13" fill="#b9a493">quality strict gate</text>
+
+    <rect x="640" y="120" width="170" height="120" rx="14" fill="url(#stage)" stroke="#3a2a20"/>
+    <text x="656" y="150" font-size="15" fill="#ff6a3d">04 · REVIEW</text>
+    <text x="656" y="178" font-size="16" font-weight="600" fill="#f6efe6">Independent</text>
+    <text x="656" y="202" font-size="13" fill="#b9a493">fresh build, clean tree</text>
+    <text x="656" y="220" font-size="13" fill="#b9a493">behavior diff review</text>
+
+    <rect x="840" y="120" width="170" height="120" rx="14" fill="url(#stage)" stroke="#3a2a20"/>
+    <text x="856" y="150" font-size="15" fill="#ffb36b">05 · SHIP</text>
+    <text x="856" y="178" font-size="16" font-weight="600" fill="#f6efe6">Tag &amp; snapshot</text>
+    <text x="856" y="202" font-size="13" fill="#b9a493">small ordered commits</text>
+    <text x="856" y="220" font-size="13" fill="#b9a493">rollback folder + hashes</text>
+
+    <rect x="1040" y="120" width="160" height="120" rx="14" fill="url(#stage)" stroke="#5a3a26"/>
+    <text x="1056" y="150" font-size="15" fill="#ff6a3d">06 · DEPLOY</text>
+    <text x="1056" y="178" font-size="16" font-weight="600" fill="#f6efe6">2 PCs</text>
+    <text x="1056" y="202" font-size="13" fill="#b9a493">host + guest</text>
+    <text x="1056" y="220" font-size="13" fill="#b9a493">acceptance run</text>
+  </g>
+  <g stroke="#ff7a3d" stroke-width="2.5" marker-end="url(#arrow2)">
+    <line x1="210" y1="180" x2="238" y2="180"/>
+    <line x1="410" y1="180" x2="438" y2="180"/>
+    <line x1="610" y1="180" x2="638" y2="180"/>
+    <line x1="810" y1="180" x2="838" y2="180"/>
+    <line x1="1010" y1="180" x2="1038" y2="180"/>
+  </g>
+  <text x="40" y="280" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#6f5c4e">Task board, disjoint scopes and independent proof are how a multi-role team keeps a 20k-line native C++ mod safe.</text>
+</svg>

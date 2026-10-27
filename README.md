@@ -1,693 +1,377 @@
-# RDR2 CO-OP — кооперативный мод для одиночного сюжета
+<p align="center">
+  <img src="assets/banner.svg" alt="RDR2 Story Mode Co-op" width="100%">
+</p>
 
-[![CI](https://github.com/cptn73m0/rdr2-coop/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cptn73m0/rdr2-coop/actions/workflows/ci.yml)
+<h1 align="center">RDR2 Story Mode Co-op</h1>
 
-Кооперативный мод для **Red Dead Redemption 2** (Story Mode): два игрока
-играют по сети, каждый проходит сюжет у себя, а второй игрок виден в мире как
-**пед-призрак** — с синхронизацией движения, анимаций, оружия, лошади и
-частично одежды (shop-предметы и wearable states). Плюс общее время/погода и
-сетевые функции (роли, reconnect, host migration).
+<p align="center">
+  <img alt="Build" src="https://img.shields.io/github/v/tag/cptn73m0/rdr2-coop?style=flat-square&label=build&color=ff6a3d">
+  <img alt="Protocol" src="https://img.shields.io/badge/protocol-v19%20wire-ff6a3d?style=flat-square">
+  <img alt="Integration" src="https://img.shields.io/badge/integration-42%2F42-2ea44f?style=flat-square">
+  <img alt="C++ tests" src="https://img.shields.io/badge/C%2B%2B%20tests-7%2F7-2ea44f?style=flat-square">
+  <img alt="Quality gate" src="https://img.shields.io/badge/quality-strict%20pass-2ea44f?style=flat-square">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20x64-4c8eda?style=flat-square">
+  <img alt="License" src="https://img.shields.io/badge/license-source--available-8a8a8a?style=flat-square">
+</p>
 
-Кооператив **не является полноценным совместным прохождением**: сюжетные
-миссии и транспорт мира по-прежнему не реплицируются; NPC-репликация
-(люди + животные + свободные лошади, E1–E19) реализована как экспериментальная
-ветка и требует `npc_actor=1` (см. «Известные ограничения»).
+<p align="center">
+  <b>English</b> · <a href="README.ru.md">Русский</a>
+</p>
 
-## Статус
+<p align="center">
+  <b><a href="#installation">Installation</a></b>
+  ·
+  <b><a href="#build-from-source">Build from source</a></b>
+  ·
+  <b><a href="#configuration">Configuration</a></b>
+  ·
+  <b><a href="#how-it-works">How it works</a></b>
+  ·
+  <b><a href="#engineering--quality">Engineering</a></b>
+</p>
 
-Проверено в игре двумя игроками на билде **1.0.1491.50**; последний игровой
-стабильный тег — **stable-v14** (`OutfitState` 784 B, wearable states одежды).
-**Текущий протокол — v19** (actor-репликация NPC E1–E19:
-`ActorDamage` 0x1F + `PlayerPresence` 0x20 + `VehicleOccupants` 0x21 +
-`TrainSnapshotV2` 0x22; e18/e19 не меняют провод). E5.2/E5.3 (трупы/сглаживание
-всадников), **E6** (presence-суффиксы), **E7.1** (visitor mode), **E7.2**
-(плавное движение 60 Гц), **E7.3** (E3d-a host-транспорт, host migration
-hardening, mission-aware visitor), **E8** (E3d-c водители/пассажиры/draft,
-E3d-b mission-train), **E9** (внешность животных/лошадей: assets 0x1E + horse
-tack 0x1C), **E10** (внешность лошади под NPC-всадником через 0x1C),
-**E11** (точные пассажиры поездов через 0x21 carIndex), **E12**
-(полный `perf: frame`/`perf: net`, Player Frame throttle, P0/P1 перф-фиксы),
-**E13** (wall-clock нормализация интервалов, FPS-independent, `tick_hz` и
-`config: warn` для опасных комбинаций) реализованы. **E14–E17** — ub-mode
-refactor-only сборки (net/server/src, без изменения протокола и поведения):
-ammo helpers/host-netId dedupe, apply-outfit dedupe/Tick perf-window,
-drain-inbox/combat-exit фазы. **E18** — player-facing фиксы: **soft host
-migration** (host game-timeout теперь демотирует хоста и повышает гостя
-**без закрытия сокета** — нет reconnect-шторма/флапа ролей; join grace 15 с
-на загрузку; `PlayerPresence` считается game-thread liveness), клиентский
-loading presence heartbeat (пока playerPed отсутствует), visitor mode больше
-не спавнит host-прокси продавца (vendors не дублируются); внутри —
-`server.cpp HandleClient` разбит на фазы (782→25 строк), `quality_scan`
-видит многострочные сигнатуры, integration-прогоны сериализованы
-(`IntegrationRunLock`). **E19** — player-facing: **имя игрока на карте/blip**
-(`_SET_BLIP_NAME` + VAR_STRING вместо дефолтной «Спутник»), **occupant-first
-roster + полный allowlist** — у гостя видны кучер и тягловые лошади повозки;
-**opt-in wheel spin** `npc_vehicle_wheels=0` (A/B, `SET_VEHICLE_FORWARD_SPEED`,
-default выкл.); `SET_ENTITY_COORDS` арность 8 подтверждена (clearArea=0,
-поведение не менялось); провод v19 без изменений. E5/E5.1 подтверждены в
-игре. **CI 42/42** integration + 7/7 C++ (HEAD `ef49ac8`, тег **npc-e19**),
-quality strict PASS. Локальная пара v19: ASI `DD0EE210` (779 264 B), server
-`DD9BD9D8`; **оба ПК на npc-e19** — задеплоено локально и на ARINA, хеши
-сверены; snapshot `dist/npc-e19`. Флаг `npc_actor` по умолчанию **0**; для
-теста включать на обоих ПК. Клиенты v14–v19 несовместимы (сервер отклоняет
-JOIN с `VersionMismatch`). Теги этапов NPC: `npc-e0`…`npc-e19`. **Сборка e19
-готова к полному 2-ПК тесту — ждём его**; замечания независимой проверки
-(low/info): подпись blip, плотный трафик (возможен «driver без машины»),
-wheel A/B. Чек-лист: [docs/ACCEPTANCE_2PC.md](docs/ACCEPTANCE_2PC.md);
-дизайн v20 — [docs/INTERACTIVITY.md](docs/INTERACTIVITY.md).
+A **two-player co-op replication layer for Red Dead Redemption 2 — Story Mode**.
+The host PC keeps playing the world it always played; a second player joins over the LAN
+and sees NPCs, animals, horses, wagons, trains, traffic, damage and player presence
+replicated into their own game session — smoothly, in real time, without modding the
+game's engine.
 
-### Что работает
+> Story Mode has no native multiplayer. This project is an **emulation by replication**:
+> the host owns the world, the relay server validates and forwards state, and the guest
+> renders authoritative proxies. There is no client-side world simulation on the guest.
 
-- Сервер-релей: JOIN / FRAME / LEAVE, таблица игроков, персистентность
-  последней позиции (`players.txt`), лог подключений с IP.
-- Роли HOST/GUEST, host migration при выходе хоста (game-timeout 4 с,
-  Ping не считается, client role-change reset), автоматический reconnect
-  с backoff (1→10 с).
-- Кадр состояния 60 Гц (~5 КБ/с на клиента), Ping/Pong и RTT в логе.
-- Общее время и погода от хоста.
-- Пед-призрак второго игрока: спавн по модели персонажа, позиция/поворот,
-  движение по навмешу (стоять/идти/бежать), интерполяция, ragdoll/укрытие/
-  плавание/лазание/прыжок/падение, смерть и возрождение.
-- Имя над головой и метка на карте; скрытие при смерти.
-- Оружие: выдача, доставание, прицел, перезарядка; стрельба удалённого игрока
-  воспроизводится по событиям (аммо-детект + очередь), включая автоматическое
-  оружие.
-- Лошадь: модель, посадка/спешивание, движение; снаряжение — частично.
-- Одежда: переносятся **shop-предметы** (куртки, шляпы, патронташи и т.п.)
-  вместе с **wearable states** (открытая/закрытая куртка, рукава и т.п.;
-  протокол v14, `OutfitState` 784 B).
-  Базовая внешность (лицо, волосы, борода, дефолтные слои модели) не
-  синхронизируется — в публичном RDR2 SDK нет getter'а этих компонентов.
-- **NPC-репликация (E1–E19, `npc_actor=1` на обоих ПК).** Хост реплицирует
-  human-NPC до `npc_cap` (1..12, default 8) в радиусе `npc_radius` (20..100 м,
-  default 60) и животные/лошади до `npc_animal_cap`: discovery 10 Гц, roster
-  actorId/epoch, spawn-heartbeat 2.5 с, кадры 10 Гц, despawn (ушёл/умер/
-  вытеснен), resync 0x1D; гость — прокси-педы с плавной навигацией и gait с
-  хоста.
-  - **E2a:** meta-outfit внешность NPC (probe: hash есть у ~22% ambient;
-    в E2a-тесте 5/5 применено, failed=0).
-  - **E2b:** всадники rider+horse (mount spawn ×9, failed=0), seat watchdog,
-    очистка при dismount/despawn; плавное движение (gait_restart=0,
-    err_p95≈0).
-  - **E3a:** сценарии (optimistic confirm, анти-наложение: skip 8 м + warp
-    revert 3 м; визуально «двое курят на разных местах»), смерть/возрождение
-    (труп остаётся).
-  - **E3b:** оружие (валидные hash через GIVE_WEAPON_TO_PED), draw/aim/
-    shoot/reload; state=shoot=1450, reload=385, weapon fail=0.
-  - **E2c-a:** хост-перебор metaped-outfits (890 моделей / 4568 кандидатов,
-    бюджет 24 натива/тик, heartbeat-пересылка, guest reapply) — механически
-    работает; для random ambient NPC resolved=0/failed=11.
-  - **E2c-b (v16):** точная внешность asset/tint — хост захватывает
-    `_GET_NUM_COMPONENTS_IN_PED` (0-based) + `GET_META_PED_ASSET_GUIDS/TINT`,
-    шлёт `ActorAppearance` (0x1E) при спавне/изменении/join (budget 1
-    актор/тик, период 2 с); гость применяет reset + `_SET_META_PED_TAG` +
-    commit + `UPDATE_PED_VARIATION` с readback/fallback; asset приоритетнее
-    metaOutfit. Валидация: host `capture count=8-10 valid=8-10`, fake guest
-    `appearance_msgs=504 appearance_actors=8 entry_max=10 errors=0`.
-  - **E3c:** животные (`kind=1`, HP 100) и свободные лошади (`kind=2`, HP 100)
-    реплицируются и двигаются; при смерти — труп/лошадиный труп до despawn.
-  - **E5 (host-authoritative урон):** гость детектит выстрел в прокси через
-    `GET_ENTITY_PLAYER_IS_FREE_AIMING_AT` и шлёт `ActorDamage` 0x1F; урон по
-    классу оружия (пистолет/револьвер 35, винтовка/repeater/sniper 60,
-    дробовик 80, иначе 30), лимиты гостя 100 мс/actor и ≤10/с. Урон применяет
-    только хост (`APPLY_DAMAGE_TO_PED`, fallback `SET_ENTITY_HEALTH`), лимиты
-    ≤8/тик, ≤15/с, дистанция ≤150 м; прокси у гостя остаются invincible.
-    Смерть → dead-флаг → труп; animals/horses тем же путём.
-  - **E5.1 (хедшоты):** гость проверяет кость `SKEL_Head` + impact ≤0.30 м
-    (fallback — луч камеры) и шлёт `damage=250` → ваншот human HP 200 /
-    animal HP 100; в логе `headshot=1`. Подтверждено в игре.
-  - **E5.2/E5.3:** труп держится, пока существует host-труп
-    (`npc_corpse_max_sec=300`, лог `actor: corpse hold/despawn`); сглаживание
-    всадников (retarget 1.75 м, lead 0.28, stuck fallback, лог
-    `actor: motion mounted err_p95/retargets`).
-  - **E6 (protocol v18):** `PlayerPresence` 0x20 — карта/пауза/сатчель/магазин
-    в имени над головой (`Name - in map`, `pause menu`, `in satchel`,
-    `in shop`); статус 2 Гц/изменение, timeout 12 с; `npc_presence=1`,
-    debug `ui: pause=...`. UIAPP-детект (`IS_PAUSE_MENU_ACTIVE` + `IS_UIAPP_*`).
-  - **E7.1 visitor mode:** у гостя подавляется локальная ambient-толпа
-    (cleanup раз в ~10 с, ≤8/тик, фейд); транспорт — при
-    `npc_visitor_vehicles=1` (default 1 после E3d-a; локальный трафик
-    подавляется, машины едут из реплик хоста); продавцы/квестовые/событийные
-    NPC сохраняются (`npc_visitor_preserve_events=1`, whitelist 23 моделей).
-    В миссии/катсцене cleanup толпы паузится (`npc_visitor_pause_scenes=1`,
-    density/road suppression продолжаются). Логи `actor: visitor mode on/off`,
-    `visitor cleanup removed=`, `visitor scene pause on/off`.
-  - **E7.2 плавное движение:** интерполяция кадров 60 Гц, far goal впереди
-    хоста (lead speed*0.7, clamp 4–12 м; кони 5–20), одна задача на фазу,
-    in-place update `_UPDATE_TASK_GO_TO_COORD_WITH_OFFSET`, MBR через
-    `_COMPUTE_SPEED_FOR_PED_MOVE_BLEND_RATIO`, stop/start гистерезис,
-    телепорт >25 м/|dz|>15/нет кадров >2 с с логом `actor: teleport`.
-    Диагностика `actor: motion id=… reissue=…/s snap=…/s target_err_p95=…
-    status=…`; baseline-порог: **reissue <0.05/s, snap=0**.
-    Флаги `npc_motion_update=1`, `npc_motion_marker=0`,
-    `npc_motion_status_p2=1`.
-  - **E3d-a host-транспорт (v18; occupants v19):** vehicles-only `WorldSnapshot` при
-    `world_sync=0 && npc_actor=1 && world_vehicles=1`: до 16 машин в радиусе
-    `npc_vehicle_radius=80` вокруг обоих игроков, отправка раз в 6 тиков;
-    пустой snapshot удаляет прокси у гостя. Гость создаёт
-    `CREATE_VEHICLE` mission/invincible/no-collision, dedupe `engineNetId`,
-    timeout 3 с. Водители/пассажиры — E3d-c (0x21). Логи `world: vehicles
-    send n=`, `world: vehicle spawn/despawn`.
-  - **E3d-c (v19):** водители/пассажиры/draft-лошади: хост собирает
-    occupants (driver/passenger/draft harness) → `VehicleOccupants` 0x21
-    (8+8×count, max 72 B, host-only, 20/с); гость ждёт vehicle+actor,
-    invisible→`SET_PED_INTO_VEHICLE` warp→`IS_PED_IN_VEHICLE`→visible;
-    draft — `_ATTACH_DRAFT_VEHICLE_HARNESS_PED`; seated/draft пропускают
-    `MoveProxy`; vehicle-прокси интерполируются 60 Гц (snap>8 м — warp+
-    пересадка). `npc_occupants=1`, логи `world: occupants vehicle=`,
-    `actor: seat attach … ok=`, `actor: draft attach … ok=`, `occupants errors=`.
-  - **E3d-b (v19):** mission-train: 87 config-хэшей, матч forward/reverse,
-    бюджет 5/тик/80 model-вызовов, `TrainSnapshotV2` 0x22 (48 B, host-only,
-    ≤4/с, flags waiting/halted/reversing/playerAboard); гость
-    `SET_RANDOM_TRAINS(false)` + `_CREATE_MISSION_TRAIN`, sync speed/coords/
-    warp/halt/leave/reverse, cleanup и восстановление random trains.
-    `world_trains=0` (тестовый opt-in; активен при `npc_actor=1 &&
-    world_vehicles=1 && world_trains=1`, не при `world_sync=1`).
-  - **E9 animal/horse appearance (v19 без bump):** при `npc_animal_appearance=1`
-    (host+guest синхронно) хост захватывает assets животных/лошадей
-    (`MPT_ANIMAL` type3, cap16, GUIDS/TINT) → `ActorAppearance` 0x1E
-    (≤460 B), budget 1 animal/tick ~2 с; horse tack (kind=2) →
-    `ActorOutfit` 0x1C 792 B on change (budget 1 horse/tick ~2 с). Гость:
-    staged apply/readback, fallback random; при 0 — random как раньше.
-    Probe `actor: animal appearance probe …` (host, 1/модель ≤1/10 с).
-  - **E10 mounted NPC-horse appearance (v19 без bump):** `npc_mount_appearance=1`
-    (host+guest синхронно) — внешность лошади под NPC-всадником через
-    `ActorOutfit` 0x1C с actorId всадника; `actor: mount outfit send/apply`,
-    guest `mount outfit applied/failed`; fallback random, retry после reseat/
-    позднего mount; при 0 — random.
-  - **E11 (v19):** точные пассажиры поездов через `VehicleOccupants` 0x21
-    с `carIndex` (driver/passenger на вагонах состава), сверка с mission-train.
-  - **E12 (v19 без bump):** `perf: frame host/guest` (полный кадр + world/
-    actor/coop p95/max), server `net: bytes_in/out` + per-type, client
-    `perf: net tx/rx`; Player Frame throttle (`player_frame_hz=20`,
-    `player_frame_change_only=1`: покой 5 Гц, движение до 20 Гц) и P0/P1
-    перф-фиксы (outfit ≤10 Гц, capture budget 2/тик, общий vehicle-скан,
-    occupants 1/с, TTL, resync, world_scan debug).
-  - **E13 (v19 без bump):** wall-clock нормализация (`GetTickCount64`) —
-    интервалы actor frames/discovery/appearance/heartbeats/trains/occupants/
-    presence/player frame/world_scan/outfit в **ms**, не зависят от FPS
-    (при 144 FPS больше нет ускорения ×2.4); `perf: frame` дополнен
-    `tick_hz=` (реальный FPS); `config: warn …` для опасных комбинаций
-    (`world_sync+npc_actor`, `world_sync+world_trains`, `!world_vehicles+
-    occupants/visitor`, `!npc_actor+vehicles/visitor`), без падения.
-- **Host migration / soft e18:** host game-timeout 4 с измеряется только по
-  **игровым** сообщениям (Ping не считается; 4-й argv 2..15 с, idle 30 с
-  отдельно). С e18 по таймауту — **мягкая миграция**: хост демотируется,
-  гость повышается, обоим шлётся `HostChanged`; сокет старого хоста **не
-  закрывается** (`PlayerLeft` нет, Ping/Pong работает) → нет
-  reconnect-шторма/флапа ролей. До первого game-сообщения хоста действует
-  **join grace 15 с** (загрузка/меню не дёргают роли); presence тоже
-  считается liveness, клиент на загрузке шлёт presence heartbeat ~2 с.
-  Серверный лог: `[!] host game-timeout (N ms), promoting remaining` +
-  `[HOST] <имя> повышен до хоста`. Клиент при `HostChanged` сбрасывает
-  world_sync/visitor/presence/actor/боевые состояния и делает
-  `ForceFullSpawnBatch`/`RequestImmediateResync`; лог
-  `coop: role change -> HOST/GUEST reset complete`.
-- **Visitor vendor dedupe (e18):** при `npc_visitor=1` гость больше не спавнит
-  host-прокси продавца (продавец остаётся локальным, без дублей); throttled
-  лог `actor: visitor vendor skip id=… model=0x…`.
-- **E19 (npc-e19, v19 без bump):** **имя игрока на карте/blip** —
-  `_SET_BLIP_NAME` + VAR_STRING (`MakeLiteralString`/`SetBlipName`, лог
-  `coop: blip name '%s'`), обновление в Tick/после rejoin; **occupant-first
-  roster + полный allowlist** — у гостя видны кучер и тягловые лошади повозки
-  (seated/в упряжке, без T-pose); **opt-in wheel spin** `npc_vehicle_wheels=0`
-  (A/B, `SET_VEHICLE_FORWARD_SPEED` SIGNATURE-ONLY, лог
-  `world: vehicle wheels speed=`, default выкл.); `SET_ENTITY_COORDS` арность 8
-  подтверждена (clearArea=0 — поведение не менялось).
-- Headless-тесты сервера/протокола (**28 базовых + 13 actor/presence/vehicle/
-  train-тестов v19**; integration **42/42**), C++ 7/7, CI-workflow (артефакты,
-  кеш) и локальный `scripts\ci.ps1`.
+## At a glance
 
-**INI-флаги NPC:** `npc_actor = 1` (включает E1–E19), `npc_cap = 8`
-(1..12), `npc_radius = 60` (20..100), `npc_appearance = 1` (meta-outfit E2a
-и asset/tint E2c-b), `npc_animal_cap = 4` (0..12), `npc_damage = 1`
-(E5-урон), `npc_corpse_max_sec = 300`, `npc_presence = 1` (E6),
-`npc_visitor = 1`, `npc_visitor_vehicles = 1`,
-`npc_visitor_preserve_events = 1`, `npc_visitor_pause_scenes = 1` (E7.1),
-`npc_motion_update = 1`, `npc_motion_marker = 0`,
-`npc_motion_status_p2 = 1` (E7.2), `world_vehicles = 1`,
-`npc_vehicle_radius = 80` (20..200, E3d-a), `npc_occupants = 1` (E3d-c),
-`npc_vehicle_wheels = 0` (e19, A/B: 1 — только отдельный прогон; host+guest),
-`npc_animal_appearance = 0` (E9; host+guest синхронно),
-`npc_mount_appearance = 0` (E10; host+guest синхронно),
-`player_frame_hz = 20` (P0; 10..60), `player_frame_change_only = 1` (P0),
-`world_trains = 0` (E3d-b, тестовый opt-in), `npc_debug = 1` —
-диагностические probe/perf/visitor/motion/world-логи (host и guest).
-**e18 новых ключей не добавлял; e19 добавляет 28-й приёмочный ключ
-`npc_vehicle_wheels`** — теперь **28 ключей / 38 строк** в INI (28 + 6
-служебных P2/P3 + 4 подключения); сверять по живому `rdr2-coop.ini` и
-`dist\npc-e19\rdr2-coop.ini.local/.arina` (оба эталона — 38 строк, включая
-`npc_vehicle_wheels`).
+| | |
+| --- | --- |
+| Current build | **`npc-e19`** (ASI `DD0EE210`, server `DD9BD9D8`) |
+| Wire protocol | **v19**, both parts must match |
+| Game build | Red Dead Redemption 2 **1.0.1491.50** + ScriptHookRDR2 |
+| Players | **host + guest** (2 players per session) |
+| Integration tests | **42 / 42** (Python protocol/server suite) |
+| C++ tests | **7 / 7** (frame reader, config, parsing, mission barrier, budgets, fuzz) |
+| Quality gate | **strict pass** — 45 files · 505 functions · CRAP>5000 = 3 · TODO = 0 |
+| Code size | **~29.5k lines** (~24.6k code) of C++17 + PowerShell/Python tooling |
+| Network | LAN, TCP `7777`, typical **4–12 KB/s**, worst **≤ 15 KB/s** |
+| Status | `npc-e19` deployed on both PCs; full 2-PC acceptance run in progress |
 
-### Отключено / не работает (экспериментальные флаги = 0)
+## What it does
 
-Код этих функций присутствует в репозитории, но в текущей рабочей сборке они
-**выключены**, в игре не проверены или работают нестабильно. Не включать без
-отдельной отладки:
+<table>
+<tr><td width="50%" valign="top">
 
-- `world_sync` — полная репликация NPC/транспорта/mission-объектов
-  (экспериментально, даёт дёргание/пропажи прокси); не путать с E3d-a
-  vehicles-only (`world_vehicles=1`, работает без `world_sync`).
-- `action_sync` — сценарии/укрытие/переноска/лутание удалённого игрока.
-- `vehicle_sync` — посадка удалённого игрока в транспорт (дилижанс/повозку).
-- `mission_sync` / `mission_credit` — активная миссия хоста, барьер старта,
-  совместный зачёт MissionData (в игре не проверялось; `mission_credit`
-  потенциально опасен для сейва).
-- `world_trains` / `train_debug` — mission-train v19 (E3d-b) реализован, но
-  по умолчанию **0** (тестовый opt-in); старый proxy-attach устарел, см.
-  [docs/TRAINS.md](docs/TRAINS.md).
-- NPC-репликация (E1–E19) — экспериментальная и **не включена по
-  умолчанию**: `npc_actor=0`; mission-NPC не входят; E3d-c occupants/draft и
-  E3d-b mission-train — тестовые (train default0); двух-ПК визуальная приёмка
-  pending (оба ПК на npc-e19, ждём полный тест e19). Прошлая ветка v14
-  (NpcSpawn/NpcFrame) в рабочую сборку не входит.
+**World & actors**
+- NPCs, ambient peds and mission actors
+- Animals and horses, including draft horses
+- Human appearance (components, drawables, tint)
+- Animal / horse appearance and tack
+- Scenarios, combat, aim, reload, weapon state
+- Damage from the guest, host-authoritative
+- Headshots are lethal (host resolves impact)
+- Corpse persistence (up to 5 minutes, like the original)
 
-## Известные ограничения
+</td><td width="50%" valign="top">
 
-- Сюжетные миссии не проходятся совместно в одном инстансе; общего прогресса
-  и барьера старта в стабильной сборке нет.
-- NPC-репликация — **экспериментальная (E1–E19: люди, животные, свободные
-  лошади, транспорт)**: cap 12 + `npc_animal_cap`; mission-NPC исключены;
-  транспорт E3d-a vehicles-only, E3d-c водители/пассажиры/draft; поезда
-  E3d-b mission-train (opt-in `world_trains=1`); E9/E10 animal/horse
-  appearance (flags `npc_animal_appearance=0`/`npc_mount_appearance=0`); E11
-  точные пассажиры поездов; E12 `perf: frame`/`perf: net` и Player Frame
-  throttle; E13 wall-clock/FPS-independent и `config: warn`; ambient у гостя
-  подавляется visitor mode; **E18** — мягкая host migration без закрытия
-  сокета/join grace 15 с, loading presence heartbeat, vendor dedupe;
-  **E19** — имя на карте/blip, occupant-first кучер/тягловые лошади повозки,
-  opt-in wheel A/B; двух-ПК приёмка e19 pending; лицо/волосы, точные
-  анимации/сценарии и катсцены не синхронизируются.
-- **E9:** cap 16 компонентов; RESET_PED_COMPONENTS на животных не проверен
-  в игре; horse tack model-specific (старые shop items не снимаются);
-  assets coverage MPT_ANIMAL может быть неполным → random fallback;
-  MetaPedOutfit только probe; `npc_animal_appearance` должен совпадать на
-  host+guest.
-- **E10:** лошадь под NPC-всадником может получить внешность с задержкой/
-  не примениться при позднем mount (heartbeat/retry повторит); horse tack
-  model-specific (старые shop items не снимаются); in-game S28 pending;
-  `npc_mount_appearance` host+guest синхронно.
-- **E11/E12/E13:** E11-пассажиры поездов — по 0x21 `carIndex` (проверять D3);
-  `player_frame_hz=20` может слегка сглаживать ghost в движении на 2-ПК
-  (поднять до 60 при необходимости); P2 config validator/wall-clock — сделаны
-  в E13, но часть таймеров осталась тиковой (corpse hold, action/presence poll,
-  motion/scenario, attach/dead windows, vehicle-scan TTL, train engine cache) —
-  при 144 FPS их реальные окна короче; трафик — по серверным bytes и клиентскому
-  `perf: net` (типично ≤10–12, worst ≤15 КБ/с).
-- **Story Mode:** нельзя реально «подселить» второго игрока в один мир —
-  каждый проходит сюжет у себя, реплицируются только NPC/животные/транспорт;
-  RedM — другой стек и несовместим с этим ASI.
-- **E5.2/E6/E7:** труп держится до исчезновения host-трупа или
-  `npc_corpse_max_sec` (300 с); presence-суффикс истекает через 12 с без
-  обновлений; при `world_vehicles=0`/`npc_visitor_vehicles=0` локальный
-  трафик гостя остаётся; smooth motion — A/B; хедшот-радиус 0.30 м, урон
-  аппроксимирован; mission-aware visitor и adaptive 15 Гц — backlog.
-- **E3d-a/c/b:** E3d-c seat=-1 (driver) требует in-game проверки; точные
-  пассажиры поездов — E11 (0x21 carIndex, D3); direction/reversing семантика поезда
-  приближённая; ambient-поезда не чистим в v1; при миграции мир не
-  переносится — новый хост отдаёт свой.
-- **E5/E5.1:** детект урона без raycast — free-aim target + impact; урон
-  аппроксимирован по классу оружия/HP движка; животные умирают быстро; труп
-  до despawn; mission NPC не получают урон; host migration — e18 soft-
-  миграция (4 с game-timeout, grace 15 с, демоция без закрытия сокета);
-  resync под нагрузкой — backlog.
-- **ARINA (второй ПК) online** — **оба ПК на npc-e19** (ASI `DD0EE210`,
-  server `DD9BD9D8`, протокол v19); хеши сверены локально и на ARINA;
-  snapshot `dist/npc-e19`.
-  Текущие E5–E13/E3d-подтверждения — одиночный ПК + fake host/гость;
-  визуальная 2-ПК приёмка e19 — pending (ждём полный тест e19).
-- **E19 (npc-e19):** standalone-замечания независимой проверки low/info —
-  проверить в игре подпись blip (если осталась «Спутник», есть резервный
-  `BLIP_REMOVE_MODIFIER`); плотный трафик — возможен гость-«driver без
-  машины» (occupant привязан к отсутствующему/ещё не созданному транспорту);
-  wheel-spin — только A/B-прогон `npc_vehicle_wheels=1`→`0` на обоих ПК
-  (SET_VEHICLE_FORWARD_SPEED SIGNATURE-ONLY, может конфликтовать с
-  интерполяцией: возможен дрейф/рывки). Протокол v19 без изменений.
-- Базовая внешность персонажа (лицо/волосы/борода, дефолтные слои одежды) не
-  переносится; синхронизируются только shop-предметы.
-- Точные клипы AnimGraph/AnimScene не передаются.
-- Стрельба педа-призрака наносит реальный урон (не вставать на линии огня).
-- Снаряжение лошади синхронизируется не полностью.
-- Хост — первый подключившийся к серверу. Чтобы хостом был нужный ПК,
-  запускайте/подключайтесь на нём первым.
+**Transport & infrastructure**
+- Vehicles, wagons and their occupants
+- Drivers, passengers, draft horses and harness
+- Mission trains with exact per-carriage passengers
+- Mission barrier sync, rewards and save backup
+- Player presence (map, pause, satchel, shop)
+- Map labels and floating name tags
+- Host migration (leave, crash, game thread hang)
+- Rollback-ready snapshots for every build
 
-## Требования
+</td></tr>
+</table>
 
-- **Red Dead Redemption 2** для PC, билд **1.0.1491.50** (только Story Mode).
-- **ScriptHookRDR2.dll** (V2 2.0 / Alexander Blade) рядом с `RDR2.exe`.
-- **ASI-лоадер** (`dinput8.dll` / `dsound.dll`) в папке игры.
-- Компилятор: **Visual Studio 2019 Build Tools** (MSVC x64) + CMake.
+## Architecture
 
-## Сборка
+<p align="center">
+  <img src="assets/architecture.svg" alt="Architecture: host game, relay server, guest game" width="96%">
+</p>
 
-Клиент (ASI-плагин):
+Three components, one authority model:
+
+| Component | Runs on | Responsibility |
+| --- | --- | --- |
+| **ASI client** (`rdr2_coop.asi`) | both PCs | hooks the game, discovers actors, captures state, applies proxies, renders UI |
+| **Relay server** (`rdr2_coop_server.exe`) | host PC (or any LAN box) | validates messages at the boundary, enforces roles and rate limits, relays host-only state |
+| **Snapshot format** | — | `[len:u32][type:u8][payload]`, versioned wire protocol |
+
+The host is the only writer of world state. The guest sends intentions (player frame,
+damage, presence) and renders the host's authoritative snapshots. The server never
+simulates and never touches the game process.
+
+## Installation
+
+### Requirements
+
+- Red Dead Redemption 2 **1.0.1491.50** (Story Mode) on **both** PCs
+- [ScriptHookRDR2](https://www.dev-c.com/rdr2/scripthookrdr2/) + an ASI loader (`dinput8.dll`)
+- Windows 10/11 x64, two PCs on the same LAN
+- Server: no runtime dependencies (static CRT)
+
+### 1. Build (or take a prepared pair)
+
+Build from source (see [Build from source](#build-from-source)) or use a prepared
+`dist/npc-*` snapshot if you have one. A snapshot contains exactly:
 
 ```
-cmake -S . -B build -G "Visual Studio 16 2019" -A x64
-cmake --build build --config Release
+rdr2_coop.asi          # client plugin
+rdr2_coop_server.exe   # relay server
+rdr2-coop.ini.local    # host INI (28 keys)
+rdr2-coop.ini.arina    # guest INI template
+README.md              # hashes, protocol, rollback instructions
 ```
 
-Сервер:
+### 2. Deploy the client
+
+Copy `rdr2_coop.asi` into the game's `scripts` folder on **both** PCs:
 
 ```
-cmake -S server -B build-server -G "Visual Studio 16 2019" -A x64
-cmake --build build-server --config Release
+<game>\scripts\rdr2_coop.asi
 ```
 
-Результат: `build/Release/rdr2_coop.asi` и `build-server/Release/rdr2_coop_server.exe`.
+### 3. Deploy the server
 
-## Тесты и CI
+The server runs on the **host PC** in a **visible console window**:
 
 ```powershell
-# headless-тесты сервера/протокола (без игры)
-python tests\integration_server.py --exe build-server-ci\Release\rdr2_coop_server.exe
-
-# полный CI: клиент + сервер + integration 42/42 + 7 C++ + restore-тест
-powershell -ExecutionPolicy Bypass -File scripts\ci.ps1
-```
-
-CI включает **ub-mode strict quality gate** (по умолчанию): `quality_scan.py`
-против `tools/quality_baseline.json`, падение при росте CRAP>5000/dup>=4/TODO.
-После P3-фикса многострочных сигнатур baseline перегенерирован на `2a58ee8`:
-45 файлов/**489** функций, CRAP>5000=**4**, dup≥4=**3**, TODO=0. Скан **e19**
-(HEAD `ef49ac8`): **45/505/3/3/0** — CRAP>5000 4→3 (`HandleClient` 782→25
-строк перестал быть hotspot'ом); функций +16 (e18 +13 phase/helper; e19 +3
-`MakeLiteralString`/`SetBlipName`/`UpdateBlipName`); `SendHostSnapshot`
-вырос 13340→**15750** (wagon/wheel-код e19, тот же класс). Baseline обновится
-осознанно после сигнала Lead. Детали и hotspots —
-[docs/UB_MODE.md](docs/UB_MODE.md).
-
-Двух-ПК чек-лист: [docs/TESTING.md](docs/TESTING.md).
-Финальная приёмка 2-ПК: [docs/ACCEPTANCE_2PC.md](docs/ACCEPTANCE_2PC.md).
-
-## Установка клиента
-
-1. `rdr2_coop.asi` — в `...\Red Dead Redemption 2\scripts\` (папку создать).
-2. `rdr2-coop.ini` — рядом с `.asi` (в той же `scripts\`).
-3. `ScriptHookRDR2.dll` и ASI-лоадер (`dinput8.dll`) — в корень игры.
-4. Запустить игру → Сюжет. Лог: `scripts\rdr2-coop.log`.
-
-```ini
-# rdr2-coop.ini
-server_host = 192.168.1.103   ; ПК с сервером
-server_port = 7777
-player_name = Player2
-ped_model   = 0xCF7E73BE      ; запасная модель, пока не пришла модель персонажа
-```
-
-> Без `ScriptHookRDR2.dll` плагин не загрузится — в логе будет
-> `ScriptHookRDR2.dll not found`.
-
-### Флаги `rdr2-coop.ini`
-
-Стабильная конфигурация — **экспериментальные world/mission-флаги ниже = 0**;
-NPC-флаги включаются только для однопК/двух-ПК тестов NPC (дефолты
-`npc_appearance`, `npc_presence`, `npc_visitor`, `npc_visitor_preserve_events`,
-`npc_motion_update`, `npc_motion_status_p2` = 1).
-
-| Флаг | По умолчанию | Состояние |
-|---|---|---|
-| `world_sync` | 0 | экспериментально, в игре нестабильно — не включать |
-| `action_sync` | 0 | не проверено в игре |
-| `vehicle_sync` | 0 | не проверено в игре |
-| `mission_sync` | 0 | не проверено в игре |
-| `mission_credit` | 0 | не проверено, опасно для сейва |
-| `save_backup` | 1 | бэкап сейва перед зачётом (защита) |
-| `mission_reward_log` | 1 | dry-run лог плана наград (нативы не вызываются) |
-| `world_trains` | 0 | E3d-b mission-train v19 (тестовый opt-in; старый proxy-attach deprecated) |
-| `train_debug` | 0 | диагностика mission-train |
-| `npc_actor` | 0 | E1–E19 NPC-репликация (экспериментально, только для теста) |
-| `npc_cap` | 8 | 1..12, максимум human NPC-прокси |
-| `npc_radius` | 60 | 20..100 м, радиус discovery (keep +10 м) |
-| `npc_appearance` | 1 | meta-outfit E2a + asset/tint E2c-b (asset приоритетнее) |
-| `npc_animal_cap` | 4 | 0..12, максимум животных/свободных лошадей (E3c) |
-| `npc_damage` | 1 | E5: host-authoritative урон по NPC/животным (0 = выключить) |
-| `npc_corpse_max_sec` | 300 | E5.2: предел удержания host-трупа, сек (0 = старое) |
-| `npc_presence` | 1 | E6: суффикс UI-статуса в имени (карта/пауза/сатчель/магазин) |
-| `npc_visitor` | 1 | E7.1: гость подавляет свою ambient-толпу |
-| `npc_visitor_vehicles` | 1 | E7.1/E3d-a: подавлять локальный трафик (машины с хоста) |
-| `npc_visitor_preserve_events` | 1 | E7.1: сохранять scenario/vendor/quest/event NPC |
-| `npc_visitor_pause_scenes` | 1 | E7.1: паузить cleanup толпы в миссии/катсцене |
-| `npc_motion_update` | 1 | E7.2: in-place update go-to задачи (A/B) |
-| `npc_motion_marker` | 0 | E7.2: fallback marker-entity follow (A2) |
-| `npc_motion_status_p2` | 1 | E7.2: p2 в GET_SCRIPT_TASK_STATUS (A/B) |
-| `world_vehicles` | 1 | E3d-a: vehicles-only WorldSnapshot хоста (при `npc_actor=1`) |
-| `npc_vehicle_radius` | 80 | 20..200 м, радиус сканирования транспорта (E3d-a) |
-| `npc_occupants` | 1 | E3d-c: водители/пассажиры/draft-лошади (0 = старое E3d-a); e19 — occupant-first + полный allowlist (кучер/тягловые лошади повозки) |
-| `npc_vehicle_wheels` | 0 | **e19 (28-й ключ):** A/B спин колёс guest vehicle-прокси (`SET_VEHICLE_FORWARD_SPEED`, SIGNATURE-ONLY); 1 — только отдельный прогон на обоих ПК |
-| `npc_animal_appearance` | 0 | E9: assets животных/лошадей (0x1E) + horse tack (0x1C); host+guest синхронно |
-| `npc_mount_appearance` | 0 | E10: внешность лошади под NPC-всадником (0x1C); host+guest синхронно |
-| `player_frame_hz` | 20 | P0: Player Frame 10..60 Гц (idle heartbeat 5 Гц) |
-| `player_frame_change_only` | 1 | P0: слать Frame при изменении/капе, в покое реже |
-| `npc_debug` | 0 | probe/perf/visitor/motion/world-логи (host и guest) |
-
-## Откат на предыдущую сборку
-
-Каждая сборка сохраняется локально в `dist\<label>\` (ASI + server + INI +
-`README.md` с SHA256, INI и пошаговой инструкцией восстановления). Снапшоты
-в `.gitignore` и в репозиторий не попадают.
-
-| label | protocol | ASI | server | README |
-|---|---|---|---|---|
-| `npc-e19` | v19 | `DD0EE210` | `DD9BD9D8` | [dist\npc-e19\README.md](dist/npc-e19/README.md) |
-| `npc-e18` | v19 | `E3FAB30F` | `DD9BD9D8` | [dist\npc-e18\README.md](dist/npc-e18/README.md) |
-| `npc-e17` | v19 | `217F8E31` | `1BE28084` | [dist\npc-e17\README.md](dist/npc-e17/README.md) |
-| `npc-e16` | v19 | `C4E4CF70` | `1BE28084` | [dist\npc-e16\README.md](dist/npc-e16/README.md) |
-| `npc-e15` | v19 | `3CC80BE3` | `1BE28084` | [dist\npc-e15\README.md](dist/npc-e15/README.md) |
-| `npc-e14` | v19 | `AD3C3481` | `1BE28084` | [dist\npc-e14\README.md](dist/npc-e14/README.md) |
-| `npc-e13` | v19 | `B43B7EE0` | `F3EBD6D1` | [dist\npc-e13\README.md](dist/npc-e13/README.md) |
-| `npc-e12` | v19 | `D47B91A5` | `F3EBD6D1` | [dist\npc-e12\README.md](dist/npc-e12/README.md) |
-| `npc-e11` | v19 | `785B2D05` | `E26C715A` | [dist\npc-e11\README.md](dist/npc-e11/README.md) |
-| `npc-e10` | v19 | `B8BA1B93` | `E26C715A` | [dist\npc-e10\README.md](dist/npc-e10/README.md) |
-| `npc-e9` | v19 | `DC0C4AB7` | `E26C715A` | [dist\npc-e9\README.md](dist/npc-e9/README.md) |
-| `npc-e8.1` | v19 | `1EB0A633` | `E26C715A` | [dist\npc-e8.1\README.md](dist/npc-e8.1/README.md) |
-| `npc-e8` | v19 | `9E3E8D7A` | `E26C715A` | [dist\npc-e8\README.md](dist/npc-e8/README.md) |
-| `npc-e7.3` | v18 | `C9BFA565` | `BEC3428B` | [dist\npc-e7.3\README.md](dist/npc-e7.3/README.md) |
-| `npc-e7.2` | v18 | `E8971A62` | `C4DD6B1A` | [dist\npc-e7.2\README.md](dist/npc-e7.2/README.md) |
-
-\* `npc-e17` — refactor-only снапшот (server — тот же `1BE28084`; ASI
-`217F8E31` — e16-логика + drain-inbox/combat-exit фазы; на момент снапшота не
-деплоился). Актуальные хеши — в README снапшота.
-
-**Короткий откат:** закрыть игры/сервер → ASI из снапшота в
-`E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi` → server в
-`E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` → INI привести к
-значениям из снапшота → запустить сервер и проверить протокол по JOIN.
-Компоненты **только из одного снапшота**: v18↔v19 несовместимы
-(`VersionMismatch`). Полная процедура, структура `dist\<label>` и команда
-создания снапшота — в [tools/README.md](tools/README.md).
-
-Текущий локальный деплой **npc-e19 / v19**: ASI `DD0EE210` (779 264 B),
-server `DD9BD9D8` (410 112 B); **оба ПК на npc-e19**, хеши сверены локально и
-на ARINA; snapshot `dist/npc-e19` (28 INI-ключей). v18-пара:
-ASI `C9BFA565` / server `BEC3428B`; v17: ASI `35163CC2` / server
-`B7AAABAE`; v16: ASI `63388AD3` / server `4EDAE4B6`; v15:
-`dist\npc-e2c-v15\`. v15–v19 несовместимы (`JOIN` → `VersionMismatch`),
-обновлять/откатывать нужно **все компоненты сразу**.
-
-**Правило сборок:** канонические `build/` и `build-server/` обновляет только
-Lead; WIP-сборки — в отдельных каталогах; `dist/` — локальные снапшоты, в
-git не коммитятся.
-
-## Запуск сервера
-
-```
-E:\rdr2-coop\run_server.bat 7777
-```
-
-или вручную:
-
-```
 rdr2_coop_server.exe 7777
 ```
 
-Сервер хранит последние позиции игроков в `players.txt`, пишет лог в консоль.
-Порт должен быть доступен клиентам (локальная сеть или туннель).
+Keep it open — the live log is the primary diagnostic tool. The server prints player
+state, per-type traffic counters and host liveness every 5 seconds.
 
-## Протокол
+### 4. Configure both PCs
 
-Все сообщения: `u32 length | u8 type | payload`. **Актуальная версия — v19** (actor-репликация NPC E1–E19: ActorAppearance 0x1E + ActorDamage 0x1F + PlayerPresence 0x20 + VehicleOccupants 0x21 + TrainSnapshotV2 0x22; E9–E19 используют существующие 0x1E/0x1C/0x21 без новых сообщений; **e18/e19 не меняют провод** — soft host migration, vendor dedupe, blip name, occupant-first и wheel A/B сделаны на существующих сообщениях/логике). Клиенты v14–v19 несовместимы: сервер отклоняет JOIN с `VersionMismatch`. v18-пара: ASI `C9BFA565`/server `BEC3428B`; v17 — `35163CC2`/`B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 — `dist\npc-e2c-v15\`.
+The client reads `scripts\rdr2-coop.ini`:
 
-| type | сообщение      | направление            | payload |
-|------|----------------|------------------------|---------|
-| 0x01 | Join           | клиент → сервер        | имя, модель, protocol_version |
-| 0x02 | JoinOk         | сервер → клиент        | sid, сохранённая позиция, isHost |
-| 0x03 | PlayerJoined   | сервер → остальным     | имя, модель, позиция |
-| 0x04 | Frame          | клиент → сервер → все  | `FramePayload` (88 байт) |
-| 0x05 | Leave          | клиент → сервер        | — |
-| 0x06 | PlayerLeft     | сервер → остальным     | имя |
-| 0x07 | Died           | клиент → сервер → все  | имя |
-| 0x08 | WorldState     | хост → сервер → все    | время, погода |
-| 0x09 | Outfit         | клиент → сервер → все  | `OutfitState` (784 байта, v14): model + components[96] + wearable[96] |
-| 0x0A | Respawned      | клиент → сервер → все  | имя |
-| 0x0B | Shot           | клиент → сервер → все  | точка попадания (x,y,z) |
-| 0x0C | Ping           | клиент → сервер        | метка времени (u64) |
-| 0x0D | Pong           | сервер → клиент        | та же метка (RTT) |
-| 0x0E | HorseOutfit    | клиент → сервер → все  | `OutfitState` (784 байта): снаряжение лошади |
-| 0x0F | JoinRejected   | сервер → клиент        | причина (версия/полный/ник) |
-| 0x10 | WorldSnapshot  | хост → сервер → гость  | P1; E3d-a: vehicles-only при `world_vehicles=1` (≤16×`WorldEntity` 32 B, радиус 80 м, пустой snapshot удаляет прокси) |
-| 0x11 | ActionState    | клиент → сервер → все  | P2, флаг выключен |
-| 0x12 | PlayerVehicle  | клиент → сервер → все  | P2, флаг выключен |
-| 0x13 | MissionEvent   | хост → сервер → гость  | P3, флаг выключен |
-| 0x14 | MissionState   | хост → сервер → гость  | P3, флаг выключен |
-| 0x15 | MissionBarrier | host ↔ guest           | P3, флаг выключен |
-| 0x16 | HostChanged    | сервер → клиент        | смена роли (host migration hardening: 4 с game-timeout, role-change reset) |
-| 0x17 | TrainSnapshot  | хост → сервер → гость  | устаревший R&D proxy-attach; заменён v19 TrainSnapshotV2 0x22 |
-| 0x18 | ActorSpawnBatch | хост → сервер → гость | v15–v19 E1–E19: до 12×`ActorSpawn` (64 B), max 776 B; host-only |
-| 0x19 | ActorFrames   | хост → сервер → гость  | v15–v19: до 12×`ActorFrame` (32 B), max 392 B; движение/флаги боя |
-| 0x1A | ActorDespawn  | хост → сервер → гость  | v15–v19: epoch/actorId/reason, 12 B; host-only |
-| 0x1B | ActorEvent    | хост → сервер → гость  | v15–v19: событие актора, 32 B; host-only (в текущем клиенте не применяется) |
-| 0x1C | ActorOutfit   | хост → сервер → гость  | v15–v19: epoch+actorId+`OutfitState` 784 B = 792 B; host-only; E9 horse tack (kind2), count=0 не шлётся |
-| 0x1D | ActorResync   | гость → сервер → хост  | v15–v19: resync-запрос, 12 B; только от гостя и только хосту |
-| 0x1E | ActorAppearance | хост → сервер → гость | v16–v19 E2c-b: header 12 B + count×28 B (count 1..16, max 460 B); host-only relay; точный размер `12+count*28` |
-| 0x1F | ActorDamage   | гость → сервер → хост  | v17 E5: 16 B `{epoch u32, actorId u32, damage u16, pad u16, weaponHash u32}`; только гостю и только хосту; damage 1..1000 |
-| 0x20 | PlayerPresence | клиент → сервер → другому | v18 E6: 8 B `{epoch u32, flags u16, pad u16}`; без эха; rate-limit 10/с; flags in_map/pause/satchel/shop/cutscene/menu_other |
-| 0x21 | VehicleOccupants | хост → сервер → гость | v19 E3d-c: 8 B header + count×8 B (count 0..8, max 72 B); host-only; rate-limit 20/с; count=0 = clear; seat -1..8, flags driver/passenger/draftHorse |
-| 0x22 | TrainSnapshotV2 | хост → сервер → гость | v19 E3d-b: 48 B `{epoch,trainId,configHash,flags,stationIndex,carCount,speed±40,xyz,heading,trackIndex,pad2[8]}`; host-only; ≤4/с; carCount 1..16 |
+```ini
+server_host = 192.168.1.103   ; IP of the PC running the server
+server_port = 7777
+player_name = Denuwa
+```
 
-Полная спецификация: [docs/PROTOCOL.md](docs/PROTOCOL.md).
+Host typically uses `127.0.0.1`, guest uses the host's LAN IP. The 28 configuration
+keys are documented in [Configuration](#configuration).
 
-`FramePayload` (88 байт): позиция (x,y,z), heading, `move`, `state`, `flags`,
-`action`, здоровье, точка прицела (aimX/Y/Z + дистанция), хэш оружия, `seq`,
-резерв (модель лошади, мета-наряд игрока, модель персонажа), наряд лошади.
+### 5. Play
 
-`OutfitState` (784 байта, v14): `model` (u64) + `count` (u32) +
-`components[96]` (u32, shop-предметы) + `wearable[96]` (u32, wearable states
-слоёв одежды). Сервер проверяет точный размер и ретранслирует byte-identical;
-сообщения 0x09 Outfit и 0x0E HorseOutfit используют одну и ту же структуру.
+1. Start the server on the host PC.
+2. Start RDR2 on the **host** PC (host is assigned by the server).
+3. Start RDR2 on the **guest** PC.
+4. Play Story Mode together — the guest sees the host's world.
 
-**v15 (NPC E1–E3b base):** actor-сообщения 0x18–0x1D — host-only relay, exact
-size, count ≤12, epoch/actorId != 0, finite coords. Используются
-`ActorSpawnBatch`/`ActorFrames`/`ActorDespawn` (E1 + heartbeat + kind
-human/animal/horse), `ActorResync` 0x1D (E1); `ActorEvent` зарезервирован,
-`ActorOutfit` 0x1C используется E9 horse tack. E2a/E2b/E3a/E3b/E3c
-передаются через поля и флаги тех же сообщений: `metaOutfit`, `flags`
-(mounted/dead/drawn/combat/scenario/reloading/aiming), `reserved` (mount
-model), `scenarioHash`, `weaponHash`, `targetActorId`.
+## Build from source
 
-**v16 (E2c-b):** добавлено **`ActorAppearance` (0x1E)** — host-only relay,
-header 12 B `{epoch u32, actorId u32, count u8, pad[3]}`, entry 28 B
-`{drawable, albedo, normal, material, palette u32; tint0/1/2 i16; reserved
-u16}`, count 1..16, max payload 460 B, точный размер `12 + count*28`;
-reserved каждой записи = 0. Хост шлёт snapshot при спавне/изменении/join
-(budget 1 актор/тик, период 2 с), гость применяет через reset +
-`_SET_META_PED_TAG` + commit + `UPDATE_PED_VARIATION` (readback/fallback);
-asset приоритетнее metaOutfit. v15↔v16↔v17↔v18↔v19 несовместимы.
+### Client ASI
 
-**v17 (E5):** добавлено **`ActorDamage` (0x1F)** — 16 B
-`{epoch u32, actorId u32, damage u16, pad u16, weaponHash u32}`; направление
-**гость → сервер → хост** (host-only relay, отправитель-хост дропается;
-серверный rate-limit 32/с). Семантика host-authoritative: гость только
-просит урон, хост применяет `APPLY_DAMAGE_TO_PED` (fallback
-`SET_ENTITY_HEALTH`) с лимитами ≤8/тик, ≤15/с, ≤150 м, только live actor из
-roster, epoch/actorId/damage валидируются; при hp≤0 — dead-флаг/труп.
-E5.1: headshot передаётся как `damage=250`; в логах `headshot=1`.
+```powershell
+cmake -S . -B build -G "Visual Studio 16 2019" -A x64
+cmake --build build --config Release
+# -> build\Release\rdr2_coop.asi
+```
 
-**v18 (E6/E7):** добавлено **`PlayerPresence` (0x20)** — 8 B
-`{epoch u32, flags u16, pad u16}`, любой клиент → сервер → **другому**
-клиенту (без эха, rate-limit 10/с, unknown bits drop). flags:
-1=in_map, 2=in_pause_menu, 4=in_satchel, 8=in_shop, 16=in_cutscene,
-32=in_menu_other; суффикс `Name - in map`/`pause menu`/`in satchel`/`in shop`,
-таймаут 12 с. E7.1/E7.2/E7.3 — клиентское поведение visitor mode/плавного
-движения/транспорта и migration reset (0x18–0x1D поля/кадры не менялись).
-**E3d-a vehicles-only WorldSnapshot (0x10)** и **host migration hardening
-(0x16)** — v18 без bump. v17↔v18↔v19 несовместимы.
+### Relay server
 
-**v19 (E3d-c/E3d-b):** добавлены **`VehicleOccupants` (0x21)** — 8 B header
-`{vehicleNetId u32, count u8, pad[3]}` + count×8 B
-`{actorId u32, seat i8, flags u8, carIndex u8, harness u8}`, count 0..8,
-max 72 B; flags driver(1)/passenger(2)/draftHorse(4); `count=0` очищает
-occupants; host-only, 20/с. **`TrainSnapshotV2` (0x22)** — 48 B
-`{epoch,trainId,configHash,flags,stationIndex,carCount,speed,xyz,heading,
-trackIndex,pad2[8]}`; flags waiting(1)/halted(2)/reversing(4)/
-playerAboard(8); carCount 1..16, speed ±40; host-only, ≤4/с. Сервер
-валидирует размер/count/флаги/epoch/actorId/netId/speed и релеит
-byte-identical только гостю.
+```powershell
+cmake -S server -B build-server -G "Visual Studio 16 2019" -A x64
+cmake --build build-server --config Release
+# -> build-server\Release\rdr2_coop_server.exe
+```
 
-**INI:** `npc_actor = 1` (включает репликацию; по умолчанию 0),
-`npc_cap = 8` (1..12), `npc_radius = 60` (20..100 м),
-`npc_appearance = 1` (meta-outfit E2a + asset/tint E2c-b),
-`npc_animal_cap = 4` (0..12), `npc_damage = 1` (E5),
-`npc_corpse_max_sec = 300`, `npc_presence = 1`, `npc_visitor = 1`,
-`npc_visitor_vehicles = 1`, `npc_visitor_preserve_events = 1`,
-`npc_visitor_pause_scenes = 1`, `npc_motion_update = 1`,
-`npc_motion_marker = 0`, `npc_motion_status_p2 = 1`,
-`world_vehicles = 1`, `npc_vehicle_radius = 80`, `npc_occupants = 1`
-(E3d-c), `npc_vehicle_wheels = 0` (e19 A/B, opt-in), `world_trains = 0`
-(E3d-b, opt-in), `npc_debug = 1` (диагностика).
+### Tests and the full proof gate
 
-Детали — [docs/PROTOCOL.md](docs/PROTOCOL.md), раздел «ACTOR-сообщения».
+```powershell
+cmake -S tests -B tests\build -G "Visual Studio 16 2019" -A x64
+cmake --build tests\build --config Release
+powershell -ExecutionPolicy Bypass -File scripts\ci.ps1
+```
 
-## Как устроено
+`scripts/ci.ps1` builds everything, runs the Python integration suite and the C++ tests,
+runs the quality scan and enforces the **strict quality gate** (a regression in CRAP,
+duplication or TODO count fails the run). Add `-NoClient`, `-NoServer` or `-NoTests`
+when you only need part of the pipeline.
 
-- `src/main.cpp` — `DllMain` + цикл скрипта (`ScriptMain`).
-- `src/script_hook.cpp/h` — резолв экспортов `ScriptHookRDR2.dll` по PE-таблице
-  (проприетарный SDK не нужен).
-- `src/native_call.h` — вызов нативов + маршаллинг `Vec3`.
-- `src/natives.h` — проверенные хэши нативов (сверены с `rdr2-runtime-scripthook`
-  и `rdr3-nativedb-data`).
-- `src/coop.cpp` — игровая логика: спавн/рендер педа, движение, одежда, оружие,
-  лошадь, смерть/возрождение, время/погода, кадры 60 Гц; E6 presence
-  (UIAPP-детект, суффикс ника), E7.1 visitor/mission-aware, role-change reset;
-  e18: loading presence heartbeat, пока playerPed отсутствует; e19: имя
-  игрока на карте/blip (`_SET_BLIP_NAME`+VAR_STRING, `SetBlipName`/
-  `UpdateBlipName`).
-- `src/actor_sync.cpp/h` — NPC-репликация E1–E19: discovery/roster, guest
-  proxies, сценарии/смерть, всадники/животные, оружие/бой, appearance,
-  host-authoritative damage (E5), corpse retention (E5.2), smooth motion
-  (E7.2), occupants/draft (E3d-c), mission-aware/role reset; e18: visitor
-  vendor dedupe (host-прокси продавца не спавнится); e19: occupant-first
-  roster + полный allowlist (кучер/draft-лошади повозки).
-- `src/world_sync.cpp` — E3d-a vehicle-прокси и E3d-b mission-train
-  (`TrainSnapshotV2`, `SET_RANDOM_TRAINS(false)` + cleanup); e19:
-  opt-in wheel spin (`npc_vehicle_wheels`, `world: vehicle wheels speed=`).
-- `src/gen_metaped_outfits.h` — сгенерированная таблица metaped-outfit
-  кандидатов (890 моделей / 4568 хэшей) для E2c.
-- `tools/fake_actor_client.py` — fake host/guest v19 для однопК-тестов NPC
-  (см. `tools/README.md`); `src/config.cpp`, `src/persist.cpp`, `src/log.cpp` —
-  конфиг, персистентность, логгер.
-- `net/protocol.h` — типы сообщений и структуры пакетов.
-- `net/client.cpp`, `net/frame.cpp`, `net/socket.cpp` — сетевой клиент,
-  сборка/разбор кадров, сокеты.
-- `server/server.cpp` — релей, таблица игроков, `players.txt`; e18: phase-
-  split `HandleClient` (ReadSocket/Timeout/CheckHostGameTimeout/dispatch/relay)
-  + soft host game-timeout (grace 15 с, presence-liveness, демоция без
-  закрытия сокета).
-- `docs/INTERACTIVITY.md` (v20 design P0–P4) и
-  `docs/NATIVE_RESEARCH_INTERACT.md` (native R&D: blip name, wheel spin,
-  vehicle interactivity) — дизайн/разведка для e19+/v20; в e19 из них
-  реализованы blip name и opt-in wheel spin, guest→host interactivity —
-  v20, код e19 остального не меняет.
-- `dist/` — готовые клиентские пакеты и ini (без сторонних DLL).
-- `third_party/` — справочные исходники (ScriptHook runtime, nativedb, каталог
-  одежды), используются только для сверки хэшей и параметров.
+### Release snapshots
 
-## Задержка и сеть
+Every accepted iteration is frozen into a self-contained folder with hashes and a
+rollback note:
 
-- `TCP_NODELAY` включён на клиенте и сервере: без него алгоритм Нагла копит
-  мелкие кадры до ~40 мс (плюс delayed ACK) — это главный источник лага.
-- Сокеты неблокирующие, у каждого своя очередь на отправку: медленный клиент
-  не тормозит ретрансляцию остальным.
-- Раз в секунду клиент шлёт `Ping`, сервер отвечает `Pong` с той же меткой;
-  RTT пишется в лог плагина (`net: rtt N ms`).
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\snapshot_build.ps1 `
+  -Label npc-e19 -Protocol 19 -Commit ef49ac8 `
+  -Features "..." -Note "..." -Tag npc-e19
+```
 
-## Практические заметки
+Snapshots live in `dist/<label>/` (not committed to git — they are release artifacts).
+Git tags `npc-e0 … npc-e19` preserve the exact corresponding source trees.
 
-- Человеческий пед **не рендерится** без обвязки
-  `SET_ENTITY_AS_MISSION_ENTITY` + `SET_PED_RANDOM_COMPONENT_VARIATION` +
-  `SET_ENTITY_VISIBLE`.
-- `RESET_PED_COMPONENTS` ломает рендер тела (остаются только одёжки) — вместо
-  него используется random variation + применение наряда в том же тике.
-- Число параметров нативов важно: `GET_CURRENT_PED_WEAPON` принимает 5
-  аргументов, `GIVE_WEAPON_TO_PED` — 13; при меньшем числе движок читает мусор.
-- Короткие события (выстрел) нельзя опрашивать по кадру — только отдельным
-  сообщением/latch.
+## Configuration
 
-## Дорожная карта
+`rdr2-coop.ini` is created on first launch. Unknown keys are ignored; invalid numbers
+fall back to safe defaults; `;` / `#` start a comment.
 
-См. [ROADMAP.md](ROADMAP.md).
+| Group | Key | Default | Meaning |
+| --- | --- | --- | --- |
+| Network | `server_host`, `server_port` | `127.0.0.1`, `7777` | relay server address |
+| Identity | `player_name`, `ped_model` | — | player display name and Story Mode model |
+| World | `world_sync`, `world_vehicles`, `world_trains` | `0`, `1`, `0` | full-world flag, vehicles, mission trains |
+| Missions | `mission_sync`, `mission_credit`, `save_backup` | `0`, `0`, `1` | mission barrier, reward credit, save backup |
+| NPC core | `npc_actor`, `npc_cap`, `npc_radius` | `1`, `12`, `60` | replication on, actor cap, discovery radius |
+| NPC detail | `npc_appearance`, `npc_animal_cap`, `npc_damage`, `npc_corpse_max_sec` | `1`, `4`, `1`, `300` | appearance, animal cap, damage, corpse hold |
+| Motion | `npc_motion_update`, `npc_motion_marker`, `npc_motion_status_p2`, `npc_frame_hz`, `npc_frame_adaptive` | `1`, `0`, `1`, `15`, `1` | motion updates, debug markers, frame rate |
+| Visitor mode | `npc_visitor`, `npc_visitor_vehicles`, `npc_visitor_preserve_events`, `npc_visitor_pause_scenes` | `1`, `1`, `1`, `1` | guest world mode and preserved local NPCs |
+| Transport | `npc_occupants`, `npc_vehicle_radius` | `1`, `80` | occupants/draft horses, vehicle scan radius |
+| Player | `player_frame_hz`, `player_frame_change_only` | `20`, `1` | player frame rate / change-only sending |
+| Appearance | `npc_animal_appearance`, `npc_mount_appearance` | `0`, `0` | animal/mounted-horse appearance assets |
+| Wheels (A/B) | `npc_vehicle_wheels` | `0` | experimental wheel spin on vehicle proxies |
+| Presence | `npc_presence` | `1` | UI status suffix in name tags |
+| Debug | `npc_debug`, `train_debug` | `1`, `0` | verbose actor/train logs |
 
-## Лицензия
+A startup validator prints `config: warn ...` for dangerous combinations
+(for example `world_sync=1` together with `npc_actor=0`).
 
-Проект распространяется для некоммерческого ознакомления. Мод одиночного
-режима и не затрагивает RDR Online.
+## How it works
+
+- **Discovery** — the host scans actors, animals, horses and vehicles around the player
+  (radius-based, budgeted per tick) and assigns stable network IDs.
+- **Replication** — the host sends spawn batches, 60 Hz actor frames, appearance assets,
+  outfits, vehicle snapshots, occupants and train state. All intervals are wall-clock
+  based, so behavior does not change with FPS.
+- **Interpolation** — the guest smooths actor and vehicle motion between snapshots
+  (lead-based far-target, teleport only on large desync).
+- **Visitor mode** — the guest suppresses its own ambient crowd to avoid duplicates, but
+  keeps local vendors, quest NPCs and random-event NPCs as its own world.
+- **Authority** — the host resolves damage, death, headshots, outfits, vehicle occupants
+  and host migration. The server only validates and relays.
+- **Recovery** — if the host game hangs or leaves, the server demotes it and promotes the
+  guest with a grace period; if the game thread goes silent during loading, a presence
+  heartbeat prevents false timeouts.
+
+Detailed specifications: [docs/PROTOCOL.md](docs/PROTOCOL.md),
+[docs/PERF.md](docs/PERF.md), [docs/TRAINS.md](docs/TRAINS.md),
+[docs/NPC_E1_TESTING.md](docs/NPC_E1_TESTING.md).
+
+## Engineering & quality
+
+<p align="center">
+  <img src="assets/pipeline.svg" alt="Engineering pipeline" width="96%">
+</p>
+
+The project is developed and reviewed by a **multi-role engineering team** using the
+[ub-mode](https://github.com/unclebob/ub-mode) discipline: *first make it work, then make
+it right, then follow practice*. Every change is a small verifiable unit with a written
+action log.
+
+| Gate | What it proves |
+| --- | --- |
+| Build | client ASI + relay server + tests compile clean (`0 warning / 0 error`) |
+| Integration | **42/42** protocol/server tests, including join race, host migration, rate limits, fuzz |
+| C++ tests | **7/7** deterministic unit suites |
+| Quality | strict CRAP/duplication/TODO gate against a committed baseline |
+| Independent review | a second agent rebuilds from a clean archive and diffs behavior |
+| Rollback | every build has a tagged source tree and a snapshot folder with hashes |
+
+**Quality metrics (current baseline):** 45 files · 505 functions · CRAP>5000 = **3** ·
+duplication ≥4 = **3** · TODO = **0**. The scanner and baseline are part of the repo:
+[tools/quality_scan.py](tools/quality_scan.py), [docs/UB_MODE.md](docs/UB_MODE.md).
+
+### Team & workflow
+
+| Role | Responsibility |
+| --- | --- |
+| **Lead / integrator** | architecture, task board, builds, CI, commits, tags, deployment, release snapshots |
+| **Network & protocol review** | framing, wire compatibility, server relay, rate limits, host migration |
+| **Client gameplay review** | C++ gameplay paths, native calls, interpolation, visitor mode |
+| **QA & release verification** | integration/C++ tests, quality gate, acceptance checklists, docs |
+| **World-sync architect** | replication design, protocol proposals, independent proof of each slice |
+| **Native R&D** | ScriptHookRDR2 native research, signatures, safe fallbacks |
+
+Workflow: **plan → implement in disjoint scopes → per-unit proof gate → independent
+proof → small ordered commits → tag + snapshot → deploy to both PCs**. The task board and
+write scopes are recorded per task; no agent overwrites another's files.
+
+## Performance
+
+Measured on a 2-PC LAN session (`npc-e19`, host p95 over 300 frames):
+
+| Metric | Value | Budget |
+| --- | --- | --- |
+| Full frame | p95 **0.39 ms**, max **1.12 ms** | p95 ≤ 4 ms, max ≤ 10 ms |
+| World sync | p95 **0.10 ms** | — |
+| Actor sync | p95 **0.20 ms** | p95 ≤ 2 ms |
+| Coop logic | p95 **0.16 ms** | — |
+| Client traffic | **~7.1 KB/s tx**, **~0.5 KB/s rx** | typical ≤ 10–12 KB/s |
+| Server traffic | typical **4–12 KB/s**, peaks ≤ 15 KB/s | worst ≤ 15 KB/s |
+
+Every log line is machine-parsable (`perf: frame`, `perf: net`, server `net: ...`) and
+checked by [tools/perf_report.py](tools/perf_report.py).
+
+## Testing & acceptance
+
+- [docs/ACCEPTANCE_2PC.md](docs/ACCEPTANCE_2PC.md) — two-PC acceptance checklist
+  (blocks A–H + interactivity block I in progress), exact hashes and rollback plan.
+- [docs/NPC_E1_TESTING.md](docs/NPC_E1_TESTING.md) — scenario catalogue **S1–S32**
+  with expected log lines.
+- [docs/TESTING.md](docs/TESTING.md) — headless test strategy and tools.
+- [tests/README.md](tests/README.md) — how to run integration and C++ suites.
+- [tools/README.md](tools/README.md) — snapshot, deploy, traffic and fake-client tools.
+
+## Roadmap
+
+| Phase | Status | Scope |
+| --- | --- | --- |
+| E1–E5 | done | actors, motion, appearance, damage, corpses |
+| E6–E8 | done | presence, motion polish, host migration / traffic counters |
+| E9–E11 | done | animal/horse appearance, mount outfit, exact train passengers |
+| E12–E15 | done | performance frame, player frame throttle, traffic accounting, ub-mode refactors |
+| E16–E19 | done | quality tooling, soft host migration, loading heartbeat, vendor dedupe, wagon occupants, map labels, wheel A/B |
+| **v20 P1** | in progress | **guest influence**: damage, doors, seats, hijack, draft hitch — host-authoritative intents (`0x23/0x24/0x26`) |
+
+Full details: [ROADMAP.md](ROADMAP.md), [docs/INTERACTIVITY.md](docs/INTERACTIVITY.md),
+[docs/INTERACTIVITY_P1.md](docs/INTERACTIVITY_P1.md),
+[docs/NATIVE_RESEARCH_INTERACT.md](docs/NATIVE_RESEARCH_INTERACT.md).
+
+## Limitations
+
+- This is **replication, not a native multiplayer engine**. Story Mode scripts and
+  missions remain host-driven; the guest is a visitor in the host's world.
+- Some host-only entities are intentionally not replicated (mission-critical scripts,
+  local vendors preserved on the guest by design).
+- The guest's vehicle proxies are visual until v20 P1 ships host-authoritative
+  interactions; wheel spin is an opt-in A/B flag.
+- Trains are mission-train replication, not fully dynamic railway simulation.
+- Both clients must run the **same protocol version**; mixing v19/v20 will be rejected.
+- No license file is present yet: treat the repository as source-available and contact
+  the author before redistribution.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `src/` | ASI client: `coop.cpp`, `actor_sync.cpp`, `world_sync.cpp`, natives, config |
+| `net/` | protocol, framing, socket layer, client parser/dispatch |
+| `server/` | relay server (validation, relay, rate limits, migration) |
+| `tests/` | Python integration suite and C++ unit/fuzz tests |
+| `tools/` | snapshot builder, quality scanner, traffic/perf reports, fake clients |
+| `docs/` | protocol, performance, acceptance, interactivity and R&D documents |
+| `scripts/ci.ps1` | full proof gate (build + tests + quality) |
+| `assets/` | README banner, architecture and pipeline diagrams |
+
+## Credits
+
+- [ScriptHookRDR2](https://www.dev-c.com/rdr2/scripthookrdr2/) and the RDR2 modding
+  community for native research and tooling.
+- [unclebob/ub-mode](https://github.com/unclebob/ub-mode) for the engineering discipline
+  used by the team.
+- Everyone who reported symptoms from real 2-PC sessions — every bug fix in the history
+  started with a log line from a live playtest.
+
+---
+
+<p align="center">
+  <sub>Built for Story Mode co-op experiments. Not affiliated with Rockstar Games or Take-Two Interactive.</sub>
+</p>
