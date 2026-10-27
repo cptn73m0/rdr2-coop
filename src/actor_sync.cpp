@@ -2019,6 +2019,7 @@ void HostDiscovery(const TickContext& ctx)
         unsigned int handle = 0;
         float distance2 = 1e30f;
         uint8_t kind = 0; // E3c: 0 human
+        bool riderMount = false; // e20.2 T2: лошадь всадника (приоритет)
     };
     static std::vector<Cand> candidates;
     static std::vector<Cand> animalCandidates; // E3c: животные/бесхозные лошади
@@ -2171,17 +2172,41 @@ void HostDiscovery(const TickContext& ctx)
                   return a.distance2 < b.distance2;
               });
 
-    // E3d-c: occupants (реальные водители/пассажиры/draft-лошади) получают
-    // слоты в первую очередь — иначе cap вытеснит их дальними NPC.
-    auto occupantFirst = [](const Cand& a, const Cand& b) {
-        const bool oa = g_occupantHandles.count(a.handle) != 0;
-        const bool ob = g_occupantHandles.count(b.handle) != 0;
-        if (oa != ob)
-            return oa;
-        return a.distance2 < b.distance2;
-    };
-    std::sort(candidates.begin(), candidates.end(), occupantFirst);
-    std::sort(animalCandidates.begin(), animalCandidates.end(), occupantFirst);
+    // e20.2 T2: всадник + его лошадь реплицируются ПАРОЙ. Лошадь всадника во
+    // втором проходе отсекается HasRider (см. выше), поэтому добавляем её
+    // здесь с приоритетом rider-mount (после occupant-животных, до остальных).
+    // Не дублируем: лошадь игрока/партнёра, уже собранные animalCandidates,
+    // world-sync excluded (ghost/mount) и несуществующие.
+    {
+        std::unordered_set<unsigned int> animalHandles;
+        animalHandles.reserve(animalCandidates.size() * 2 + 8);
+        for (const Cand& a : animalCandidates)
+            animalHandles.insert(a.handle);
+        for (const Cand& hc : candidates)
+        {
+            using namespace natives_api;
+            Init(natives::IS_PED_ON_MOUNT);
+            Push(hc.handle);
+            if (Call() == 0)
+                continue;
+            const unsigned int horse = GetMountOf(hc.handle);
+            if (!horse || horse == localMount ||
+                horse == ctx.partnerMount || horse == ctx.localPed ||
+                horse == ctx.partnerGhost)
+                continue;
+            if (coop::IsWorldSyncExcluded(horse) || !DoesExist(horse))
+                continue;
+            if (animalHandles.count(horse) != 0)
+                continue;
+            Cand a;
+            a.handle = horse;
+            a.distance2 = hc.distance2;
+            a.kind = 2u; // лошадь/маунт
+            a.riderMount = true;
+            animalCandidates.push_back(a);
+            animalHandles.insert(horse);
+        }
+    }
 
     // Стабильный roster: старые акторы сохраняют actorId, новые получают
     // следующий монотонный id. cap ограничивает число активных акторов.
@@ -2251,8 +2276,40 @@ void HostDiscovery(const TickContext& ctx)
             animalCandidates.push_back(c);
         present.insert(handle);
     }
-    std::sort(candidates.begin(), candidates.end(), occupantFirst);
-    std::sort(animalCandidates.begin(), animalCandidates.end(), occupantFirst);
+    // e20.2 T1: выбор по дистанции, без приоритета «известных»; известность —
+    // только tie-break при РАВНОЙ дистанции. Hysteresis actorId сохраняется,
+    // если handle остался выбран; при смене ближайших actorId может «переехать»
+    // на другого педа/лошадь — это ожидаемо для e20.2 T1.
+    const auto isKnown = [](unsigned int handle) {
+        return g_roster.count(handle) != 0;
+    };
+    // Люди: occupants -> строго distance (known/new вместе) -> known tie-break.
+    auto humanOrder = [&](const Cand& a, const Cand& b) {
+        const bool oa = g_occupantHandles.count(a.handle) != 0;
+        const bool ob = g_occupantHandles.count(b.handle) != 0;
+        if (oa != ob) return oa;
+        if (std::fabs(a.distance2 - b.distance2) > 1e-3f)
+            return a.distance2 < b.distance2;
+        const bool ka = isKnown(a.handle);
+        const bool kb = isKnown(b.handle);
+        if (ka != kb) return ka;
+        return a.handle < b.handle;
+    };
+    // Животные: occupants -> rider-mount (T2) -> distance -> known tie-break.
+    auto animalOrder = [&](const Cand& a, const Cand& b) {
+        const bool oa = g_occupantHandles.count(a.handle) != 0;
+        const bool ob = g_occupantHandles.count(b.handle) != 0;
+        if (oa != ob) return oa;
+        if (a.riderMount != b.riderMount) return a.riderMount;
+        if (std::fabs(a.distance2 - b.distance2) > 1e-3f)
+            return a.distance2 < b.distance2;
+        const bool ka = isKnown(a.handle);
+        const bool kb = isKnown(b.handle);
+        if (ka != kb) return ka;
+        return a.handle < b.handle;
+    };
+    std::sort(candidates.begin(), candidates.end(), humanOrder);
+    std::sort(animalCandidates.begin(), animalCandidates.end(), animalOrder);
 
     // E3c: люди занимают слоты первыми, животные — свободные ПОСЛЕ них
     // (общий roster <= kMaxActors 12; npc_animal_cap=0 выключает животных).
@@ -2269,13 +2326,16 @@ void HostDiscovery(const TickContext& ctx)
         selected.push_back(h);
         selectedSet.insert(h);
     }
-    // E3d-c priority: occupants (водители/пассажиры/draft-лошади) получают
-    // слоты ПЕРВЫМИ — и люди, и животные. Иначе cap занимают случайные
-    // горожане, occupant-пед никогда не discovered, actorId не появляется и
-    // 0x21 навсегда неполный (наблюдали: «n=1 driver=0», кучер/лошади
-    // повозки не доезжают до гостя). Порядок: occupant-люди -> occupant-
-    // животные -> известные люди (hysteresis actorId) -> новые люди ->
-    // прочие животные.
+    // e20.2 T1/T2 порядок выбора слотов (после трупов):
+    //   1) occupants (люди и животные) — приоритет 0x21/allowlist;
+    //   2) ВСЕ люди строго по distance (известные/новые вместе; known — только
+    //      tie-break): раньше проход «известные люди» заполнял cap старым
+    //      roster'ом, и ближайшие новые всадники/NPC не попадали (наблюдали
+    //      in-vehicle skip 17 и mounted-фикс без эффекта);
+    //   3) животные: rider-mount (T2: всадник+лошадь парой) -> остальные по
+    //      distance, пока animalCap/общий cap позволяют.
+    // actorId hysteresis: сохраняется, если handle всё ещё выбран; при смене
+    // ближайших actorId переезжает — ожидаемо (T1).
     int animalsSelected = 0;
     auto totalRoom = [&]() {
         return static_cast<int>(selected.size()) < net::kMaxActors;
@@ -2296,6 +2356,7 @@ void HostDiscovery(const TickContext& ctx)
     auto isOccupant = [&](unsigned int handle) {
         return g_occupantHandles.count(handle) != 0;
     };
+    // 1) occupants: люди, затем животные (driver/пассажиры/draft-лошади).
     for (const Cand& c : candidates)
     {
         if (!humanRoom()) break;
@@ -2308,30 +2369,41 @@ void HostDiscovery(const TickContext& ctx)
         if (!isOccupant(c.handle)) continue;
         if (takeHandle(c.handle)) ++animalsSelected;
     }
-    // 1) уже известные люди, которые всё ещё в кандидатах (стабильный actorId)
-    for (const Cand& c : candidates)
-    {
-        if (!humanRoom()) break;
-        if (g_roster.count(c.handle) == 0) continue;
-        takeHandle(c.handle);
-    }
-    // 2) добор новыми ближайшими людьми
+    // 2) ВСЕ люди строго по distance (candidates уже отсортирован humanOrder).
     for (const Cand& c : candidates)
     {
         if (!humanRoom()) break;
         takeHandle(c.handle);
     }
-    // 3) животные: известные (hysteresis) + новые, пока есть слоты/cap
+    // 3) животные: rider-mount (T2), затем остальные по distance.
     for (const Cand& c : animalCandidates)
     {
         if (!animalRoom()) break;
-        if (g_roster.count(c.handle) == 0) continue;
+        if (!c.riderMount) continue;
         if (takeHandle(c.handle)) ++animalsSelected;
     }
     for (const Cand& c : animalCandidates)
     {
         if (!animalRoom()) break;
         if (takeHandle(c.handle)) ++animalsSelected;
+    }
+
+    // e20.2 T5: диагностика discovery (npcDebug, 1/2 c) — почему у гостя
+    // animals=0: сколько кандидатов/животных, сколько взято, roster/cap'ы.
+    if (coopcfg::Get().npcDebug)
+    {
+        static unsigned long long lastDiscoveryLogMs = 0;
+        if (lastDiscoveryLogMs == 0 || nowMs - lastDiscoveryLogMs >= 2000ull)
+        {
+            lastDiscoveryLogMs = nowMs;
+            sh_log::Write("actor: discovery humans=%u animals=%u roster=%u "
+                          "animalsSelected=%u cap=%d animalCap=%d\n",
+                          static_cast<unsigned int>(candidates.size()),
+                          static_cast<unsigned int>(animalCandidates.size()),
+                          static_cast<unsigned int>(g_roster.size()),
+                          static_cast<unsigned int>(animalsSelected), cap,
+                          animalCap);
+        }
     }
 
     // 3) остальных из roster — despawn (умер/вытеснен/ушёл)

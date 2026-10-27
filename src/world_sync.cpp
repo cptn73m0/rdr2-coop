@@ -488,7 +488,6 @@ std::vector<unsigned int> CollectVehicleOccupants(
                    static_cast<uint8_t>(h));
         }
     }
-    (void)netId;
     // task-143 P2.6: протокол cap 8; приоритет driver+passengers, затем draft.
     if (attempted > net::kMaxVehicleOccupants)
     {
@@ -501,6 +500,53 @@ std::vector<unsigned int> CollectVehicleOccupants(
             sh_log::Write("world: occupants truncated n=%u total=%u\n",
                           static_cast<unsigned int>(net::kMaxVehicleOccupants),
                           static_cast<unsigned int>(attempted));
+        }
+    }
+    // e20.2 T3: диагностика occupants (npcDebug, 1/5 c per vehicle) — видит ли
+    // хост кучера/лошадей и почему aid=0 (roster miss / mission / player).
+    // ВАЖНО: handles пушатся в allowlist ДО lookup actorId (addPed выше), т.е.
+    // водитель/draft-лошади известны discovery даже без actorId — эта строка
+    // только диагностирует, а не меняет allowlist.
+    if (coopcfg::Get().npcDebug)
+    {
+        static std::map<unsigned int, unsigned long long> lastOccDbgMs;
+        const unsigned long long nowMs = GetTickCount64();
+        unsigned long long& last = lastOccDbgMs[netId];
+        if (last == 0 || nowMs - last >= 5000ull)
+        {
+            last = nowMs;
+            uint32_t driverAid = 0;
+            actor_sync::GetHostActorIdForHandle(driver, driverAid);
+            int draft = 0;
+            int harnessCount = 0;
+            {
+                using namespace natives_api;
+                Init(natives::IS_DRAFT_VEHICLE);
+                Push(vehicle);
+                draft = Call() != 0 ? 1 : 0;
+                if (draft)
+                {
+                    for (unsigned int h = 0;
+                         h <= static_cast<unsigned int>(net::kMaxDraftHarness);
+                         ++h)
+                    {
+                        Init(natives::_GET_PED_IN_DRAFT_HARNESS);
+                        Push(vehicle);
+                        Push(static_cast<unsigned long long>(h));
+                        if (static_cast<unsigned int>(Call()) != 0)
+                            ++harnessCount;
+                    }
+                }
+            }
+            sh_log::Write("world: occ dbg veh=%u model=0x%X driverH=%u "
+                          "driverAid=%u attempted=%u entries=%u draft=%d "
+                          "harness=%d\n",
+                          netId, GetModel(vehicle), driver, driverAid,
+                          static_cast<unsigned int>(attempted),
+                          static_cast<unsigned int>(out.size()), draft,
+                          harnessCount);
+            if (lastOccDbgMs.size() > 64)
+                lastOccDbgMs.erase(lastOccDbgMs.begin());
         }
     }
     return handles;
@@ -4766,6 +4812,29 @@ void ApplyGuestVehicleWheelSpeed(const Proxy& p)
     if (speed < 0.f) speed = 0.f;
     if (speed > 30.f) speed = 30.f; // защита от мусорных дельт/warp
     using namespace natives_api;
+    // e20.2 T4 (A/B candidate B): mission/invincible/no-collision прокси не
+    // крутит колёса от одного SET_VEHICLE_FORWARD_SPEED. При движении включаем
+    // физику/гравитацию/двигатель — только при speed>0.1 (стоя не трогаем).
+    // Позицию/поворот жёстко перезапишет интерполяция СРАЗУ после этого вызова
+    // (InterpolateVehicleProxies: ApplyGuestVehicleWheelSpeed -> SetCoords/
+    // SetHeading), поэтому «уезжание» ограничено одним тиком; риск push
+    // игрока/дрейфа — только при npc_vehicle_wheels=1 (opt-in A/B).
+    if (speed > 0.1f)
+    {
+        Init(natives::SET_ENTITY_DYNAMIC);
+        Push(p.handle);
+        Push(true);
+        Call();
+        Init(natives::SET_ENTITY_HAS_GRAVITY);
+        Push(p.handle);
+        Push(true);
+        Call();
+        Init(natives::SET_VEHICLE_ENGINE_ON);
+        Push(p.handle);
+        Push(true); // value: завести
+        Push(true); // instantly: без анимации водителя (arity 3, R&D/NativeDecl)
+        Call();
+    }
     Init(natives::SET_VEHICLE_FORWARD_SPEED);
     Push(p.handle);
     Push(speed);
@@ -4834,9 +4903,12 @@ void InterpolateVehicleProxies()
             while (dh < -180.f) dh += 360.f;
             h += dh / spanSec * exSec;
         }
+        // e20.2 T4: порядок «нативы (dynamic/gravity/engine + forward speed) ->
+        // жёсткая позиция/поворот из интерполяции», чтобы физика не уводила
+        // прокси больше чем на тик.
+        ApplyGuestVehicleWheelSpeed(p);
         SetCoords(p.handle, x, y, z);
         SetHeading(p.handle, h);
-        ApplyGuestVehicleWheelSpeed(p);
     }
 }
 

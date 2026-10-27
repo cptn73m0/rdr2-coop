@@ -343,6 +343,14 @@ constexpr unsigned long long SET_PED_INTO_VEHICLE             = 0xF75B0D629E1C06
 // v20 (opt-in npc_vehicle_wheels): единственный кандидат «крутить колёса»
 // guest-прокси — задать прокси скорость вперёд (SIGNATURE-ONLY, A/B).
 constexpr unsigned long long SET_VEHICLE_FORWARD_SPEED         = 0xF9F92AF49F12F6E7ull;
+// e20.2 T4 (A/B candidate B, npc_vehicle_wheels=1): физика/двигатель guest
+// vehicle-прокси для спина колёс. SET_ENTITY_DYNAMIC/HAS_GRAVITY — 2 арг;
+// SET_VEHICLE_ENGINE_ON — 3 арг (NativeDecl 1491.50: vehicle,value,instantly;
+// 4-го p4 в этом билде НЕТ — не передаём). Позицию/поворот прокси по-прежнему
+// жёстко задаёт интерполяция сразу после этих нативов.
+constexpr unsigned long long SET_ENTITY_DYNAMIC              = 0xFBFC4473F66CE344ull;
+constexpr unsigned long long SET_ENTITY_HAS_GRAVITY          = 0x0CEDB728A1083FA7ull;
+constexpr unsigned long long SET_VEHICLE_ENGINE_ON           = 0xB64CFA14CB9A2E78ull;
 // E3d-c (v19): occupants транспорта + draft-лошади.
 constexpr unsigned long long GET_DRIVER_OF_VEHICLE            = 0x2963B5C1637E8A27ull;
 constexpr unsigned long long GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS = 0xA9C55F1C15E62E06ull;
