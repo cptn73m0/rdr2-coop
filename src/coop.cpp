@@ -6825,6 +6825,46 @@ void UpdateLocalActionSync(unsigned int playerPed)
         }
 }
 
+// ub-mode A5-c2: локальный vehicle-sync (детект/приём/cleanup).
+void UpdateLocalVehicleSync(unsigned int playerPed)
+{
+    if (coopcfg::Get().vehicleSync)
+        {
+            if ((s_tickCount % 3) == 0)
+            {
+                net::PlayerVehicleState pv = DetectLocalPlayerVehicle(playerPed);
+                const bool changed = !s_lastSentPvValid ||
+                    std::memcmp(&pv, &s_lastSentPv, sizeof(pv)) != 0;
+                if (changed || s_tickCount - s_lastPvSendTick >= 15)
+                {
+                    s_lastSentPv = pv;
+                    s_lastSentPvValid = true;
+                    s_lastPvSendTick = s_tickCount;
+                    g_netClient.SendPlayerVehicle(pv);
+                }
+            }
+            net::PlayerVehicleState pv{};
+            bool havePv = false;
+            {
+                std::lock_guard<std::mutex> lk(s_pvMtx);
+                if (s_havePvIn)
+                {
+                    pv = s_pvIn;
+                    s_havePvIn = false;
+                    havePv = true;
+                }
+            }
+            if (havePv)
+                ApplyRemotePlayerVehicle(pv);
+        }
+        else
+        {
+            if (s_remoteInVehicle || s_playerVehicle)
+                DeleteRemotePlayerVehicle();
+            s_lastSentPvValid = false;
+        }
+}
+
 void Tick()
 {
     ++s_tickCount;
@@ -6913,43 +6953,9 @@ void Tick()
         UpdateLocalActionSync(playerPed);
 
     // P2: посадка в транспорт удалённого игрока.
-        if (coopcfg::Get().vehicleSync)
-        {
-            if ((s_tickCount % 3) == 0)
-            {
-                net::PlayerVehicleState pv = DetectLocalPlayerVehicle(playerPed);
-                const bool changed = !s_lastSentPvValid ||
-                    std::memcmp(&pv, &s_lastSentPv, sizeof(pv)) != 0;
-                if (changed || s_tickCount - s_lastPvSendTick >= 15)
-                {
-                    s_lastSentPv = pv;
-                    s_lastSentPvValid = true;
-                    s_lastPvSendTick = s_tickCount;
-                    g_netClient.SendPlayerVehicle(pv);
-                }
-            }
-            net::PlayerVehicleState pv{};
-            bool havePv = false;
-            {
-                std::lock_guard<std::mutex> lk(s_pvMtx);
-                if (s_havePvIn)
-                {
-                    pv = s_pvIn;
-                    s_havePvIn = false;
-                    havePv = true;
-                }
-            }
-            if (havePv)
-                ApplyRemotePlayerVehicle(pv);
-        }
-        else
-        {
-            if (s_remoteInVehicle || s_playerVehicle)
-                DeleteRemotePlayerVehicle();
-            s_lastSentPvValid = false;
-        }
+        UpdateLocalVehicleSync(playerPed);
 
-        // P3: MissionData — хост детектит новые завершения, гость применяет.
+    // P3: MissionData — хост детектит новые завершения, гость применяет.
         if (coopcfg::Get().missionSync)
         {
             if (s_amHost.load() && (s_tickCount - s_lastMissionPollTick) >= 60)
