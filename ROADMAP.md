@@ -3,12 +3,12 @@
 Кооператив для одиночного сюжета RDR2. Дорожная карта показывает этапы,
 порядок работ и текущий прогресс. Отмечаем галочками по мере выполнения.
 
-**Актуально на:** 26.10.2026
+**Актуально на:** 27.10.2026
 **Целевой билд:** RDR2 1.0.1491.50, ScriptHookRDR2 1.0.1491.17
-**Текущий протокол:** **v19** (actor-репликация NPC E1–E13,
+**Текущий протокол:** **v19** (actor-репликация NPC E1–E18,
 0x18–0x22: ActorDamage 0x1F + PlayerPresence 0x20 + VehicleOccupants 0x21 +
-TrainSnapshotV2 0x22). v18↔v19 несовместимы; откат v18 — ASI
-`C9BFA565`/server `BEC3428B`, v17 — `35163CC2`/`B7AAABAE`, v16 —
+TrainSnapshotV2 0x22; e18 не меняет провод). v18↔v19 несовместимы; откат v18 —
+ASI `C9BFA565`/server `BEC3428B`, v17 — `35163CC2`/`B7AAABAE`, v16 —
 `63388AD3`/`4EDAE4B6`, v15 — `dist\npc-e2c-v15\`.
 Рабочая база/игровой стабильный тег — **stable-v14** (пед-призрак, лошадь,
 одежда shop+wearable, выстрелы, время/погода). NPC-репликация реализована:
@@ -19,11 +19,19 @@ E7.2 плавное движение, E7.3 E3d-a/migration, E8 — E3d-c occupan
 E3d-b mission-train, E9 — animal/horse appearance, E10 — mounted NPC-horse
 appearance, E11 — точные пассажиры поездов, E12 — `perf: frame`/`perf: net`,
 Player Frame throttle/P0/P1, **E13 — wall-clock нормализация (FPS-independent),
-`tick_hz`, config warnings**.
-CI **41/41** + 7 C++; HEAD e3accaa; тег **npc-e13**; теги `npc-e0`…`npc-e13`.
-`npc_actor=0` по умолчанию; локальная пара v19 — ASI `B43B7EE0`/server
-`F3EBD6D1`, снапшот `dist\npc-e13`, ARINA offline. Двух-ПК приёмка/
-S27/S28/S29/S30 — backlog; это финальная сборка перед приёмкой.
+`tick_hz`, config warnings**, **E14–E17 — ub-mode refactor-only** (net/server/
+src: ammo helpers, host-netId dedupe, Tick/ApplyOutfit/ApplyRemoteFrame фазы,
+drain-inbox/combat-exit; протокол и поведение не менялись), **E18 — soft host
+migration** (game-timeout демотирует хоста без закрытия сокета, join grace
+15 с, presence-liveness; клиентский loading heartbeat; vendor dedupe у гостя;
+server `HandleClient` phases; integration run lock).
+CI **41/41** + 7 C++ (в этой задаче +1 honest grace-тест → после мержа
+**42/42**); HEAD `6772c8a`; тег **npc-e18**; теги `npc-e0`…`npc-e18`.
+`npc_actor=0` по умолчанию; локальная пара v19 — ASI `E3FAB30F`/server
+`DD9BD9D8`, снапшот `dist\npc-e18`, **оба ПК задеплоены** (local + ARINA,
+хеши сверены). Двух-ПК приёмка e18 pending; **в работе e19** (client-polish2:
+имя на карте/blip, кучер/лошади повозки, колёса; wheel-ключ INI → 28) —
+**ждём полный тест e19**.
 
 ---
 
@@ -80,7 +88,7 @@ S27/S28/S29/S30 — backlog; это финальная сборка перед �
 
 ## Фаза 5 — P1: репликация мира/NPC
 
-### NPC-репликация — E1–E13 реализованы; 2-ПК/визуал pending
+### NPC-репликация — E1–E18 реализованы; 2-ПК/визуал pending
 - [x] E-1: probe-режим `npc_debug=1` + анализатор probe-логов (22% NPC имеют
       metaOutfit hash; сценарии/модели/лошади/оружие)
 - [x] E0: протокол actor-сообщения 0x18–0x1E, `kMaxActors=12`,
@@ -163,13 +171,16 @@ S27/S28/S29/S30 — backlog; это финальная сборка перед �
       прокси; guest `CREATE_VEHICLE` mission/invincible/no-collision,
       dedupe `engineNetId`, timeout 3 с; `npc_visitor_vehicles=1` подавляет
       локальный трафик гостя; логи `world: vehicles send n=`, `world: vehicle spawn/despawn`
-- [x] **Host migration hardening (v18):** серверный host game-timeout 4 с
-      (4-й argv 2..15 с; idle 30 с отдельно), liveness только по game-thread
-      сообщениям (Ping/Pong не считаются) → close → PlayerLeft + promote +
-      HostChanged; client role-change reset (world_sync/visitor/presence/
+- [x] **Host migration hardening (v18) + soft e18:** серверный host
+      game-timeout 4 с (4-й argv 2..15 с; idle 30 с отдельно), liveness только
+      по game-thread сообщениям (Ping/Pong не считаются). e18: по таймауту —
+      **мягкая миграция** (демоция хоста + promote второго + HostChanged,
+      **сокет старого хоста не закрывается**, `PlayerLeft` нет, Ping/Pong жив);
+      **join grace 15 с** до первого game-сообщения хоста; presence =
+      liveness; клиент role-change reset (world_sync/visitor/presence/
       actor/боевые/remote vehicle, ForceFullSpawnBatch/RequestImmediateResync),
       лог `coop: role change -> HOST/GUEST reset complete`; интеграционные
-      тесты host migration/timeout в общих **41/41**
+      тесты host migration/timeout в общих **41/41** (+grace → 42/42)
 - [x] **Mission-aware visitor:** `npc_visitor_pause_scenes=1` — при
       `GET_MISSION_FLAG` 0xB15CD1CF58771DE1 или
       `IS_PLAYER_READY_FOR_CUTSCENE(PLAYER_ID())` 0xAA67BCB0097F2FA3
@@ -211,11 +222,30 @@ S27/S28/S29/S30 — backlog; это финальная сборка перед �
       опасных комбинаций (world_sync+npc_actor/world_trains,
       !world_vehicles+occupants/visitor, !npc_actor+vehicles/visitor);
       ASI `B43B7EE0`, server `F3EBD6D1`; snapshot `dist\npc-e13`; tests 41/41
-- [ ] Backlog: **2-ПК приёмка S27/S28/S29/S30** (ARINA offline),
-      ambient-trains cleanup, mission-aware visitor на NPC активной миссии,
-      adaptive 15 Гц, **двух-ПК визуальная приёмка E2c-b/E5/E6/E7/E3d-a/
-      E3d-b/E3d-c/E9/E10**, host migration/resync под нагрузкой, Tick p95/FPS;
-      `npc_actor` не включать в рабочую сборку до неё
+- [x] **E14–E17 (npc-e14…npc-e17, v19, refactor-only):** ub-mode чистка без
+      изменения протокола/поведения — net/server (`RunOnce` 574→211,
+      server `main` 209→30, `HandleClient` 782→25 через phase-хелперы),
+      src (`Tick` 1712→1523, `ApplyRemoteFrame` 386→230,
+      `ApplyActionToGhost`/`ApplyOutfitToGhost`/`ApplyLine` dedupe,
+      `UpdateLocalShotEvents`, host-netId helper), `quality_scan` многострочные
+      сигнатуры + `--self-check`, `IntegrationRunLock`; baseline regenerated
+      (45/489/4/3/0 на `2a58ee8`)
+- [x] **E18 (npc-e18, v19 без bump):** **soft host migration** — host
+      game-timeout 4 с (Ping не считается) демотирует хоста и повышает
+      второго **без закрытия сокета** (`PlayerLeft` нет, Ping/Pong жив),
+      **join grace 15 с** до первого game-thread сообщения, presence =
+      liveness; клиентский loading presence heartbeat (~2 с, пока playerPed
+      отсутствует); гость в visitor mode не спавнит host-прокси продавца
+      (`actor: visitor vendor skip`); server `HandleClient` phases;
+      integration run lock; honest grace-тест host-migration; ASI
+      `E3FAB30F`, server `DD9BD9D8`; snapshot `dist\npc-e18`; **оба ПК
+      задеплоены**, canonical CI 41/41 + C++7
+- [ ] Backlog: **2-ПК приёмка e18** (F1–F4/soft migration, S31),
+      **полный тест e19** (client-polish2: blip name, кучер/лошади повозки,
+      колёса; wheel-ключ INI → 28), visual E2c-b/E5/E6/E7/E3d/E9/E10,
+      ambient-trains cleanup, mission-aware visitor, adaptive 15 Гц,
+      host migration/resync под нагрузкой, Tick p95/FPS;
+      `npc_actor` не включать в рабочую сборку до приёмки
 - [ ] Известные ограничения: E9 cap16/RESET на животных не проверен/
       horse tack model-specific/MPT_ANIMAL coverage fallback random/
       MetaPedOutfit только probe; E10 mounted horse late mount; E12
@@ -309,7 +339,8 @@ S27/S28/S29/S30 — backlog; это финальная сборка перед �
 
 - [x] Сервер: keepalive/timeouts, лимиты очередей, атомарный players.txt,
       защита от пустых/повторных JOIN, host-only сообщения
-- [x] Headless-тесты протокола/сервера (20 integration tests, без игры)
+- [x] Headless-тесты протокола/сервера (41 integration test, без игры;
+      e18 + новый grace-тест → после мержа 42)
 - [x] Лимит одновременных соединений сервера (32) + flood-тест
 - [x] Mission catalog/rewards validation test (80 миссий, 23 записи/17)
 - [x] Idle timeout сервера (настраивается 2-м аргументом, по умолчанию 30 с)
@@ -318,9 +349,13 @@ S27/S28/S29/S30 — backlog; это финальная сборка перед �
 - [x] Проверка и фикс: probe-подключения больше не затирают players.txt
 - [x] Reconnect с backoff (1→10 с), очистка педа, повторный JOIN
 - [x] Host migration: сервер повышает гостя, шлёт HostChanged (v12);
-      E7.3 hardening — game-timeout 4 с/Ping не считается, role-change reset
+      E7.3 hardening — game-timeout 4 с/Ping не считается, role-change reset;
+      **e18 soft migration** — демоция без закрытия сокета (нет
+      reconnect-шторма), join grace 15 с, presence-liveness
 - [x] Headless-тест host migration: новый хост принимается для WorldSnapshot;
-      game-timeout ping-only/frame-activity тесты
+      game-timeout ping-only/frame-activity тесты; **e18**: soft-семантика
+      (demote/no-socket-close/presence) + join-grace тест (host без
+      game-сообщений не демотируется внутри grace 15 с)
 - [x] Fuzz-тест: 300 случайных кадров/размеров + C++ FrameReader fuzz
 - [x] C++ тест client reconnect с фейковым сервером
 - [x] WorldSnapshot parser stress: 4 потока × 20k, строгий размер/count,

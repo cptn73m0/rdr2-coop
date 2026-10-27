@@ -35,24 +35,38 @@ CRAP-прокси >5000, dup-группы `count>=4`, число TODO/FIXME. Del
 latest − baseline; отрицательная — улучшение. Baseline обновляйте
 осознанно, а не для «позеленения» CI.
 
-**Финальный delta (parser-fixed; HEAD `2a58ee8`, база `npc-e16`):**
+**Финальный delta (parser-fixed; база `2a58ee8`, скан npc-e18 `6772c8a`):**
 
-| метрика | initial baseline (old scanner) | corrected baseline | delta |
+| метрика | initial baseline (old scanner) | parser-fixed baseline (`2a58ee8`) | скан e18 (`6772c8a`) |
 |---|---:|---:|---:|
-| files | 45 | 45 | 0 |
-| functions | 334 | **489** | +155 (скрытые функции) |
-| CRAP>5000 | 4 | **4** | 0 (вскрыты HandleClient/SendHostSnapshot/ProcessGuestHorseOutfits) |
-| dup>=4 | 7 | **3** | **-4** |
+| files | 45 | 45 | 45 |
+| functions | 334 | **489** | **502** (+13 phase/helper) |
+| CRAP>5000 | 4 | **4** | **3** (`HandleClient` ушёл) |
+| dup>=4 | 7 | **3** | **3** |
 | TODO | 0 | 0 | 0 |
 
-Топ CRAP после: `Tick` 68906 (1234 строк), `HandleClient` 25440 (782),
-`SendHostSnapshot` 13340 (534), `ProcessGuestHorseOutfits` 7140 (263),
-`main` frame_reader_fuzz 3192 (312). **P3-фикс многострочных сигнатур** вскрыл
-скрытые функции — это не регрессия кода; baseline regenerated after parser
-fix (45/489/4/3/0). **P2:** `integration_server.py` сериализует прогоны
+Топ CRAP после e18: `Tick` 66306 (1218 строк), `SendHostSnapshot` 13340 (534),
+`ProcessGuestHorseOutfits` 7140 (263), `main` frame_reader_fuzz 3192 (312),
+`ApplyRemoteFramePositionPhase` 2256 (201). **P3-фикс многострочных сигнатур**
+вскрыл скрытые функции — это не регрессия кода; baseline regenerated after
+parser fix (45/489/4/3/0). **P2:** `integration_server.py` сериализует прогоны
 `IntegrationRunLock`; 3 последовательных + параллельный прогон — 0 флейков.
-`npc-e16` (ASI `C4E4CF70`, server без изменений `1BE28084`) задеплоен
-локально и на ARINA; визуальная 2-ПК приёмка ещё нужна.
+`npc-e18` (ASI `E3FAB30F`, server `DD9BD9D8`, protocol v19) задеплоен **на
+обоих ПК** (local + ARINA, хеши сверены); визуальная 2-ПК приёмка e18 ещё
+нужна. **Baseline для e18 НЕ обновлялся** (45/502/3/3/0 — в отчёте, а в
+`tools/quality_baseline.json` остаётся 45/489/4/3/0 до сигнала Lead).
+
+Скан «чистого» коммита без WIP-изменений worktree (как в e18-отчёте):
+
+```powershell
+git worktree add --detach "$env:TEMP\qa-e18" 6772c8a
+python tools\quality_scan.py --root "$env:TEMP\qa-e18" --json build\quality_scan_qa_e18.json --top 20
+git worktree remove --force "$env:TEMP\qa-e18"
+```
+
+Новые native-разведочные документы (read-only, в npc-e18 не реализованы):
+`docs/NATIVE_RESEARCH_INTERACT.md` (blip name, wheel-spin candidates,
+guest→host vehicle interactivity), дизайн v20 — `docs/INTERACTIVITY.md`.
 
 ## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 
@@ -589,14 +603,19 @@ npc_visitor_pause_scenes = 1
   vehicle-прокси в радиусе 80 м; host log `world: vehicles send n=`,
   guest `world: vehicle spawn/despawn`; локального трафика гостя нет.
   До 16 машин; empty snapshot удаляет прокси. Occupants/draft — E3d-c (0x21).
-- **Host migration:** игра-хост Alt+F4/quit или зависание только с Ping;
-  второй игрок становится HOST, в логах `coop: role change -> HOST reset
-  complete`/`[!] host game-timeout … promoting remaining`; старый хост
-  rejoin — как гость. Проверять по S23 в `docs/NPC_E1_TESTING.md`.
+- **Host migration (e18 soft):** игра-хост Alt+F4/quit → обычная миграция
+  (Leave/PlayerLeft/promote). «Зависание» (игровой поток остановлен, Ping
+  идёт) → через ~4 с **мягкая миграция**: второй игрок становится HOST, в
+  логах `coop: role change -> HOST reset complete`, server
+  `[!] host game-timeout … promoting remaining` + `[HOST] … повышен до
+  хоста`; сокет старого хоста **не закрывается**, `PlayerLeft` нет, Ping/Pong
+  работает, у старого хоста `GUEST reset complete`. Загрузка/меню хоста
+  (playerPed нет) роли не дёргают: grace 15 с + presence heartbeat. Проверять
+  по S23/S31 в `docs/NPC_E1_TESTING.md` и F1–F4 в `docs/ACCEPTANCE_2PC.md`.
 - **Mission-aware:** в миссии/катсцене толпа гостя не удаляется
   (`actor: visitor scene pause on`), после выхода cleanup продолжается.
-- Локальная пара v19/npc-e8: ASI `9E3E8D7A`, server `E26C715A` (деплой
-  task-137); ARINA offline — двух-ПК прогон pending.
+- Локальная пара v19/npc-e18: ASI `E3FAB30F`, server `DD9BD9D8` (задеплоено
+  на обоих ПК); двух-ПК прогон e18 — pending.
 
 ### E8: occupants и mission-train (игровые)
 
@@ -649,8 +668,38 @@ npc_debug = 1
   ```
 - `npc_animal_appearance=0` → животные/лошади снова random (не залипают);
   при расхождении INI host/guest поведение несимметрично — не допускается.
-- Локальная пара npc-e16/v19: ASI `C4E4CF70`, server `1BE28084`;
-  ARINA offline. Чек-лист — `docs/NPC_E1_TESTING.md` S27.
+- Локальная пара npc-e18/v19: ASI `E3FAB30F`, server `DD9BD9D8` (оба ПК).
+  Чек-лист — `docs/NPC_E1_TESTING.md` S27.
+
+### E18: soft host migration + loading heartbeat + vendor dedupe (игровые)
+
+Fake tool **не эмулирует** роль-миграцию/загрузку — проверяется игрой
+(S23/S31 в `docs/NPC_E1_TESTING.md`, F1–F4 в `docs/ACCEPTANCE_2PC.md`).
+INI на обоих ПК: обычный (27 приёмочных ключей, e18 новых не добавляет).
+
+- **Soft host game-timeout:** хост шлёт только Ping / «зависает» → через 4 с
+  `[!] host game-timeout (N ms), promoting remaining`; гость HOST, старый
+  хост GUEST; сокет старого хоста **не закрыт** (`PlayerLeft` нет), Ping/Pong
+  работает. В клиентских логах — `coop: role change -> HOST/GUEST reset
+  complete`; reconnect-шторма (серия JOIN/reconnect) быть не должно.
+- **Join grace 15 с:** хост, который ещё грузится/в меню и не прислал ни
+  одного game-thread сообщения, **не демотируется**; presence (~2 с) тоже
+  считается liveness. Клиент без playerPed шлёт presence heartbeat
+  (нагрузка ~1 сообщение/2 с — видно в `perf: net`/серверном логе).
+- **Vendor dedupe:** гость с `npc_visitor=1` не спавнит host-прокси продавца;
+  в guest-логе throttled `actor: visitor vendor skip id=… model=0x…` (не
+  ошибка); у продавца не должно быть двух копий.
+- **Server phases/quality:** `HandleClient` 782→25 строк (phase-хелперы) —
+  поведение/провод не менялись; `IntegrationRunLock` сериализует прогоны
+  `tests/integration_server.py` (см. `tests/README.md`).
+- Быстрый фильтр логов:
+  ```powershell
+  # сервер: soft migration (ожидается только при инъецированном F2/S31)
+  Select-String -Path server_console.log -Pattern "host game-timeout|promoting remaining|\[HOST\]"
+  # клиент: роль-резет и loading/vendor-фиксы
+  Select-String -Path "E:\Games\Red Dead Redemption 2\scripts\rdr2-coop.log" `
+    -Pattern "coop: role change|visitor vendor skip"
+  ```
 
 ### npc-e12/e13: перф/трафик + config warnings (grep-команды)
 
@@ -740,8 +789,9 @@ python tools\fake_actor_client.py --mode guest --name TestGuest `
 ```
 Реальный хост шлёт 0x1E сам: host log `asset capture count=8-10
 valid=8-10`; fake guest — `appearance_msgs=504 appearance_actors=8
-entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e16 ASI `C4E4CF70`/server `1BE28084`, ARINA online) —
-pending. Для дымового теста без игры fake host `--appearance` шлёт
+entry_max=10 errors=0`. Визуальная двух-ПК приёмка (локальная пара npc-e18
+ASI `E3FAB30F`/server `DD9BD9D8`, оба ПК задеплоены) — pending. Для дымового
+теста без игры fake host `--appearance` шлёт
 синтетические записи (drawable=model hash, tints=255), fake guest показывает
 `appearance_msgs=5 appearance_actors=5 entry_max=8 errors=0` на 5 акторах.
 
@@ -914,8 +964,8 @@ Windows PowerShell / PS 5.1 (скрипт сохранён с UTF-8 BOM):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\snapshot_build.ps1 `
-  -Label npc-e16 -Features "ub-mode ApplyOutfitToGhost dedupe + Tick perf-window" `
-  -Tag npc-e16
+  -Label npc-e18 -Features "soft host migration + loading presence + vendor dedupe" `
+  -Tag npc-e18
 ```
 
 - `-Label` — имя папки `dist\<label>` (обязательно).
@@ -957,10 +1007,12 @@ dist\<label>\
    снапшота (v18/v19), иначе будет `VersionMismatch`. Все компоненты
    (ASI+server+INI) — **только из одного снапшота**.
 
-Деплой на ARINA (когда в сети): `rdr2_coop.asi` →
+Деплой на ARINA: `rdr2_coop.asi` →
 `\\ARINA\Red Dead Redemption 2\scripts\rdr2_coop.asi`, сервер (если нужен
 на ARINA) → `\\ARINA\Red Dead Redemption 2\coop-server\rdr2_coop_server.exe`,
-INI — по разделу INI снапшота.
+INI — по разделу INI снапшота. Для npc-e18 **оба ПК уже задеплоены** (ASI
+`E3FAB30F`/server `DD9BD9D8`, хеши сверены) — повторный деплой только при
+смене сборки (e19).
 
 ### Сделанные снапшоты
 
@@ -973,6 +1025,8 @@ INI — по разделу INI снапшота.
 | `npc-e9` | v19 | `DC0C4AB7` | `E26C715A` | `1543622` / npc-e9 |
 | `npc-e10` | v19 | `B8BA1B93` | `E26C715A` | `ff7cfc4` / npc-e10 |
 | `npc-e11` | v19 | `785B2D05` | `E26C715A` | `b2e5525` / npc-e11 |
+| `npc-e18` | v19 | `E3FAB30F` | `DD9BD9D8` | `6772c8a` / npc-e18 |
+| `npc-e17` | v19 | `217F8E31` | `1BE28084` | `37ef206` / npc-e17 |
 | `npc-e16` | v19 | `C4E4CF70` | `1BE28084` | `0e64a22` / npc-e16 |
 | `npc-e15` | v19 | `3CC80BE3` | `1BE28084` | `5799ea7` / npc-e15 |
 | `npc-e14` | v19 | `AD3C3481` | `1BE28084` | `6295e6b` / npc-e14 |

@@ -1,23 +1,55 @@
-# Финальная приёмка 2-ПК — RDR2 CO-OP v19 / npc-e13
+# Финальная приёмка 2-ПК — RDR2 CO-OP v19 / npc-e18
 
 **Назначение:** пошаговый приёмочный сценарий для пользователя + ARINA (второй
 ПК) после деплоя v19. Проверяем не отдельные unit-тесты, а связку
 «игра-хост + игра-гость» в реальном мире: NPC, visitor, транспорт, поезда,
 внешность, миграцию хоста и 30–40 минут стабильной игры.
 
-**Версия:** protocol **v19**, **финальная сборка npc-e13**: ASI
-`B43B7EE017690D78B6313AACA75BF450E17B2E186D6BCA0E03C703F503C5675C`,
-server `F3EBD6D151E346935C5E35A8017E40655D0EBBB4B9B8D9B3C01C4E0196E37206`
-(сервер без изменений с e12); оба ПК — **одна и та же** сборка/снапшот
-`dist\npc-e13`. **27 INI-ключей не менялись** (новых нет). E11 (точные
-пассажиры поездов через 0x21 carIndex) входит в базу и проверяется в D3.
-E13 делает интервалы wall-clock (ms) **FPS-independent**, добавляет
-`tick_hz` в `perf: frame` и `config: warn` для опасных комбинаций; пороги
-G2/G3 не меняются.
+**Версия:** protocol **v19**, **финальная сборка npc-e18** (HEAD `6772c8a`,
+тег `npc-e18`): ASI
+`E3FAB30F8DEBC3E0CF7A9A210E548A24798F65DAB5A998CD0793079904FC99D7` (776 704 B),
+server `DD9BD9D818CB5ADF9063A35CE8CDF7C0D54468D9711212A782411BD0D54781FC`
+(410 112 B); оба ПК — **одна и та же** сборка/снапшот `dist\npc-e18`.
+**27 INI-ключей приёмки не менялись** — e18 новых ключей не вводит (сверено с
+`src/config.cpp` на 6772c8a: всего 37 строк в INI снапшота = 27 приёмочных +
+6 служебных P2/P3 + 4 подключения; `npc_motion_status_p2` поддержан в config
+default 1, но в INI снапшота не выписан). **e19** (client-polish2: имя на
+карте/blip, кучер/лошади повозки, колёса) планирует wheel-ключ → 28 и в эту
+приёмку **не входит**. E11 (точные пассажиры поездов через 0x21 carIndex)
+входит в базу и проверяется в D3. E13 делает интервалы wall-clock (ms)
+**FPS-independent**; E14–E17 — ub-mode refactor-only (протокол/поведение не
+менялись); пороги G2/G3 не меняются.
 
-**Текущий статус:** ARINA offline — сначала задеплоить на неё
-`dist\npc-e13` и сверить хеши. Локальная пара ASI `B43B7EE0` + server
-`F3EBD6D1`. Без одинаковой пары на обоих ПК приёмка не начинается.
+**Что изменилось в npc-e18 (проверяется в блоке F):**
+
+- host game-timeout — теперь **мягкая миграция**: хост демотируется, второй
+  повышается, **сокет старого хоста НЕ закрывается** (нет reconnect-шторма и
+  флапа ролей); `PlayerLeft` не рассылается; Ping/Pong демотированного хоста
+  продолжает работать;
+- **join grace 15 с** до первого game-thread сообщения от хоста: загрузка/
+  меню не дёргают роли; после первого game-сообщения действует обычный
+  game-timeout 4 с;
+- `PlayerPresence` считается game-thread liveness — presence-only хост не
+  демотируется (интеграционный тест);
+- клиент на загрузке/респавне, пока playerPed отсутствует, шлёт presence
+  heartbeat ~2 с (с появлением педа обычная presence-логика берёт верх,
+  дублей нет);
+- гость в visitor mode **не спавнит host-прокси продавца** — продавцы больше
+  не дублируются (throttled-лог `actor: visitor vendor skip`);
+- серверный `HandleClient` разбит на фазы (`ReadSocketPhase`,
+  `CheckTimeoutPhase`, `CheckHostGameTimeoutPhase`, dispatch/relay-фазы) —
+  поведение и провод не менялись; новый тест host-timeout переписан под soft
+  семантику;
+- `IntegrationRunLock` — параллельные integration-прогоны сериализуются
+  (больше нет ложных WinError 10054/10061).
+
+**Текущий статус:** **оба ПК задеплоены npc-e18** — локальный ПК и ARINA
+(`\\ARINA\Red Dead Redemption 2\...`) имеют одинаковые хеши ASI/server,
+сверено `Get-FileHash`. Canonical CI на момент снапшота: **41/41**
+integration + C++ 7/7 (`build-server-ci`); в этой задаче добавлен ещё один
+honest grace-тест (после мержа — **42/42**, см. `tests/README.md`). Полный
+двух-ПК игровой прогон A–G ещё **не пройден** — ждём его. Без одинаковой пары
+на обоих ПК приёмка не начинается.
 
 ---
 
@@ -36,12 +68,12 @@ Get-FileHash "E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe" -Algorithm
 
 | Компонент | Версия/хеш | Где |
 |---|---|---|
-| ASI | npc-e13, `B43B7EE0…` (SHA256 как в `dist\npc-e13\README.md`) | оба ПК: `...\scripts\rdr2_coop.asi` |
-| Server | v19, `F3EBD6D1…` (traffic counters, без изменений) | ПК-хост: `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` |
+| ASI | npc-e18, `E3FAB30F…` (SHA256 как в `dist\npc-e18\README.md`) | оба ПК: `...\scripts\rdr2_coop.asi` |
+| Server | v19, `DD9BD9D8…` (soft host migration, HandleClient phases) | ПК-хост: `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` (ARINA: `coop-server\`) |
 | Protocol | **v19** (`kProtocolVersion=19`) | `net/protocol.h` / JOIN в логе |
-| INI | `dist\npc-e13\rdr2-coop.ini.local` как эталон; **27 ключей** | оба ПК |
+| INI | `dist\npc-e18\rdr2-coop.ini.local` как эталон; **27 ключей** приёмки (37 строк) | оба ПК |
 
-Если хеш/протокол не совпал — **стоп**, откатиться на `dist\npc-e13`
+Если хеш/протокол не совпал — **стоп**, откатиться на `dist\npc-e18`
 (см. блок H, §8) и не начинать прогон.
 
 ### 0.2. INI: 27 ключей приёмки
@@ -92,6 +124,12 @@ ped_model   = 0xCF7E73BE
 `mission_sync=0`, `mission_credit=0`, `save_backup=1`,
 `mission_reward_log=1` — как в снапшоте.
 
+**Проверка e18:** INI-ключи не менялись (`dist\npc-e18\rdr2-coop.ini.local` и
+`rdr2-coop.ini.arina` — те же 37 строк, 27 приёмочных + 6 служебных +
+4 ключа подключения). `npc_motion_status_p2` в файле не выписан, но поддержан
+`src/config.cpp` (default 1) — это не новый ключ. **e19** добавит wheel-ключ →
+28: до e19 ничего не добавлять, после — сверить по config и INI снапшота e19.
+
 После правки INI **перезапустить игру** на обоих ПК (конфиг читается при
 старте). Если меняли `world_trains`/`npc_animal_appearance`/
 `npc_mount_appearance` — рестарт обязателен.
@@ -106,9 +144,15 @@ ped_model   = 0xCF7E73BE
    ```powershell
    E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe 7777
    ```
-   В консоли должно быть `Host game-timeout: 4 s (idle timeout: 30 s)`.
+   В консоли должно быть `Host game-timeout: 4 s (idle timeout: 30 s)`;
+   в логе при миграции — `[!] host game-timeout (N ms), promoting remaining`,
+   затем `[HOST] <имя> повышен до хоста`.
+   Grace 15 с до первого game-сообщения хоста в баннер не выводится, но
+   действует (проверяется в F3): загрузка/меню до 15 с роли не дёргают.
 3. Запустить RDR2 → Story Mode на **хосте первым**, зайти в сессию
-   (`is_host=1`); дождаться JOIN_OK/подключения к серверу.
+   (`is_host=1`); дождаться JOIN_OK/подключения к серверу. Загрузка уровня/
+   меню может занять >4 с — это нормально, миграции быть не должно
+   (`host game-timeout` только после первого game-сообщения и ещё 4 с тишины).
 4. Запустить RDR2 на **госте вторым**, проверить `is_host=0` и отсутствие
    `VersionMismatch`.
 5. На сервере — ровно два игрока; в `players.txt` появляются записи; в
@@ -200,16 +244,37 @@ ped_model   = 0xCF7E73BE
 
 ---
 
-## 6. Блок F — host migration (S23)
+## 6. Блок F — host migration (S23) + soft migration e18
 
 Условия: активны транспорт/occupants/поезд (если проверяли) и visitor;
-`npc_debug=1`.
+`npc_debug=1`. С e18 миграция по game-timeout **мягкая** (без закрытия
+сокета старого хоста); обычный выход хоста (Alt+F4/quit) — по-прежнему
+Leave → PlayerLeft → promote.
 
 | # | Действие | Ожидаемый результат | Логи/проверка | При fail прислать |
 |---|---|---|---|---|
 | F1 | Хост Alt+F4/quit (обычный выход) | Гость становится HOST; старые прокси/транспорт/поезда/occupants очищены; role-change reset; старый хост rejoin — как гость | guest `coop: role change -> HOST reset complete`; server PlayerLeft+HostChanged; нет дублей | оба лога, server console, видео |
-| F2 | Хост «зависает», шлёт только Ping | Через ~4 с сервер: `[!] host game-timeout (N ms), promoting remaining`; гость становится HOST; Ping не продлевает таймаут | server log, guest `coop: role change -> HOST` | server log, guest log |
-| F3 | Rejoin старого хоста после миграции | Заходит как гость, без старых прокси/транспорта; новый хост отдаёт свой мир | JOIN_OK `is_host=0`; `actor: reset`/`resync`; нет дублей | оба лога, видео |
+| F2 | Хост «зависает» (только Ping) после хотя бы одного game-сообщения | Через ~4 с сервер: `[!] host game-timeout (N ms), promoting remaining` + `[HOST] … повышен до хоста`; гость становится HOST (`HostChanged(1)`, `reset complete`), старый хост получает `HostChanged(0)` и `GUEST reset complete`; **сокет старого хоста не закрыт**, `PlayerLeft` нет; Ping старого хоста → Pong работает; нет reconnect-шторма/флапа ролей | server log; guest/host `HostChanged`; `Select-String -Pattern "host game-timeout|promoting remaining|PlayerLeft|reconnect"` | server log, guest+host логи, видео |
+| F3 | Хост на загрузке/в меню: playerPed ещё нет, идут только presence heartbeat (~2 с) | **Демоции НЕТ**: join grace 15 с + presence считается game-thread liveness; в server log нет `host game-timeout`; после загрузки идут Frame, роли стабильны (гость остаётся гостем) | server log (нет `host game-timeout`); host `perf:`/FRAME после загрузки; отсутствие серии JOIN/reconnect | server log, оба лога, видео загрузки |
+| F4 | Rejoin старого хоста после миграции | Заходит как гость, без старых прокси/транспорта; новый хост отдаёт свой мир; если старый хост после «зависания» ожил — он остаётся гостем (не забирает роль обратно) | JOIN_OK `is_host=0`; `actor: reset`/`resync`; нет дублей; в server log один `[HOST]` | оба лога, видео |
+
+**Как проверить мягкую миграцию/загрузку (S31):**
+
+1. Сервер в видимом окне, `server_console.log` копируется в папку прогона.
+2. F2: хост заходит в игру, ходит 5–10 с (game-сообщения идут), затем
+   «замораживается» (диспетчер задач → Suspend, или физически отключить
+   игровой поток). Гость наблюдает: через ~4 с он HOST; в server log —
+   `host game-timeout` и `promoting remaining`; **строки `PlayerLeft` для
+   хоста нет**; `Get-NetTCPConnection` на сервере по-прежнему видит сокет
+   старого хоста. После «оживления» хоста — в его логе `role change -> GUEST
+   reset complete`.
+3. F3: перезапустить RDR2 на хосте и наблюдать загрузку 30–60 с с сервером:
+   до появления playerPed клиент шлёт presence каждые ~2 с; в логе сервера
+   **нет** `host game-timeout`, роли не меняются. Проверить, что гость в это
+   время не «прыгает» в HOST.
+4. Ни в одном из сценариев F2/F3 не должно быть серии подряд
+   `JOIN`/`reconnect` (reconnect-шторм) и повторных `HostChanged` туда-обратно
+   (роль-флап); максимум одна миграция за сценарий.
 
 ---
 
@@ -224,7 +289,7 @@ ped_model   = 0xCF7E73BE
 | G1 | 30–40 мин игры без рестарта | FPS host/guest стабилен относительно baseline; без длинных фризов/утечек | FPS-скрины/лог; `perf: frame host tick=… p95=… max=…`; `perf: frame guest …` каждые ~5 с | FPS-замеры, оба лога |
 | G2 | Проверить бюджет полного кадра | `perf: frame host` p95 **≤4.0 мс**, max **≤10.0 мс**; guest p95/max — те же; `actor` p95 ≤**2.0 мс**; `perf: npc warn` = 0; guest timeouts ≤0.5%, appearance failed ≤1% | grep `perf: frame`, `perf: npc`; снять 5–10 строк за 30–40 мин | host/guest `perf: frame` выдержки, `perf: npc warn` |
 | G3 | Проверить трафик (server + client) | Типично **≤10–12 КБ/с** на клиента, worst **≤15 КБ/с**; нет роста `bytes_in/out` вне нормы; `bytes=`/`proxies` не копятся | server `net: bytes_in=… bytes_out=… | frame=… actor=… world=…` каждые ~10 с; client `perf: net tx=… KB/s rx=… KB/s msgs_tx=…` | 2–3 heartbeat server, 2–3 `perf: net`, FPS |
-| G4 | Ошибки/десинк | Нет `ERROR`, `warn`, `VersionMismatch`, «вечных» `ok=0`; трупы/прокси не копятся | grep `actor:|world:|coop:|perf: net` | проблемные строки + видео |
+| G4 | Ошибки/десинк | Нет `ERROR`, `warn`, `VersionMismatch`, «вечных» `ok=0`; трупы/прокси не копятся. В e18 допустимо: одна пара `host game-timeout`/`promoting remaining` (только если F2 инъецировали), `actor: visitor vendor skip` (ожидаемый skip host-прокси продавца, не ошибка) | grep `actor:|world:|coop:|perf: net|host game-timeout|vendor skip` | проблемные строки + видео |
 
 **Как снимать G2/G3:**
 
@@ -269,15 +334,22 @@ Select-String -Path server_console.log -Pattern "net: bytes_in=" | Select-Object
 Если блок A–G даёт FAIL, не «лечить» на ходу:
 
 1. Закрыть игры на обоих ПК и остановить сервер.
-2. Открыть `dist\npc-e13\README.md` (или `dist\npc-e12\README.md`, если
+2. Открыть `dist\npc-e18\README.md` (или `dist\npc-e17\README.md`, если
    откат на предыдущую) — там SHA256, INI и порядок восстановления.
-3. ASI: `dist\npc-e13\rdr2_coop.asi` → `E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi`.
-4. Server: `dist\npc-e13\rdr2_coop_server.exe` → `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe`.
+3. ASI: `dist\npc-e18\rdr2_coop.asi` → `E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi`.
+4. Server: `dist\npc-e18\rdr2_coop_server.exe` → `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe`
+   (и на ARINA в `coop-server\`, если сервер поднимается там).
 5. INI: привести к разделу INI снапшота; протокол должен быть v19 на обоих
    ПК; v18↔v19 несовместимы (`VersionMismatch`).
 6. Запустить сервер в видимом окне, проверить `Host game-timeout: 4 s`, затем
    зайти хостом/гость и убедиться, что JOIN/FRAME идут.
 7. Зафиксировать в отчёте: label снапшота, оба хеша, причину отката.
+
+**Откат e18 → e17/e16** (если soft migration дала регрессию): сервер и ASI —
+**только из одного снапшота** (`dist\npc-e17` — refactor-only без серверных
+изменений; `dist\npc-e16` — пара `C4E4CF70`/`1BE28084`). e18 менял и ASI
+(loading heartbeat/vendor skip), и server (soft migration) — смешивать пары
+нельзя.
 
 ---
 
@@ -286,14 +358,16 @@ Select-String -Path server_console.log -Pattern "net: bytes_in=" | Select-Object
 Для каждого FAIL-пункта — отдельная папка `accept-<block>-<item>-<time>/`:
 
 - `rdr2-coop.log` **host** и **guest** (полные или участок ±2 минуты);
-- `server_console.log` (окно сервера; особенно game-timeout/PlayerLeft);
+- `server_console.log` (окно сервера; особенно game-timeout/PlayerLeft/promoting
+  remaining и `[HOST] … повышен до хоста`);
 - оба `rdr2-coop.ini` (можно замазать IP/ник, но ключи сохранить);
 - `Get-FileHash` ASI/server на обоих ПК и `git rev-parse HEAD`;
 - FPS/скриншоты или OBS-видео 20–30 с (что именно видно);
 - точное время, локация, блок/пункт (A1…H), ожидаемое/фактическое;
 - `Select-String` выдержки: `actor:`, `world:`, `perf: frame`, `perf: net`,
-  `perf: npc`, `coop:`; для server — строки `net: bytes_in=`; при проверке
-  конфига — `config: warn` (в нормальном прогоне быть не должно);
+  `perf: npc`, `coop:`, `host game-timeout`, `visitor vendor skip`; для
+  server — строки `net: bytes_in=`; при проверке конфига — `config: warn`
+  (в нормальном прогоне быть не должно);
 - если откатывались — `dist\<label>` и хеши восстановленной пары.
 
 ---
@@ -302,25 +376,31 @@ Select-String -Path server_console.log -Pattern "net: bytes_in=" | Select-Object
 
 | Блок | Пункты | PASS/FAIL | Комментарий/время |
 |---|---|---|---|
-| A — базовый NPC | A1–A10 |  |  |
+| A — базовый NPC | A1–A11 |  |  |
 | B — visitor | B1–B4 |  |  |
 | C — транспорт/occupants | C1–C5 |  |  |
 | D — поезда | D1–D4 |  |  |
 | E — внешность E9/E10 | E1–E4 |  |  |
-| F — host migration | F1–F3 |  |  |
+| F — host migration (soft e18) | F1–F4 |  |  |
 | G — производительность | G1–G4 |  |  |
 | H — откат (если был) | — |  |  |
 
 **Критерий общего PASS:** все блоки PASS, нет FAIL по G2/G3 и F; E11
-точные пассажиры поездов проверяются в D3 (входит в npc-e13). Если ARINA
-offline — приёмка не начата, таблица не заполняется.
+точные пассажиры поездов проверяются в D3 (входит в базу). Обязательное
+условие PASS: F2/F3 подтверждают мягкую миграцию без reconnect-шторма и без
+демоции хоста во время загрузки. Пара уже задеплоена на оба ПК; если хеши на
+ARINA/local не совпали — приёмка не начата, таблица не заполняется.
 
 ---
 
 ## 11. Связанные документы
 
-- [NPC_E1_TESTING.md](NPC_E1_TESTING.md) — детальные S0–S28 и методики.
+- [NPC_E1_TESTING.md](NPC_E1_TESTING.md) — детальные S0–S31 и методики.
 - [PERF.md](PERF.md) — пороги/разбор `perf: npc`.
 - [TRAINS.md](TRAINS.md) — mission-train S26.
+- [INTERACTIVITY.md](INTERACTIVITY.md) — v20 design guest influence (P0–P4;
+  в npc-e18 не реализовано — только для планирования e19+).
+- [NATIVE_RESEARCH_INTERACT.md](NATIVE_RESEARCH_INTERACT.md) — native R&D
+  (blip name, wheel spin, vehicle interactivity).
 - [../README.md](../README.md#откат-на-предыдущую-сборку) — снапшоты/откат.
 - [../tools/README.md](../tools/README.md#снапшоты-сборокоткат) — `snapshot_build.ps1`.

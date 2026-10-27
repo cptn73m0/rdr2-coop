@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 `--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
 `KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто (28 базовых сценариев + 13 actor/presence-тестов v19)
+## Что покрыто (28 базовых сценариев + новый e18 grace-тест + 13 actor/presence-тестов v19)
 
 | Тест | Проверка |
 |---|---|
@@ -69,7 +69,8 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_worldstate_host_only` | WorldState от хоста ретранслируется, от гостя — блокируется (P0-фикс сервера) |
 | `test_oversized_and_truncated` | len > 64 КБ и обрезанные кадры не роняют сервер |
 | `test_host_migration` | при выходе хоста гость получает HostChanged(1) и может слать WorldSnapshot |
-| `test_host_game_timeout_ping_only` | хост шлёт только Ping (без game-thread сообщений) → game-timeout 4 с, close, promote, PlayerLeft+HostChanged |
+| `test_host_game_timeout_ping_only` | **e18 soft-семантика:** хост после одного game-сообщения шлёт только Ping → game-timeout 2 с, **демоция без закрытия сокета** (гость promoted, старый хост получает HostChanged(0) и остаётся подключён: `PlayerLeft` нет, Ping→Pong работает); под-сценарий: presence-only хост (0x20 — game-thread liveness) не демотируется |
+| `test_host_game_join_grace` | **e18 join grace:** хост, не отправивший ни одного game-thread сообщения (только Ping, как на загрузке), **не демотируется** внутри grace 15 с, даже когда обычный game-timeout (2 с) уже истёк; в server log нет `host game-timeout` |
 | `test_host_game_timeout_frame_activity` | Frame/game-thread сообщения продлевают хост-сессию; game-timeout не срабатывает по Ping, но срабатывает при отсутствии game-сообщений |
 | `test_join_race` | 50 раундов по 3 одновременных JOIN (threading.Barrier): ровно 2 JOIN_OK, ровно один is_host, третий → ServerFull; после JOIN гость→хост FRAME релеится; сервер чистит сессии |
 | `test_idle_timeout` | молчащий клиент отключается по таймауту (2-й аргумент сервера) |
@@ -87,6 +88,33 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 | `test_train_v2_validation` | 0x22: epoch/trainId=0, carCount 0/17, speed ±40+, unknown flags, short/long drop; сервер жив |
 | `test_vehicle_occupants_rate_limit` | 0x21: 20/с на клиента; лишние drop; окно сбрасывается (после паузы снова проходит) |
 | `test_train_v2_rate_limit` | 0x22: ≤4/с на клиента; лишние drop; окно сбрасывается |
+
+### Host game-timeout: soft migration (e18, task-175)
+
+Сервер (`server/server.cpp`, `CheckHostGameTimeoutPhase`) различает две фазы
+жизни хоста:
+
+1. **Join grace (15 с)** — от JOIN/промоушена до **первого** game-thread
+   сообщения (`IsGameThreadMessage`: Frame/WorldState/actor/Outfit/…, но
+   **не Ping**). Внутри grace хост не демотируется вообще: загрузка уровня/
+   меню не должна менять роли (`test_host_game_join_grace`).
+2. **Обычный game-timeout (4 с по умолчанию; 4-й argv 2..15 с)** — после
+   первого game-сообщения. Ping/Pong его **не продлевают**; если game-поток
+   замолчал — через таймаут сервер:
+   - снимает `isHost` со старого хоста и повышает второго (если есть);
+   - **НЕ закрывает** сокет старого хоста и **не** рассылает `PlayerLeft`
+     (в отличие от hard-миграции при Leave); старый хост остаётся обычным
+     подключённым клиентом (Ping/Pong работает), пока его не закроет
+     idle/connection cleanup;
+   - шлёт `HostChanged` обоим; новому хосту даётся свежий join grace;
+   - пишет `[!] host game-timeout (N ms), promoting remaining` +
+     `[HOST] <имя> повышен до хоста`.
+
+`IntegrationRunLock` (см. ниже) не влияет на эти тайминги: тесты,
+проверяющие таймаут, задают `host_game_ms` явно через 4-й argv сервера.
+
+In-game проверка soft-семантики — `docs/NPC_E1_TESTING.md` S23/S31 и
+`docs/ACCEPTANCE_2PC.md` F1–F4.
 
 ### actor/presence-тесты (v15–v17 base + v18 damage/presence; активны при наличии `Actor*`/`PlayerPresence` в header)
 
@@ -109,16 +137,16 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 ### NPC actor-репликация (E1–E9) — что проверено
 
 Wire/relay/валидация actor-сообщений покрыты actor/presence-тестами выше
-(**41/41** автоматических сценариев на `build-server-ci`, protocol v19:
+(**42/42** автоматических сценариев на `build-server-ci`, protocol v19:
 appearance + ActorDamage + PlayerPresence + VehicleOccupants +
-TrainSnapshotV2 + rate-limit 0x21/0x22 + host migration/game-timeout;
-16 компонентов / 460 B, damage 16 B, presence 8 B, occupants ≤72 B,
-train 48 B, 28 базовых). Клиентская логика NPC/E2c-b/E5/E6/E7/E3d/E9
-проверена на **одном ПК** с fake host/guest и реальным хостом
-(`tools/fake_actor_client.py`, см. `tools/README.md`); E5/E5.1 подтверждены
-игровым гостем («выстрелы убивают, хэдшот ваншотит»); двух-ПК приёмка
-pending — ARINA offline. Локальная пара npc-e9/v19 — ASI `DC0C4AB7`/server
-`E26C715A` (PID 10276).
+TrainSnapshotV2 + rate-limit 0x21/0x22 + host migration/game-timeout
+(soft e18: demote/no-socket-close/join-grace/presence); 16 компонентов / 460 B,
+damage 16 B, presence 8 B, occupants ≤72 B, train 48 B, 28 базовых + grace).
+Клиентская логика NPC/E2c-b/E5/E6/E7/E3d/E9 проверена на **одном ПК** с fake
+host/guest и реальным хостом (`tools/fake_actor_client.py`, см.
+`tools/README.md`); E5/E5.1 подтверждены игровым гостем («выстрелы убивают,
+хэдшот ваншотит»); двух-ПК приёмка e18 pending. Локальная пара npc-e18/v19 —
+ASI `E3FAB30F`/server `DD9BD9D8` (оба ПК задеплоены).
 
 - **E1 (human-only):** discovery/roster, spawn heartbeat/frames/despawn,
   guest-прокси, resync, gating `npc_actor=0` → 0 `actor:`/`probe:` строк.
@@ -165,7 +193,7 @@ pending — ARINA offline. Локальная пара npc-e9/v19 — ASI `DC0C4
 - **E7.3:** E3d-a — `world_vehicles=1`, `npc_vehicle_radius=80`,
   vehicles-only `WorldSnapshot` (≤16×32 B/6 тиков, пустой snapshot удаляет
   прокси); host migration hardening (game-timeout 4 с, Ping не считается,
-  role-change reset, 2 теста); mission-aware visitor.
+  role-change reset, soft e18: demote/no-socket-close/join-grace — 3 теста); mission-aware visitor.
 - **E8 (v19):** E3d-c `VehicleOccupants` 0x21 — driver/passenger/draft
   (invisible→warp→visible, draft attach, skip MoveProxy); E3d-b
   `TrainSnapshotV2` 0x22 — mission-train у гостя, `SET_RANDOM_TRAINS(false)`
@@ -175,7 +203,7 @@ pending — ARINA offline. Локальная пара npc-e9/v19 — ASI `DC0C4
   assets животные/лошади (MPT_ANIMAL kind1/2, cap16) → 0x1E (≤460 B,
   budget 1 animal/tick ~2 с); horse tack kind2 → 0x1C 792 B on change;
   guest staged apply/readback, fallback random; probe
-  `actor: animal appearance probe …`; при 0 — random. 41/41.
+  `actor: animal appearance probe …`; при 0 — random. 42/42.
 - Используемые сообщения: **0x18** `ActorSpawnBatch` (спавн + heartbeat),
   **0x19** `ActorFrames` (10 Гц), **0x1A** `ActorDespawn` (gone/dead/evicted),
   **0x1D** `ActorResync` (guest→host; Client::SendActorResync, троттлинг ≤1/с),
@@ -267,7 +295,10 @@ $env:DSH_CI_STRICT_QUALITY = "0"; powershell -File scripts\ci.ps1
 Baseline: `tools\quality_baseline.json` (parser-fixed снимок: **45 файлов, 489
 функций, 4 функции CRAP>5000, 3 dup-группы count>=4, 0 TODO**; многострочные
 сигнатуры, включая `TickPerfWindow`/`HandleClient`, теперь учитываются).
-P3 parser self-check: `python tools\quality_scan.py --self-check` — проверяет
+Скан **e18** (`6772c8a`): **45/502/3/3/0** — CRAP>5000 4→3 (`HandleClient`
+782→25 строк через phase-хелперы), +13 функций-хелперов; baseline **не
+обновлялся** (ждём сигнал Lead). P3 parser self-check:
+`python tools\quality_scan.py --self-check` — проверяет
 многострочную функцию и отсутствие ложных `if`/call-функций. Baseline
 обновлять **осознанно после доказанной шлифовки** (build + CI + повторный
 scan): `python tools\quality_scan.py --json tools\quality_baseline.json --top 20`.
@@ -281,6 +312,11 @@ CI-шаг не заменяет тесты: он ловит только рег�
 Это закрывает гонку `_pick_port` (сокет закрывается до bind сервера): параллельные
 запуски ждут, а не падают с WinError 10054/10061. Запускать параллельно можно
 без ручного lock; второй прогон печатает «waiting for the serialized lock».
+Если нужен гарантированно последовательный прогон (например, замер времени) —
+просто запускайте один; lock глобальный на пользователя/машину (temp-файл),
+поэтому безопасно и из двух терминалов, и из CI+ручного прогона:
+`IntegrationRunLock` ждёт освобождения, а не падает. Владелец lock —
+процесс-раннер; при крэше ОС снимает блокировку, stale-lock чинить не нужно.
 
 ## Важно
 

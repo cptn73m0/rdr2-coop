@@ -1,6 +1,6 @@
-# NPC actor replication (E1–E13) — in-game test plan and acceptance metrics
+# NPC actor replication (E1–E18) — in-game test plan and acceptance metrics
 
-**Статус (26.10.2026):** E1–E13 реализованы; текущий протокол — **v19**.
+**Статус (27.10.2026):** E1–E18 реализованы; текущий протокол — **v19**.
 E1 human-only, E2a meta-outfit, E2b всадники, E2c-b asset/tint, E3a
 сценарии/смерть, E3b оружие/бой, E3c животные/свободные лошади, E4 perf,
 E5 урон/E5.1 хедшоты, E5.2/E5.3 трупы/mounted, E6 presence, E7.1 visitor,
@@ -10,11 +10,20 @@ E9 — animal/horse appearance (0x1E assets + 0x1C tack),
 E10 — mounted NPC-horse appearance через 0x1C (семантика rider actorId),
 **E11 — точные пассажиры поездов через 0x21 carIndex**,
 **E12 — полный `perf: frame`, `perf: net`, Player Frame throttle + P0/P1**,
-**E13 — wall-clock интервалы (ms, FPS-independent), `tick_hz`, config warnings**.
-CI **41/41** integration + 7/7 C++; тег **npc-e13**. E2c-b/E1–E5.1 проверены
-на одном ПК + реальный хост; двух-ПК приёмка pending. Локальная пара
-**npc-e13/v19**: ASI `B43B7EE0`, server `F3EBD6D1`; **ARINA offline** —
-pending. Финальный чек-лист 2-ПК: [ACCEPTANCE_2PC.md](ACCEPTANCE_2PC.md).
+**E13 — wall-clock интервалы (ms, FPS-independent), `tick_hz`, config warnings**,
+**E14–E17 — ub-mode refactor-only (протокол/поведение не менялись)**,
+**E18 — soft host migration (grace 15 с, presence-liveness, демоция без
+закрытия сокета), клиентский loading presence heartbeat, vendor dedupe у
+гостя, server HandleClient phases, integration run lock; провод v19 без
+изменений**.
+CI **41/41** integration + 7/7 C++ на снапшоте e18 (+новый honest grace-тест
+→ после мержа **42/42**); тег **npc-e18**, HEAD `6772c8a`. E2c-b/E1–E5.1
+проверены на одном ПК + реальный хост; двух-ПК приёмка e18 pending.
+Локальная пара **npc-e18/v19**: ASI `E3FAB30F`, server `DD9BD9D8`; **оба ПК
+задеплоены** (local + ARINA, хеши сверены). Финальный чек-лист 2-ПК:
+[ACCEPTANCE_2PC.md](ACCEPTANCE_2PC.md). **В работе e19** (client-polish2:
+blip name, кучер/лошади повозки, колёса) — в npc-e18 не входит, ждём полный
+тест e19.
 
 E1 — human-only NPC; E2/E3 добавляют внешность, всадников, сценарии/смерть,
 оружие/бой, животных/лошадей. **E5** — урон применяет только хост:
@@ -28,24 +37,25 @@ presence 0x20. **E7.1** — visitor mode; **E7.2** — плавное движе
 **E11** — точные пассажиры поездов (0x21 carIndex).
 **E12** — полный перф-кадр/трафик и Player Frame throttle.
 **E13** — wall-clock нормализация (FPS-independent), `tick_hz`,
-`config: warn` для опасных комбинаций. Mission NPC не
+`config: warn` для опасных комбинаций. **E14–E17** — refactor-only.
+**E18** — мягкая host-migration и клиентские фиксы (S31). Mission NPC не
 входят; 0x1B зарезервирован; 0x1C используется E9/E10; resync 0x1D
 реализован (≤1/с).
 
 Автоматизированная часть — wire/relay/validation:
-`tests/integration_server.py` (**41 сценарий**, protocol v19, appearance +
+`tests/integration_server.py` (**42 сценария**, protocol v19, appearance +
 ActorDamage + PlayerPresence + VehicleOccupants + TrainSnapshotV2 + rate-limit
-+ host migration/timeout) + 7 C++ тестов; клиентская логика проверяется в
-игре/fake-клиентами.
++ host migration/timeout incl. e18 soft/join-grace) + 7 C++ тестов;
+клиентская логика проверяется в игре/fake-клиентами.
 
 ## 0. Флаги и предусловия
 
 - Оба ПК: одна и та же сборка (protocol v19: `net/protocol.h`,
   `kProtocolVersion=19`), один `rdr2_coop_server.exe` v19. **Локальная пара
-  npc-e13** — ASI `B43B7EE0`, server `F3EBD6D1`; **ARINA offline** — pending.
-  Откат v18 — ASI `C9BFA565`/server `BEC3428B`; v17 —
-  ASI `35163CC2`/server `B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 —
-  `dist\npc-e2c-v15\`.
+  npc-e18** — ASI `E3FAB30F`, server `DD9BD9D8`, снапшот `dist\npc-e18`;
+  **оба ПК задеплоены** (local + ARINA, хеши сверены). Откат v18 — ASI
+  `C9BFA565`/server `BEC3428B`; v17 — ASI `35163CC2`/server `B7AAABAE`;
+  v16 — `63388AD3`/`4EDAE4B6`; v15 — `dist\npc-e2c-v15\`.
 - INI на обоих ПК (кроме указанных):
   - `npc_actor = 1` — включить NPC-репликацию;
   - `npc_cap = 12` — для проверки 8–12 NPC в городе (default 8; допустимо 1..12);
@@ -70,8 +80,11 @@ ActorDamage + PlayerPresence + VehicleOccupants + TrainSnapshotV2 + rate-limit
     после прогона выключить;
   - остальные экспериментальные флаги — **0** (`world_sync=0`, `action_sync=0`,
     `vehicle_sync=0`, `mission_sync=0`, `train_debug=0`, `mission_credit=0`).
-- E13 **не добавляет новых INI-ключей** — 27 ключей как в npc-e12
-  (snapshot `dist\npc-e13\rdr2-coop.ini.local`).
+- E13–E18 **не добавляют новых INI-ключей** — те же **27 приёмочных** ключей
+  (37 строк в снапшоте: 27 + 6 служебных P2/P3 + 4 подключения; проверено по
+  `src/config.cpp` на `6772c8a`). `npc_motion_status_p2` (default 1) в INI не
+  выписан, но поддержан config. **e19** планирует wheel-ключ → 28 (для e18
+  ничего не добавлять).
 - Хост — первый подключившийся; гость — второй. Оба игрока стоят/ходят рядом
   с одной и той же толпой NPC (discovery учитывает позиции обоих игроков).
 - Бэкап INI/ASI и сейвов (см. `docs/TESTING.md` §7); лог-файл
@@ -139,7 +152,7 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 - При `npc_cap=8` (default) ожидаемые proxies 8, а не 8–12; для приёмки E1
   городского сценария используйте `npc_cap=12`.
 
-## 3. Игровой чек-лист (E1–E13, два ПК)
+## 3. Игровой чек-лист (E1–E18, два ПК)
 
 | # | Сценарий / условия | Шаги | Ожидаемо (визуал + лог) | Артефакт | Pass |
 |---|---|---|---|---|---|
@@ -166,7 +179,7 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 | **S20** | E7.1 visitor mode | у гостя `npc_visitor=1`, `npc_visitor_vehicles=1`; город; сравнить до/после | Локальная ambient-толпа гостя подавлена/уменьшена (`actor: visitor mode on`, `visitor cleanup removed=N`); продавцы/квестовые/событийные NPC остаются; локального трафика нет, машины — из реплик хоста (E3d-a) | guest/host log, видео | [ ] |
 | **S21** | E7.2 плавность | host fake `--pattern circle --num 4 --gait 3 --duration 120`, гость смотрит | `actor: motion id=… reissue=<0.05/s snap=0 target_err_p95` низкий; нет телепортов (кроме `>25 м/|dz|>15/нет кадров>2 с`); стоп/старт без дёргания; `warn update-native A/B` отсутствует | fake host/guest log, OBS | [ ] |
 | **S22** | E3d-a транспорт | `world_vehicles=1`, `npc_vehicle_radius=80`, `npc_visitor_vehicles=1`, `npc_occupants=1`; хост садится за руль/пассажиром и едет; повозка с draft-лошадью | Гость видит тот же транспорт в пределах ~80 м; водитель/пассажиры seated (0x21) без дублей/T-pose, draft-лошадь в упряжке; `world: vehicles send n=`/`vehicle spawn`, `world: occupants vehicle=`, `actor: seat attach … ok=`/`draft attach … ok=`; локального трафика гостя нет; при уходе из радиуса/пустом snapshot прокси удаляются; до 16 машин. При `npc_occupants=0` — старое E3d-a (пустые машины) | host/guest log, видео | [ ] |
-| **S23** | Host migration | хост Alt+F4/quit/Ping-only зависание; гость остаётся; затем старый хост rejoin | Гость становится HOST (HostChanged), реплики очищены/reset, чек `coop: role change -> HOST reset complete`; для Ping-only срабатывает game-timeout 4 с (`[!] host game-timeout`), старый хост rejoin как гость без дублей | оба лога, server log, видео | [ ] |
+| **S23** | Host migration | хост Alt+F4/quit/Ping-only зависание; гость остаётся; затем старый хост rejoin | Гость становится HOST (HostChanged), реплики очищены/reset, чек `coop: role change -> HOST reset complete`; для Ping-only с e18 — **мягкая** миграция: game-timeout 4 с (`[!] host game-timeout`+`promoting remaining`), сокет старого хоста не закрыт, `PlayerLeft` нет, Ping/Pong жив (детально — S31); старый хост rejoin как гость без дублей | оба лога, server log, видео | [ ] |
 | **S24** | Mission-aware visitor | гость в миссии/катсцене (`GET_MISSION_FLAG`/`IS_PLAYER_READY_FOR_CUTSCENE`) в городе | Толпа гостя **не удаляется** во время миссии/катсцены (`actor: visitor scene pause on mission=1/cutscene=1`); после выхода cleanup возобновляется; density/road suppression продолжаются | guest log, видео | [ ] |
 | **S25** | E3d-c occupants/draft | `npc_occupants=1`; хост за рулём, затем пассажиром; повозка с draft-лошадью; сравнить host/guest | Гость видит водителя/пассажиров **seated** в тех же местах, draft-лошадь прицеплена; без дублей human-прокси (occupant не спавнится как отдельный human), без T-pose/провала в текстуры; log `world: occupants vehicle=…`, `actor: seat attach … ok=`, `actor: draft attach … ok=`, `occupants errors=0`; `npc_occupants=0` откат на пустые машины | host/guest log, видео | [ ] |
 | **S26** | E3d-b mission-train + E11 passengers | `world_trains=1` (при `npc_actor=1 && world_vehicles=1 && world_sync=0`); хост у станции/едет, останавливается, разворачивается; затем `world_trains=0` | Гость видит **один** mission-train на рельсах с правильным числом вагонов, станцией/направлением/разворотом; **E11:** пассажиры поезда в carIndex seated/совпадают, без T-pose/дублей; локального второго поезда нет; состав не скачет >25 м/|dz|>15; при выключении/leave/role change mission-train удаляется и random trains восстанавливаются (`SET_RANDOM_TRAINS(true)`); риски: config matching 87 хэшей, direction/reversing семантика | host/guest log, видео | [ ] |
@@ -174,9 +187,11 @@ Select-String -Path .\rdr2-coop.log -Pattern 'scan: fps='
 | **S28** | E10 mounted horse appearance | `npc_mount_appearance=1` на **обоих** ПК; хост садится на NPC-лошадь/всадника (NPC mounted pair); гость смотрит; затем флаг 0 и рестарт | Лошадь под NPC-всадником совпадает с хостом (масть/грива/хвост/седло); нет invisible/T-pose/заморозки/дублей; host log `actor: mount outfit send actor=… model=… items=…`; guest `actor: mount outfit apply … ok=1`/`guest mount outfit applied/failed`; при 0 → random; mounted-horse повторно применяется после позднего mount (heartbeat/retry) | host/guest log, видео | [ ] |
 | **S29** | E12 перф/трафик | 5–10 мин активной игры (NPC + транспорт); `npc_debug=1`, `player_frame_hz=20`, `player_frame_change_only=1`; снять `perf: frame`, `perf: npc`, `perf: net` на обоих ПК и server `net: bytes_in/out` | `perf: frame host/guest` p95 ≤**4 мс**, max ≤**10 мс**; actor p95 ≤**2 мс**; `perf: npc warn`=0; traffic типично **≤10–12 КБ/с**, worst **≤15 КБ/с**; `frames_hz` соответствует движению/покою (≤20/5), bytes не растут бесконечно | host/guest log, server console, FPS | [ ] |
 | **S30** | E13 wall-clock + config warnings | Обычный прогон с 27 ключами; затем отдельный scratch-прогон с опасной комбинацией (например `world_sync=1 && npc_actor=1`), вернуть INI; смотреть `perf: frame host/guest ... tick_hz=` | В обычном прогоне **нет** `config: warn`; в опасной комбинации ровно соответствующая строка `config: warn world_sync=1 && npc_actor=1 …`, игра не падает; `tick_hz` ≈ реальный FPS, `frames_hz` — целевой Player Frame; интервалы/трафик не масштабируются с FPS (60 vs 144) | host log, `config: warn`, `perf: frame` выдержки | [ ] |
+| **S31** | **E18 soft host migration + загрузка + vendor dedupe** | (а) хост Alt+F4/quit — обычная миграция; (б) хост «зависает» (только Ping) после 5–10 с игры; (в) хост перезапускает игру и 30–60 с висит на загрузке (playerPed нет); (г) rejoin старого хоста; (д) гость в visitor mode у продавца | **(а)** гость HOST, `PlayerLeft`+`HostChanged`, `reset complete`; **(б)** через ~4 с server `[!] host game-timeout … promoting remaining` + `[HOST] … повышен до хоста`, guest HOST, старый хост GUEST (`HostChanged(0)`, `GUEST reset complete`), **сокет старого хоста не закрыт**, `PlayerLeft` нет, Ping→Pong работает, reconnect-шторма/флапа ролей нет; **(в)** демоции **нет** — grace 15 с + presence heartbeat ~2 с, в server log нет `host game-timeout`, после загрузки идут Frame; **(г)** старый хост заходит гостем (`is_host=0`), без старых прокси, роль не забирает; **(д)** у продавца нет дубля: guest throttled `actor: visitor vendor skip id=… model=0x…`, host-прокси продавца не спавнится | server `server_console.log` (game-timeout/promoting/PlayerLeft), оба `coop: role change`, guest `actor: visitor vendor skip`, видео загрузки/миграции | [ ] |
 
-Дополнительно: визуальная проверка E2c-b/E5/E6/E7/E3d-a/E3d-b/E3d-c/E9 на
-**двух ПК** (ARINA offline, деплой pending), сценарные позы (E3a), ночь/дождь.
+Дополнительно: визуальная проверка E2c-b/E5/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10 на
+**двух ПК** (оба ПК на npc-e18, деплой выполнен; полный прогон e18 — pending,
+ждём тест e19), сценарные позы (E3a), ночь/дождь.
 Ambient-поезда не чистим v1, точные пассажиры поездов — P1, seat=-1/driver
 и direction/reversing требуют in-game проверки.
 
@@ -255,6 +270,39 @@ Ambient-поезда не чистим v1, точные пассажиры по�
   таймеры (corpse hold, action/presence poll, motion/scenario, attach/dead
   windows, vehicle-scan TTL, train engine cache) — известное ограничение.
 
+### E18 — soft host migration, загрузка и vendor dedupe (S31)
+
+- **Семантика сервера** (task-175, `server/server.cpp`
+  `CheckHostGameTimeoutPhase`): host game-timeout 4 с считается только по
+  **игровым** сообщениям (Ping/Pong — нет). До **первого** game-thread
+  сообщения хоста действует **join grace 15 с** от JOIN/промоушена — загрузка/
+  меню роли не меняют. По таймауту — **мягкая миграция**: `isHost` снимается
+  со старого хоста, второй повышается, обоим уходит `HostChanged`; **сокет
+  старого хоста не закрывается**, `PlayerLeft` не рассылается; старый хост
+  остаётся обычным клиентом (Ping/Pong живёт) до idle/connection cleanup.
+  Логи: `[!] host game-timeout (N ms), promoting remaining`,
+  `[HOST] <имя> повышен до хоста`; клиенты — `coop: role change -> HOST/GUEST
+  reset complete`. Новому хосту даётся тот же grace 15 с.
+- **Клиент на загрузке** (task-176): пока `playerPed` отсутствует (загрузка/
+  респавн), клиент шлёт `PlayerPresence` flags=0 каждые ~2 с; presence —
+  game-thread сообщение, поэтому сервер не демотирует загружающегося хоста.
+  После появления педа обычная presence-логика (2 Гц/изменение) берёт верх;
+  дублей нет. Лог `perf: net`/серверная статистика показывают ~1 сообщение/2 с.
+- **Vendor dedupe** (task-180): при `npc_visitor=1` гость не спавнит
+  host-прокси продавца (`IsVisitorVendorModel`) — продавец остаётся локальным,
+  без дубля. Guest-лог throttled: `actor: visitor vendor skip id=… model=0x…`.
+- **Как проверять (S31):** см. F1–F4 в [ACCEPTANCE_2PC.md](ACCEPTANCE_2PC.md)
+  §6; серверный лог — `Select-String -Pattern "host game-timeout|promoting
+  remaining|\[HOST\]|PlayerLeft"`; наличие `PlayerLeft` **вместе** с
+  `promoting remaining` для одного и того же хоста — FAIL (hard-миграция
+  вместо soft). Reconnect-шторм = серия JOIN/reconnect/WinError в логах
+  клиента после такого таймаута — FAIL.
+- **Автотесты:** `tests/integration_server.py` —
+  `test_host_game_timeout_ping_only` (demote/no-socket-close/no-PlayerLeft,
+  Ping→Pong; presence-only не демотируется),
+  `test_host_game_join_grace` (хост без game-сообщений не демотируется внутри
+  grace), `test_host_game_timeout_frame_activity` (Frame продлевает).
+
 ### E5.2/E6/E7 — уточнения методики
 
 - **E5.2:** труп-прокси держится до `npc_corpse_max_sec` (300 с) или пока
@@ -271,7 +319,8 @@ Ambient-поезда не чистим v1, точные пассажиры по�
 - **E7.2:** baseline-порог плавности `reissue <0.05/s`, `snap=0`;
   телепорт-лог ожидается только на respawn/стрим-прыжках; `npc_motion_marker`
   включать только для A/B fallback.
-- **E7.3:** E3d-a — см. S22; host migration — S23; mission-aware visitor —
+- **E7.3:** E3d-a — см. S22; host migration — S23 (+ soft e18 — S31);
+  mission-aware visitor —
   S24; новых сообщений протокола нет (v18 без bump), v19 — VehicleOccupants
   0x21/TrainSnapshotV2 0x22.
 
@@ -343,8 +392,9 @@ Ambient-поезда не чистим v1, точные пассажиры по�
 - **E7.3/E3d-a/host migration:** E3d-a vehicles-only; E3d-c occupants/draft
   (0x21) — водитель/пассажиры seated, без дублей; при миграции мир не
   переносится (новый хост отдаёт свой), реплики очищаются; game-timeout 4 с
-  не считается по Ping; пустой snapshot удаляет vehicle-прокси; ARINA
-  offline — 2-ПК прогон pending.
+  не считается по Ping; **e18:** мягкая миграция без закрытия сокета/без
+  `PlayerLeft`, join grace 15 с, presence-liveness (S31/F1–F4); пустой
+  snapshot удаляет vehicle-прокси; 2-ПК прогон e18 pending (ждём тест e19).
 - **E8/E3d-b/E3d-c:** mission-train (0x22) — 87 config-хэшей, direction/
   reversing семантика приближённая; E11 точные пассажиры поездов — 0x21
   `carIndex`, проверять S26; ambient-поезда не чистим v1; seat=-1 (driver)
@@ -357,7 +407,7 @@ Ambient-поезда не чистим v1, точные пассажиры по�
   и `npc_mount_appearance` должны совпадать на host+guest. Проверять S27/S28.
   E10: mounted horse может получить внешность с задержкой/не примениться при
   позднем mount (heartbeat/retry повторит).
-- **E12/E13:** `perf: frame` p95/max — полный кадр (рекомендуемый бюджет
+- **E12/E13/E18:** `perf: frame` p95/max — полный кадр (рекомендуемый бюджет
   p95≤4/ max≤10 мс), actor p95≤2 мс; traffic по server bytes и client
   `perf: net` — типично ≤10–12, worst ≤15 КБ/с; `player_frame_hz=20` может
   слегка сглаживать ghost (поднять до 60). E13: wall-clock/FPS-independent;
@@ -365,14 +415,18 @@ Ambient-поезда не чистим v1, точные пассажиры по�
   таймеров осталась тиковой (corpse hold, action/presence poll, motion/
   scenario, attach/dead windows, vehicle-scan TTL, train engine cache) —
   при 144 FPS их окна короче; config-асимметрия host/guest не проверяется.
+  E18: loading presence heartbeat добавляет ~1 сообщение/2 с только пока
+  playerPed отсутствует; soft migration не закрывает сокет (трафик/Ping
+  продолжаются, reconnect-шторма нет).
 - **E2c-a resolver**: механически работает (890 моделей/4568 кандидатов,
   бюджет 24 натива/тик), но random ambient NPC без именованного outfit —
   `resolved=0/failed=11`; это закрывает E2c-b asset/tint, проверять
   `appearance_msgs/appearance_actors/entry_max/errors` и визуал.
-- **Двух-ПК приёмка не пройдена**: локальная пара npc-e13/v19 (ASI
-  `B43B7EE0`, server `F3EBD6D1`), ARINA offline — деплой pending; текущие
-  E1–E13 — однопК-проверки fake host/guest + реальный хост, E5/E5.1
-  подтверждены игровым гостем. Финальный чек-лист: [ACCEPTANCE_2PC.md](ACCEPTANCE_2PC.md).
+- **Двух-ПК приёмка не пройдена**: локальная пара npc-e18/v19 (ASI
+  `E3FAB30F`, server `DD9BD9D8`), оба ПК задеплоены (local + ARINA, хеши
+  сверены); текущие E1–E18 — однопК-проверки fake host/guest + реальный
+  хост, E5/E5.1 подтверждены игровым гостем. Полный прогон e18 pending —
+  ждём тест e19. Финальный чек-лист: [ACCEPTANCE_2PC.md](ACCEPTANCE_2PC.md).
 - **Tick budget**: для E4 добавлена инструментация (`perf: npc host/guest ...`
   при `npc_debug=1`); анализ и пороги — `docs/PERF.md` +
   `tools/perf_report.py`. На старом логе (до E4-билда) `perf:` нет — это не
@@ -404,5 +458,6 @@ E4 принимается по `perf: npc host/guest` и полному `perf: f
 `--baseline` vs `--log`, `--json`, exit 0/1/2) — в `docs/PERF.md`.
 Ограничение 1 ПК: host и guest метрики снимаются отдельными прогонами;
 fake guest не даёт guest-`perf:` (это Python). Двух-ПК приёмка
-E2c-b/E4/E5/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10 — pending; локальная пара
-npc-e13/v19 — ASI `B43B7EE0`/server `F3EBD6D1`, ARINA offline (деплой pending).
+E2c-b/E4/E5/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10/E18 — pending; локальная пара
+npc-e18/v19 — ASI `E3FAB30F`/server `DD9BD9D8`, оба ПК задеплоены (local +
+ARINA, хеши сверены); полный прогон ждём на e19.

@@ -2327,6 +2327,38 @@ def test_host_game_timeout_ping_only(exe, tmp):
         guest.close()
 
 
+def test_host_game_join_grace(exe, tmp):
+    log("[test] host game-timeout: join grace (no game-thread msg yet)")
+    # task-175 invariant: until the host sends its FIRST game-thread message it
+    # gets kHostGameGraceMs (15 s) from JOIN/promotion. The normal game-timeout
+    # (here 2000 ms) must NOT demote a still-loading host inside that grace.
+    # Host is realistic during load: the network thread keeps Pinging (Pong
+    # proves the socket is alive), the game thread has not started yet.
+    with Server(exe, tmp / "host_game_grace", host_game_ms=2000) as srv:
+        host, guest = _fast_pair(srv)
+        end = time.time() + 3.0  # > game-timeout 2 s, well inside 15 s grace
+        changed = None
+        host_closed = False
+        while time.time() < end and changed is None:
+            if not host_closed:
+                try:
+                    host.sendall(frame_bytes(TYPE_PING, struct.pack("<Q", 55)))
+                except OSError:
+                    host_closed = True
+            for t, p in recv_msgs(guest, 0.2):
+                if t == TYPE_HOST_CHANGED:
+                    changed = p
+            recv_msgs(host, 0.05)  # drain Pong
+        require(not host_closed,
+                "host socket must stay open inside the join grace")
+        require(changed is None,
+                f"host inside join grace must NOT be demoted, got HostChanged {changed}")
+        require("host game-timeout" not in srv.log_text(),
+                "server must not apply game-timeout inside the join grace")
+        host.close()
+        guest.close()
+
+
 def test_host_game_timeout_frame_activity(exe, tmp):
     log("[test] host game-timeout: Frame activity keeps host alive")
     # host_game timeout 2500 мс; Frame каждые ~0.2 с продлевает хоста.
@@ -3017,6 +3049,7 @@ def main():
         test_oversized_and_truncated,
         test_host_migration,
         test_host_game_timeout_ping_only,
+        test_host_game_join_grace,
         test_host_game_timeout_frame_activity,
         test_join_race,
         test_idle_timeout,
