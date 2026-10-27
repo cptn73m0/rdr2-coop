@@ -315,10 +315,11 @@ powershell -ExecutionPolicy Bypass -File scripts\ci.ps1
 
 CI включает **ub-mode strict quality gate** (по умолчанию): `quality_scan.py`
 против `tools/quality_baseline.json`, падение при росте CRAP>5000/dup>=4/TODO.
-Финальный delta после refactor-сборки `npc-e16`: 45 файлов/334→388 функций,
-CRAP>5000 **4→1**, dup≥4 **7→3**, TODO 0→0; **baseline обновлён после
-0e64a22** (45/388/1/3/0), strict ловит регрессии относительно нового лучшего
-состояния. Детали и hotspots — [docs/UB_MODE.md](docs/UB_MODE.md).
+После P3-фикса многострочных сигнатур baseline перегенерирован:
+45 файлов/**489** функций, CRAP>5000=**4**, dup≥4=**3**, TODO=0; скрытые
+`HandleClient`/`SendHostSnapshot`/`ProcessGuestHorseOutfits` — не регрессия
+кода, а артефакт старого сканера. Детали и hotspots —
+[docs/UB_MODE.md](docs/UB_MODE.md).
 
 Двух-ПК чек-лист: [docs/TESTING.md](docs/TESTING.md).
 Финальная приёмка 2-ПК: [docs/ACCEPTANCE_2PC.md](docs/ACCEPTANCE_2PC.md).
