@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace net {
 
@@ -19,7 +21,9 @@ namespace net {
 //           релеится сервером другому игроку (любое направление, без эха).
 // v19 (E3d-b/E3d-c): VehicleOccupants — водители/пассажиры транспорта,
 //           TrainSnapshotV2 — поезд/состав (хост -> сервер -> гость).
-constexpr uint16_t kProtocolVersion = 19;
+// v20 (P1): VehicleInteraction/Result/State — guest->host интенты по
+//           транспорту (двери/урон/посадка/…), ответы и state хоста.
+constexpr uint16_t kProtocolVersion = 20;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -75,6 +79,13 @@ enum class Msg : uint8_t {
     VehicleOccupants = 0x21, // хост -> сервер -> гость: occupants/всадники
     // E3d-b (v19): поезд/состав v2 — только хост -> сервер -> гость.
     TrainSnapshotV2  = 0x22, // хост -> сервер -> гость: поезд/вагоны
+    // v20 P1: события транспорта. 0x23 — только гость -> сервер -> хосту;
+    // 0x24/0x26 — только хост -> сервер -> гостю(ям). 0x25/0x27 — P3, не в P1.
+    VehicleInteraction       = 0x23, // guest -> server -> host: интент
+    VehicleInteractionResult = 0x24, // host -> server -> guest: результат
+    VehicleControlInput      = 0x25, // RESERVED (P3): не реализуется в P1
+    VehicleState             = 0x26, // host -> server -> guest: состояние
+    VehicleControlState      = 0x27, // RESERVED (P3): не реализуется в P1
 };
 
 // 1 байт: 1 = «ты теперь хост», 0 = «ты гость».
@@ -657,6 +668,256 @@ struct TrainSnapshotV2Payload {
 };
 static_assert(sizeof(TrainSnapshotV2Payload) == 48,
               "TrainSnapshotV2Payload must be 48 bytes");
+
+// ---------------- v20 P1: интерактивность транспорта ----------------
+// 0x23 VehicleInteraction: гость -> сервер -> хосту (интент).
+// 0x24 VehicleInteractionResult: хост -> сервер -> гостю (ответ).
+// 0x26 VehicleState: хост -> сервер -> гостю (состояние).
+// Всё fixed-size, little-endian, без float; проверки входа — inline ниже
+// (единый источник для server/client/tests).
+
+enum class VehicleAction : uint8_t {
+    None       = 0,
+    Damage     = 1,   // door = part*, param = amount 1..1000
+    DoorOpen   = 2,   // door = doorId 0..7
+    DoorClose  = 3,   // door = doorId 0..7
+    DoorLock   = 4,   // door = doorId 0..7 или 255 (все двери)
+    DoorUnlock = 5,   // door = doorId 0..7 или 255 (все двери)
+    DoorBreak  = 6,   // door = doorId 0..7
+    Enter      = 7,   // seat = -1 driver / 0..8 passenger / 127 = first free
+    Exit       = 8,   // seat = 127
+    Hijack     = 9,   // seat = -1/127; targetId = actorId водителя (или 0)
+    Loot       = 10,  // targetId = netId контейнера (0 = груз vehicle)
+    Hitch      = 11,  // door = harness 0..5; targetId = netId лошади (0 = any)
+    Unhitch    = 12,  // door = harness 0..5
+};
+
+// Части vehicle для Damage (поле door = part).
+constexpr uint8_t kVehiclePartDoorBase   = 0;   // 0..7  — doorId
+constexpr uint8_t kVehiclePartWheelFL    = 8;
+constexpr uint8_t kVehiclePartWheelFR    = 9;
+constexpr uint8_t kVehiclePartWheelRL    = 10;
+constexpr uint8_t kVehiclePartWheelRR    = 11;
+constexpr uint8_t kVehiclePartWindowBase = 12;  // 12..15 — P1 RESERVED/reject
+constexpr uint8_t kVehiclePartEngine     = 254;
+constexpr uint8_t kVehiclePartBody       = 255;
+
+// Флаги интента (uint8_t).
+constexpr uint8_t kInteractionTargetActor   = 1u << 0; // targetId = actorId
+constexpr uint8_t kInteractionTargetEntity  = 1u << 1; // targetId = entity netId
+constexpr uint8_t kInteractionUrgent        = 1u << 2;
+constexpr uint8_t kInteractionLootContainer = 1u << 3;
+constexpr uint8_t kInteractionGuestHorse    = 1u << 4; // hitch: лошадь гостя
+constexpr uint8_t kInteractionForce         = 1u << 5; // host может игнорировать
+constexpr uint8_t kInteractionKnownFlags =
+    kInteractionTargetActor | kInteractionTargetEntity |
+    kInteractionUrgent | kInteractionLootContainer |
+    kInteractionGuestHorse | kInteractionForce;
+
+// Значения seat/door.
+constexpr int8_t  kVehicleSeatNone   = 127;
+constexpr int8_t  kVehicleSeatDriver = -1;
+constexpr uint8_t kVehicleDoorAll    = 255;
+constexpr uint8_t kVehicleDoorNone   = 255;
+
+struct VehicleInteractionPayload {
+    uint32_t epoch = 0;          // 0
+    uint32_t vehicleNetId = 0;   // 4
+    uint32_t targetId = 0;       // 8  actorId/netId по flags; 0 = нет
+    uint16_t seq = 0;            // 12 idempotency key; 0 невалиден
+    uint8_t  action = 0;         // 14 VehicleAction
+    int8_t   seat = kVehicleSeatNone; // 15 -1/0..8/127
+    uint8_t  door = 255;         // 16 doorId/part/harness по action
+    uint8_t  flags = 0;          // 17 kInteractionFlag*
+    uint16_t param = 0;          // 18 Damage amount 1..1000; иначе 0..255
+    uint32_t weaponHash = 0;     // 20 контекст Damage (0 = неизвестно)
+};
+static_assert(sizeof(VehicleInteractionPayload) == 24,
+              "VehicleInteractionPayload must be 24 bytes");
+static_assert(offsetof(VehicleInteractionPayload, action) == 14,
+              "VehicleInteractionPayload.action offset must be 14");
+static_assert(offsetof(VehicleInteractionPayload, weaponHash) == 20,
+              "VehicleInteractionPayload.weaponHash offset must be 20");
+
+enum class VehicleResult : uint8_t {
+    Applied = 0,       // натив применён, состояние прочитано
+    NotAllowed = 1,    // policy/param reject; reason — detail bits 8..15
+    StaleEpoch = 2,
+    NotFound = 3,      // netId не в host handle map / vehicle исчез
+    OutOfRange = 4,
+    SeatOccupied = 5,
+    Locked = 6,
+    RateLimited = 7,   // cooldown/budget/queue
+    Timeout = 8,       // не применено за отведённый тик-бюджет
+    Correction = 9,    // state поправлен; guest обязан reconcile
+};
+
+// detail bits 8..15 для result=NotAllowed (u8 reason = (detail >> 8) & 0xFF).
+constexpr uint8_t kResultReasonConfigOff        = 1; // vehicle_interaction=0
+constexpr uint8_t kResultReasonMissionProtected = 2; // mission vehicle (default)
+constexpr uint8_t kResultReasonHostVehicle      = 3; // host player's vehicle
+constexpr uint8_t kResultReasonBadParam         = 4; // seat/door/part/flags/param
+constexpr uint8_t kResultReasonDeadGuest        = 5; // guest ghost мёртв/нет
+constexpr uint8_t kResultReasonBadRole          = 6; // не та роль / self-target
+constexpr uint8_t kResultReasonPolicy           = 7; // прочая политика
+
+inline uint8_t VehicleInteractionReason(uint32_t detail)
+{
+    return static_cast<uint8_t>((detail >> 8) & 0xFF);
+}
+
+struct VehicleInteractionResultPayload {
+    uint32_t epoch = 0;        // 0
+    uint32_t vehicleNetId = 0; // 4
+    uint16_t seq = 0;          // 8  echo запроса
+    uint8_t  action = 0;       // 10 echo
+    uint8_t  result = 0;       // 11 VehicleResult
+    uint32_t detail = 0;       // 12 action-specific detail
+};
+static_assert(sizeof(VehicleInteractionResultPayload) == 16,
+              "VehicleInteractionResultPayload must be 16 bytes");
+
+// doorBits: 2 бита на дверь, doorId 0..7 (0 closed, 1 fully open, 2 broken,
+// 3 unknown; lock — глобальный флаг/кэш: per-door readback в 1491.50 нет).
+// wheelsBits: 2 бита на колесо 0 FL/1 FR/2 RL/3 RR (0 intact, 2 destroyed,
+// 3 unknown; damaged(1) readback в 1491.50 отсутствует — хост не отправляет).
+constexpr uint8_t kVehicleStateFlagDoorValid       = 1u << 0;
+constexpr uint8_t kVehicleStateFlagDamageValid     = 1u << 1;
+constexpr uint8_t kVehicleStateFlagLocked          = 1u << 2;
+constexpr uint8_t kVehicleStateFlagMissionProtected= 1u << 3;
+constexpr uint8_t kVehicleStateFlagHostSeatValid   = 1u << 4;
+constexpr uint8_t kVehicleStateFlagGuestSeatValid  = 1u << 5;
+constexpr uint8_t kVehicleStateFlagHijacked        = 1u << 6;
+constexpr uint8_t kVehicleStateFlagDead            = 1u << 7;
+constexpr uint8_t kVehicleStateKnownFlags =
+    kVehicleStateFlagDoorValid | kVehicleStateFlagDamageValid |
+    kVehicleStateFlagLocked | kVehicleStateFlagMissionProtected |
+    kVehicleStateFlagHostSeatValid | kVehicleStateFlagGuestSeatValid |
+    kVehicleStateFlagHijacked | kVehicleStateFlagDead;
+
+// R&D (docs/NATIVE_RESEARCH_V20_HEALTH.md): оба readback-натива возвращают
+// float; в wire квантуем (body 0..1000 → u16, engine -4000..1000 → i16).
+// kVehicleStateFlagDamageValid ставится только при finite health.
+constexpr uint16_t kVehicleBodyHealthUnknown   = 0xFFFF; // 0..1000 valid
+constexpr int16_t  kVehicleEngineHealthUnknown = -32768; // -4000..1000 valid
+
+struct VehicleStatePayload {
+    uint32_t epoch = 0;         // 0
+    uint32_t vehicleNetId = 0;  // 4
+    uint16_t bodyHealth = kVehicleBodyHealthUnknown; // 8
+    int16_t  engineHealth = kVehicleEngineHealthUnknown; // 10
+    uint16_t doorBits = 0;      // 12
+    uint16_t seq = 0;           // 14 монотонный per vehicle
+    uint8_t  flags = 0;         // 16 kVehicleStateFlag*
+    uint8_t  wheelsBits = 0;    // 17
+    int8_t   hostSeat = kVehicleSeatNone;  // 18
+    int8_t   guestSeat = kVehicleSeatNone; // 19
+    uint32_t reserved = 0;      // 20 зарезервировано (P3: leaseId)
+};
+static_assert(sizeof(VehicleStatePayload) == 24,
+              "VehicleStatePayload must be 24 bytes");
+
+// ---------------- inline валидаторы (единый источник) ----------------
+inline bool IsValidVehicleSeat(int value)
+{
+    return value == kVehicleSeatDriver ||
+           (value >= 0 && value <= kMaxVehicleSeat) ||
+           value == kVehicleSeatNone;
+}
+
+inline bool IsValidVehicleInteraction(const std::vector<uint8_t>& p)
+{
+    if (p.size() != sizeof(VehicleInteractionPayload))
+        return false;
+    VehicleInteractionPayload m{};
+    std::memcpy(&m, p.data(), sizeof(m));
+    if (m.epoch == 0 || m.vehicleNetId == 0 || m.seq == 0)
+        return false;
+    if (m.action < static_cast<uint8_t>(VehicleAction::Damage) ||
+        m.action > static_cast<uint8_t>(VehicleAction::Unhitch))
+        return false;
+    if ((m.flags & ~kInteractionKnownFlags) != 0)
+        return false;
+    if ((m.flags & kInteractionTargetActor) &&
+        (m.flags & kInteractionTargetEntity))
+        return false;
+    if (!IsValidVehicleSeat(m.seat))
+        return false;
+    const VehicleAction action = static_cast<VehicleAction>(m.action);
+    if (action != VehicleAction::Damage && m.weaponHash != 0)
+        return false;
+    const bool targetNone = m.targetId == 0;
+    switch (action)
+    {
+    case VehicleAction::Damage:
+        // door = part: двери 0..7, колёса 8..11, engine/body 254/255;
+        // окна 12..15 — P1 RESERVED/reject.
+        if (!((m.door <= 7) || (m.door >= kVehiclePartWheelFL &&
+                                m.door <= kVehiclePartWheelRR) ||
+              m.door == kVehiclePartEngine || m.door == kVehiclePartBody))
+            return false;
+        return m.param >= 1 && m.param <= 1000;
+    case VehicleAction::DoorOpen:
+    case VehicleAction::DoorClose:
+    case VehicleAction::DoorBreak:
+        return m.door <= 7 && m.param == 0;
+    case VehicleAction::DoorLock:
+    case VehicleAction::DoorUnlock:
+        return (m.door <= 7 || m.door == kVehicleDoorAll) && m.param == 0;
+    case VehicleAction::Enter:
+        return m.door == kVehicleDoorNone && m.targetId == 0 &&
+               m.param == 0;
+    case VehicleAction::Exit:
+        return m.seat == kVehicleSeatNone && m.door == kVehicleDoorNone &&
+               m.param == 0;
+    case VehicleAction::Hijack:
+        return (m.seat == kVehicleSeatDriver ||
+                m.seat == kVehicleSeatNone) &&
+               m.door == kVehicleDoorNone && m.param == 0 &&
+               (targetNone || (m.flags & kInteractionTargetActor));
+    case VehicleAction::Loot:
+        return m.seat == kVehicleSeatNone && m.param == 0 &&
+               ((m.flags & kInteractionTargetEntity) ? !targetNone : targetNone);
+    case VehicleAction::Hitch:
+    case VehicleAction::Unhitch:
+        return m.door <= kMaxDraftHarness && m.param == 0 &&
+               (targetNone || (m.flags & kInteractionTargetEntity));
+    default:
+        return false;
+    }
+}
+
+inline bool IsValidVehicleInteractionResult(const std::vector<uint8_t>& p)
+{
+    if (p.size() != sizeof(VehicleInteractionResultPayload))
+        return false;
+    VehicleInteractionResultPayload m{};
+    std::memcpy(&m, p.data(), sizeof(m));
+    if (m.epoch == 0 || m.vehicleNetId == 0 || m.seq == 0)
+        return false;
+    if (m.action < static_cast<uint8_t>(VehicleAction::Damage) ||
+        m.action > static_cast<uint8_t>(VehicleAction::Unhitch))
+        return false;
+    return m.result <= static_cast<uint8_t>(VehicleResult::Correction);
+}
+
+inline bool IsValidVehicleState(const std::vector<uint8_t>& p)
+{
+    if (p.size() != sizeof(VehicleStatePayload))
+        return false;
+    VehicleStatePayload m{};
+    std::memcpy(&m, p.data(), sizeof(m));
+    if (m.epoch == 0 || m.vehicleNetId == 0)
+        return false;
+    if ((m.flags & ~kVehicleStateKnownFlags) != 0)
+        return false;
+    if (!(m.bodyHealth <= 1000 || m.bodyHealth == kVehicleBodyHealthUnknown))
+        return false;
+    if (!((m.engineHealth >= -4000 && m.engineHealth <= 1000) ||
+          m.engineHealth == kVehicleEngineHealthUnknown))
+        return false;
+    return IsValidVehicleSeat(m.hostSeat) && IsValidVehicleSeat(m.guestSeat);
+}
 
 // Размеры полей кадра.
 constexpr std::size_t kLenSize   = 4; // u32

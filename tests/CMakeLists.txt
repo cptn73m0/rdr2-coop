@@ -56,6 +56,13 @@ add_executable(mission_barrier_rules_fuzz
 target_include_directories(mission_barrier_rules_fuzz PRIVATE .. ../src)
 target_compile_features(mission_barrier_rules_fuzz PRIVATE cxx_std_17)
 
+# v20 P1 (U1): wire-структуры/валидаторы интерактивности транспорта.
+add_executable(vehicle_interaction_protocol_test
+    vehicle_interaction_protocol_test.cpp
+)
+target_include_directories(vehicle_interaction_protocol_test PRIVATE ..)
+target_compile_features(vehicle_interaction_protocol_test PRIVATE cxx_std_17)
+
 if (WIN32)
     target_link_libraries(client_reconnect_test PRIVATE ws2_32)
     target_link_libraries(frame_reader_fuzz PRIVATE ws2_32)

@@ -71,6 +71,9 @@ struct OnlinePlayer {
     RateWindow presenceRate;  // E6 (v18): PlayerPresence 0x20
     RateWindow occupantsRate; // E3d-c (v19): VehicleOccupants 0x21
     RateWindow trainV2Rate;   // E3d-b (v19): TrainSnapshotV2 0x22
+    RateWindow interactionRate;       // v20 P1: VehicleInteraction 0x23 (guest)
+    RateWindow interactionResultRate; // v20 P1: VehicleInteractionResult 0x24
+    RateWindow vehicleStateRate;      // v20 P1: VehicleState 0x26
     // Host migration hardening: время последнего игрового (не Ping) сообщения
     // от этого клиента (мс). Если isHost и с этого момента прошло больше
     // g_hostGameTimeoutMs — хост считается зависшим и мигрирует.
@@ -111,6 +114,7 @@ enum class TrafficBucket : int
     Damage,
     Trains,
     Occupants,
+    Vehicle, // v20 P1: 0x23/0x24/0x26
     Other,
     Count
 };
@@ -143,6 +147,9 @@ TrafficBucket TrafficBucketFor(net::Msg m)
     case net::Msg::TrainSnapshot:
     case net::Msg::TrainSnapshotV2: return TrafficBucket::Trains;
     case net::Msg::VehicleOccupants: return TrafficBucket::Occupants;
+    case net::Msg::VehicleInteraction:
+    case net::Msg::VehicleInteractionResult:
+    case net::Msg::VehicleState: return TrafficBucket::Vehicle;
     default: return TrafficBucket::Other;
     }
 }
@@ -200,6 +207,10 @@ constexpr int kMaxPlayerPresencePerSecond = 10;
 constexpr int kMaxVehicleOccupantsPerSecond = 20;
 // E3d-b (v19): поезд v2 — не больше 4 сообщений (0x22) в секунду с клиента.
 constexpr int kMaxTrainSnapshotV2PerSecond = 4;
+// v20 P1 (D3): rate-лимиты сервера для интерактивности транспорта.
+constexpr int kMaxVehicleInteractionPerSecond = 8;
+constexpr int kMaxVehicleInteractionResultPerSecond = 20;
+constexpr int kMaxVehicleStatePerSecond = 10;
 std::mutex g_rateMutex;
 struct IpRate
 {
@@ -309,6 +320,9 @@ bool IsGameThreadMessage(net::Msg m)
     case net::Msg::ActorOutfit:
     case net::Msg::PlayerPresence: // task-175: клиент шлёт из игрового потока
     case net::Msg::ActorAppearance:
+    // v20 P1 (§3.3): host activity; 0x23 (guest intent) сюда НЕ входит.
+    case net::Msg::VehicleInteractionResult:
+    case net::Msg::VehicleState:
         return true;
     default:
         return false;
@@ -994,6 +1008,53 @@ void RelayHostOnlyRate(netio::Socket* sock, const std::string& name,
                                          static_cast<uint32_t>(pay.size())));
 }
 
+// v20 P1 (§3.3): guest -> host unicast + per-client rate-limit (0x23).
+// Хост-отправитель: warn+drop; нет хоста online — drop (сервер не эмулирует).
+void RelayGuestToHostRate(netio::Socket* sock, const std::string& name,
+                          const std::vector<uint8_t>& pay, uint8_t type,
+                          PayloadValidator validator,
+                          RateWindow OnlinePlayer::*rate, int limit,
+                          const char* what)
+{
+    (void)sock;
+    if (!validator(pay))
+        return;
+    bool senderIsHost = false;
+    bool allowed = false;
+    netio::Socket* hostSock = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        auto it = g_online.find(name);
+        if (it != g_online.end())
+        {
+            senderIsHost = it->second.isHost;
+            if (!senderIsHost)
+            {
+                for (auto& kv : g_online)
+                {
+                    if (kv.second.isHost && kv.second.sock)
+                    {
+                        hostSock = kv.second.sock;
+                        break;
+                    }
+                }
+                if (hostSock)
+                    allowed = AllowRate(it->second.*rate, limit, NowMs());
+            }
+        }
+    }
+    if (senderIsHost)
+        LogWarn("[!] " + name + ": " + what + " от хоста проигнорирован");
+    else if (allowed && hostSock)
+    {
+        const std::vector<uint8_t> msg = MakeMsg(
+            type, pay.data(), static_cast<uint32_t>(pay.size()));
+        SendTracked(hostSock, msg.data(), (int)msg.size());
+    }
+    // Нет хоста / rate-limited: молча drop (клиент повторит по своей policy).
+}
+
+
 // ---------------- Таблица состояния ----------------
 void PrintStatus()
 {
@@ -1045,6 +1106,7 @@ void PrintStatus()
            << " damage=" << tc(TrafficBucket::Damage)
            << " trains=" << tc(TrafficBucket::Trains)
            << " occupants=" << tc(TrafficBucket::Occupants)
+           << " vehicle=" << tc(TrafficBucket::Vehicle)
            << " other=" << tc(TrafficBucket::Other) << "\n";
     }
     if (copy.empty())
@@ -1710,6 +1772,41 @@ void ActorRelayMessagesPhase(ClientSession& s,
     }
 }
 
+// v20 P1 (§3): 0x23 guest->host unicast; 0x24/0x26 host->guest relay.
+void VehicleMessagesPhase(ClientSession& s,
+                          const std::vector<uint8_t>& pay, net::Msg msg)
+{
+    switch (msg)
+    {
+        case net::Msg::VehicleInteraction:
+            RelayGuestToHostRate(s.sock, s.name, pay,
+                                 (uint8_t)net::Msg::VehicleInteraction,
+                                 net::IsValidVehicleInteraction,
+                                 &OnlinePlayer::interactionRate,
+                                 kMaxVehicleInteractionPerSecond,
+                                 "VehicleInteraction");
+            break;
+        case net::Msg::VehicleInteractionResult:
+            RelayHostOnlyRate(s.sock, s.name, pay,
+                              (uint8_t)net::Msg::VehicleInteractionResult,
+                              net::IsValidVehicleInteractionResult,
+                              &OnlinePlayer::interactionResultRate,
+                              kMaxVehicleInteractionResultPerSecond,
+                              "VehicleInteractionResult");
+            break;
+        case net::Msg::VehicleState:
+            RelayHostOnlyRate(s.sock, s.name, pay,
+                              (uint8_t)net::Msg::VehicleState,
+                              net::IsValidVehicleState,
+                              &OnlinePlayer::vehicleStateRate,
+                              kMaxVehicleStatePerSecond,
+                              "VehicleState");
+            break;
+        default:
+            break;
+    }
+}
+
 // Rate-limit/presence/traffic/misc phases (ActorDamage..Ping), без закрытия.
 void MiscMessagesPhase(ClientSession& s,
                        const std::vector<uint8_t>& pay, net::Msg msg)
@@ -1954,6 +2051,14 @@ bool DispatchMessagesPhase(ClientSession& s, uint64_t nowMs)
         case net::Msg::Ping:
             MiscMessagesPhase(s, pay, msg);
             break;
+        case net::Msg::VehicleInteraction:
+        case net::Msg::VehicleInteractionResult:
+        case net::Msg::VehicleState:
+            VehicleMessagesPhase(s, pay, msg);
+            break;
+        case net::Msg::VehicleControlInput:
+        case net::Msg::VehicleControlState:
+            break; // RESERVED (P3): не реализуется в P1
         default:
             break;
         }

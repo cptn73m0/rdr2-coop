@@ -551,6 +551,73 @@ TRAFFIC_TESTS = {
     "test_train_v2_rate_limit",
 }
 
+# --------------------------------------------------------------------------
+# Protocol v20 P1: VehicleInteraction (0x23) / Result (0x24) / State (0x26).
+# 0x23: 24 B {epoch u32, vehicleNetId u32, targetId u32, seq u16, action u8,
+# seat i8, door u8, flags u8, param u16, weaponHash u32}; guest -> host unicast.
+# 0x24: 16 B; 0x26: 24 B; host -> guest. 0x25/0x27 reserved (P3).
+# --------------------------------------------------------------------------
+VEHICLE_AVAILABLE = False
+TYPE_VEHICLE_INTERACTION = None
+TYPE_VEHICLE_INTERACTION_RESULT = None
+TYPE_VEHICLE_STATE = None
+VEHICLE_INTERACTION_SIZE = 0
+VEHICLE_RESULT_SIZE = 0
+VEHICLE_STATE_SIZE = 0
+if PROTO >= 20:
+    _missing_veh = [name for name in
+                    ("VehicleInteraction", "VehicleInteractionResult",
+                     "VehicleState", "VehicleControlInput",
+                     "VehicleControlState")
+                    if name not in MSG]
+    for _name in ("VehicleInteractionPayload",
+                  "VehicleInteractionResultPayload", "VehicleStatePayload"):
+        if _struct_size_optional(_name) is None:
+            _missing_veh.append(_name)
+    if _missing_veh:
+        raise RuntimeError(
+            "protocol v20 is present but P1 vehicle spec is incomplete: "
+            f"missing={_missing_veh}")
+    require(MSG["VehicleInteraction"] == 0x23,
+            f"Msg::VehicleInteraction expected 0x23, "
+            f"got {MSG['VehicleInteraction']}")
+    require(MSG["VehicleInteractionResult"] == 0x24,
+            f"Msg::VehicleInteractionResult expected 0x24, "
+            f"got {MSG['VehicleInteractionResult']}")
+    require(MSG["VehicleControlInput"] == 0x25, "reserved 0x25")
+    require(MSG["VehicleState"] == 0x26,
+            f"Msg::VehicleState expected 0x26, got {MSG['VehicleState']}")
+    require(MSG["VehicleControlState"] == 0x27, "reserved 0x27")
+    require(_struct_size("VehicleInteractionPayload") == 24,
+            "VehicleInteractionPayload expected 24 B (v20 spec)")
+    require(_struct_size("VehicleInteractionResultPayload") == 16,
+            "VehicleInteractionResultPayload expected 16 B (v20 spec)")
+    require(_struct_size("VehicleStatePayload") == 24,
+            "VehicleStatePayload expected 24 B (v20 spec)")
+    TYPE_VEHICLE_INTERACTION = MSG["VehicleInteraction"]
+    TYPE_VEHICLE_INTERACTION_RESULT = MSG["VehicleInteractionResult"]
+    TYPE_VEHICLE_STATE = MSG["VehicleState"]
+    VEHICLE_INTERACTION_SIZE = 24
+    VEHICLE_RESULT_SIZE = 16
+    VEHICLE_STATE_SIZE = 24
+    VEHICLE_AVAILABLE = True
+
+# Pinned v20 P1 server rate limits (D3): 8/20/10 per second.
+VEHICLE_RATE_INTERACTION = 8
+VEHICLE_RATE_RESULT = 20
+VEHICLE_RATE_STATE = 10
+
+VEHICLE_TESTS = {
+    "test_vehicle_interaction_guest_only_relay",
+    "test_vehicle_interaction_validation",
+    "test_vehicle_interaction_rate_limit",
+    "test_vehicle_result_host_only_relay",
+    "test_vehicle_result_validation_rate",
+    "test_vehicle_state_host_only_relay",
+    "test_vehicle_interaction_no_host_drop",
+    "test_vehicle_interaction_after_migration",
+}
+
 # 50-100 rounds of the JOIN race per task; overridable for slow CI.
 JOIN_RACE_ITERS = int(os.environ.get("RDR2_JOIN_RACE_ITERS", "50"))
 
@@ -761,6 +828,50 @@ def train_v2(epoch=1, train_id=1, config_hash=0x12345678, flags=0,
             f"TrainSnapshotV2 builder mismatch: "
             f"{len(payload)} != {TRAIN_V2_SIZE}")
     return payload
+
+
+def vehicle_interaction(epoch=1, vehicle_net_id=7, target_id=0, seq=1,
+                        action=1, seat=127, door=8, flags=0, param=60,
+                        weapon_hash=0):
+    require(VEHICLE_AVAILABLE, "v20 VehicleInteraction is not available")
+    payload = struct.pack("<IIIHBbBBHI", epoch, vehicle_net_id, target_id, seq,
+                          action, seat, door, flags, param, weapon_hash)
+    require(len(payload) == VEHICLE_INTERACTION_SIZE,
+            f"VehicleInteraction builder mismatch: "
+            f"{len(payload)} != {VEHICLE_INTERACTION_SIZE}")
+    return payload
+
+
+def vehicle_result(epoch=1, vehicle_net_id=7, seq=1, action=1, result=0,
+                   detail=0):
+    require(VEHICLE_AVAILABLE, "v20 VehicleInteractionResult is not available")
+    payload = struct.pack("<IIHBBI", epoch, vehicle_net_id, seq, action,
+                          result, detail)
+    require(len(payload) == VEHICLE_RESULT_SIZE,
+            f"VehicleInteractionResult builder mismatch: "
+            f"{len(payload)} != {VEHICLE_RESULT_SIZE}")
+    return payload
+
+
+def vehicle_state(epoch=1, vehicle_net_id=7, body_health=500, engine_health=500,
+                  door_bits=1, seq=1, flags=1, wheels_bits=0, host_seat=127,
+                  guest_seat=127, reserved=0):
+    require(VEHICLE_AVAILABLE, "v20 VehicleState is not available")
+    payload = struct.pack("<IIHhHHBBbbI", epoch, vehicle_net_id, body_health,
+                          engine_health, door_bits, seq, flags, wheels_bits,
+                          host_seat, guest_seat, reserved)
+    require(len(payload) == VEHICLE_STATE_SIZE,
+            f"VehicleState builder mismatch: "
+            f"{len(payload)} != {VEHICLE_STATE_SIZE}")
+    return payload
+
+
+def _recv_count(sock, type_, duration):
+    n = 0
+    for t, _p in recv_msgs(sock, duration):
+        if t == type_:
+            n += 1
+    return n
 
 
 def frame_bytes(type_, payload):
@@ -2171,6 +2282,235 @@ def test_train_v2_rate_limit(exe, tmp):
         guest.close()
 
 
+def test_vehicle_interaction_guest_only_relay(exe, tmp):
+    log("[test] v20 vehicle interaction: guest->host relay, no echo")
+    require(VEHICLE_AVAILABLE, "v20 vehicle messages missing")
+    with Server(exe, tmp / "vehicle_interaction") as srv:
+        host, guest = _fast_pair(srv)
+        intent = vehicle_interaction(epoch=3, vehicle_net_id=42, seq=5,
+                                     action=1, seat=127, door=8, param=60,
+                                     weapon_hash=0xAABBCCDD)
+        guest.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION, intent))
+        require(recv_type(host, TYPE_VEHICLE_INTERACTION, 2.0) == intent,
+                "VehicleInteraction must relay guest->host byte-identical")
+        require(recv_type(guest, TYPE_VEHICLE_INTERACTION, 0.4) is None,
+                "VehicleInteraction must not echo back to guest")
+        host.close()
+        guest.close()
+
+
+def test_vehicle_interaction_validation(exe, tmp):
+    log("[test] v20 vehicle interaction: size/action/seat/flags validation")
+    require(VEHICLE_AVAILABLE, "v20 vehicle messages missing")
+    with Server(exe, tmp / "vehicle_interaction_validate") as srv:
+        host, guest = _fast_pair(srv)
+        good = vehicle_interaction()
+
+        def expect_drop(payload, what):
+            guest.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION, payload))
+            require(recv_type(host, TYPE_VEHICLE_INTERACTION, 0.35) is None,
+                    f"VehicleInteraction({what}) must be dropped")
+
+        expect_drop(good[:-1], "short 23 B")
+        expect_drop(good + b"\x00", "long 25 B")
+        bad = []
+        bad.append((vehicle_interaction(epoch=0), "epoch=0"))
+        bad.append((vehicle_interaction(vehicle_net_id=0), "netId=0"))
+        bad.append((vehicle_interaction(seq=0), "seq=0"))
+        bad.append((vehicle_interaction(action=0), "action None"))
+        bad.append((vehicle_interaction(action=13), "action 13"))
+        bad.append((vehicle_interaction(seat=9), "seat 9"))
+        bad.append((vehicle_interaction(door=12), "door part 12"))
+        bad.append((vehicle_interaction(param=0), "param 0"))
+        bad.append((vehicle_interaction(flags=0x40), "unknown flag"))
+        bad.append((vehicle_interaction(flags=1 | 2), "actor+entity flags"))
+        for payload, what in bad:
+            expect_drop(payload, what)
+        # 0x25/0x27 reserved: drop, server must stay alive.
+        guest.sendall(frame_bytes(0x25, b"\x00" * 24))
+        guest.sendall(frame_bytes(0x27, b"\x00" * 24))
+        require(recv_type(host, 0x25, 0.3) is None, "0x25 must not relay")
+        require(recv_type(host, 0x27, 0.3) is None, "0x27 must not relay")
+        # Server alive: valid frame still relays after invalid burst.
+        f = frame_bytes(TYPE_FRAME, make_frame_payload())
+        guest.sendall(f)
+        require(recv_type(host, TYPE_FRAME, 1.5) == make_frame_payload(),
+                "server must stay alive after invalid vehicle intents")
+        host.close()
+        guest.close()
+
+
+def test_vehicle_interaction_rate_limit(exe, tmp):
+    log("[test] v20 vehicle interaction: rate-limit 8/s (guest->host)")
+    require(VEHICLE_AVAILABLE, "v20 vehicle messages missing")
+    limit = VEHICLE_RATE_INTERACTION
+    burst = limit * 2
+    with Server(exe, tmp / "vehicle_interaction_rate") as srv:
+        host, guest = _fast_pair(srv)
+        payload = vehicle_interaction(seq=1)
+        for _ in range(burst):
+            guest.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION, payload))
+        got = _recv_count(host, TYPE_VEHICLE_INTERACTION, 1.2)
+        require(got == limit,
+                f"VehicleInteraction rate-limit: expected {limit}/s, got {got}")
+        time.sleep(1.2)
+        for _ in range(2):
+            guest.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION, payload))
+        got2 = _recv_count(host, TYPE_VEHICLE_INTERACTION, 1.0)
+        require(got2 == 2,
+                f"VehicleInteraction rate window must reset: got {got2}/2")
+        host.close()
+        guest.close()
+
+
+def test_vehicle_result_host_only_relay(exe, tmp):
+    log("[test] v20 vehicle result: host->guest relay, guest sender dropped")
+    require(VEHICLE_AVAILABLE, "v20 vehicle messages missing")
+    with Server(exe, tmp / "vehicle_result") as srv:
+        host, guest = _fast_pair(srv)
+        payload = vehicle_result(epoch=3, vehicle_net_id=42, seq=5, action=1,
+                                 result=0, detail=0)
+        host.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION_RESULT, payload))
+        require(recv_type(guest, TYPE_VEHICLE_INTERACTION_RESULT, 2.0) == payload,
+                "VehicleInteractionResult must relay host->guest")
+        require(recv_type(host, TYPE_VEHICLE_INTERACTION_RESULT, 0.4) is None,
+                "VehicleInteractionResult must not echo back to host")
+        guest.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION_RESULT, payload))
+        require(recv_type(host, TYPE_VEHICLE_INTERACTION_RESULT, 0.4) is None,
+                "guest result must be dropped (host-only)")
+        srv.wait_log_contains("VehicleInteractionResult от не-хоста", 2.0)
+        host.close()
+        guest.close()
+
+
+def test_vehicle_result_validation_rate(exe, tmp):
+    log("[test] v20 vehicle result: validation + rate-limit 20/s")
+    require(VEHICLE_AVAILABLE, "v20 vehicle messages missing")
+    limit = VEHICLE_RATE_RESULT
+    with Server(exe, tmp / "vehicle_result_validate") as srv:
+        host, guest = _fast_pair(srv)
+
+        def expect_drop(payload, what):
+            host.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION_RESULT, payload))
+            require(recv_type(guest, TYPE_VEHICLE_INTERACTION_RESULT, 0.35) is None,
+                    f"VehicleInteractionResult({what}) must be dropped")
+
+        good = vehicle_result()
+        expect_drop(good[:-1], "short 15 B")
+        expect_drop(vehicle_result(epoch=0), "epoch=0")
+        expect_drop(vehicle_result(vehicle_net_id=0), "netId=0")
+        expect_drop(vehicle_result(seq=0), "seq=0")
+        expect_drop(vehicle_result(action=0), "action 0")
+        expect_drop(vehicle_result(action=13), "action 13")
+        expect_drop(vehicle_result(result=10), "result 10")
+        for _ in range(limit * 2):
+            host.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION_RESULT, good))
+        got = _recv_count(guest, TYPE_VEHICLE_INTERACTION_RESULT, 1.2)
+        require(got == limit,
+                f"VehicleInteractionResult rate-limit: expected {limit}/s, got {got}")
+        host.close()
+        guest.close()
+
+
+def test_vehicle_state_host_only_relay(exe, tmp):
+    log("[test] v20 vehicle state: host->guest relay + validation + rate 10/s")
+    require(VEHICLE_AVAILABLE, "v20 vehicle messages missing")
+    limit = VEHICLE_RATE_STATE
+    with Server(exe, tmp / "vehicle_state") as srv:
+        host, guest = _fast_pair(srv)
+        payload = vehicle_state(epoch=3, vehicle_net_id=42, body_health=750,
+                                engine_health=800, door_bits=0x0005, seq=7,
+                                flags=3, wheels_bits=2, host_seat=-1,
+                                guest_seat=0)
+        host.sendall(frame_bytes(TYPE_VEHICLE_STATE, payload))
+        require(recv_type(guest, TYPE_VEHICLE_STATE, 2.0) == payload,
+                "VehicleState must relay host->guest byte-identical")
+        guest.sendall(frame_bytes(TYPE_VEHICLE_STATE, payload))
+        require(recv_type(host, TYPE_VEHICLE_STATE, 0.4) is None,
+                "guest VehicleState must be dropped (host-only)")
+        srv.wait_log_contains("VehicleState от не-хоста", 2.0)
+
+        def expect_drop(p, what):
+            host.sendall(frame_bytes(TYPE_VEHICLE_STATE, p))
+            require(recv_type(guest, TYPE_VEHICLE_STATE, 0.35) is None,
+                    f"VehicleState({what}) must be dropped")
+
+        expect_drop(payload[:-1], "short 23 B")
+        expect_drop(vehicle_state(epoch=0), "epoch=0")
+        expect_drop(vehicle_state(vehicle_net_id=0), "netId=0")
+        expect_drop(vehicle_state(body_health=1001), "bodyHealth 1001")
+        expect_drop(vehicle_state(engine_health=-4001), "engineHealth -4001")
+        expect_drop(vehicle_state(host_seat=9), "hostSeat 9")
+        for _ in range(limit * 2):
+            host.sendall(frame_bytes(TYPE_VEHICLE_STATE, payload))
+        got = _recv_count(guest, TYPE_VEHICLE_STATE, 1.2)
+        require(got == limit,
+                f"VehicleState rate-limit: expected {limit}/s, got {got}")
+        host.close()
+        guest.close()
+
+
+def test_vehicle_interaction_no_host_drop(exe, tmp):
+    log("[test] v20 vehicle interaction: host-sender dropped, server survives")
+    require(VEHICLE_AVAILABLE, "v20 vehicle messages missing")
+    with Server(exe, tmp / "vehicle_no_host") as srv:
+        lone = connect(srv.port)
+        join(lone, "Lone")
+        require(recv_type(lone, TYPE_JOIN_OK, 2.0) is not None,
+                "lone host JOIN_OK")
+        # Единственный клиент назначен хостом: 0x23 от хоста — role violation,
+        # молча drop + warn; сервер жив и принимает второго игрока.
+        intent = vehicle_interaction()
+        lone.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION, intent))
+        require(recv_type(lone, TYPE_VEHICLE_INTERACTION_RESULT, 0.4) is None,
+                "host intent must be dropped (guest-only)")
+        srv.wait_log_contains("VehicleInteraction от хоста", 2.0)
+        second = connect(srv.port)
+        join(second, "Second")
+        require(recv_type(second, TYPE_JOIN_OK, 2.0) is not None,
+                "server must accept a second JOIN after dropped host intent")
+        second.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION, intent))
+        require(recv_type(lone, TYPE_VEHICLE_INTERACTION, 2.0) == intent,
+                "guest intent must relay to host after recovery")
+        lone.close()
+        second.close()
+
+
+def test_vehicle_interaction_after_migration(exe, tmp):
+    log("[test] v20 vehicle interaction: relay to promoted host after migration")
+    require(VEHICLE_AVAILABLE, "v20 vehicle messages missing")
+    with Server(exe, tmp / "vehicle_migration") as srv:
+        host, guest = _fast_pair(srv)
+        intent = vehicle_interaction(seq=1)
+        guest.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION, intent))
+        require(recv_type(host, TYPE_VEHICLE_INTERACTION, 2.0) == intent,
+                "intent must relay to original host")
+        host.sendall(frame_bytes(TYPE_LEAVE, b""))
+        # Гость повышен до хоста; старые результаты/интенты не ломают сервер.
+        promoted = None
+        deadline = time.time() + 3.0
+        while time.time() < deadline and promoted is None:
+            for t, p in recv_msgs(guest, 0.2):
+                if t == TYPE_HOST_CHANGED and p and p[0] == 1:
+                    promoted = p
+        require(promoted is not None, "guest must be promoted after host Leave")
+        new_peer = connect(srv.port)
+        join(new_peer, "NewGuest")
+        require(recv_type(new_peer, TYPE_JOIN_OK, 2.0) is not None,
+                "new guest JOIN_OK after migration")
+        intent2 = vehicle_interaction(seq=2)
+        new_peer.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION, intent2))
+        require(recv_type(guest, TYPE_VEHICLE_INTERACTION, 2.0) == intent2,
+                "intent must relay to promoted host")
+        # Старый (уже гость) результат: drop, no crash.
+        new_peer.sendall(frame_bytes(TYPE_VEHICLE_INTERACTION_RESULT,
+                                     vehicle_result()))
+        require(recv_type(guest, TYPE_VEHICLE_INTERACTION_RESULT, 0.4) is None,
+                "guest result must be dropped after migration")
+        guest.close()
+        new_peer.close()
+
+
 def test_actor_gating_no_actor_log(exe, tmp):
     log("[test] v15 gating: no 'actor:' log lines in a normal session")
     # Server-side gating only: mock clients never send actor messages, so this
@@ -3045,6 +3385,14 @@ def main():
         test_train_v2_host_only,
         test_train_v2_validation,
         test_train_v2_rate_limit,
+        test_vehicle_interaction_guest_only_relay,
+        test_vehicle_interaction_validation,
+        test_vehicle_interaction_rate_limit,
+        test_vehicle_result_host_only_relay,
+        test_vehicle_result_validation_rate,
+        test_vehicle_state_host_only_relay,
+        test_vehicle_interaction_no_host_drop,
+        test_vehicle_interaction_after_migration,
         test_actor_gating_no_actor_log,
         test_oversized_and_truncated,
         test_host_migration,
@@ -3089,6 +3437,11 @@ def main():
                 log(f"[skip] {test.__name__}: protocol v19 E3d traffic is "
                     "not in net/protocol.h yet (E3d merge pending)")
                 continue
+            if test.__name__ in VEHICLE_TESTS and not VEHICLE_AVAILABLE:
+                skipped += 1
+                log(f"[skip] {test.__name__}: protocol v20 P1 vehicle is "
+                    "not in net/protocol.h yet (U1 merge pending)")
+                continue
             try:
                 test(exe, tmp)
                 if test.__name__ in KNOWN_FAIL_TESTS:
@@ -3114,6 +3467,11 @@ def main():
                            f"on({PLAYER_PRESENCE_SIZE}B)")
         traffic_status = ("pending" if not TRAFFIC_AVAILABLE else
                           f"on(occ={OCCUPANTS_MAX}B,train={TRAIN_V2_SIZE}B)")
+        vehicle_status = ("pending" if not VEHICLE_AVAILABLE else
+                          f"on(0x23={VEHICLE_INTERACTION_SIZE}B,"
+                          f"0x24={VEHICLE_RESULT_SIZE}B,"
+                          f"0x26={VEHICLE_STATE_SIZE}B)")
+
         log(f"{passed} passed, {failures} failed, {known_fails} known-fail"
             f"{skipped_part} "
             f"(protocol v{PROTO}, outfit={OUTFIT_SIZE}B, "
@@ -3122,6 +3480,7 @@ def main():
             f"damage={damage_status}, "
             f"presence={presence_status}, "
             f"traffic={traffic_status}, "
+            f"vehicle={vehicle_status}, "
             f"cap={CAP_ACTIVE}/rate={CAP_RATE}/s, "
             f"name<={MAX_NAME_BYTES}B)")
         if failures:
