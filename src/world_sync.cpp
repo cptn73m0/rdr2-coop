@@ -2298,7 +2298,10 @@ constexpr unsigned long long kIntentCooldownMs = 250ull;
 constexpr unsigned long long kIntentCooldownUrgentMs = 100ull;
 constexpr unsigned long long kIntentIdempotencyMs = 2000ull;
 constexpr std::size_t kIntentResultCacheCap = 32;
-constexpr std::size_t kTrackedVehicleStates = 4;
+// L3 (spec §2.6/§4.2): держим до 8 tracked vehicle states (было 4) — host шлёт
+// heartbeat 1/с на каждый, окно kStateSendWindowCap=8/с и серверный лимит 10/с
+// не превышаются; dirty-события сверх окна уйдут следующим тиком.
+constexpr std::size_t kTrackedVehicleStates = 8;
 constexpr uint32_t kDamageBudgetPerSec = 200; // HP/с на vehicle
 constexpr unsigned long long kStateHeartbeatMs = 1000ull;
 constexpr unsigned int kStateSendWindowCap = 8; // <=10/с лимит сервера
@@ -2311,6 +2314,15 @@ constexpr uint16_t kDoorBreakDamageThreshold = 200; // A/B: damage -> broken
 // A/B-гейты: lock enum/поведение не подтверждены -> lock/unlock в P1 всегда
 // NotAllowed; setter'ы не вызываются до A/B (§4.2/R&D §4.2, D8).
 constexpr bool kVehicleInteractionLocksEnabled = false;
+// F3: detach колеса (_BREAK_OFF_VEHICLE_WHEEL) — one-way, mapping wheelIndex
+// НЕ подтверждён (R&D §2.4/§10.3). В P1 detach ВЫКЛ: damage по зоне колеса
+// применяется, но Applied только если destroyed-readback подтвердил эффект;
+// иначе Correction (без one-way разрушения).
+constexpr bool kVehicleInteractionBreakWheelDetach = false;
+// F4: DoorBreak — one-way (deleteDoor), host-side A/B-гейт (capture-гейт в
+// coop.cpp не защищает от fake/чужого клиента). До A/B (§4.3/§10.3) host
+// отвечает NotAllowed(reason=policy) и натив НЕ вызывает.
+constexpr bool kVehicleInteractionDoorBreak = false;
 
 const char* VehicleActionName(uint8_t action)
 {
@@ -2380,6 +2392,30 @@ struct HostVehicleRuntime
 };
 
 std::map<uint32_t, HostVehicleRuntime> g_hostVehicleRuntime;
+
+// v20 P1 F2: seq 0x26 per netId — persistent-карта, НЕ вытесняется вместе с
+// tracked-runtime (>kTrackedVehicleStates). Иначе при повторном добавлении
+// netId в tracked-окно host начинал seq с 0→1, а гость (guard монотонности)
+// дропал state до тех пор, пока новый seq не перегонит старый. Wire не
+// расширяем (reserved 0x26 не трогаем): generation живёт host-side, гость
+// дополнительно терпит restart (wrap/пауза >1.5 с, см. ApplyVehicleStateToProxy).
+std::map<uint32_t, uint16_t> g_vehicleStateSeq;
+constexpr std::size_t kVehicleStateSeqCap = 128;
+uint16_t NextVehicleStateSeq(uint32_t netId)
+{
+    uint16_t& seq = g_vehicleStateSeq[netId];
+    ++seq;
+    if (seq == 0) ++seq; // seq=0 = «нет данных»; не отдаём
+    if (g_vehicleStateSeq.size() > kVehicleStateSeqCap)
+    {
+        // netId монотонны и за сессию не переиспользуются — старейшую запись
+        // (по возрастанию netId) безопасно выбросить.
+        auto it = g_vehicleStateSeq.begin();
+        if (it->first != netId)
+            g_vehicleStateSeq.erase(it);
+    }
+    return seq;
+}
 
 // 0x23 inbox: сетевой поток -> очередь; overflow -> RateLimited.
 std::mutex g_vehicleIntentsMutex;
@@ -2800,7 +2836,11 @@ uint8_t ApplyDamageIntent(unsigned int veh, const net::VehicleInteractionPayload
         Call();
         if (!before && IsVehicleWheelDestroyedNative(veh, wheel))
             return static_cast<uint8_t>(net::VehicleResult::Applied);
-        // detach — отдельный натив (mapping wheelIndex UNCERTAIN, A/B 0..5)
+        // F3: detach — one-way натив с неподтверждённым wheelIndex mapping.
+        // По умолчанию выключен (A/B); damage уже применён, эффект нечитаем ->
+        // Correction, чтобы гость не считал колесо оторванным.
+        if (!kVehicleInteractionBreakWheelDetach)
+            return static_cast<uint8_t>(net::VehicleResult::Correction);
         Init(natives::_BREAK_OFF_VEHICLE_WHEEL);
         Push(veh);
         Push(static_cast<unsigned long long>(wheel));
@@ -2840,6 +2880,9 @@ uint8_t ApplyDoorIntent(unsigned int veh,
                    ? static_cast<uint8_t>(net::VehicleResult::Correction)
                    : static_cast<uint8_t>(net::VehicleResult::Applied);
     case net::VehicleAction::DoorBreak:
+        // F4: host-side A/B-гейт; натив one-way (deleteDoor) — до A/B не зовём.
+        if (!kVehicleInteractionDoorBreak)
+            return static_cast<uint8_t>(net::VehicleResult::NotAllowed);
         Init(natives::SET_DOOR_ALLOWED_TO_BE_BROKEN_OFF);
         Push(veh);
         Push(static_cast<unsigned long long>(door));
@@ -3021,6 +3064,17 @@ bool IsIntentAllowedByPolicy(const net::VehicleInteractionPayload& p,
         detail = NotAllowedDetail(net::kResultReasonHostVehicle);
         return false;
     }
+    // L8: driver-seat Enter на host-vehicle при host_vehicle=0 — тоже reject
+    // (иначе гость мог бы занять место водителя, пока хост пассажиром; policy
+    // D2 разрешает только пассажирский Enter). Остальные Enter — ок.
+    if (action == net::VehicleAction::Enter &&
+        p.seat == net::kVehicleSeatDriver && hostVehicle &&
+        hostVehicle == veh && !coopcfg::Get().vehicleInteractionHostVehicle)
+    {
+        result = static_cast<uint8_t>(net::VehicleResult::NotAllowed);
+        detail = NotAllowedDetail(net::kResultReasonHostVehicle);
+        return false;
+    }
     if (p.action > 12)
     {
         result = static_cast<uint8_t>(net::VehicleResult::NotAllowed);
@@ -3160,7 +3214,13 @@ bool ApplyOneIntent(const net::VehicleInteractionPayload& p,
     {
         MarkVehicleStateDirty(p.vehicleNetId);
     }
-    SendInteractionResult(p, result, 0);
+    // F4: NotAllowed из apply (gated action, bad_param) несёт reason-биты
+    // detail>>8, чтобы гость мог залогировать причину (§2.3).
+    const uint32_t resultDetail =
+        result == static_cast<uint8_t>(net::VehicleResult::NotAllowed)
+            ? NotAllowedDetail(net::kResultReasonPolicy)
+            : 0u;
+    SendInteractionResult(p, result, resultDetail);
     if (coopcfg::Get().vehicleInteractionDebug)
         sh_log::Write("vehicle: interaction action=%s net=%u seq=%u result=%s "
                       "guest=%u\n",
@@ -3248,7 +3308,10 @@ net::VehicleStatePayload BuildVehicleState(uint32_t netId, unsigned int veh,
     }
     if (rt.hijacked)
         s.flags |= net::kVehicleStateFlagHijacked;
-    s.seq = ++rt.stateSeq;
+    // F2: seq из persistent-карты по netId (не сбрасывается при eviction
+    // tracked-runtime); rt.stateSeq остаётся синхронным для диагностики.
+    rt.stateSeq = NextVehicleStateSeq(netId);
+    s.seq = rt.stateSeq;
     return s;
 }
 
@@ -3404,6 +3467,7 @@ void ResetHostVehicleInteraction()
     }
     g_intentResultCache.clear();
     g_hostVehicleRuntime.clear();
+    g_vehicleStateSeq.clear(); // F2: новая сессия/роль — seq заново
     g_vehicleInteractionLastLogMs = 0;
 }
 
@@ -3434,6 +3498,7 @@ struct Proxy
     bool interactive = false;
     bool mirrorStateValid = false;
     uint16_t mirrorStateSeq = 0;
+    unsigned long long mirrorStateMs = 0; // F2: время последнего принятого state
     uint16_t mirrorDoorBits = 0;
     uint8_t mirrorWheelsBits = 0;
     uint16_t mirrorBodyHealth = net::kVehicleBodyHealthUnknown;
@@ -4437,12 +4502,33 @@ void ApplyVehicleStateToProxy(Proxy& p, const net::VehicleStatePayload& st,
     using namespace natives_api;
     if (!p.handle || !DoesExist(p.handle))
         return;
-    // Stale seq guard (монотонный per-vehicle seq).
-    if (p.mirrorStateValid && st.seq != 0 && p.mirrorStateSeq != 0 &&
-        static_cast<int16_t>(st.seq - p.mirrorStateSeq) <= 0)
-        return;
+    // Stale seq guard: host seq монотонен per netId (persistent-карта), но
+    // терпим restart — uint16-wrap ИЛИ seq ушёл назад после паузы >1.5 с
+    // (host re-created tracked-runtime/старый хост/потеря сообщений). Иначе
+    // eviction (>kTrackedVehicleStates tracked) давал бы «навсегда дропнутый»
+    // state.
+    const unsigned long long stateNowMs = GetTickCount64();
+    if (p.mirrorStateValid && st.seq != 0 && p.mirrorStateSeq != 0)
+    {
+        const uint16_t cur = static_cast<uint16_t>(st.seq);
+        const uint16_t prev = static_cast<uint16_t>(p.mirrorStateSeq);
+        const bool wrapRestart =
+            static_cast<unsigned int>(cur) + 64u <
+            static_cast<unsigned int>(prev);
+        const bool stale =
+            !wrapRestart && static_cast<int16_t>(cur - prev) <= 0;
+        const bool timeoutRestart =
+            stale && (p.mirrorStateMs == 0 || stateNowMs - p.mirrorStateMs >
+                                                  1500ull);
+        if (stale && !timeoutRestart)
+            return; // старый/reordered state
+        if (timeoutRestart && coopcfg::Get().vehicleInteractionDebug)
+            sh_log::Write("vehicle: state seq reset net=%u %u -> %u\n",
+                          st.vehicleNetId, prev, cur);
+    }
     p.mirrorStateValid = true;
     p.mirrorStateSeq = st.seq;
+    p.mirrorStateMs = stateNowMs;
     if (st.flags & net::kVehicleStateFlagDoorValid)
     {
         for (int d = 0; d < 8; ++d)

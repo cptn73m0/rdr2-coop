@@ -1,6 +1,8 @@
 # RDR2 native research for v20 P1: host apply / 0x26 readback / controls
 
-**Статус:** R&D, read-only; файл не закоммичен, код мода не изменялся.
+**Статус:** R&D, read-only; файл закоммичен в ветке `feature/v20-p1` (docs-коммиты
+`a5b8cde`/`e581d95`/`07283a5`). Сам R&D код мода не изменял — реализация по его
+выводам сделана отдельно в U3/U4 (`8a34e7d`); решения — `docs/INTERACTIVITY_P1.md`.
 **Target:** RDR2 PC **1491.50**.
 **Источники:**
 - `third_party/rdr2-runtime-scripthook/source/scripting_v3/RDR2.Native/NativeDecl.cs` (ScriptHook RDR2 runtime; ниже `ND:<line>`);

@@ -314,7 +314,9 @@ checked by [tools/perf_report.py](tools/perf_report.py).
 ## Testing & acceptance
 
 - [docs/ACCEPTANCE_2PC.md](docs/ACCEPTANCE_2PC.md) — two-PC acceptance checklist
-  (blocks A–H + interactivity block I in progress), exact hashes and rollback plan.
+  (blocks A–H for deployed npc-e19 + interactivity block I for v20 P1, which is
+  **ready for deploy but not deployed yet**; P1 is **default-off**), exact hashes
+  and rollback plan.
 - [docs/NPC_E1_TESTING.md](docs/NPC_E1_TESTING.md) — scenario catalogue **S1–S32**
   with expected log lines.
 - [docs/TESTING.md](docs/TESTING.md) — headless test strategy and tools.
@@ -330,7 +332,7 @@ checked by [tools/perf_report.py](tools/perf_report.py).
 | E9–E11 | done | animal/horse appearance, mount outfit, exact train passengers |
 | E12–E15 | done | performance frame, player frame throttle, traffic accounting, ub-mode refactors |
 | E16–E19 | done | quality tooling, soft host migration, loading heartbeat, vendor dedupe, wagon occupants, map labels, wheel A/B |
-| **v20 P1** | in progress | **guest influence**: damage, doors, seats, hijack, draft hitch — host-authoritative intents (`0x23/0x24/0x26`) |
+| **v20 P1** | **ready for deploy** (default-off) | **guest influence**: damage, doors, seats, hijack, draft hitch — host-authoritative intents (`0x23/0x24/0x26`); U1–U5 done on `feature/v20-p1` (integration 50/50, C++ 8/8); `vehicle_interaction=0` by default — enable with the key on both PCs after F1–F4 re-proof; deploy pair `npc-e20` pending |
 
 Full details: [ROADMAP.md](ROADMAP.md), [docs/INTERACTIVITY.md](docs/INTERACTIVITY.md),
 [docs/INTERACTIVITY_P1.md](docs/INTERACTIVITY_P1.md),

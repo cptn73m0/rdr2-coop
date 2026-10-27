@@ -16,8 +16,11 @@
   **`VehicleInteractionResult` (0x24)** — ответ хоста host → сервер → гость;
   **`VehicleState` (0x26)** — authoritative состояние транспорта host → сервер
   → гость; **0x25/0x27 зарезервированы** под P3 (управление) и в P1 не шлются.
-  Wire-часть/релей реализованы (U1/U2); host apply/guest capture — U3/U4.
-  Спецификация — раздел «VEHICLE-СООБЩЕНИЯ (v20 P1)».
+  Wire-часть/релей/хосты/клиент + tools/docs реализованы (**U1–U5 DONE**,
+  ветка `feature/v20-p1`; commits `9703943`/`8a34e7d`/`77055fc`); deploy пары
+  `npc-e20` pending. **P1 default-off:** `vehicle_interaction = 0` (host apply
+  при 0 → `NotAllowed` reason=config_off), включается ключом на host+guest
+  после F1–F4 re-proof. Спецификация — раздел «VEHICLE-СООБЩЕНИЯ (v20 P1)».
 - v19 (E3d-b/E3d-c): **`VehicleOccupants` (0x21)** — водители/пассажиры/
   draft-лошади, host → сервер → гость; **`TrainSnapshotV2` (0x22)** —
   mission-train/состав, host → сервер → гость. Спецификация — раздел
@@ -511,12 +514,15 @@ payload: TrainSnapshotV2Payload (48 B)
   (Δ>0.5)/coords (>5 м soft ≤1/0.5 с)/warp (>25 м/|dz|>15)/halt/leave/
   reverse, cleanup timeout 2 с и restore random trains (`world_trains=1`).
 
-## VEHICLE-СООБЩЕНИЯ (v20 P1 — guest influence, wire U1/U2)
+## VEHICLE-СООБЩЕНИЯ (v20 P1 — guest influence; U1–U5 DONE, deploy pending)
 
-> **Статус:** wire-структуры/валидаторы (U1) и серверный релей/rate/роли (U2)
-> реализованы (ветка `feature/v20-p1`); host apply (U3) и guest capture (U4)
-> ещё в работе — поэтому **v20-пара не деплоится** до их завершения. Полная
-> спека: `docs/INTERACTIVITY_P1.md`.
+> **Статус:** U1–U5 реализованы в ветке `feature/v20-p1` (`9703943` wire/релей,
+> `8a34e7d` host apply/guest capture/client transport, `77055fc` U5
+> tools/docs): wire-структуры/валидаторы, серверный релей/rate/роли, host apply +
+> 0x24/0x26, guest capture/mirror, 4 INI-ключа, fake-клиент, C++8/integration
+> 50/50. **Пара `npc-e20` не задеплоена**; **P1 default-off** (ключ
+> `vehicle_interaction = 0`, включение после F1–F4 re-proof). Полная спека:
+> `docs/INTERACTIVITY_P1.md`.
 
 ### Направления и роли
 
@@ -622,7 +628,7 @@ readback-нативов (R&D: `docs/NATIVE_RESEARCH_V20_HEALTH.md`).
   (`VersionMismatch`), смешанная пара невозможна. Deploy только парой
   ASI+server из одного снапшота `dist\npc-e20` (оба ПК, одинаковые хеши);
   откат — `dist\npc-e19` (v19, ASI `DD0EE210`/server `DD9BD9D8`) полной парой.
-  Промежуточные U1–U4 **не деплоить**.
+  Промежуточные U1–U5 **не деплоить** до снапшота `npc-e20`.
 - Серверный трафик-бакет: heartbeat `net: … occupants=… vehicle=… other=…`;
   `tools/perf_report.py` показывает `vehicle` per-type (сумма/проценты), старые
   v19-логи (без `vehicle=`) остаются без новой категории.

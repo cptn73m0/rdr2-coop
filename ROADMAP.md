@@ -34,6 +34,13 @@ CI **42/42** + 7 C++; HEAD `ef49ac8`; тег **npc-e19**; теги `npc-e0`…`n
 pending — **ждём полный тест e19** (low/info: blip label, плотный трафик,
 wheel A/B).
 
+**v20 P1 (guest influence) — ветка `feature/v20-p1`, `main`/деплой e19 не
+тронуты:** U1–U5 done (wire 0x23/0x24/0x26, server relay/rate 8/20/10, host
+apply, guest capture/mirror, 4 INI-ключа, fake-клиент/perf-report/C++8; полный
+CI **50/50 + 8/8 + quality strict PASS**, скан 46/573/3/2/0). **P1 default-off**
+(`vehicle_interaction=0`), deploy пары `npc-e20` pending; 2-ПК блок I — после
+F1–F4 re-proof и деплоя.
+
 ---
 
 ## Фаза 0 — Каркас и окружение — готово
@@ -254,7 +261,19 @@ wheel A/B).
       задеплоены**, canonical CI **42/42** + C++7 + quality strict PASS;
       независимая проверка `architect-verify2` — «можно тестировать/деплоить»
       (low/info: blip label, плотный трафик, wheel A/B)
-- [ ] Backlog: **2-ПК приёмка e19** (S31 soft migration, S22/S25
+- [x] **v20 P1 — guest influence (ветка `feature/v20-p1`, НЕ задеплоено):**
+      protocol bump v19→v20: `VehicleInteraction` 0x23 (24 B, guest→host),
+      `VehicleInteractionResult` 0x24 (16 B) и `VehicleState` 0x26 (24 B) —
+      host→guest; 0x25/0x27 reserved (P3). U1 wire/валидаторы, U2 server
+      relay/rate 8/20/10/game-thread, U3 host apply, U4 guest capture/mirror +
+      4 INI-ключа, U5 tools/tests/docs (`9703943`/`8a34e7d`/`77055fc`);
+      **P1 default-off** (`vehicle_interaction=0`; включается ключом host+guest
+      после F1–F4 re-proof); full CI — build client+server, C++ **8/8**,
+      integration **50/50**, quality strict PASS; deploy пары `dist\npc-e20` и
+      блок I — pending
+- [ ] Backlog: **deploy `npc-e20`** (ASI+server, оба ПК; INI 32/42; P1
+      default-off → включение после F1–F4 re-proof) + **2-ПК приёмка e19**
+      (S31 soft migration, S22/S25
       occupants, S20 vendors, blip label, wheel A/B отдельным прогоном
       `npc_vehicle_wheels=1`→0), visual E2c-b/E5/E6/E7/E3d/E9/E10,
       ambient-trains cleanup, mission-aware visitor, adaptive 15 Гц,

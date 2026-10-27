@@ -57,7 +57,9 @@ quality strict PASS (0 warnings). **v20-пару ещё не деплоить**:
    (выстрел по прокси; посадка/выход/угон; изменение дверей прокси) и зеркалит
    визуал только после `Applied`/`VehicleState`; локального авторитета нет.
 6. **v20 — жёсткий bump:** v19-клиенты отклоняются по версии; deploy только парой
-   ASI+server; в промежуточных коммитах U1–U4 не деплоить (см. §7).
+   ASI+server; промежуточные коммиты U1–U5 не деплоить (см. §7). **P1 — default-off:**
+   `vehicle_interaction = 0` в сборке (включается ключом на host+guest после
+   F1–F4 re-proof); wire/сервер при этом безопасны и просто не получают интентов.
 7. **R&D для v20 P1 выполнен** (`docs/NATIVE_RESEARCH_V20_HEALTH.md`, 2026-10-27):
    health readback — **float** (квантование u16/i16, `DamageValid` только finite);
    `IS_CONTROL_*` **PRESENT** → двери/loot/hitch capture через controls, P1.1 не
@@ -164,7 +166,7 @@ static_assert(offsetof(VehicleInteractionPayload, weaponHash) == 20, "...");
 | Damage | `door`=part, `param`=1..1000 | part валиден для P1 (0..11, 254,255); не mission; damage budget; wheel-part damage может НЕ менять `_IS_VEHICLE_WHEEL_DESTROYED` (R&D §2.4) |
 | DoorOpen/Close | `door`=0..7 | vehicle существует; door не broken |
 | DoorLock/Unlock | `door`=0..7 или 255 | lock enum **не подтверждён** (R&D §4.2): default `NotAllowed`/gated, `Locked` — только из host cache; вкл. после A/B |
-| DoorBreak | `door`=0..7 | one-way (deleteDoor A/B, restore нет); только при A/B-константе `kVehicleInteractionDoorBreak=true`; в P1 default false (ломание — по порогу damage) |
+| DoorBreak | `door`=0..7 | one-way (deleteDoor A/B, restore нет); только при A/B-константе `kVehicleInteractionDoorBreak=true` / capture `kVehicleInteractionCaptureDoorBreak`; в P1 `false` (F4) → `NotAllowed`; ломание — по порогу damage (R&D) |
 | Enter/Exit | `seat`=-1/0..8/127 (Enter), 127 (Exit) | seat free, гость рядом, гость жив |
 | Hijack | `seat`=-1/127, `targetId`=actorId (optional) | NPC driver существует/не mission; seat -1; host vehicle policy |
 | Loot | `targetId`=netId(optional), flags | P1: host-side лог/loot-таблица; без инвентаря |
@@ -293,8 +295,11 @@ Readback-правила (host, U4; R&D §6):
   активный guestSeat, недавний интент (<10 с), hostSeat != 127, или lease (P3);
 - суммарно ≤ `kMaxVehicleStateRate=10/с` (серверный cap), иначе ставим в dirty-set и
   отправляем позже; при переполнении — round-robin, потеря не критична (heartbeat починит);
-- `seq` инкрементируется per vehicle; guest отбрасывает state с чужим epoch или
-  `seq` старше последнего для этого vehicle.
+- `seq` инкрементируется **per vehicleNetId в persistent-карте хоста**
+  (`g_vehicleStateSeq`, cap 128; не сбрасывается при eviction tracked-окна, F2);
+  guest отбрасывает state с чужим epoch или `seq` старше последнего для этого
+  vehicle, но **терпит restart**: u16-wrap (`cur+64 < prev`) или seq назад после
+  паузы >**1.5 с** → принять + лог `vehicle: state seq reset net=…` (F2).
 
 Почему не 0x21: 0x21 семантически «кто в каких seats (actorId)», host→guest,
 layout 8+count*8 ≤72 B, валидаторы привязаны к actorId/seat/carIndex/harness.
@@ -624,8 +629,8 @@ latest nativedb; 2026-10-27). Где статус SIGNATURE-ONLY/UNCERTAIN — �
   локального proxy (`IS_VEHICLE_DOOR_FULLY_OPEN`/`_IS_VEHICLE_DOOR_BROKEN`) →
   DoorOpen/DoorClose/DoorBreak/DoorLock/DoorUnlock intent. Точный mapping
   «control → action» фиксируется in-game A/B (I2); `kVehicleInteractionCaptureDoors`
-  (constexpr, default **true** в U4; gate для rollback, если A/B покажет конфликт
-  pitch/attack).
+  (constexpr = **true**, `src/coop.cpp:4958`; gate для rollback, если A/B покажет
+  конфликт pitch/attack).
 - `GET_VEHICLE_DOOR_STATUS`/`IS_VEHICLE_DOOR_CLOSED` **ABSENT** — только
   fullyOpen/broken (R&D §2.3); ajar не читается, 0 = closed/ajar.
 - DoorLock/Unlock capture **не включать** до A/B enum (R&D §4.2): wire-ready/фейк,
@@ -710,24 +715,36 @@ Mirror (guest, только после `Applied`/`VehicleState`; R&D §2.5):
 
 ```cpp
 // v20 P1: guest→host interactions (событийные интенты, без вождения).
-bool vehicleInteraction = true;          // vehicle_interaction
+// DEFAULT OFF (Lead decision): P1 включается только ключом
+// vehicle_interaction=1 на host+guest; код/код-пути безопасны при 0
+// (интентов нет, host отвечает NotAllowed(reason=config_off) на 0x23).
+bool vehicleInteraction = false;         // vehicle_interaction
 bool vehicleInteractionMission = false;  // vehicle_interaction_mission
 bool vehicleInteractionHostVehicle = false; // vehicle_interaction_host_vehicle
 bool vehicleInteractionDebug = false;    // vehicle_interaction_debug
 ```
+
+> **P1 default-off (важно):** в сборке `npc-e20` `vehicle_interaction = 0` по
+> умолчанию на обоих ПК; сервер/wire включены всегда, но host apply при 0
+> отвечает `NotAllowed` (reason=config_off), guest capture не отправляет
+> интенты. Включение — отдельным шагом acceptance (оба ПК, рестарт) после
+> F1–F4 re-proof; выключение — вернуть `0` и рестарт.
 
 `src/config.cpp`:
 - `WriteDefaultIni` — после `npc_vehicle_wheels` (`:121-123`) добавить блок
   `# v20 P1: guest→host vehicle interactions ...` + **4 ключа** (0/1) — INI снапшота
   станет **32 приёмочных ключа / 42 строки** (было 28/38);
 - `ApplyBoolKey` (`:204-232`) — 4 новые записи; иначе key unknown → warn/ignore;
-- A/B-гейты capture (`kVehicleInteractionCaptureDoors` — default **true** в U4,
-  `kVehicleInteractionDoorBreak` — default false) — **constexpr в world_sync.cpp**,
-  не INI: страховка на случай конфликта control-mapping (A/B I2); при необходимости
+- A/B-гейты capture (constexpr, по коду `8a34e7d`): `kVehicleInteractionCaptureDoors`
+  = **true** (`src/coop.cpp:4958`), `kVehicleInteractionCaptureDoorBreak` =
+  **false** (`:4959`), `kVehicleInteractionLocksEnabled` = **false**
+  (`src/world_sync.cpp:2313`; lock/unlock в P1 → `NotAllowed` до A/B enum) —
+  страховка на случай конфликта control-mapping (A/B I2); при необходимости
   вынести в INI в P1.1 отдельным bump'ом acceptance-INI (не в v20 P1);
 - config warn (`:320-340`): `vehicle_interaction=1 && npc_actor=0` →
   `config: warn vehicle_interaction=1 requires npc_actor=1` (нет epoch → интенты
   не пойдут); `vehicle_interaction_mission=1` — предупреждение о риске mission.
+  `vehicle_interaction=0` — штатный default-off режим (без warning).
 
 Конфиг читают оба клиента; сервер конфиг не использует (pinned tests не нужны для
 этих ключей, но acceptance INI должен совпадать host/guest).
@@ -853,7 +870,7 @@ exit 0 PASS / 1 usage-env / 2 protocol-fail):
 |---|---:|---:|---:|
 | 0x23 VehicleInteraction | 24+5=29 | 0.1–1/с (≈0.03 KiB/s) | 8/с → 0.23 KiB/s guest→host |
 | 0x24 Result | 16+5=21 | = intents (≈0.02 KiB/s) | 20/с → 0.41 KiB/s host→guest |
-| 0x26 VehicleState | 24+5=29 | ≤4 tracked × 1/с + changes (≈0.12–0.25 KiB/s) | 10/с → 0.28 KiB/s host→guest |
+| 0x26 VehicleState | 24+5=29 | ≤8 tracked × 1/с + changes (≈0.24–0.5 KiB/s) | 10/с → 0.28 KiB/s host→guest |
 
 P1 total: typical **<0.3 KiB/s**, worst **<0.7 KiB/s** на направление — <5 % от G3
 (≤15 KiB/s); transform не дублируется (0x10 остаётся единственным потоком позиции).
@@ -869,6 +886,26 @@ P1 total: typical **<0.3 KiB/s**, worst **<0.7 KiB/s** на направлени
   при изменении near/варп) и control-poll (≤5 проверок `IS_CONTROL_*`/тик при near;
   `DISABLE_CONTROL_ACTION` — только пока guest в proxy);
 - server: точные размеры/rate — без очередей; host timeout не зависит от 0x23.
+
+### 5.7. Принятые low-fixes из independent proof (F1–F4 + L3)
+
+По итогам independent proof v20 P1 («deployable, default-off») приняты и внесены
+в код/acceptance следующие low-fixes; **блок I включается только после их
+re-proof** (см. `docs/ACCEPTANCE_2PC.md` §9):
+
+| # | фикс | суть | где (код/лог) | эффект для приёмки |
+|---|---|---|---|---|
+| **F1** | server socket-lifetime invariant | в `RelayGuestToHostRate` поиск хоста, rate-check и `SendTracked` — **в одной секции под `g_mutex`**; чужой `Socket*` не сохраняется вне lock (cleanup другого потока мог удалить сокет) | `server/server.cpp` (комментарий F1) | 0x23 не теряется/не шлётся в удалённый сокет при гонке с Leave/cleanup |
+| **F2** | 0x26 seq-reset tolerance | host seq теперь **persistent per netId** (`g_vehicleStateSeq`, cap 128) и не сбрасывается при eviction tracked-окна; гость терпит restart: wrap u16 (`cur+64<prev`) **или** seq назад после паузы >**1.5 с** → принять state + лог `vehicle: state seq reset` | `src/world_sync.cpp` (`NextVehicleStateSeq`, `mirrorStateMs`, 1500 ms) | eviction/повторный tracked netId больше не «навсегда дропает» state; I7/I8 стабильны |
+| **F3** | wheel-detach A/B gate | `kVehicleInteractionBreakWheelDetach = **false**`: damage колеса применяется (`SET_VEHICLE_DAMAGE` + readback), а one-way `_BREAK_OFF_VEHICLE_WHEEL` (wheelIndex mapping UNCERTAIN) **не вызывается** до A/B; при gate off → `Correction` (гость не считает колесо оторванным) | `src/world_sync.cpp` (~2318, ~2842) | I1 wheel PASS по damage/health; detach — только после A/B |
+| **F4** | host DoorBreak gate | `kVehicleInteractionDoorBreak = **false**` (host apply): `SET_VEHICLE_DOOR_BROKEN`/`SET_DOOR_ALLOWED_TO_BE_BROKEN` не вызываются до A/B → `NotAllowed`; guest capture `kVehicleInteractionCaptureDoorBreak = false` (не шлёт DoorBreak). Damage-порог `kDoorBreakDamageThreshold=200` остаётся как fallback | `src/world_sync.cpp` (~2325, ~2884); `src/coop.cpp:4959` | I2 door open/close PASS; DoorBreak — wire-ready, в игре gated |
+| **L3** | tracked states 8 | `kTrackedVehicleStates = **8**` (было 4): больше одновременных 0x26-tracked vehicle + state-send window ≤8/с; eviction по самому давнему | `src/world_sync.cpp:2304` | меньше вытеснений в плотном трафике (I7/I9) |
+
+Wire-протокол эти low-fixes **не меняют** (v20 bump уже сделан): только
+поведение host/guest/server. Precheck перед блоком I:
+`python tools\fake_vehicle_client.py --mode scenario` (wire/relay) + re-proof
+F1–F4 на сборке `npc-e20` (CI/смоук + 2-ПК I1–I10 с `vehicle_interaction=1`
+после F1–F4 re-proof; default-off сохраняется).
 
 ---
 
@@ -896,6 +933,11 @@ P1 total: typical **<0.3 KiB/s**, worst **<0.7 KiB/s** на направлени
 его статус SIGNATURE-ONLY/UNCERTAIN (lock enum, wheelIndex mapping, p6/offset/clamp,
 non-local SET_PED_INTO, keepPhysics, TASK flags). Открытые A/B — §10.2; hashes —
 только из R&D-дока/NativeDecl 1491.50, не из локального native-DB 1207.
+
+**Independent-proof low-fixes (F1–F4, L3):** приняты и внесены (§5.7) — F1
+server socket-lifetime, F2 0x26 seq-reset tolerance, F3 wheel-detach A/B gate,
+F4 host DoorBreak gate, L3 tracked states 8. Блок I — только после F1–F4
+re-proof; P1 default-off (`vehicle_interaction=0`).
 
 ---
 

@@ -107,8 +107,10 @@ Get-FileHash "E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe" -Algorithm
 
 **Для блока I (v20 P1)** — другая пара: `dist\npc-e20` (protocol **v20**,
 ASI+server, оба ПК), INI **32/42** (28 ключей + 4 `vehicle_interaction*`).
-До деплоя `npc-e20` блок I не выполняется; сейчас задеплоена пара npc-e19/v19
-и прогон A–H идёт на ней.
+**P1 default-off:** `vehicle_interaction = 0` в снапшоте; для блока I ключ
+временно ставится `1` на обоих ПК **только после F1–F4 re-proof**, в конце —
+обратно `0`. До деплоя `npc-e20` блок I не выполняется; сейчас задеплоена
+пара npc-e19/v19 и прогон A–H идёт на ней.
 
 ### 0.2. INI: 28 ключей приёмки
 
@@ -401,13 +403,26 @@ refactor-only без серверных изменений; `dist\npc-e16` — �
 
 ---
 
-## 9. Блок I — v20 P1 guest influence (I1–I10; только после U3/U4 + deploy `npc-e20`)
+## 9. Блок I — v20 P1 guest influence (I1–I10; только после F1–F4 re-proof + deploy `npc-e20`)
 
-**Предусловия (не начинать раньше):** U3 (host apply) и U4 (guest capture)
-влиты; собран и задеплоен **снапшот `dist\npc-e20`** (protocol **v20**,
+> **P1 — default-off.** В сборке `npc-e20` ключ `vehicle_interaction = 0`
+> **по умолчанию на обоих ПК** (Lead decision; `src/config.h:96`). Сервер/wire
+> включены всегда, но при 0 host отвечает `NotAllowed` (reason=config_off), а
+> guest не отправляет интенты. **Включать `vehicle_interaction = 1` можно
+> только после F1–F4 re-proof** (independent proof low-fixes: F1 server
+> socket-lifetime, F2 seq-reset tolerance, F3 wheel-detach A/B gate, F4 host
+> DoorBreak gate, L3 tracked states 8 — см. `docs/INTERACTIVITY_P1.md` §5.7) —
+> до этого блок I не начинать. Шаг включения: выставить `1` на **обоих** ПК →
+> перезапустить игру на обоих → убедиться, что `config: warn` нет, а в логе
+> host apply есть `vehicle: interaction`; в конце прогона вернуть `0` + рестарт
+> (default-off — рабочее состояние).
+
+**Предусловия (не начинать раньше):** F1–F4 re-proof закрыт (см. warning
+выше); собран и задеплоен **снапшот `dist\npc-e20`** (protocol **v20**,
 wire 0x23/0x24/0x26) **парой ASI+server** на **оба** ПК (одинаковые хеши);
 INI — **32 приёмочных ключа / 42 строки**: к 28 ключам e19 добавлены
-`vehicle_interaction = 1`, `vehicle_interaction_mission = 0`,
+`vehicle_interaction = 0` (**default-off**; для блока I — временно `1` после
+F1–F4 re-proof), `vehicle_interaction_mission = 0`,
 `vehicle_interaction_host_vehicle = 0`, `vehicle_interaction_debug = 1`
 (host+guest одинаково); `npc_actor = 1`; смешанная v19/v20-пара невозможна
 (`VersionMismatch`). Server-лог содержит `net: … vehicle=` heartbeat
@@ -433,7 +448,9 @@ INI — **32 приёмочных ключа / 42 строки**: к 28 ключ
 - v20 — **жёсткий bump**: `kProtocolVersion 19→20`; v19-клиент на v20-сервере
   получает `VersionMismatch`. Deploy — **только парой** ASI+server из одного
   снапшота `dist\npc-e20`, оба ПК с одинаковыми хешами; промежуточные коммиты
-  U1–U4 не деплоить.
+  U1–U5 не деплоить. **P1 default-off:** `vehicle_interaction=0` — деплой
+  безопасен, пока ключ не включён; включение — только после F1–F4 re-proof
+  (см. warning в начале блока I).
 - Задеплоенная сейчас рабочая пара — **npc-e19/v19** (ASI `DD0EE210`, server
   `DD9BD9D8`, INI 28/38). **Откат:** закрыть игры/сервер → ASI и server из
   `dist\npc-e19` → INI из `dist\npc-e19\README.md` (28 ключей; убрать 4

@@ -1010,6 +1010,10 @@ void RelayHostOnlyRate(netio::Socket* sock, const std::string& name,
 
 // v20 P1 (§3.3): guest -> host unicast + per-client rate-limit (0x23).
 // Хост-отправитель: warn+drop; нет хоста online — drop (сервер не эмулирует).
+// ИНВАРИАНТ F1: чужой netio::Socket* нельзя сохранять вне g_mutex — cleanup
+// другого потока удаляет сокет после Close. Поэтому и поиск хоста, и
+// rate-check, и SendTracked выполняются в одной секции под lock (как в
+// BroadcastToOthers / ActorDamage); наружу выходит только имя для LogWarn.
 void RelayGuestToHostRate(netio::Socket* sock, const std::string& name,
                           const std::vector<uint8_t>& pay, uint8_t type,
                           PayloadValidator validator,
@@ -1019,9 +1023,9 @@ void RelayGuestToHostRate(netio::Socket* sock, const std::string& name,
     (void)sock;
     if (!validator(pay))
         return;
+    const std::vector<uint8_t> msg = MakeMsg(
+        type, pay.data(), static_cast<uint32_t>(pay.size()));
     bool senderIsHost = false;
-    bool allowed = false;
-    netio::Socket* hostSock = nullptr;
     {
         std::lock_guard<std::mutex> lk(g_mutex);
         auto it = g_online.find(name);
@@ -1032,25 +1036,17 @@ void RelayGuestToHostRate(netio::Socket* sock, const std::string& name,
             {
                 for (auto& kv : g_online)
                 {
-                    if (kv.second.isHost && kv.second.sock)
-                    {
-                        hostSock = kv.second.sock;
-                        break;
-                    }
+                    if (!kv.second.isHost || !kv.second.sock)
+                        continue;
+                    if (AllowRate(it->second.*rate, limit, NowMs()))
+                        SendTracked(kv.second.sock, msg.data(), (int)msg.size());
+                    break;
                 }
-                if (hostSock)
-                    allowed = AllowRate(it->second.*rate, limit, NowMs());
             }
         }
     }
     if (senderIsHost)
         LogWarn("[!] " + name + ": " + what + " от хоста проигнорирован");
-    else if (allowed && hostSock)
-    {
-        const std::vector<uint8_t> msg = MakeMsg(
-            type, pay.data(), static_cast<uint32_t>(pay.size()));
-        SendTracked(hostSock, msg.data(), (int)msg.size());
-    }
     // Нет хоста / rate-limited: молча drop (клиент повторит по своей policy).
 }
 

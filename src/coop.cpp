@@ -5123,6 +5123,20 @@ void UpdateVehicleDoorCapture(unsigned int pedal)
     const unsigned long long nowMs = GetTickCount64();
     if (s_viLastDoorMs != 0 && nowMs - s_viLastDoorMs < 250ull)
         return;
+    // L5: двери только если игрок реально целится в ЭТОТ прокси (иначе attack
+    // откроет дверь соседней машины или уйдёт в NPC/стрельбу).
+    {
+        using namespace natives_api;
+        Init(natives::GET_PLAYER_INDEX);
+        const int player = static_cast<int>(Call());
+        if (player < 0) return;
+        unsigned long long aimed = 0;
+        Init(natives::GET_ENTITY_PLAYER_IS_FREE_AIMING_AT);
+        Push(static_cast<unsigned long long>(player));
+        Push(reinterpret_cast<unsigned long long>(&aimed));
+        if (!Call() || static_cast<unsigned int>(aimed) != handle)
+            return;
+    }
     const bool attack = IsControlJustPressedGuest(0, natives::input::INPUT_ATTACK);
     const bool attack2 =
         kVehicleInteractionCaptureDoorBreak &&
