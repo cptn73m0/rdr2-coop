@@ -147,6 +147,98 @@ bool AsBool(const std::string& val)
     return !(v == "0" || v == "false" || v == "no" || v == "off");
 }
 
+// ub-mode unit D: ApplyLine разделён на группы ключей; поведение то же.
+struct IntKey
+{
+    const char* key;
+    int Config::*field;
+    int minValue;
+    int maxValue;
+    bool clamp; // true: clamp в диапазон; false: невалидное значение игнор
+};
+
+struct BoolKey
+{
+    const char* key;
+    bool Config::*field;
+};
+
+bool ApplyIntKey(const std::string& key, const std::string& val, Config& out)
+{
+    static const IntKey keys[] = {
+        {"server_port", &Config::serverPort, 1, 65535, false},
+        {"npc_vehicle_radius", &Config::npcVehicleRadius, 20, 200, false},
+        {"npc_cap", &Config::npcCap, 1, 12, false},
+        {"npc_radius", &Config::npcRadius, 20, 100, false},
+        {"npc_animal_cap", &Config::npcAnimalCap, 0, 12, false},
+        {"npc_frame_hz", &Config::npcFrameHz, 10, 20, false},
+        {"player_frame_hz", &Config::playerFrameHz, 10, 60, true},
+        {"npc_corpse_max_sec", &Config::npcCorpseMaxSec, 0, 600, false},
+    };
+    for (const IntKey& k : keys)
+    {
+        if (key != k.key)
+            continue;
+        char* end = nullptr;
+        const long v = std::strtol(val.c_str(), &end, 10);
+        if (end == val.c_str() || *end != '\0')
+            return true;
+        if (k.clamp)
+        {
+            if (v < k.minValue) out.*(k.field) = k.minValue;
+            else if (v > k.maxValue) out.*(k.field) = k.maxValue;
+            else out.*(k.field) = static_cast<int>(v);
+        }
+        else if (v >= k.minValue && v <= k.maxValue)
+        {
+            out.*(k.field) = static_cast<int>(v);
+        }
+        return true;
+    }
+    return false;
+}
+
+bool ApplyBoolKey(const std::string& key, const std::string& val, Config& out)
+{
+    static const BoolKey keys[] = {
+        {"world_sync", &Config::worldSync},
+        {"world_vehicles", &Config::worldVehicles},
+        {"action_sync", &Config::actionSync},
+        {"vehicle_sync", &Config::vehicleSync},
+        {"mission_sync", &Config::missionSync},
+        {"mission_credit", &Config::missionCredit},
+        {"save_backup", &Config::saveBackup},
+        {"mission_reward_log", &Config::missionRewardLog},
+        {"world_trains", &Config::worldTrains},
+        {"train_debug", &Config::trainDebug},
+        {"npc_actor", &Config::npcActor},
+        {"npc_debug", &Config::npcDebug},
+        {"npc_appearance", &Config::npcAppearance},
+        {"npc_damage", &Config::npcDamage},
+        {"npc_presence", &Config::npcPresence},
+        {"npc_visitor", &Config::npcVisitor},
+        {"npc_visitor_vehicles", &Config::npcVisitorVehicles},
+        {"npc_visitor_preserve_events", &Config::npcVisitorPreserveEvents},
+        {"npc_visitor_pause_scenes", &Config::npcVisitorPauseScenes},
+        {"npc_occupants", &Config::npcOccupants},
+        {"npc_animal_appearance", &Config::npcAnimalAppearance},
+        {"npc_mount_appearance", &Config::npcMountAppearance},
+        {"npc_frame_adaptive", &Config::npcFrameAdaptive},
+        {"player_frame_change_only", &Config::playerFrameChangeOnly},
+        {"npc_motion_update", &Config::npcMotionUpdate},
+        {"npc_motion_marker", &Config::npcMotionMarker},
+        {"npc_motion_status_p2", &Config::npcMotionStatusP2},
+    };
+    for (const BoolKey& k : keys)
+    {
+        if (key != k.key)
+            continue;
+        out.*(k.field) = AsBool(val);
+        return true;
+    }
+    return false;
+}
+
 void ApplyLine(const std::string& raw, Config& out)
 {
     std::string s = Trim(raw);
@@ -171,102 +263,9 @@ void ApplyLine(const std::string& raw, Config& out)
     if (val.empty()) return;
 
     if (key == "server_host") out.serverHost = val;
-    else if (key == "server_port")
-    {
-        char* end = nullptr;
-        const long port = std::strtol(val.c_str(), &end, 10);
-        if (end != val.c_str() && *end == '\0' && port >= 1 && port <= 65535)
-            out.serverPort = static_cast<int>(port);
-    }
     else if (key == "player_name") out.playerName = val;
-    else if (key == "world_sync") out.worldSync = AsBool(val);
-    else if (key == "world_vehicles") out.worldVehicles = AsBool(val);
-    else if (key == "npc_vehicle_radius")
-    {
-        char* end = nullptr;
-        const long r = std::strtol(val.c_str(), &end, 10);
-        if (end != val.c_str() && *end == '\0' && r >= 20 && r <= 200)
-            out.npcVehicleRadius = static_cast<int>(r);
-    }
-    else if (key == "action_sync") out.actionSync = AsBool(val);
-    else if (key == "vehicle_sync") out.vehicleSync = AsBool(val);
-    else if (key == "mission_sync") out.missionSync = AsBool(val);
-    else if (key == "mission_credit") out.missionCredit = AsBool(val);
-    else if (key == "save_backup") out.saveBackup = AsBool(val);
-    else if (key == "mission_reward_log") out.missionRewardLog = AsBool(val);
-    else if (key == "world_trains") out.worldTrains = AsBool(val);
-    else if (key == "train_debug") out.trainDebug = AsBool(val);
-    else if (key == "npc_actor") out.npcActor = AsBool(val);
-    else if (key == "npc_debug") out.npcDebug = AsBool(val);
-    else if (key == "npc_cap")
-    {
-        char* end = nullptr;
-        const long cap = std::strtol(val.c_str(), &end, 10);
-        if (end != val.c_str() && *end == '\0' && cap >= 1 && cap <= 12)
-            out.npcCap = static_cast<int>(cap);
-    }
-    else if (key == "npc_radius")
-    {
-        char* end = nullptr;
-        const long r = std::strtol(val.c_str(), &end, 10);
-        if (end != val.c_str() && *end == '\0' && r >= 20 && r <= 100)
-            out.npcRadius = static_cast<int>(r);
-    }
-    else if (key == "npc_animal_cap")
-    {
-        char* end = nullptr;
-        const long a = std::strtol(val.c_str(), &end, 10);
-        if (end != val.c_str() && *end == '\0' && a >= 0 && a <= 12)
-            out.npcAnimalCap = static_cast<int>(a);
-    }
-    else if (key == "npc_appearance") out.npcAppearance = AsBool(val);
-    else if (key == "npc_damage") out.npcDamage = AsBool(val);
-    else if (key == "npc_presence") out.npcPresence = AsBool(val);
-    else if (key == "npc_visitor") out.npcVisitor = AsBool(val);
-    else if (key == "npc_visitor_vehicles")
-        out.npcVisitorVehicles = AsBool(val);
-    else if (key == "npc_visitor_preserve_events")
-        out.npcVisitorPreserveEvents = AsBool(val);
-    else if (key == "npc_visitor_pause_scenes")
-        out.npcVisitorPauseScenes = AsBool(val);
-    else if (key == "npc_occupants") out.npcOccupants = AsBool(val);
-    else if (key == "npc_animal_appearance")
-        out.npcAnimalAppearance = AsBool(val);
-    else if (key == "npc_mount_appearance")
-        out.npcMountAppearance = AsBool(val);
-    else if (key == "npc_frame_hz")
-    {
-        char* end = nullptr;
-        const long hz = std::strtol(val.c_str(), &end, 10);
-        if (end != val.c_str() && *end == '\0' && hz >= 10 && hz <= 20)
-            out.npcFrameHz = static_cast<int>(hz);
-    }
-    else if (key == "npc_frame_adaptive")
-        out.npcFrameAdaptive = AsBool(val);
-    else if (key == "player_frame_hz")
-    {
-        char* end = nullptr;
-        const long hz = std::strtol(val.c_str(), &end, 10);
-        if (end != val.c_str() && *end == '\0')
-        {
-            if (hz < 10) out.playerFrameHz = 10;
-            else if (hz > 60) out.playerFrameHz = 60;
-            else out.playerFrameHz = static_cast<int>(hz);
-        }
-    }
-    else if (key == "player_frame_change_only")
-        out.playerFrameChangeOnly = AsBool(val);
-    else if (key == "npc_motion_update") out.npcMotionUpdate = AsBool(val);
-    else if (key == "npc_motion_marker") out.npcMotionMarker = AsBool(val);
-    else if (key == "npc_motion_status_p2")
-        out.npcMotionStatusP2 = AsBool(val);
-    else if (key == "npc_corpse_max_sec")
-    {
-        char* end = nullptr;
-        const long c = std::strtol(val.c_str(), &end, 10);
-        if (end != val.c_str() && *end == '\0' && c >= 0 && c <= 600)
-            out.npcCorpseMaxSec = static_cast<int>(c);
-    }
+    else if (ApplyIntKey(key, val, out)) return;
+    else if (ApplyBoolKey(key, val, out)) return;
     else if (key == "ped_model")
     {
         unsigned long long m = 0;

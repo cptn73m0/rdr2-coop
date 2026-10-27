@@ -3940,43 +3940,30 @@ void RespawnGhostPed(const net::FramePayload* f)
     s_remoteRespawnName[0] = '\0';
 }
 
-void ApplyRemoteFrame(const net::FramePayload& f)
+// ub-mode unit B1: ранние guard'ы ApplyRemoteFrame (порядок сохранён).
+bool ApplyRemoteFrameEarly(const net::FramePayload& f)
 {
-    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
-    // Мёртвый пед: труп лежит там, где умер — не двигаем. НО если оригинал
-    // ожил (в кадре положительное здоровье) — воскрешаем педа. s_deadGuardTicks
-    // не даёт кадру, отправленному ещё до смерти, воскресить труп мгновенно.
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return true;
     if (s_ghostDead)
     {
         if (s_deadGuardTicks == 0 && f.health > 0.2f)
-        {
             RespawnGhostPed(&f);
-        }
         else
-        {
-            return; // всё ещё мёртв — труп не трогаем
-        }
+            return true; // всё ещё мёртв — труп не трогаем
     }
-
-    // P2: удалённый игрок едет в транспорте — позицией и посадкой управляет
-    // PlayerVehicle-сообщение; кадры не должны телепортировать призрака.
     if (s_remoteInVehicle)
     {
         ApplyPedStateToGhost(f);
         ApplyPlayerOutfitToGhost(f.reserved[1]);
-        return;
+        return true;
     }
+    return false;
+}
 
-    constexpr float LERP_FACTOR = 0.2f; // ~20% за тик при 60 Гц (плавно, без рывков)
-    constexpr float TELEPORT_DIST = 10.0f; // больше этой дистанции — телепорт
-
-    Vec3 cur = GetEntityCoords(s_ghost);
-    Vec3 p{f.x, f.y, f.z};
-
-    const uint8_t move = static_cast<uint8_t>(f.move);
-    const uint8_t rideState = static_cast<uint8_t>(coop::MoveState::RideHorse);
-    // Отсев мерцания: IS_PED_ON_MOUNT у отправителя может кратко дрожать,
-    // поэтому «не верхом» считаем только после kRideLossTicks подряд.
+// ub-mode unit B2: mounted/dis mount/ride-loss фазы ApplyRemoteFrame.
+bool ApplyRemoteFrameMountPhase(const net::FramePayload& f, Vec3 p,
+                                uint8_t move, uint8_t rideState)
+{
     if (move == rideState)
         s_rideLossTicks = 0;
     else if (s_rideLossTicks < 1000)
@@ -3996,7 +3983,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
                           off ? 1 : 0, s_mountPhaseTicks);
             DismountAndRemoveMount(); // удаляет лошадь + пересобирает внешний вид
         }
-        return;
+        return true;
     }
 
     if (move == rideState)
@@ -4044,7 +4031,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
             RequestMountModel();       // создаёт лошадь рядом с педом
             if (s_mount)
                 StartMounting();       // подойти и сесть с анимацией
-            return;
+            return true;
         }
         if (s_mountPhase == MountPhase::Mounting)
         {
@@ -4069,7 +4056,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
                 s_mountPhase = MountPhase::Seated;
                 s_mountTaskValid = false;
             }
-            return; // пока пед садится — лошадь не двигаем
+            return true; // пока пед садится — лошадь не двигаем
         }
         // В седле: ведём лошадь за кадрами.
         if (s_mountPhase != MountPhase::Seated)
@@ -4103,7 +4090,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         }
         DisableMountLocalCollision();
         ApplyPedStateToGhost(f);
-        return;
+        return true;
     }
 
     // Кадр «не верхом», но лошадь ещё есть.
@@ -4111,8 +4098,28 @@ void ApplyRemoteFrame(const net::FramePayload& f)
     {
         if (s_rideLossTicks >= kRideLossTicks)
             StartDismounting(); // запустит анимацию спешивания
-        return;                 // мерцание — продолжаем держать посадку
+        return true;                 // мерцание — продолжаем держать посадку
     }
+    return false;
+}
+
+void ApplyRemoteFrame(const net::FramePayload& f)
+{
+    if (ApplyRemoteFrameEarly(f))
+        return;
+
+    constexpr float LERP_FACTOR = 0.2f; // ~20% за тик при 60 Гц (плавно, без рывков)
+    constexpr float TELEPORT_DIST = 10.0f; // больше этой дистанции — телепорт
+
+    Vec3 cur = GetEntityCoords(s_ghost);
+    Vec3 p{f.x, f.y, f.z};
+
+    const uint8_t move = static_cast<uint8_t>(f.move);
+    const uint8_t rideState = static_cast<uint8_t>(coop::MoveState::RideHorse);
+    // Отсев мерцания: IS_PED_ON_MOUNT у отправителя может кратко дрожать,
+    // поэтому «не верхом» считаем только после kRideLossTicks подряд.
+    if (ApplyRemoteFrameMountPhase(f, p, move, rideState))
+        return;
 
     // Прыжок/падение/плавание: пед в воздухе или в воде — Z кадра валиден
     // (это «пояс» игрока на высоте прыжка). НЕ прижимаем к земле и НЕ даём
@@ -5464,24 +5471,16 @@ net::ActionStatePayload DetectLocalActionV2(unsigned int ped)
 }
 
 // P2: применить действие удалённого игрока к педу-призраку.
-void ApplyRemoteActionV2(const net::ActionStatePayload& a)
+// ub-mode unit C1: фазы ApplyRemoteActionV2 (порядок сохранён).
+void FinishPreviousRemoteAction(uint8_t mode, uint8_t scenarioMode,
+                               uint8_t coverMode, uint8_t carryMode,
+                               uint8_t lootMode)
 {
-    if (!s_ghost || !DoesEntityExist(s_ghost) || s_ghostDead)
-        return;
     using namespace natives_api;
-
-    const uint8_t mode = a.mode;
-    const uint8_t scenarioMode = static_cast<uint8_t>(net::ActionMode::Scenario);
-    const uint8_t coverMode    = static_cast<uint8_t>(net::ActionMode::Cover);
-    const uint8_t carryMode    = static_cast<uint8_t>(net::ActionMode::Carry);
-    const uint8_t lootMode     = static_cast<uint8_t>(net::ActionMode::Loot);
     const bool wasScenario = (s_appliedActionMode == scenarioMode);
     const bool wasCover = (s_appliedActionMode == coverMode);
     const bool wasCarryOrLoot =
         (s_appliedActionMode == carryMode || s_appliedActionMode == lootMode);
-
-    // 1) Сначала завершаем ПРЕДЫДУЩЕЕ состояние: иначе его exit-задача
-    //    (или TASK_STAND_STILL) перебьёт только что применённое новое действие.
     if (wasCover && mode != coverMode)
     {
         Init(natives::TASK_EXIT_COVER);
@@ -5506,6 +5505,12 @@ void ApplyRemoteActionV2(const net::ActionStatePayload& a)
     }
 
     // 2) Применяем текущее состояние.
+}
+
+void ApplyRemoteScenarioAction(const net::ActionStatePayload& a, uint8_t mode,
+                               uint8_t scenarioMode)
+{
+    using namespace natives_api;
     if (mode == scenarioMode && a.scenarioHash)
     {
         if (s_appliedActionMode != mode || s_appliedScenario != a.scenarioHash)
@@ -5525,6 +5530,11 @@ void ApplyRemoteActionV2(const net::ActionStatePayload& a)
         }
     }
 
+}
+
+void ApplyRemoteCoverAction(uint8_t mode, uint8_t coverMode, bool wasCover)
+{
+    using namespace natives_api;
     if (mode == coverMode)
     {
         if (!wasCover)
@@ -5549,6 +5559,12 @@ void ApplyRemoteActionV2(const net::ActionStatePayload& a)
         }
     }
 
+}
+
+void ApplyRemoteCarryLootAction(const net::ActionStatePayload& a, uint8_t mode,
+                                uint8_t carryMode, uint8_t lootMode)
+{
+    using namespace natives_api;
     if (mode == carryMode || mode == lootMode)
     {
         unsigned int target = 0;
@@ -5584,9 +5600,30 @@ void ApplyRemoteActionV2(const net::ActionStatePayload& a)
         }
     }
 
+}
+
+void ApplyRemoteActionV2(const net::ActionStatePayload& a)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost) || s_ghostDead)
+        return;
+    const uint8_t mode = a.mode;
+    const uint8_t scenarioMode = static_cast<uint8_t>(net::ActionMode::Scenario);
+    const uint8_t coverMode    = static_cast<uint8_t>(net::ActionMode::Cover);
+    const uint8_t carryMode    = static_cast<uint8_t>(net::ActionMode::Carry);
+    const uint8_t lootMode     = static_cast<uint8_t>(net::ActionMode::Loot);
+    const bool wasCover = (s_appliedActionMode == coverMode);
+
+    FinishPreviousRemoteAction(mode, scenarioMode, coverMode, carryMode,
+                               lootMode);
+    ApplyRemoteScenarioAction(a, mode, scenarioMode);
+    ApplyRemoteCoverAction(mode, coverMode, wasCover);
+    ApplyRemoteCarryLootAction(a, mode, carryMode, lootMode);
+
     s_appliedActionMode = mode;
     s_appliedScenario = a.scenarioHash;
 }
+
+
 
 // P2: посадка в транспорт. Локальный детект: если игрок внутри vehicle —
 // отправляем модель/позицию/место; гость создаёт прокси и сажает призрака.
@@ -6220,6 +6257,133 @@ void SendActorResync(uint32_t epoch, uint32_t lastSeq, uint8_t reason)
     g_netClient.SendActorResync(epoch, lastSeq, reason);
     sh_log::Write("actor: resync request epoch=%u seq=%u reason=%u\n",
                   epoch, lastSeq, (unsigned)reason);
+}
+
+// ub-mode unit A1: выделенные фазы coop::Tick (без переупорядочивания).
+void TickWorldStateSync()
+{
+    if (g_netStarted && s_amHost.load())
+    {
+        // Раз в 5 секунд (300 тиков) отправляем текущее время/погоду.
+        if (s_tickCount - s_lastWorldSendTick >= 5 * 60)
+        {
+            s_lastWorldSendTick = s_tickCount;
+            net::WorldState ws{};
+            using namespace natives_api;
+            Init(natives::GET_CLOCK_HOURS);   ws.hour   = static_cast<uint8_t>(Call());
+            Init(natives::GET_CLOCK_MINUTES); ws.minute = static_cast<uint8_t>(Call());
+            Init(natives::GET_CLOCK_SECONDS); ws.second = static_cast<uint8_t>(Call());
+            // Текущее состояние погоды: два типа + доля перехода.
+            uint32_t w1 = 0, w2 = 0; float pct = 0.f;
+            void* a = nullptr, * b = nullptr;
+            Init(natives::GET_CURR_WEATHER_STATE);
+            Push(reinterpret_cast<unsigned long long>(&w1));
+            Push(reinterpret_cast<unsigned long long>(&w2));
+            Push(reinterpret_cast<unsigned long long>(&pct));
+            Call();
+            ws.weatherType1 = w1;
+            ws.weatherType2 = w2;
+            ws.weatherPct = pct;
+            g_netClient.SendWorldState(ws);
+            if (s_tickCount % (15 * 60) == 1) // редкий лог
+                sh_log::Write("coop: host world state %02u:%02u:%02u w=%08X/%08X %.2f\n",
+                              ws.hour, ws.minute, ws.second,
+                              ws.weatherType1, ws.weatherType2, ws.weatherPct);
+        }
+    }
+    else if (s_haveWorldState)
+    {
+        // Не хост: применяем время и погоду хоста.
+        s_haveWorldState = false;
+        const net::WorldState& ws = s_worldState;
+        using namespace natives_api;
+        // Применяем часы только при заметном расхождении (иначе дёргаем
+        // секунды каждый кадр — секунды всё равно идут сами).
+        int ch = 0, cm = 0;
+        Init(natives::GET_CLOCK_HOURS);   ch = static_cast<int>(Call());
+        Init(natives::GET_CLOCK_MINUTES); cm = static_cast<int>(Call());
+        if (ch != ws.hour || cm != ws.minute || s_lastAppliedHour < 0)
+        {
+            Init(natives::SET_CLOCK_TIME);
+            Push(static_cast<unsigned long long>(ws.hour));
+            Push(static_cast<unsigned long long>(ws.minute));
+            Push(static_cast<unsigned long long>(ws.second));
+            Call();
+            s_lastAppliedHour = ws.hour;
+            s_lastAppliedMin = ws.minute;
+            sh_log::Write("coop: apply host time %02u:%02u:%02u\n",
+                          ws.hour, ws.minute, ws.second);
+        }
+        // Погода: SET_WEATHER_TYPE переключает сразу (с плавным переходом).
+        if (ws.weatherType1 || ws.weatherType2)
+        {
+            Init(natives::SET_WEATHER_TYPE);
+            Push(static_cast<unsigned long long>(ws.weatherType2 ? ws.weatherType2
+                                                                 : ws.weatherType1));
+            Push(static_cast<unsigned long long>(1));  // p1
+            Push(static_cast<unsigned long long>(0));  // p2
+            Push(static_cast<unsigned long long>(1));  // transition
+            Push(0.5f);                                // transitionTime (сек)
+            Push(static_cast<unsigned long long>(0));  // p5
+            Call();
+        }
+    }
+}
+
+void TickJoinSubtitle()
+{
+    if (s_joinedName[0])
+    {
+        if (s_subtitleTicksLeft > 0)
+        {
+            if (s_subtitleTicksLeft == 8 * 60) // первый тик нового таймера — лог для диагностики
+                sh_log::Write("coop: subtitle: '%s' (%u ticks)\n", s_joinedName, s_subtitleTicksLeft);
+            DrawSubtitle(s_joinedName);
+            --s_subtitleTicksLeft;
+        }
+        else
+        {
+            s_joinedName[0] = '\0'; // hide permanently until next event
+        }
+    }
+
+    // Редкий heartbeat-лог живого педа (раньше раз в 2 с засорял лог).
+}
+
+void TickRttHud()
+{
+    if (g_netStarted)
+    {
+        uint32_t rtt = g_netClient.RttMs();
+        if (rtt > 0)
+        {
+            if (s_rttMin == 0 || rtt < s_rttMin) s_rttMin = rtt;
+            if (rtt > s_rttMax) s_rttMax = rtt;
+        }
+        if (s_tickCount - s_lastRttDrawTick >= 2 * 60)
+        {
+            s_lastRttDrawTick = s_tickCount;
+            // Джиттер: |rtt - prev| со сглаживанием (RFC 3550-стиль).
+            if (s_rttPrev)
+            {
+                float diff = rtt > s_rttPrev ? (float)(rtt - s_rttPrev)
+                                             : (float)(s_rttPrev - rtt);
+                s_rttJitter = s_rttJitter * 0.75f + diff * 0.25f;
+            }
+            s_rttPrev = rtt;
+            std::snprintf(s_rttHud, sizeof(s_rttHud),
+                          "RTT %u ms jit %.0f (min %u / max %u)",
+                          rtt, s_rttJitter, s_rttMin, s_rttMax);
+            sh_log::Write("net: rtt %u ms (min %u / max %u, jit %.0f)\n",
+                          rtt, s_rttMin, s_rttMax, s_rttJitter);
+            s_rttMin = rtt;
+            s_rttMax = rtt;
+        }
+        // _BG_DISPLAY_TEXT рисует строку только на ОДИН кадр, поэтому
+        // вызываем каждый тик с уже сформированным текстом (иначе моргает).
+        if (s_rttHud[0])
+            DrawHudLine(s_rttHud);
+    }
 }
 
 void Tick()
@@ -7760,132 +7924,22 @@ void Tick()
 
     // Синхронизация мира (время + погода): хост шлёт своё состояние каждые
     // ~5 секунд, остальные применяют его у себя (SET_CLOCK_TIME / погода).
-    if (g_netStarted && s_amHost.load())
-    {
-        // Раз в 5 секунд (300 тиков) отправляем текущее время/погоду.
-        if (s_tickCount - s_lastWorldSendTick >= 5 * 60)
-        {
-            s_lastWorldSendTick = s_tickCount;
-            net::WorldState ws{};
-            using namespace natives_api;
-            Init(natives::GET_CLOCK_HOURS);   ws.hour   = static_cast<uint8_t>(Call());
-            Init(natives::GET_CLOCK_MINUTES); ws.minute = static_cast<uint8_t>(Call());
-            Init(natives::GET_CLOCK_SECONDS); ws.second = static_cast<uint8_t>(Call());
-            // Текущее состояние погоды: два типа + доля перехода.
-            uint32_t w1 = 0, w2 = 0; float pct = 0.f;
-            void* a = nullptr, * b = nullptr;
-            Init(natives::GET_CURR_WEATHER_STATE);
-            Push(reinterpret_cast<unsigned long long>(&w1));
-            Push(reinterpret_cast<unsigned long long>(&w2));
-            Push(reinterpret_cast<unsigned long long>(&pct));
-            Call();
-            ws.weatherType1 = w1;
-            ws.weatherType2 = w2;
-            ws.weatherPct = pct;
-            g_netClient.SendWorldState(ws);
-            if (s_tickCount % (15 * 60) == 1) // редкий лог
-                sh_log::Write("coop: host world state %02u:%02u:%02u w=%08X/%08X %.2f\n",
-                              ws.hour, ws.minute, ws.second,
-                              ws.weatherType1, ws.weatherType2, ws.weatherPct);
-        }
-    }
-    else if (s_haveWorldState)
-    {
-        // Не хост: применяем время и погоду хоста.
-        s_haveWorldState = false;
-        const net::WorldState& ws = s_worldState;
-        using namespace natives_api;
-        // Применяем часы только при заметном расхождении (иначе дёргаем
-        // секунды каждый кадр — секунды всё равно идут сами).
-        int ch = 0, cm = 0;
-        Init(natives::GET_CLOCK_HOURS);   ch = static_cast<int>(Call());
-        Init(natives::GET_CLOCK_MINUTES); cm = static_cast<int>(Call());
-        if (ch != ws.hour || cm != ws.minute || s_lastAppliedHour < 0)
-        {
-            Init(natives::SET_CLOCK_TIME);
-            Push(static_cast<unsigned long long>(ws.hour));
-            Push(static_cast<unsigned long long>(ws.minute));
-            Push(static_cast<unsigned long long>(ws.second));
-            Call();
-            s_lastAppliedHour = ws.hour;
-            s_lastAppliedMin = ws.minute;
-            sh_log::Write("coop: apply host time %02u:%02u:%02u\n",
-                          ws.hour, ws.minute, ws.second);
-        }
-        // Погода: SET_WEATHER_TYPE переключает сразу (с плавным переходом).
-        if (ws.weatherType1 || ws.weatherType2)
-        {
-            Init(natives::SET_WEATHER_TYPE);
-            Push(static_cast<unsigned long long>(ws.weatherType2 ? ws.weatherType2
-                                                                 : ws.weatherType1));
-            Push(static_cast<unsigned long long>(1));  // p1
-            Push(static_cast<unsigned long long>(0));  // p2
-            Push(static_cast<unsigned long long>(1));  // transition
-            Push(0.5f);                                // transitionTime (сек)
-            Push(static_cast<unsigned long long>(0));  // p5
-            Call();
-        }
-    }
+    TickWorldStateSync();
 
     // Small "Player X joined" subtitle on screen while a join happened
     // (drawn each frame for a short while proves the text path works).
     // Гейт по тексту/таймеру, а не по s_playerJoinedNotified: этот флаг теперь
     // означает только «удалённый игрок в сессии» (гейт спавна), а субтитры
     // показываем и для death/respawn/host-changed/connection-lost.
-    if (s_joinedName[0])
-    {
-        if (s_subtitleTicksLeft > 0)
-        {
-            if (s_subtitleTicksLeft == 8 * 60) // первый тик нового таймера — лог для диагностики
-                sh_log::Write("coop: subtitle: '%s' (%u ticks)\n", s_joinedName, s_subtitleTicksLeft);
-            DrawSubtitle(s_joinedName);
-            --s_subtitleTicksLeft;
-        }
-        else
-        {
-            s_joinedName[0] = '\0'; // hide permanently until next event
-        }
-    }
+    TickJoinSubtitle();
 
-    // Редкий heartbeat-лог живого педа (раньше раз в 2 с засорял лог).
     if (s_tickCount % (30 * 60) == 1 && s_ghost && DoesEntityExist(s_ghost))
         sh_log::Write("coop: ghost ped alive, handle=%u\n", s_ghost);
 
     // Задержка до сервера: окно мин/макс обновляется раз в 2 с, но строка
     // РИСУЕТСЯ КАЖДЫЙ КАДР — _BG_DISPLAY_TEXT живёт один кадр, иначе надпись
     // мелькает миллисекунду и пропадает.
-    if (g_netStarted)
-    {
-        uint32_t rtt = g_netClient.RttMs();
-        if (rtt > 0)
-        {
-            if (s_rttMin == 0 || rtt < s_rttMin) s_rttMin = rtt;
-            if (rtt > s_rttMax) s_rttMax = rtt;
-        }
-        if (s_tickCount - s_lastRttDrawTick >= 2 * 60)
-        {
-            s_lastRttDrawTick = s_tickCount;
-            // Джиттер: |rtt - prev| со сглаживанием (RFC 3550-стиль).
-            if (s_rttPrev)
-            {
-                float diff = rtt > s_rttPrev ? (float)(rtt - s_rttPrev)
-                                             : (float)(s_rttPrev - rtt);
-                s_rttJitter = s_rttJitter * 0.75f + diff * 0.25f;
-            }
-            s_rttPrev = rtt;
-            std::snprintf(s_rttHud, sizeof(s_rttHud),
-                          "RTT %u ms jit %.0f (min %u / max %u)",
-                          rtt, s_rttJitter, s_rttMin, s_rttMax);
-            sh_log::Write("net: rtt %u ms (min %u / max %u, jit %.0f)\n",
-                          rtt, s_rttMin, s_rttMax, s_rttJitter);
-            s_rttMin = rtt;
-            s_rttMax = rtt;
-        }
-        // _BG_DISPLAY_TEXT рисует строку только на ОДИН кадр, поэтому
-        // вызываем каждый тик с уже сформированным текстом (иначе моргает).
-        if (s_rttHud[0])
-            DrawHudLine(s_rttHud);
-    }
+    TickRttHud();
 
     // P0-1 (task-156): полный кадр coop::Tick = world + actor + coop.
     {
