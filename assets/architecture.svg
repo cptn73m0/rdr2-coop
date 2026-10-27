@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="620" viewBox="0 0 1240 620" role="img" aria-label="RDR2 co-op architecture: host game, relay server, guest game">
+  <defs>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1713"/>
+      <stop offset="1" stop-color="#14100d"/>
+    </linearGradient>
+    <linearGradient id="host" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e8502a"/>
+      <stop offset="1" stop-color="#ffb36b"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#ffb36b"/>
+    </marker>
+  </defs>
+  <rect width="1240" height="620" fill="#0d0a08"/>
+  <text x="40" y="56" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="700" fill="#f6efe6">How it works</text>
+  <text x="40" y="88" font-family="Segoe UI, Arial, sans-serif" font-size="19" fill="#b9a493">Host-authoritative world · relay server · visual proxies on the guest</text>
+
+  <rect x="40" y="130" width="330" height="430" rx="18" fill="url(#card)" stroke="#3a2a20"/>
+  <rect x="40" y="130" width="330" height="6" rx="3" fill="url(#host)"/>
+  <text x="66" y="180" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffb36b">HOST · RDR2 + ASI</text>
+  <text x="66" y="214" font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#d9c7b4">owns the world and its state</text>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#e8d9c8">
+    <rect x="66" y="240" width="278" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="84" y="272">actor_sync · NPCs, animals, horses</text>
+    <rect x="66" y="302" width="278" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="84" y="334">world_sync · vehicles, occupants, trains</text>
+    <rect x="66" y="364" width="278" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="84" y="396">coop · player ghost, presence, damage</text>
+    <rect x="66" y="426" width="278" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="84" y="458">net client · framing + session</text>
+    <rect x="66" y="488" width="278" height="46" rx="10" fill="#2a1d14" stroke="#5a3a26"/>
+    <text x="84" y="517" fill="#ffb36b">host game thread: 60 Hz snapshots</text>
+  </g>
+
+  <rect x="440" y="130" width="360" height="430" rx="18" fill="url(#card)" stroke="#3a2a20"/>
+  <rect x="440" y="130" width="360" height="6" rx="3" fill="#f6efe6" opacity="0.65"/>
+  <text x="466" y="180" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700" fill="#f6efe6">RELAY SERVER</text>
+  <text x="466" y="214" font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#d9c7b4">validates, relays, never simulates</text>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#e8d9c8">
+    <rect x="466" y="240" width="308" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="484" y="272">boundary validation · exact sizes</text>
+    <rect x="466" y="302" width="308" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="484" y="334">host-only relay · role checks</text>
+    <rect x="466" y="364" width="308" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="484" y="396">rate limits · traffic counters</text>
+    <rect x="466" y="426" width="308" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="484" y="458">presence · host migration</text>
+    <rect x="466" y="488" width="308" height="46" rx="10" fill="#2a1d14" stroke="#5a3a26"/>
+    <text x="484" y="517" fill="#ffb36b">single visible console · TCP 7777</text>
+  </g>
+  <text x="620" y="596" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#b9a493">framing: [len:u32][type:u8][payload] · protocol v19</text>
+
+  <rect x="870" y="130" width="330" height="430" rx="18" fill="url(#card)" stroke="#3a2a20"/>
+  <rect x="870" y="130" width="330" height="6" rx="3" fill="#ffb36b" opacity="0.8"/>
+  <text x="896" y="180" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700" fill="#ffb36b">GUEST · RDR2 + ASI</text>
+  <text x="896" y="214" font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#d9c7b4">sees a living, mirrored world</text>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#e8d9c8">
+    <rect x="896" y="240" width="278" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="914" y="272">proxy actors · interpolation</text>
+    <rect x="896" y="302" width="278" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="914" y="334">visitor mode · local vendors kept</text>
+    <rect x="896" y="364" width="278" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="914" y="396">vehicle occupants · draft horses</text>
+    <rect x="896" y="426" width="278" height="52" rx="10" fill="#241a14" stroke="#3a2a20"/>
+    <text x="914" y="458">presence · name tags · map labels</text>
+    <rect x="896" y="488" width="278" height="46" rx="10" fill="#2a1d14" stroke="#5a3a26"/>
+    <text x="914" y="517" fill="#ffb36b">v20: guest intents → host world</text>
+  </g>
+
+  <line x1="370" y1="300" x2="440" y2="300" stroke="#ffb36b" stroke-width="3" marker-end="url(#arrow)"/>
+  <line x1="800" y1="380" x2="870" y2="380" stroke="#ffb36b" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="374" y="286" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#8f7a68">state</text>
+  <text x="806" y="366" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#8f7a68">state</text>
+  <path d="M870 450 C820 470 800 520 760 540 C700 560 640 540 600 520" fill="none" stroke="#e8502a" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+  <text x="620" y="570" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#e8502a">v20 intents (Interaction/Result/State)</text>
+
+  <text x="40" y="600" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#6f5c4e">Every write is host-authoritative; the guest never owns world state.</text>
+</svg>
