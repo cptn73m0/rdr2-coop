@@ -106,6 +106,25 @@ std::vector<uint8_t> BuildJoinFrame(const std::string& name, unsigned long long 
 
 // Разбор строки "name_len:u8 + name[]" из сообщений сервера. Раньше клиент
 // читал p.data()+1 без проверки длины (heap OOB при битом/враждебном сервере).
+
+// ub-mode (task-165): little-endian чтение на границе (payload уже проверен).
+float ReadF32LE(const std::vector<uint8_t>& p, std::size_t off)
+{
+    uint32_t u = 0;
+    std::memcpy(&u, p.data() + off, 4);
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+}
+
+uint64_t ReadU64LE(const std::vector<uint8_t>& p, std::size_t off)
+{
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i)
+        v |= static_cast<uint64_t>(p[off + static_cast<std::size_t>(i)]) << (8 * i);
+    return v;
+}
+
 bool ParseNamePayload(const std::vector<uint8_t>& p, std::string& out)
 {
     if (p.empty()) return false;
@@ -876,6 +895,345 @@ void Client::Run()
         state_.store(ClientState::Disconnected);
 }
 
+
+// ---------------- ub-mode (task-165): обработчики сообщений сервера ----------------
+// RunOnce раньше держал весь switch на ~370 строк/155 ветвей. Теперь граница
+// (размеры/конечность/диапазоны) проверяется в Parse*/Is* helpers, а каждый
+// обработчик отвечает за один тип сообщения и вызывает ровно один колбэк.
+Client::MsgEffect Client::HandleJoinOk(const std::vector<uint8_t>& p,
+                                       uint64_t& lastPongMs)
+{
+    if (p.size() < 10) return MsgEffect::None; // session(8)+has_saved(1)+is_host(1)
+    JoinResult jr;
+    jr.hasSaved = p[8] != 0;
+    if (jr.hasSaved)
+    {
+        if (p.size() < 26) return MsgEffect::None; // битый JOIN_OK — пропускаем
+        jr.x = ReadF32LE(p, 9);
+        jr.y = ReadF32LE(p, 13);
+        jr.z = ReadF32LE(p, 17);
+        jr.heading = ReadF32LE(p, 21);
+        jr.isHost = p[25] != 0;
+        if (!IsFiniteCoord(jr.x) || !IsFiniteCoord(jr.y) ||
+            !IsFiniteCoord(jr.z) || !IsFiniteCoord(jr.heading))
+        {
+            jr.hasSaved = false; // битые координаты не применяем
+            jr.x = jr.y = jr.z = jr.heading = 0.f;
+        }
+    }
+    else
+    {
+        jr.isHost = p[9] != 0; // без координат is_host сразу после has_saved
+    }
+    state_.store(ClientState::JoinOk);
+    joined_.store(true);
+    isHost_.store(jr.isHost);
+    // Behavior-preserving: старый код сбрасывал Pong-таймер ДО колбэка.
+    lastPongMs = NowMs();
+    if (onJoinOk_) onJoinOk_(jr);
+    return MsgEffect::None; // таймер уже сброшен явно
+}
+
+Client::MsgEffect Client::HandleJoinRejected(const std::vector<uint8_t>& p)
+{
+    const uint8_t reason = p.empty() ? 0u : p[0];
+    if (onJoinRejected_)
+        onJoinRejected_(static_cast<net::JoinRejectReason>(reason));
+    // Несовпадение версии и «плохой ник» фатальны (повторять бессмысленно).
+    // Полный сервер/занятый ник — временные: reconnect с backoff.
+    const bool fatal =
+        reason == static_cast<uint8_t>(net::JoinRejectReason::VersionMismatch) ||
+        reason == static_cast<uint8_t>(net::JoinRejectReason::BadName);
+    if (fatal)
+    {
+        state_.store(ClientState::Error);
+        running_.store(false);
+        return MsgEffect::None;
+    }
+    return MsgEffect::Reconnect;
+}
+
+Client::MsgEffect Client::HandlePong(const std::vector<uint8_t>& p)
+{
+    if (p.size() >= 8)
+    {
+        const uint64_t ts = ReadU64LE(p, 0);
+        const uint64_t now = NowMs();
+        if (now >= ts) rttMs_.store(static_cast<uint32_t>(now - ts));
+    }
+    return MsgEffect::Pong; // Pong (и битый Pong) — признак живого сервера
+}
+
+void Client::HandleWorldSnapshot(const std::vector<uint8_t>& p)
+{
+    // Payload разбирает coop в игровом потоке; здесь проверяем границы и
+    // конечность координат и передаём копию.
+    if (IsSaneWorldSnapshot(p) && onWorldSnapshot_) onWorldSnapshot_(p);
+}
+
+void Client::HandleActionState(const std::vector<uint8_t>& p)
+{
+    if (p.size() < sizeof(net::ActionStatePayload)) return;
+    net::ActionStatePayload st{};
+    std::memcpy(&st, p.data(), sizeof(st));
+    if (onActionState_) onActionState_(st);
+}
+
+void Client::HandlePlayerVehicle(const std::vector<uint8_t>& p)
+{
+    if (p.size() < sizeof(net::PlayerVehicleState)) return;
+    net::PlayerVehicleState st{};
+    std::memcpy(&st, p.data(), sizeof(st));
+    if (IsSaneVehicle(st) && onPlayerVehicle_) onPlayerVehicle_(st);
+}
+
+void Client::HandleMissionEvent(const std::vector<uint8_t>& p)
+{
+    if (p.size() < sizeof(net::MissionEventPayload)) return;
+    net::MissionEventPayload ev{};
+    std::memcpy(&ev, p.data(), sizeof(ev));
+    if (onMissionEvent_) onMissionEvent_(ev);
+}
+
+void Client::HandleMissionState(const std::vector<uint8_t>& p)
+{
+    if (p.size() < sizeof(net::MissionStatePayload)) return;
+    net::MissionStatePayload st{};
+    std::memcpy(&st, p.data(), sizeof(st));
+    if (onMissionState_) onMissionState_(st);
+}
+
+void Client::HandleMissionBarrier(const std::vector<uint8_t>& p)
+{
+    if (p.size() != sizeof(net::MissionBarrierPayload)) return;
+    net::MissionBarrierPayload ev{};
+    std::memcpy(&ev, p.data(), sizeof(ev));
+    if (onMissionBarrier_) onMissionBarrier_(ev);
+}
+
+void Client::HandleTrainSnapshot(const std::vector<uint8_t>& p)
+{
+    // Сырой payload: проверку размера/carCount делает world_sync.
+    if (onTrainSnapshot_) onTrainSnapshot_(p);
+}
+
+void Client::HandleActorSpawnBatch(const std::vector<uint8_t>& p)
+{
+    uint32_t epoch = 0;
+    std::vector<net::ActorSpawn> actors;
+    if (ParseActorSpawnBatch(p, epoch, actors) && onActorSpawnBatch_)
+        onActorSpawnBatch_(epoch, actors);
+}
+
+void Client::HandleActorFrames(const std::vector<uint8_t>& p)
+{
+    uint32_t epoch = 0;
+    uint16_t seq = 0;
+    std::vector<net::ActorFrame> frames;
+    if (ParseActorFrames(p, epoch, seq, frames) && onActorFrames_)
+        onActorFrames_(epoch, seq, frames);
+}
+
+void Client::HandleActorDespawn(const std::vector<uint8_t>& p)
+{
+    net::ActorDespawnPayload msg{};
+    if (ParseActorDespawn(p, msg) && onActorDespawn_) onActorDespawn_(msg);
+}
+
+void Client::HandleActorEvent(const std::vector<uint8_t>& p)
+{
+    net::ActorEventPayload ev{};
+    if (ParseActorEvent(p, ev) && onActorEvent_) onActorEvent_(ev);
+}
+
+void Client::HandleActorOutfit(const std::vector<uint8_t>& p)
+{
+    uint32_t epoch = 0, actorId = 0;
+    net::OutfitState outfit{};
+    if (ParseActorOutfit(p, epoch, actorId, outfit) && onActorOutfit_)
+        onActorOutfit_(epoch, actorId, outfit);
+}
+
+void Client::HandleActorAppearance(const std::vector<uint8_t>& p)
+{
+    uint32_t epoch = 0, actorId = 0;
+    std::vector<net::ActorAppearanceEntry> entries;
+    if (ParseActorAppearance(p, epoch, actorId, entries) && onActorAppearance_)
+        onActorAppearance_(epoch, actorId, entries);
+}
+
+void Client::HandleActorResync(const std::vector<uint8_t>& p)
+{
+    net::ActorResyncPayload req{};
+    if (ParseActorResync(p, req) && onActorResyncRequest_)
+        onActorResyncRequest_(req);
+}
+
+void Client::HandleActorDamage(const std::vector<uint8_t>& p)
+{
+    net::ActorDamagePayload req{};
+    if (ParseActorDamage(p, req) && onActorDamageRequest_)
+        onActorDamageRequest_(req.epoch, req.actorId, req.damage, req.weaponHash);
+}
+
+void Client::HandlePlayerPresence(const std::vector<uint8_t>& p)
+{
+    net::PlayerPresencePayload req{};
+    if (ParsePlayerPresence(p, req) && onPlayerPresence_)
+        onPlayerPresence_(req.epoch, req.flags);
+}
+
+void Client::HandleVehicleOccupants(const std::vector<uint8_t>& p)
+{
+    uint32_t vid = 0;
+    std::vector<net::VehicleOccupantEntry> entries;
+    if (ParseVehicleOccupants(p, vid, entries) && onVehicleOccupants_)
+        onVehicleOccupants_(vid, entries);
+}
+
+void Client::HandleTrainSnapshotV2(const std::vector<uint8_t>& p)
+{
+    net::TrainSnapshotV2Payload ts{};
+    if (ParseTrainSnapshotV2(p, ts) && onTrainSnapshotV2_)
+        onTrainSnapshotV2_(ts);
+}
+
+void Client::HandlePlayerJoined(const std::vector<uint8_t>& p)
+{
+    PlayerJoinInfo ji;
+    if (!ParseNamePayload(p, ji.name)) return;
+    std::size_t off = 1u + static_cast<std::size_t>(p[0]);
+    if (p.size() >= off + 8)
+    {
+        for (int i = 0; i < 8; ++i)
+            ji.model |= static_cast<unsigned long long>(p[off + i]) << (8 * i);
+    }
+    // необязательный блок позиции: has_pos + [x,y,z,heading]
+    off += 8;
+    if (p.size() >= off + 1)
+    {
+        ji.hasPos = p[off] != 0;
+        off += 1;
+        if (ji.hasPos && p.size() >= off + 16)
+        {
+            ji.x = ReadF32LE(p, off);
+            ji.y = ReadF32LE(p, off + 4);
+            ji.z = ReadF32LE(p, off + 8);
+            ji.heading = ReadF32LE(p, off + 12);
+        }
+        if (ji.hasPos && (!IsFiniteCoord(ji.x) || !IsFiniteCoord(ji.y) ||
+                          !IsFiniteCoord(ji.z) || !IsFiniteCoord(ji.heading)))
+        {
+            ji.hasPos = false; // битая позиция — спавн рядом с хостом
+        }
+    }
+    if (onPlayerJoin_) onPlayerJoin_(ji);
+}
+
+void Client::HandleFrame(const std::vector<uint8_t>& p)
+{
+    if (p.size() < sizeof(net::FramePayload)) return;
+    net::FramePayload fp;
+    std::memcpy(&fp, p.data(), sizeof(fp));
+    if (IsSaneFrame(fp) && onFrame_) onFrame_(fp);
+}
+
+void Client::HandlePlayerLeft(const std::vector<uint8_t>& p)
+{
+    std::string nm;
+    if (ParseNamePayload(p, nm) && onPlayerLeave_) onPlayerLeave_(nm);
+}
+
+void Client::HandleDied(const std::vector<uint8_t>& p)
+{
+    std::string nm;
+    if (ParseNamePayload(p, nm) && onDied_) onDied_(nm);
+}
+
+void Client::HandleRespawned(const std::vector<uint8_t>& p)
+{
+    std::string nm;
+    if (ParseNamePayload(p, nm) && onRespawned_) onRespawned_(nm);
+}
+
+void Client::HandleWorldState(const std::vector<uint8_t>& p)
+{
+    if (p.size() < sizeof(net::WorldState)) return;
+    net::WorldState ws;
+    std::memcpy(&ws, p.data(), sizeof(ws));
+    if (IsSaneWorldState(ws) && onWorldState_) onWorldState_(ws);
+}
+
+void Client::HandleOutfitMsg(const std::vector<uint8_t>& p, const OnOutfit& cb)
+{
+    if (p.size() < sizeof(net::OutfitState)) return;
+    net::OutfitState os;
+    std::memcpy(&os, p.data(), sizeof(os));
+    if (os.count > static_cast<uint32_t>(net::kMaxOutfitComponents))
+        os.count = static_cast<uint32_t>(net::kMaxOutfitComponents);
+    if (cb) cb(os);
+}
+
+void Client::HandleShot(const std::vector<uint8_t>& p)
+{
+    if (p.size() < sizeof(net::ShotPayload)) return;
+    net::ShotPayload sp;
+    std::memcpy(&sp, p.data(), sizeof(sp));
+    if (IsFiniteCoord(sp.x) && IsFiniteCoord(sp.y) &&
+        IsFiniteCoord(sp.z) && onShot_)
+        onShot_(sp);
+}
+
+void Client::HandleHostChanged(const std::vector<uint8_t>& p)
+{
+    if (p.empty()) return;
+    const bool nowHost = p[0] != 0;
+    isHost_.store(nowHost);
+    if (onHostChanged_) onHostChanged_(nowHost);
+}
+
+Client::MsgEffect Client::HandleServerMessage(uint8_t type,
+                                              const std::vector<uint8_t>& p,
+                                              uint64_t& lastPongMs)
+{
+    switch (static_cast<net::Msg>(type))
+    {
+    case net::Msg::JoinOk: return HandleJoinOk(p, lastPongMs);
+    case net::Msg::JoinRejected: return HandleJoinRejected(p);
+    case net::Msg::Pong: return HandlePong(p);
+    case net::Msg::WorldSnapshot: HandleWorldSnapshot(p); break;
+    case net::Msg::ActionState: HandleActionState(p); break;
+    case net::Msg::PlayerVehicle: HandlePlayerVehicle(p); break;
+    case net::Msg::MissionEvent: HandleMissionEvent(p); break;
+    case net::Msg::MissionState: HandleMissionState(p); break;
+    case net::Msg::MissionBarrier: HandleMissionBarrier(p); break;
+    case net::Msg::TrainSnapshot: HandleTrainSnapshot(p); break;
+    case net::Msg::ActorSpawnBatch: HandleActorSpawnBatch(p); break;
+    case net::Msg::ActorFrames: HandleActorFrames(p); break;
+    case net::Msg::ActorDespawn: HandleActorDespawn(p); break;
+    case net::Msg::ActorEvent: HandleActorEvent(p); break;
+    case net::Msg::ActorOutfit: HandleActorOutfit(p); break;
+    case net::Msg::ActorAppearance: HandleActorAppearance(p); break;
+    case net::Msg::ActorResync: HandleActorResync(p); break;
+    case net::Msg::ActorDamage: HandleActorDamage(p); break;
+    case net::Msg::PlayerPresence: HandlePlayerPresence(p); break;
+    case net::Msg::VehicleOccupants: HandleVehicleOccupants(p); break;
+    case net::Msg::TrainSnapshotV2: HandleTrainSnapshotV2(p); break;
+    case net::Msg::PlayerJoined: HandlePlayerJoined(p); break;
+    case net::Msg::Frame: HandleFrame(p); break;
+    case net::Msg::PlayerLeft: HandlePlayerLeft(p); break;
+    case net::Msg::Died: HandleDied(p); break;
+    case net::Msg::Respawned: HandleRespawned(p); break;
+    case net::Msg::WorldState: HandleWorldState(p); break;
+    case net::Msg::Outfit: HandleOutfitMsg(p, onOutfit_); break;
+    case net::Msg::HorseOutfit: HandleOutfitMsg(p, onHorseOutfit_); break;
+    case net::Msg::Shot: HandleShot(p); break;
+    case net::Msg::HostChanged: HandleHostChanged(p); break;
+    default: break;
+    }
+    return MsgEffect::None;
+}
+
 bool Client::RunOnce()
 {
     SOCKET c = INVALID_SOCKET;
@@ -1038,372 +1396,9 @@ bool Client::RunOnce()
         while (reader_.Poll(type, p))
         {
             rxMsgs_.fetch_add(1, std::memory_order_relaxed);
-            switch (static_cast<net::Msg>(type))
-            {
-            case net::Msg::JoinOk:
-            {
-                JoinResult jr;
-                if (p.size() < 10) break; // session(8) + has_saved(1) + is_host(1)
-                // session_id (8) + has_saved (1) [+ coords 16] + is_host (1)
-                uint64_t sid = 0;
-                for (int i = 0; i < 8; ++i) sid |= (uint64_t)p[i] << (8 * i);
-                (void)sid;
-                jr.hasSaved = p[8] != 0;
-                if (jr.hasSaved)
-                {
-                    if (p.size() < 26) break; // битый JOIN_OK — пропускаем
-                    auto rf = [&](int off) {
-                        uint32_t u = 0;
-                        std::memcpy(&u, &p[off], 4);
-                        float f;
-                        std::memcpy(&f, &u, 4);
-                        return f;
-                    };
-                    jr.x = rf(9); jr.y = rf(13); jr.z = rf(17); jr.heading = rf(21);
-                    jr.isHost = p[25] != 0;
-                    if (!IsFiniteCoord(jr.x) || !IsFiniteCoord(jr.y) ||
-                        !IsFiniteCoord(jr.z) || !IsFiniteCoord(jr.heading))
-                    {
-                        jr.hasSaved = false; // битые координаты не применяем
-                        jr.x = jr.y = jr.z = jr.heading = 0.f;
-                    }
-                }
-                else
-                {
-                    jr.isHost = p[9] != 0; // без координат is_host сразу после has_saved
-                }
-                state_.store(ClientState::JoinOk);
-                joined_.store(true);
-                isHost_.store(jr.isHost);
-                lastPongMs = NowMs();
-                if (onJoinOk_) onJoinOk_(jr);
-                break;
-            }
-            case net::Msg::JoinRejected:
-            {
-                const uint8_t reason = p.empty() ? 0u : p[0];
-                if (onJoinRejected_)
-                    onJoinRejected_(static_cast<net::JoinRejectReason>(reason));
-                // Несовпадение версии и «плохой ник» — фатальны (повторять
-                // бессмысленно, надо править ini). Полный сервер/занятый ник
-                // — временные: уходим в reconnect с backoff.
-                const bool fatal =
-                    reason == static_cast<uint8_t>(net::JoinRejectReason::VersionMismatch) ||
-                    reason == static_cast<uint8_t>(net::JoinRejectReason::BadName);
-                if (fatal)
-                {
-                    state_.store(ClientState::Error);
-                    running_.store(false);
-                }
-                else
-                {
-                    reconnectRequested = true;
-                }
-                break;
-            }
-            case net::Msg::WorldSnapshot:
-            {
-                // P1: payload разбирает coop в игровом потоке; здесь проверяем
-                // границы/конечность координат и передаём копию.
-                if (IsSaneWorldSnapshot(p))
-                {
-                    if (onWorldSnapshot_) onWorldSnapshot_(p);
-                }
-                break;
-            }
-            case net::Msg::ActionState:
-            {
-                if (p.size() >= sizeof(net::ActionStatePayload))
-                {
-                    net::ActionStatePayload st{};
-                    std::memcpy(&st, p.data(), sizeof(st));
-                    if (onActionState_) onActionState_(st);
-                }
-                break;
-            }
-            case net::Msg::PlayerVehicle:
-            {
-                if (p.size() >= sizeof(net::PlayerVehicleState))
-                {
-                    net::PlayerVehicleState st{};
-                    std::memcpy(&st, p.data(), sizeof(st));
-                    if (IsSaneVehicle(st) && onPlayerVehicle_) onPlayerVehicle_(st);
-                }
-                break;
-            }
-            case net::Msg::MissionEvent:
-            {
-                if (p.size() >= sizeof(net::MissionEventPayload))
-                {
-                    net::MissionEventPayload ev{};
-                    std::memcpy(&ev, p.data(), sizeof(ev));
-                    if (onMissionEvent_) onMissionEvent_(ev);
-                }
-                break;
-            }
-            case net::Msg::MissionState:
-            {
-                if (p.size() >= sizeof(net::MissionStatePayload))
-                {
-                    net::MissionStatePayload st{};
-                    std::memcpy(&st, p.data(), sizeof(st));
-                    if (onMissionState_) onMissionState_(st);
-                }
-                break;
-            }
-            case net::Msg::MissionBarrier:
-            {
-                if (p.size() == sizeof(net::MissionBarrierPayload))
-                {
-                    net::MissionBarrierPayload ev{};
-                    std::memcpy(&ev, p.data(), sizeof(ev));
-                    if (onMissionBarrier_) onMissionBarrier_(ev);
-                }
-                break;
-            }
-            case net::Msg::TrainSnapshot:
-            {
-                // Сырой payload: проверку размера/carCount делает world_sync.
-                if (onTrainSnapshot_) onTrainSnapshot_(p);
-                break;
-            }
-            // ---------------- E0 (v15): actor-сообщения ----------------
-            case net::Msg::ActorSpawnBatch:
-            {
-                uint32_t epoch = 0;
-                std::vector<net::ActorSpawn> actors;
-                if (ParseActorSpawnBatch(p, epoch, actors) && onActorSpawnBatch_)
-                    onActorSpawnBatch_(epoch, actors);
-                break;
-            }
-            case net::Msg::ActorFrames:
-            {
-                uint32_t epoch = 0;
-                uint16_t seq = 0;
-                std::vector<net::ActorFrame> frames;
-                if (ParseActorFrames(p, epoch, seq, frames) && onActorFrames_)
-                    onActorFrames_(epoch, seq, frames);
-                break;
-            }
-            case net::Msg::ActorDespawn:
-            {
-                net::ActorDespawnPayload msg{};
-                if (ParseActorDespawn(p, msg) && onActorDespawn_)
-                    onActorDespawn_(msg);
-                break;
-            }
-            case net::Msg::ActorEvent:
-            {
-                net::ActorEventPayload ev{};
-                if (ParseActorEvent(p, ev) && onActorEvent_)
-                    onActorEvent_(ev);
-                break;
-            }
-            case net::Msg::ActorOutfit:
-            {
-                uint32_t epoch = 0, actorId = 0;
-                net::OutfitState outfit{};
-                if (ParseActorOutfit(p, epoch, actorId, outfit) && onActorOutfit_)
-                    onActorOutfit_(epoch, actorId, outfit);
-                break;
-            }
-            case net::Msg::ActorAppearance:
-            {
-                uint32_t epoch = 0, actorId = 0;
-                std::vector<net::ActorAppearanceEntry> entries;
-                if (ParseActorAppearance(p, epoch, actorId, entries) &&
-                    onActorAppearance_)
-                    onActorAppearance_(epoch, actorId, entries);
-                break;
-            }
-            case net::Msg::ActorResync:
-            {
-                net::ActorResyncPayload req{};
-                if (ParseActorResync(p, req) && onActorResyncRequest_)
-                    onActorResyncRequest_(req);
-                break;
-            }
-            case net::Msg::ActorDamage:
-            {
-                net::ActorDamagePayload req{};
-                if (ParseActorDamage(p, req) && onActorDamageRequest_)
-                    onActorDamageRequest_(req.epoch, req.actorId, req.damage,
-                                          req.weaponHash);
-                break;
-            }
-            case net::Msg::PlayerPresence:
-            {
-                net::PlayerPresencePayload req{};
-                if (ParsePlayerPresence(p, req) && onPlayerPresence_)
-                    onPlayerPresence_(req.epoch, req.flags);
-                break;
-            }
-            case net::Msg::VehicleOccupants:
-            {
-                uint32_t vid = 0;
-                std::vector<net::VehicleOccupantEntry> entries;
-                if (ParseVehicleOccupants(p, vid, entries) &&
-                    onVehicleOccupants_)
-                    onVehicleOccupants_(vid, entries);
-                break;
-            }
-            case net::Msg::TrainSnapshotV2:
-            {
-                net::TrainSnapshotV2Payload ts{};
-                if (ParseTrainSnapshotV2(p, ts) && onTrainSnapshotV2_)
-                    onTrainSnapshotV2_(ts);
-                break;
-            }
-            case net::Msg::PlayerJoined:
-            {
-                PlayerJoinInfo ji;
-                if (!ParseNamePayload(p, ji.name)) break;
-                std::size_t off = 1u + static_cast<std::size_t>(p[0]);
-                if (p.size() >= off + 8)
-                {
-                    for (int i = 0; i < 8; ++i)
-                        ji.model |= (unsigned long long)p[off + i] << (8 * i);
-                }
-                // необязательный блок позиции: has_pos + [x,y,z,heading]
-                off += 8;
-                if (p.size() >= off + 1)
-                {
-                    ji.hasPos = p[off] != 0;
-                    off += 1;
-                    if (ji.hasPos && p.size() >= off + 16)
-                    {
-                        auto rf = [&](int o) {
-                            uint32_t u = 0;
-                            std::memcpy(&u, &p[o], 4);
-                            float f;
-                            std::memcpy(&f, &u, 4);
-                            return f;
-                        };
-                        ji.x = rf((int)off); ji.y = rf((int)off + 4);
-                        ji.z = rf((int)off + 8); ji.heading = rf((int)off + 12);
-                    }
-                    if (ji.hasPos && (!IsFiniteCoord(ji.x) || !IsFiniteCoord(ji.y) ||
-                                      !IsFiniteCoord(ji.z) || !IsFiniteCoord(ji.heading)))
-                    {
-                        ji.hasPos = false; // битая позиция — спавн рядом с хостом
-                    }
-                }
-                if (onPlayerJoin_) onPlayerJoin_(ji);
-                break;
-            }
-            case net::Msg::Frame:
-            {
-                if (p.size() >= sizeof(net::FramePayload))
-                {
-                    net::FramePayload fp;
-                    std::memcpy(&fp, p.data(), sizeof(fp));
-                    if (IsSaneFrame(fp) && onFrame_) onFrame_(fp);
-                }
-                break;
-            }
-            case net::Msg::PlayerLeft:
-            {
-                std::string nm;
-                if (ParseNamePayload(p, nm))
-                {
-                    if (onPlayerLeave_) onPlayerLeave_(nm);
-                }
-                break;
-            }
-            case net::Msg::Died:
-            {
-                // От сервера: игрок умер. name в payload (как PlayerLeft).
-                std::string nm;
-                if (ParseNamePayload(p, nm))
-                {
-                    if (onDied_) onDied_(nm);
-                }
-                break;
-            }
-            case net::Msg::Respawned:
-            {
-                // От сервера: игрок ожил после смерти (name в payload).
-                std::string nm;
-                if (ParseNamePayload(p, nm))
-                {
-                    if (onRespawned_) onRespawned_(nm);
-                }
-                break;
-            }
-            case net::Msg::WorldState:
-            {
-                if (p.size() >= sizeof(net::WorldState))
-                {
-                    net::WorldState ws;
-                    std::memcpy(&ws, p.data(), sizeof(ws));
-                    if (IsSaneWorldState(ws) && onWorldState_) onWorldState_(ws);
-                }
-                break;
-            }
-            case net::Msg::Outfit:
-            {
-                if (p.size() >= sizeof(net::OutfitState))
-                {
-                    net::OutfitState os;
-                    std::memcpy(&os, p.data(), sizeof(os));
-                    if (os.count > static_cast<uint32_t>(net::kMaxOutfitComponents))
-                        os.count = static_cast<uint32_t>(net::kMaxOutfitComponents);
-                    if (onOutfit_) onOutfit_(os);
-                }
-                break;
-            }
-            case net::Msg::HorseOutfit:
-            {
-                if (p.size() >= sizeof(net::OutfitState))
-                {
-                    net::OutfitState os;
-                    std::memcpy(&os, p.data(), sizeof(os));
-                    if (os.count > static_cast<uint32_t>(net::kMaxOutfitComponents))
-                        os.count = static_cast<uint32_t>(net::kMaxOutfitComponents);
-                    if (onHorseOutfit_) onHorseOutfit_(os);
-                }
-                break;
-            }
-            case net::Msg::Shot:
-            {
-                if (p.size() >= sizeof(net::ShotPayload))
-                {
-                    net::ShotPayload sp;
-                    std::memcpy(&sp, p.data(), sizeof(sp));
-                    if (IsFiniteCoord(sp.x) && IsFiniteCoord(sp.y) && IsFiniteCoord(sp.z) &&
-                        onShot_)
-                        onShot_(sp);
-                }
-                break;
-            }
-            case net::Msg::HostChanged:
-            {
-                if (!p.empty())
-                {
-                    const bool nowHost = p[0] != 0;
-                    isHost_.store(nowHost);
-                    if (onHostChanged_) onHostChanged_(nowHost);
-                }
-                break;
-            }
-            case net::Msg::Pong:
-            {
-                if (p.size() >= 8)
-                {
-                    uint64_t ts = 0;
-                    for (int i = 0; i < 8; ++i)
-                        ts |= static_cast<uint64_t>(p[i]) << (8 * i);
-                    const uint64_t now = NowMs();
-                    if (now >= ts)
-                        rttMs_.store(static_cast<uint32_t>(now - ts));
-                }
-                lastPongMs = NowMs(); // Pong — признак живого сервера
-                break;
-            }
-            default:
-                break;
-            }
-
+            const MsgEffect effect = HandleServerMessage(type, p, lastPongMs);
+            if (effect == MsgEffect::Pong) lastPongMs = NowMs();
+            else if (effect == MsgEffect::Reconnect) reconnectRequested = true;
             if (!running_.load() || reconnectRequested) break;
         }
 

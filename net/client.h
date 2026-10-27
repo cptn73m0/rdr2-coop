@@ -240,6 +240,42 @@ private:
     void EmitTrafficLog(const std::string& line);
     void SendPing();
     uint64_t NowMs() const;
+    // ub-mode (task-165): RunOnce decomposition — один обработчик на тип
+    // сообщения. Payload проверяется на границе (Parse*/Is* helpers) один раз,
+    // внутри обработчики доверяют данным. Порядок/поведение прежнего switch.
+    enum class MsgEffect { None, Pong, Reconnect };
+    MsgEffect HandleServerMessage(uint8_t type, const std::vector<uint8_t>& p,
+                                  uint64_t& lastPongMs);
+    MsgEffect HandleJoinOk(const std::vector<uint8_t>& p, uint64_t& lastPongMs);
+    MsgEffect HandleJoinRejected(const std::vector<uint8_t>& p);
+    void HandleWorldSnapshot(const std::vector<uint8_t>& p);
+    void HandleActionState(const std::vector<uint8_t>& p);
+    void HandlePlayerVehicle(const std::vector<uint8_t>& p);
+    void HandleMissionEvent(const std::vector<uint8_t>& p);
+    void HandleMissionState(const std::vector<uint8_t>& p);
+    void HandleMissionBarrier(const std::vector<uint8_t>& p);
+    void HandleTrainSnapshot(const std::vector<uint8_t>& p);
+    void HandleActorSpawnBatch(const std::vector<uint8_t>& p);
+    void HandleActorFrames(const std::vector<uint8_t>& p);
+    void HandleActorDespawn(const std::vector<uint8_t>& p);
+    void HandleActorEvent(const std::vector<uint8_t>& p);
+    void HandleActorOutfit(const std::vector<uint8_t>& p);
+    void HandleActorAppearance(const std::vector<uint8_t>& p);
+    void HandleActorResync(const std::vector<uint8_t>& p);
+    void HandleActorDamage(const std::vector<uint8_t>& p);
+    void HandlePlayerPresence(const std::vector<uint8_t>& p);
+    void HandleVehicleOccupants(const std::vector<uint8_t>& p);
+    void HandleTrainSnapshotV2(const std::vector<uint8_t>& p);
+    void HandlePlayerJoined(const std::vector<uint8_t>& p);
+    void HandleFrame(const std::vector<uint8_t>& p);
+    void HandlePlayerLeft(const std::vector<uint8_t>& p);
+    void HandleDied(const std::vector<uint8_t>& p);
+    void HandleRespawned(const std::vector<uint8_t>& p);
+    void HandleWorldState(const std::vector<uint8_t>& p);
+    void HandleOutfitMsg(const std::vector<uint8_t>& p, const OnOutfit& cb);
+    void HandleShot(const std::vector<uint8_t>& p);
+    void HandleHostChanged(const std::vector<uint8_t>& p);
+    MsgEffect HandlePong(const std::vector<uint8_t>& p);
 
     std::string host_;
     int         port_ = 0;

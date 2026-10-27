@@ -48,6 +48,14 @@ using netio::Result;
 namespace {
 
 // ---------------- Состояние сервера ----------------
+// ub-mode (task-165): окно rate-limit «N сообщений в секунду на клиента».
+// Поля защищены g_mutex; AllowRate() — одна точка логики окна.
+struct RateWindow
+{
+    uint64_t windowMs = 0;
+    int count = 0;
+};
+
 struct OnlinePlayer {
     std::string name;
     std::string ip;
@@ -57,18 +65,12 @@ struct OnlinePlayer {
     float x = 0, y = 0, z = 0, heading = 0;
     bool hasLoc = false;
     bool isHost = false;   // первый подключившийся (его время/погода = канонические)
-    // E5 (v17): окно rate-limit для ActorDamage (0x1F), защищено g_mutex.
-    uint64_t damageWindowMs = 0;
-    int damageCount = 0;
-    // E6 (v18): окно rate-limit для PlayerPresence (0x20), защищено g_mutex.
-    uint64_t presenceWindowMs = 0;
-    int presenceCount = 0;
-    // E3d-b/E3d-c (v19): окна rate-limit для VehicleOccupants (0x21) и
-    // TrainSnapshotV2 (0x22), защищены g_mutex.
-    uint64_t occupantsWindowMs = 0;
-    int occupantsCount = 0;
-    uint64_t trainV2WindowMs = 0;
-    int trainV2Count = 0;
+    // ub-mode (task-165): окна rate-limit — по одному RateWindow на тип
+    // сообщения вместо пары window/count (защищены g_mutex).
+    RateWindow damageRate;    // E5 (v17): ActorDamage 0x1F
+    RateWindow presenceRate;  // E6 (v18): PlayerPresence 0x20
+    RateWindow occupantsRate; // E3d-c (v19): VehicleOccupants 0x21
+    RateWindow trainV2Rate;   // E3d-b (v19): TrainSnapshotV2 0x22
     // Host migration hardening: время последнего игрового (не Ping) сообщения
     // от этого клиента (мс). Если isHost и с этого момента прошло больше
     // g_hostGameTimeoutMs — хост считается зависшим и мигрирует.
@@ -158,6 +160,19 @@ void SendTracked(netio::Socket* sock, const uint8_t* data, int len)
     sock->Send(data, len);
     g_netBytesOut.fetch_add(static_cast<uint64_t>(len),
                             std::memory_order_relaxed);
+}
+
+// ub-mode (task-165): единая логика окна rate-limit (вызывать под g_mutex).
+bool AllowRate(RateWindow& w, int limit, uint64_t nowMs)
+{
+    if (w.windowMs == 0 || nowMs - w.windowMs >= 1000)
+    {
+        w.windowMs = nowMs;
+        w.count = 0;
+    }
+    if (w.count >= limit) return false;
+    ++w.count;
+    return true;
 }
 
 // Защита от thread/socket flood: больше этого числа TCP-соединений сервер
@@ -428,6 +443,16 @@ bool IsFiniteActorCoord(float v)
     return std::isfinite(v) && std::fabs(v) < 1.0e5f;
 }
 
+// ub-mode (task-165): точный размер + memcpy в одном месте. Валидаторы ниже
+// проверяют только поля — проверка размера не дублируется в каждом.
+template <typename T>
+bool ReadExactPayload(const std::vector<uint8_t>& pay, T& out)
+{
+    if (pay.size() != sizeof(T)) return false;
+    std::memcpy(&out, pay.data(), sizeof(out));
+    return true;
+}
+
 bool IsSaneActorSpawnRecord(const net::ActorSpawn& a)
 {
     return a.actorId != 0 &&
@@ -503,28 +528,22 @@ bool IsValidActorFrames(const std::vector<uint8_t>& pay)
 
 bool IsValidActorDespawn(const std::vector<uint8_t>& pay)
 {
-    if (pay.size() != sizeof(net::ActorDespawnPayload))
-        return false;
     net::ActorDespawnPayload msg{};
-    std::memcpy(&msg, pay.data(), sizeof(msg));
+    if (!ReadExactPayload(pay, msg)) return false;
     return msg.epoch != 0 && msg.actorId != 0;
 }
 
 bool IsValidActorEvent(const std::vector<uint8_t>& pay)
 {
-    if (pay.size() != sizeof(net::ActorEventPayload))
-        return false;
     net::ActorEventPayload ev{};
-    std::memcpy(&ev, pay.data(), sizeof(ev));
+    if (!ReadExactPayload(pay, ev)) return false;
     return ev.epoch != 0 && ev.actorId != 0;
 }
 
 bool IsValidActorOutfit(const std::vector<uint8_t>& pay)
 {
-    if (pay.size() != sizeof(net::ActorOutfitPayload))
-        return false;
     net::ActorOutfitPayload msg{};
-    std::memcpy(&msg, pay.data(), sizeof(msg));
+    if (!ReadExactPayload(pay, msg)) return false;
     return msg.epoch != 0 && msg.actorId != 0;
 }
 
@@ -561,10 +580,8 @@ bool IsValidActorAppearance(const std::vector<uint8_t>& pay)
 // damage 1..kMaxActorDamage; хост-получатель решает сам.
 bool IsValidActorDamage(const std::vector<uint8_t>& pay)
 {
-    if (pay.size() != sizeof(net::ActorDamagePayload))
-        return false;
     net::ActorDamagePayload msg{};
-    std::memcpy(&msg, pay.data(), sizeof(msg));
+    if (!ReadExactPayload(pay, msg)) return false;
     return msg.epoch != 0 && msg.actorId != 0 &&
            msg.damage >= net::kMinActorDamage &&
            msg.damage <= net::kMaxActorDamage;
@@ -574,10 +591,8 @@ bool IsValidActorDamage(const std::vector<uint8_t>& pay)
 // биты flags (неизвестные -> drop); flags=0 допустим («нет статуса»).
 bool IsValidPlayerPresence(const std::vector<uint8_t>& pay)
 {
-    if (pay.size() != sizeof(net::PlayerPresencePayload))
-        return false;
     net::PlayerPresencePayload msg{};
-    std::memcpy(&msg, pay.data(), sizeof(msg));
+    if (!ReadExactPayload(pay, msg)) return false;
     if (msg.epoch == 0)
         return false;
     return (msg.flags & ~net::kPlayerPresenceKnownFlags) == 0;
@@ -624,10 +639,8 @@ bool IsValidVehicleOccupants(const std::vector<uint8_t>& pay)
 // carCount 1..kMaxTrainCars, speed -40..40, координаты конечны, известные флаги.
 bool IsValidTrainSnapshotV2(const std::vector<uint8_t>& pay)
 {
-    if (pay.size() != sizeof(net::TrainSnapshotV2Payload))
-        return false;
     net::TrainSnapshotV2Payload p{};
-    std::memcpy(&p, pay.data(), sizeof(p));
+    if (!ReadExactPayload(pay, p)) return false;
     if (p.epoch == 0 || p.trainId == 0)
         return false;
     if (p.carCount < 1 || p.carCount > net::kMaxTrainCars)
@@ -645,10 +658,8 @@ bool IsValidTrainSnapshotV2(const std::vector<uint8_t>& pay)
 
 bool IsValidActorResync(const std::vector<uint8_t>& pay)
 {
-    if (pay.size() != sizeof(net::ActorResyncPayload))
-        return false;
     net::ActorResyncPayload msg{};
-    std::memcpy(&msg, pay.data(), sizeof(msg));
+    if (!ReadExactPayload(pay, msg)) return false;
     return msg.epoch != 0;
 }
 
@@ -920,16 +931,6 @@ void BroadcastToOthers(netio::Socket* except, const std::vector<uint8_t>& frame)
     }
 }
 
-void BroadcastToAll(const std::vector<uint8_t>& frame)
-{
-    std::lock_guard<std::mutex> lk(g_mutex);
-    for (auto& kv : g_online)
-    {
-        netio::Socket* s = kv.second.sock;
-        if (s) SendTracked(s, frame.data(), static_cast<int>(frame.size()));
-    }
-}
-
 // ---------------- E0: host-only ретрансляция actor-сообщений ----------------
 using PayloadValidator = bool (*)(const std::vector<uint8_t>&);
 
@@ -954,6 +955,36 @@ void RelayHostOnly(netio::Socket* sock, const std::string& name,
     if (!validator(pay))
         return;
     BroadcastToOthers(sock, MakeMsg(type, pay.data(), static_cast<uint32_t>(pay.size())));
+}
+
+
+// ub-mode (task-165): host-only relay + per-client rate-limit. Раньше
+// VehicleOccupants/TrainSnapshotV2 держали две копии этого блока.
+void RelayHostOnlyRate(netio::Socket* sock, const std::string& name,
+                       const std::vector<uint8_t>& pay, uint8_t type,
+                       PayloadValidator validator,
+                       RateWindow OnlinePlayer::*rate, int limit,
+                       const char* what)
+{
+    if (!validator(pay))
+        return;
+    bool senderIsHost = false;
+    bool allowed = false;
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        auto it = g_online.find(name);
+        if (it != g_online.end())
+        {
+            senderIsHost = it->second.isHost;
+            if (senderIsHost)
+                allowed = AllowRate(it->second.*rate, limit, NowMs());
+        }
+    }
+    if (!senderIsHost)
+        LogWarn("[!] " + name + ": " + what + " от не-хоста проигнорирован");
+    else if (allowed)
+        BroadcastToOthers(sock, MakeMsg(type, pay.data(),
+                                         static_cast<uint32_t>(pay.size())));
 }
 
 // ---------------- Таблица состояния ----------------
@@ -1578,20 +1609,11 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                     if (it != g_online.end())
                     {
                         senderIsHost = it->second.isHost;
-                        if (!senderIsHost)
+                        if (!senderIsHost &&
+                            AllowRate(it->second.damageRate,
+                                      kMaxActorDamagePerSecond, NowMs()))
                         {
-                            const uint64_t now = NowMs();
-                            if (it->second.damageWindowMs == 0 ||
-                                now - it->second.damageWindowMs >= 1000)
                             {
-                                it->second.damageWindowMs = now;
-                                it->second.damageCount = 0;
-                            }
-                            const bool overLimit =
-                                it->second.damageCount >= kMaxActorDamagePerSecond;
-                            if (!overLimit)
-                            {
-                                ++it->second.damageCount;
                                 const std::vector<uint8_t> msg = MakeMsg(
                                     (uint8_t)net::Msg::ActorDamage,
                                     pay.data(),
@@ -1624,16 +1646,9 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
                 auto it = g_online.find(name);
                 if (it == g_online.end())
                     break;
-                const uint64_t now = NowMs();
-                if (it->second.presenceWindowMs == 0 ||
-                    now - it->second.presenceWindowMs >= 1000)
-                {
-                    it->second.presenceWindowMs = now;
-                    it->second.presenceCount = 0;
-                }
-                if (it->second.presenceCount >= kMaxPlayerPresencePerSecond)
+                if (!AllowRate(it->second.presenceRate,
+                               kMaxPlayerPresencePerSecond, NowMs()))
                     break; // rate-limited: молча дропаем
-                ++it->second.presenceCount;
                 const std::vector<uint8_t> msg = MakeMsg(
                     (uint8_t)net::Msg::PlayerPresence,
                     pay.data(), static_cast<uint32_t>(pay.size()));
@@ -1649,82 +1664,24 @@ void HandleClient(netio::Socket* sock, const std::string& peerIp,
             {
                 // E3d-c (v19): occupants — только хост -> сервер -> гостю,
                 // байт-в-байт; флуд-лимит kMaxVehicleOccupantsPerSecond/с.
-                if (!IsValidVehicleOccupants(pay))
-                    break;
-                bool senderIsHost = false;
-                bool allowed = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    if (it != g_online.end())
-                    {
-                        senderIsHost = it->second.isHost;
-                        if (senderIsHost)
-                        {
-                            const uint64_t now = NowMs();
-                            if (it->second.occupantsWindowMs == 0 ||
-                                now - it->second.occupantsWindowMs >= 1000)
-                            {
-                                it->second.occupantsWindowMs = now;
-                                it->second.occupantsCount = 0;
-                            }
-                            if (it->second.occupantsCount <
-                                kMaxVehicleOccupantsPerSecond)
-                            {
-                                ++it->second.occupantsCount;
-                                allowed = true;
-                            }
-                        }
-                    }
-                }
-                if (!senderIsHost)
-                    LogWarn("[!] " + name +
-                            ": VehicleOccupants от не-хоста проигнорирован");
-                else if (allowed)
-                    BroadcastToOthers(sock, MakeMsg(
-                        (uint8_t)net::Msg::VehicleOccupants,
-                        pay.data(), static_cast<uint32_t>(pay.size())));
+                RelayHostOnlyRate(sock, name, pay,
+                                  (uint8_t)net::Msg::VehicleOccupants,
+                                  IsValidVehicleOccupants,
+                                  &OnlinePlayer::occupantsRate,
+                                  kMaxVehicleOccupantsPerSecond,
+                                  "VehicleOccupants");
                 break;
             }
             case net::Msg::TrainSnapshotV2:
             {
                 // E3d-b (v19): поезд v2 — только хост -> сервер -> гостю,
                 // байт-в-байт; флуд-лимит kMaxTrainSnapshotV2PerSecond/с.
-                if (!IsValidTrainSnapshotV2(pay))
-                    break;
-                bool senderIsHost = false;
-                bool allowed = false;
-                {
-                    std::lock_guard<std::mutex> lk(g_mutex);
-                    auto it = g_online.find(name);
-                    if (it != g_online.end())
-                    {
-                        senderIsHost = it->second.isHost;
-                        if (senderIsHost)
-                        {
-                            const uint64_t now = NowMs();
-                            if (it->second.trainV2WindowMs == 0 ||
-                                now - it->second.trainV2WindowMs >= 1000)
-                            {
-                                it->second.trainV2WindowMs = now;
-                                it->second.trainV2Count = 0;
-                            }
-                            if (it->second.trainV2Count <
-                                kMaxTrainSnapshotV2PerSecond)
-                            {
-                                ++it->second.trainV2Count;
-                                allowed = true;
-                            }
-                        }
-                    }
-                }
-                if (!senderIsHost)
-                    LogWarn("[!] " + name +
-                            ": TrainSnapshotV2 от не-хоста проигнорирован");
-                else if (allowed)
-                    BroadcastToOthers(sock, MakeMsg(
-                        (uint8_t)net::Msg::TrainSnapshotV2,
-                        pay.data(), static_cast<uint32_t>(pay.size())));
+                RelayHostOnlyRate(sock, name, pay,
+                                  (uint8_t)net::Msg::TrainSnapshotV2,
+                                  IsValidTrainSnapshotV2,
+                                  &OnlinePlayer::trainV2Rate,
+                                  kMaxTrainSnapshotV2PerSecond,
+                                  "TrainSnapshotV2");
                 break;
             }
             case net::Msg::ActorResync:
@@ -1907,31 +1864,29 @@ done:
 
 } // namespace
 
-int main(int argc, char** argv)
+namespace {
+
+// ---------------- ub-mode (task-165): main-декомпозиция ----------------
+// main раньше держал 209 строк (argv/config + socket + banner + accept-loop +
+// shutdown). Каждая часть вынесена в маленькую функцию с явным контрактом;
+// порядок и поведение прежние: argv/config → bind/listen → banner → timers →
+// accept-loop → shutdown (drain + SaveAll + netio::Shutdown).
+
+// Разбор argv: порт (1-й), idle sec (2-й), test-exit ms (3-й),
+// host game-timeout ms (4-й, clamp 2..15 с). Один вход — дальше доверяем.
+int ParsePortArg(int argc, char** argv)
 {
-#ifdef _WIN32
-    // UTF-8 в консоли: иначе русский текст отображается «кракозябрами».
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-#endif
-
-    if (!netio::Init()) { std::cerr << "socket init failed\n"; return 1; }
-
-#ifdef _WIN32
-    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
-#else
-    std::signal(SIGINT, PosixSignalHandler);
-    std::signal(SIGTERM, PosixSignalHandler);
-#endif
-
-    LoadAllSaved();
-
     int port = argc > 1 ? std::atoi(argv[1]) : 7777;
     if (port <= 0 || port > 65535)
     {
         std::cerr << "invalid port, using 7777\n";
         port = 7777;
     }
+    return port;
+}
+
+void ApplyTimeoutArgs(int argc, char** argv)
+{
     if (argc > 2)
     {
         const int idleSec = std::atoi(argv[2]);
@@ -1946,20 +1901,43 @@ int main(int argc, char** argv)
     }
     if (argc > 4)
     {
-        // 4-й аргумент: host game-thread timeout в мс (clamp 2..15 с).
         long long v = std::atoll(argv[4]);
         if (v <= 0) v = 4000;
         if (v < 2000) v = 2000;
         if (v > 15000) v = 15000;
         g_hostGameTimeoutMs = static_cast<uint64_t>(v);
     }
+}
 
+void InstallSignalHandlers()
+{
+#ifdef _WIN32
+    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+#else
+    std::signal(SIGINT, PosixSignalHandler);
+    std::signal(SIGTERM, PosixSignalHandler);
+#endif
+}
+
+void CloseSocketSafe(SOCKET s)
+{
+#ifdef _WIN32
+    closesocket(s);
+#else
+    ::close(s);
+#endif
+}
+
+// Создать слушающий сокет (SO_REUSEADDR, bind, listen, non-blocking).
+// INVALID_SOCKET = ошибка (причина уже в stderr), вызывающий выходит.
+SOCKET OpenListenSocket(int port)
+{
 #ifdef _WIN32
     SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 #else
     SOCKET ls = ::socket(AF_INET, SOCK_STREAM, 0);
 #endif
-    if (ls == INVALID_SOCKET) { std::cerr << "socket() failed\n"; return 1; }
+    if (ls == INVALID_SOCKET) { std::cerr << "socket() failed\n"; return INVALID_SOCKET; }
 
     int opt = 1;
 #ifdef _WIN32
@@ -1976,13 +1954,20 @@ int main(int argc, char** argv)
 #ifdef _WIN32
     if (bind(ls, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR ||
         listen(ls, 8) == SOCKET_ERROR)
-    { std::cerr << "bind/listen failed\n"; closesocket(ls); return 1; }
+    { std::cerr << "bind/listen failed\n"; closesocket(ls); return INVALID_SOCKET; }
 #else
     if (::bind(ls, (sockaddr*)&addr, sizeof(addr)) == -1 ||
         ::listen(ls, 8) == -1)
-    { std::cerr << "bind/listen failed\n"; ::close(ls); return 1; }
+    { std::cerr << "bind/listen failed\n"; ::close(ls); return INVALID_SOCKET; }
 #endif
 
+    // Неблокирующий accept: позволяет корректно выйти по Ctrl+C и сделать SaveAll.
+    netio::SetNonBlocking(ls);
+    return ls;
+}
+
+void PrintStartupBanner(int port)
+{
     std::cout << "RDR2 CO-OP — сервер-релей" << std::endl;
     std::cout << "Порт: " << port << ". Ожидание игроков..." << std::endl;
     std::cout << "Host game-timeout: " << (g_hostGameTimeoutMs / 1000) << " s"
@@ -1990,24 +1975,99 @@ int main(int argc, char** argv)
               << std::endl;
     std::cout << "(таблица состояния выводится каждые ~10 секунд)" << std::endl;
     std::cout << "(Ctrl+C — корректная остановка, players.txt сохраняется)" << std::endl;
+}
 
-    // Неблокирующий accept: позволяет корректно выйти по Ctrl+C и сделать SaveAll.
-    netio::SetNonBlocking(ls);
+void StartStatusThread()
+{
+    std::thread(StatusThread).detach();
+}
 
-    // статусный поток
-    std::thread st(StatusThread);
-    st.detach();
+void StartTestExitTimer()
+{
+    LogLine("[test] graceful exit after " +
+            std::to_string(g_testExitAfterMs) + " ms");
+    std::thread([ms = g_testExitAfterMs]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        g_running.store(false);
+    }).detach();
+}
 
-    if (g_testExitAfterMs > 0)
+// Проверка лимитов и запуск per-connection обработчика. Возвращает false,
+// если соединение отклонено (сокет уже закрыт и причина залогирована).
+bool AdmitAndStartClient(SOCKET c, const char* ipbuf, uint64_t acceptedAtMs)
+{
+    ++g_totalConnections;
+
+    if (!AllowConnectionFrom(ipbuf, NowMs()))
     {
-        LogLine("[test] graceful exit after " +
-                std::to_string(g_testExitAfterMs) + " ms");
-        std::thread([ms = g_testExitAfterMs]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-            g_running.store(false);
-        }).detach();
+        ++g_rejectedRate;
+        LogLine("[!] " + std::string(ipbuf) +
+                ": per-IP rate limit (" +
+                std::to_string(kMaxNewConnectionsPerIpPerSecond) +
+                "/s) — соединение отклонено");
+        CloseSocketSafe(c);
+        return false;
     }
 
+    if (g_activeConnections.load() >= kMaxActiveConnections)
+    {
+        ++g_rejectedCap;
+        LogLine("[!] " + std::string(ipbuf) +
+                ": лимит соединений (" +
+                std::to_string(kMaxActiveConnections) + ") — отклонён");
+        CloseSocketSafe(c);
+        return false;
+    }
+
+    // Отдельный лимит на «ещё не JOIN-нутые» соединения: они не должны
+    // вытеснять реальных игроков и жить до idle timeout.
+    if (g_preJoinConnections.load() >= kMaxPreJoinConnections)
+    {
+        ++g_rejectedPreJoin;
+        LogLine("[!] " + std::string(ipbuf) +
+                ": лимит pre-JOIN соединений (" +
+                std::to_string(kMaxPreJoinConnections) + ") — отклонён");
+        CloseSocketSafe(c);
+        return false;
+    }
+
+    const int activeNow = ++g_activeConnections;
+    ++g_preJoinConnections;
+    int peak = g_peakConnections.load();
+    while (activeNow > peak &&
+           !g_peakConnections.compare_exchange_weak(peak, activeNow))
+    {
+    }
+
+    netio::Socket* cs = new netio::Socket(c);
+    // Как и на клиенте: без Нагла + неблокирующий сокет.
+    netio::SetNoDelay(c);
+    netio::SetNonBlocking(c);
+    std::thread([cs, ip = std::string(ipbuf), acceptedAtMs]() {
+        bool preJoinCounted = true;
+        try
+        {
+            HandleClient(cs, ip, preJoinCounted, acceptedAtMs);
+        }
+        catch (const std::exception& e)
+        {
+            // Ни одна ошибка обработчика не должна ронять весь сервер.
+            LogLine(std::string("[!] handler exception: ") + e.what());
+        }
+        catch (...)
+        {
+            LogLine("[!] handler exception: unknown");
+        }
+        if (preJoinCounted)
+            --g_preJoinConnections;
+        delete cs;
+        --g_activeConnections;
+    }).detach();
+    return true;
+}
+
+void AcceptLoop(SOCKET ls)
+{
     while (g_running.load())
     {
         sockaddr_in peer{};
@@ -2026,86 +2086,15 @@ int main(int argc, char** argv)
         }
         char ipbuf[64] = "unknown";
         inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf));
-        ++g_totalConnections;
         const uint64_t acceptedAtMs = NowMs();
-
-        if (!AllowConnectionFrom(ipbuf, NowMs()))
-        {
-            ++g_rejectedRate;
-            LogLine("[!] " + std::string(ipbuf) +
-                    ": per-IP rate limit (" +
-                    std::to_string(kMaxNewConnectionsPerIpPerSecond) +
-                    "/s) — соединение отклонено");
-            closesocket(c);
-            continue;
-        }
-
-        if (g_activeConnections.load() >= kMaxActiveConnections)
-        {
-            ++g_rejectedCap;
-            LogLine("[!] " + std::string(ipbuf) +
-                    ": лимит соединений (" +
-                    std::to_string(kMaxActiveConnections) + ") — отклонён");
-            closesocket(c);
-            continue;
-        }
-
-        // Отдельный лимит на «ещё не JOIN-нутые» соединения: они не должны
-        // вытеснять реальных игроков и жить до idle timeout.
-        if (g_preJoinConnections.load() >= kMaxPreJoinConnections)
-        {
-            ++g_rejectedPreJoin;
-            LogLine("[!] " + std::string(ipbuf) +
-                    ": лимит pre-JOIN соединений (" +
-                    std::to_string(kMaxPreJoinConnections) + ") — отклонён");
-            closesocket(c);
-            continue;
-        }
-
-        const int activeNow = ++g_activeConnections;
-        ++g_preJoinConnections;
-        int peak = g_peakConnections.load();
-        while (activeNow > peak &&
-               !g_peakConnections.compare_exchange_weak(peak, activeNow))
-        {
-        }
-
-        netio::Socket* cs = new netio::Socket(c);
-        // Как и на клиенте: без Нагла + неблокирующий сокет.
-        netio::SetNoDelay(c);
-        netio::SetNonBlocking(c);
-        std::thread([cs, ip = std::string(ipbuf), acceptedAtMs]() {
-            bool preJoinCounted = true;
-            try
-            {
-                HandleClient(cs, ip, preJoinCounted, acceptedAtMs);
-            }
-            catch (const std::exception& e)
-            {
-                // Ни одна ошибка обработчика не должна ронять весь сервер.
-                LogLine(std::string("[!] handler exception: ") + e.what());
-            }
-            catch (...)
-            {
-                LogLine("[!] handler exception: unknown");
-            }
-            if (preJoinCounted)
-                --g_preJoinConnections;
-            delete cs;
-            --g_activeConnections;
-        }).detach();
+        AdmitAndStartClient(c, ipbuf, acceptedAtMs);
     }
+}
 
-    g_running.store(false);
-#ifdef _WIN32
-    closesocket(ls);
-#else
-    ::close(ls);
-#endif
-
-    // Даём потокам клиентов завершиться (они проверяют g_running и закрывают
-    // свои сокеты), затем финальный SaveAll. Без ожидания WSACleanup/выход
-    // процесса могли произойти, пока обработчики ещё использовали сокеты.
+// Дождаться завершения клиентских обработчиков (они проверяют g_running и
+// закрывают свои сокеты), затем финальный SaveAll.
+void DrainClientThreadsAndSave()
+{
     const uint64_t drainDeadlineMs = NowMs() + 2000;
     while (g_activeConnections.load() > 0 && NowMs() < drainDeadlineMs)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -2114,6 +2103,38 @@ int main(int argc, char** argv)
                 " обработчик(ов) не завершились за 2 с");
 
     SaveAll();
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+#ifdef _WIN32
+    // UTF-8 в консоли: иначе русский текст отображается «кракозябрами».
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
+    if (!netio::Init()) { std::cerr << "socket init failed\n"; return 1; }
+
+    InstallSignalHandlers();
+    LoadAllSaved();
+
+    const int port = ParsePortArg(argc, argv);
+    ApplyTimeoutArgs(argc, argv);
+    const SOCKET ls = OpenListenSocket(port);
+    if (ls == INVALID_SOCKET) return 1;
+
+    PrintStartupBanner(port);
+    StartStatusThread();
+    if (g_testExitAfterMs > 0) StartTestExitTimer();
+
+    AcceptLoop(ls);
+
+    g_running.store(false);
+    CloseSocketSafe(ls);
+
+    DrainClientThreadsAndSave();
     netio::Shutdown();
     return 0;
 }
