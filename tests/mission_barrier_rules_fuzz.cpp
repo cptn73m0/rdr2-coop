@@ -114,6 +114,47 @@ int main()
     Check(coop::missionsbarrier::IsPhaseAllowedForRole(
               Role::Guest, net::kMissionBarrierStarted), "guest started");
 
+    // MatchesOffer / event gates: these are the public boundary rules used by
+    // the network path. A null/zero offer never matches; guest accepts Offer
+    // without a prior offer, but other host phases require the exact pair.
+    {
+        net::MissionBarrierPayload ev{};
+        ev.missionId = 7;
+        ev.epoch = 9;
+        ev.phase = net::kMissionBarrierReady;
+        Check(coop::missionsbarrier::MatchesOffer(7, 9, ev),
+              "MatchesOffer exact pair");
+        Check(!coop::missionsbarrier::MatchesOffer(0, 9, ev),
+              "MatchesOffer zero offer id rejected");
+        Check(!coop::missionsbarrier::MatchesOffer(8, 9, ev),
+              "MatchesOffer wrong mission rejected");
+        Check(!coop::missionsbarrier::MatchesOffer(7, 8, ev),
+              "MatchesOffer wrong epoch rejected");
+
+        ev.missionId = 0;
+        ev.epoch = 0;
+        ev.phase = net::kMissionBarrierOffer;
+        Check(coop::missionsbarrier::IsGuestEventAllowed(0, 0, ev),
+              "guest accepts Offer without a matching offer");
+        ev.phase = net::kMissionBarrierStartWindow;
+        Check(!coop::missionsbarrier::IsGuestEventAllowed(0, 0, ev),
+              "guest rejects StartWindow with zero offer");
+        ev.phase = net::kMissionBarrierAbort;
+        Check(!coop::missionsbarrier::IsGuestEventAllowed(0, 0, ev),
+              "guest rejects Abort with zero offer");
+
+        ev.missionId = 7;
+        ev.epoch = 9;
+        ev.phase = net::kMissionBarrierReady;
+        Check(coop::missionsbarrier::IsHostEventAllowed(7, 9, ev),
+              "host accepts matching Ready");
+        Check(!coop::missionsbarrier::IsHostEventAllowed(0, 9, ev),
+              "host rejects Ready with zero offer");
+        ev.phase = net::kMissionBarrierOffer;
+        Check(!coop::missionsbarrier::IsHostEventAllowed(7, 9, ev),
+              "host rejects guest-disallowed Offer");
+    }
+
     // Multithreaded fuzz: 4 x 100k random events/roles.
     {
         std::atomic<int> threadFailures{0};

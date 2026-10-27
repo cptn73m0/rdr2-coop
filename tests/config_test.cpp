@@ -174,6 +174,59 @@ int main()
         Check(cfg.serverPort == 65535, "server_port = 65535 accepted");
     }
 
+    // 4b) Integer ranges: bounds are enforced; clamp keys clamp, others ignore
+    // an out-of-range value and keep the default.
+    {
+        coopcfg::Config cfg;
+        const int defaultCap = cfg.npcCap;
+        const int defaultRadius = cfg.npcRadius;
+        const int defaultVehicleRadius = cfg.npcVehicleRadius;
+        const int defaultAnimalCap = cfg.npcAnimalCap;
+        const int defaultFrameHz = cfg.npcFrameHz;
+        const int defaultCorpse = cfg.npcCorpseMaxSec;
+        Write(path,
+            "npc_cap = 0\n"
+            "npc_radius = 19\n"
+            "npc_vehicle_radius = 201\n"
+            "npc_animal_cap = 13\n"
+            "npc_frame_hz = 9\n"
+            "npc_corpse_max_sec = 601\n"
+            "player_frame_hz = 5\n");
+        Check(coopcfg::LoadFromFile(path.string(), cfg), "range file loads");
+        Check(cfg.npcCap == defaultCap, "npc_cap below min keeps default");
+        Check(cfg.npcRadius == defaultRadius, "npc_radius below min keeps default");
+        Check(cfg.npcVehicleRadius == defaultVehicleRadius,
+              "npc_vehicle_radius above max keeps default");
+        Check(cfg.npcAnimalCap == defaultAnimalCap,
+              "npc_animal_cap above max keeps default");
+        Check(cfg.npcFrameHz == defaultFrameHz,
+              "npc_frame_hz below min keeps default");
+        Check(cfg.npcCorpseMaxSec == defaultCorpse,
+              "npc_corpse_max_sec above max keeps default");
+        Check(cfg.playerFrameHz == 10,
+              "player_frame_hz below min clamps to 10");
+    }
+    {
+        coopcfg::Config cfg;
+        Write(path,
+            "npc_cap = 12\n"
+            "npc_radius = 100\n"
+            "npc_vehicle_radius = 20\n"
+            "npc_animal_cap = 0\n"
+            "npc_frame_hz = 20\n"
+            "npc_corpse_max_sec = 600\n"
+            "player_frame_hz = 61\n");
+        Check(coopcfg::LoadFromFile(path.string(), cfg), "boundary file loads");
+        Check(cfg.npcCap == 12, "npc_cap max accepted");
+        Check(cfg.npcRadius == 100, "npc_radius max accepted");
+        Check(cfg.npcVehicleRadius == 20, "npc_vehicle_radius min accepted");
+        Check(cfg.npcAnimalCap == 0, "npc_animal_cap zero accepted");
+        Check(cfg.npcFrameHz == 20, "npc_frame_hz max accepted");
+        Check(cfg.npcCorpseMaxSec == 600, "npc_corpse_max_sec max accepted");
+        Check(cfg.playerFrameHz == 60,
+              "player_frame_hz above max clamps to 60");
+    }
+
     // 5) Unknown keys are ignored; duplicate keys: last value wins.
     Write(path,
         "world_mission_entities = 1\n"
@@ -191,6 +244,19 @@ int main()
         Check(cfg.playerName == "Dup Name", "duplicate file player_name");
     }
 
+    // 5b) Boolean values and duplicate booleans: only documented false tokens
+    // are false; an unknown token is true, and the last duplicate wins.
+    {
+        coopcfg::Config cfg;
+        Write(path,
+            "npc_actor = maybe\n"
+            "npc_debug = 1\n"
+            "npc_debug = 0\n");
+        Check(coopcfg::LoadFromFile(path.string(), cfg), "bool file loads");
+        Check(cfg.npcActor, "unknown bool token is truthy");
+        Check(!cfg.npcDebug, "duplicate bool: last value wins");
+    }
+
     // 6) README example INI: inline `; comment` must be stripped (P0 expected).
     Write(path,
         "server_host = 192.168.1.103   ; PC with the server\n"
@@ -206,6 +272,18 @@ int main()
         Check(cfg.playerName == "Player2",
               "inline ';' comment stripped from player_name");
         Check(cfg.pedModel == 0xCF7E73BEull, "README-style ped_model hex");
+    }
+
+    // 6b) Inline comment only when preceded by whitespace: '#' inside a token
+    // (e.g. a nick) is preserved, while a spaced comment is stripped.
+    {
+        coopcfg::Config cfg;
+        Write(path,
+            "server_host = host#1\n"
+            "player_name = Name # comment\n");
+        Check(coopcfg::LoadFromFile(path.string(), cfg), "hash-name file loads");
+        Check(cfg.serverHost == "host#1", "embedded '#' preserved");
+        Check(cfg.playerName == "Name", "spaced '#' comment stripped");
     }
 
     // 7) ped_model=0 must not overwrite the default; empty values ignored.

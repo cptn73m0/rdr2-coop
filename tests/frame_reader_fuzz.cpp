@@ -363,6 +363,38 @@ int main()
         }
     }
 
+    // 12) Reset drops a partial frame; a frame after Reset still parses.
+    {
+        netio::FrameReader reader;
+        std::vector<uint8_t> payload{1, 2, 3, 4};
+        auto frame = netio::MakeFrame(0x34, payload.data(),
+                                      static_cast<uint32_t>(payload.size()));
+        reader.Feed(frame.data(), static_cast<int>(frame.size() - 2));
+        reader.Reset();
+        reader.Feed(frame.data(), static_cast<int>(frame.size()));
+        uint8_t t = 0;
+        std::vector<uint8_t> p;
+        if (!reader.Poll(t, p) || t != 0x34 || p != payload)
+        {
+            std::printf("FAIL: Reset did not discard partial frame\n");
+            ++failures;
+        }
+    }
+
+    // 13) Zero-length payload is a valid frame with the correct type.
+    {
+        netio::FrameReader reader;
+        auto frame = netio::MakeFrame(0x35, nullptr, 0);
+        reader.Feed(frame.data(), static_cast<int>(frame.size()));
+        uint8_t t = 0;
+        std::vector<uint8_t> p{9, 9};
+        if (!reader.Poll(t, p) || t != 0x35 || !p.empty())
+        {
+            std::printf("FAIL: zero-length payload frame mismatch\n");
+            ++failures;
+        }
+    }
+
     if (failures == 0)
     {
         std::printf("frame_reader_fuzz: PASS\n");

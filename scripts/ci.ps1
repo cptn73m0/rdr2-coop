@@ -1,12 +1,22 @@
 param(
     [switch]$NoClient,
     [switch]$NoServer,
-    [switch]$NoTests
+    [switch]$NoTests,
+    [switch]$StrictQuality,
+    [switch]$NoStrictQuality
 )
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 $python = "python"
+# Strict quality gate is ON by default (P2). -NoStrictQuality disables it;
+# DSH_CI_STRICT_QUALITY=0/false does too, =1/true forces it on.
+$strictQuality = $true
+$envStrict = $env:DSH_CI_STRICT_QUALITY
+if ($envStrict -in @("0", "false", "off", "no")) { $strictQuality = $false }
+elseif ($envStrict -in @("1", "true", "on", "yes")) { $strictQuality = $true }
+if ($StrictQuality) { $strictQuality = $true }
+if ($NoStrictQuality) { $strictQuality = $false }
 
 function Resolve-CMake {
     $cmd = Get-Command cmake -ErrorAction SilentlyContinue
@@ -35,12 +45,97 @@ function Get-ProtocolVersion {
     return "unknown"
 }
 
+function Get-QualityCounts($report) {
+    $highCrap = @($report.functions |
+        Where-Object { [double]$_.crap_proxy -gt 5000 }).Count
+    $highDups = @($report.duplication |
+        Where-Object { [int]$_.count -ge 4 }).Count
+    return [pscustomobject]@{
+        Files = @($report.inventory).Count
+        Functions = @($report.functions).Count
+        HighCrap = $highCrap
+        Duplicates = @($report.duplication).Count
+        HighDups = $highDups
+        Todos = [int]$report.markers.todos_total
+    }
+}
+
+function Write-QualitySummary($report) {
+    $counts = Get-QualityCounts $report
+    Write-Host ("quality: files={0} functions={1} duplicates(top20)={2} dup>=4={3} crap>5000={4} TODO={5}" -f `
+        $counts.Files, $counts.Functions, $counts.Duplicates, $counts.HighDups,
+        $counts.HighCrap, $counts.Todos)
+    Write-Host "quality top-5 CRAP:"
+    foreach ($fn in @($report.functions | Select-Object -First 5)) {
+        Write-Host ("  {0,8}  {1}:{2}  {3}  ({4} lines)" -f `
+            $fn.crap_proxy, $fn.file, $fn.line, $fn.name, $fn.lines)
+    }
+}
+
+function Get-QualityRegression($baseline, $latest) {
+    $base = Get-QualityCounts $baseline
+    $now = Get-QualityCounts $latest
+    $regressions = @()
+    if ($now.HighCrap -gt $base.HighCrap) {
+        $regressions += "functions with CRAP>5000: $($base.HighCrap) -> $($now.HighCrap)"
+    }
+    if ($now.HighDups -gt $base.HighDups) {
+        $regressions += "duplicate groups count>=4: $($base.HighDups) -> $($now.HighDups)"
+    }
+    if ($now.Todos -gt $base.Todos) {
+        $regressions += "TODO/FIXME markers: $($base.Todos) -> $($now.Todos)"
+    }
+    return $regressions
+}
+
 $cmake = Resolve-CMake
 $serverBuild = Join-Path $repo "build-server-ci"
 $serverExe = Join-Path $serverBuild "Release\rdr2_coop_server.exe"
 
 Write-Host "=== CI: $repo ==="
 Write-Host "=== protocol: v$(Get-ProtocolVersion) (net\protocol.h) ==="
+Write-Host "=== quality gate: $(if ($strictQuality) { 'strict (default)' } else { 'report only (-NoStrictQuality)' }) ==="
+
+Write-Host "=== Quality scan (ub-mode) ==="
+$qualityDir = Join-Path $repo "build"
+New-Item -ItemType Directory -Force -Path $qualityDir | Out-Null
+$qualityJson = Join-Path $qualityDir "quality_latest.json"
+$qualityLog = Join-Path $qualityDir "quality_scan.log"
+& $python (Join-Path $repo "tools\quality_scan.py") --json $qualityJson --top 20 > $qualityLog 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "quality_scan failed; see $qualityLog"
+    exit $LASTEXITCODE
+}
+$latestQuality = Get-Content -Raw -LiteralPath $qualityJson | ConvertFrom-Json
+Write-QualitySummary $latestQuality
+
+$baselinePath = Join-Path $repo "tools\quality_baseline.json"
+if (Test-Path -LiteralPath $baselinePath) {
+    $baseQuality = Get-Content -Raw -LiteralPath $baselinePath | ConvertFrom-Json
+    $baseCounts = Get-QualityCounts $baseQuality
+    $qualityRegressions = @(Get-QualityRegression $baseQuality $latestQuality)
+    Write-Host ("quality delta: crap>5000 {0} -> {1}; dup>=4 {2} -> {3}; TODO {4} -> {5}" -f `
+        $baseCounts.HighCrap, (Get-QualityCounts $latestQuality).HighCrap,
+        $baseCounts.HighDups, (Get-QualityCounts $latestQuality).HighDups,
+        $baseCounts.Todos, (Get-QualityCounts $latestQuality).Todos)
+    if ($qualityRegressions.Count -gt 0) {
+        foreach ($regression in $qualityRegressions) {
+            Write-Host "quality regression: $regression"
+        }
+        if ($strictQuality) {
+            Write-Host "QUALITY GATE: FAIL (strict; baseline $baselinePath)"
+            exit 1
+        }
+        Write-Host "QUALITY GATE: regression detected, report mode (-NoStrictQuality or DSH_CI_STRICT_QUALITY=0 disables strict)"
+    } else {
+        Write-Host "QUALITY GATE: PASS (no regression vs baseline)"
+    }
+} elseif ($strictQuality) {
+    Write-Host "QUALITY GATE: FAIL (baseline missing: $baselinePath)"
+    exit 1
+} else {
+    Write-Host "QUALITY GATE: baseline missing, report mode"
+}
 
 if (-not $NoClient) {
     Write-Host "=== Build client (ASI) ==="

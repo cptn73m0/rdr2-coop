@@ -216,21 +216,28 @@ powershell -File tests\restore_saves_test.ps1
 - `frame_reader_fuzz` — фрагментация, пары кадров, мусор, oversize length,
   truncated frame, byte-by-byte stream, 4 потока × 20k случайных буферов,
   **границы `kMaxPayload` (65536 принимается, 65537/0xFFFFFFFF/oversized Feed
-  сбрасываются без выдачи кадра и без зависания)**.
+  сбрасываются без выдачи кадра и без зависания)**, `Reset` после частичного
+  кадра и frame с payload=0.
 - `client_reconnect_test` — фейковый TCP-сервер отвечает JOIN_OK и рвёт
   соединение; клиент должен переподключиться (join ≥ 2, connection-lost ≥ 1).
 - `config_test` — `LoadFromFile`: дефолты, флаги/hex/битые строки, unknown/
-  дубликаты ключей, регистронезависимые bool и inline `;`-комментарии,
-  порт 0/70000/abc/65535. Все проверки строгие (`Check`): регрессия парсера
-  валит тест, non-fatal pending-механизма нет.
+  дубликаты ключей, регистронезависимые bool и inline `;`/`#`-комментарии,
+  порт 0/70000/abc/65535, **clamp `player_frame_hz` 10..60 и ignore
+  out-of-range `npc_*` чисел**, последний duplicate выигрывает, `#` без
+  пробела не считается комментарием. Все проверки строгие (`Check`):
+  регрессия парсера валит тест, non-fatal pending-механизма нет.
 - `world_snapshot_parse_test` — 4 потока × 20k: валидные снапшоты 0..64
-  сущностей и произвольный мусор; строгая проверка размера/count.
+  сущностей и произвольный мусор; строгая проверка размера/count,
+  **`count=64` round-trip, `count=65`/tail/little-endian 256/missing body
+  rejected**.
 - `mission_catalog_test` — 80 уникальных миссий, runtime/title, 23 награды
   на 17 миссий, корректные binding/amount, нет дублей.
 - `world_entity_budget_test` — 4 потока × 10k: mission-приоритет, лимиты
-  Ped/Vehicle/Object и порядок против reference-реализации.
+  Ped/Vehicle/Object и порядок против reference-реализации; **deterministic
+  mission-before-distance и caps=0**.
 - `mission_barrier_rules_fuzz` — 4×100k случайных фаз/ролей/offer/epoch:
-  host/guest события, disjoint role phases.
+  host/guest события, disjoint role phases; **прямые `MatchesOffer`, guest
+  Offer без offer, host Ready/Aborted с нулевым/чужим offer**.
 - `restore_saves_test.ps1` — restore + pre-restore snapshot на temp-каталогах.
 
 ## CI
@@ -239,6 +246,30 @@ powershell -File tests\restore_saves_test.ps1
 тесты. Локально: `powershell -File scripts\ci.ps1`.
 Локальный CI использует тот же канонический `build-server-ci`, что и GitHub
 Actions; fallback на старые `build-server-v10/v12` удалён.
+
+### Quality gate (ub-mode)
+
+`scripts\ci.ps1` всегда запускает `python tools\quality_scan.py --json
+build\quality_latest.json --top 20` и печатает сводку `files/functions/dups/
+CRAP>5000/TODO` + top-5. Артефакт — `build\quality_latest.json`.
+**Strict-гейт включён по умолчанию**: CI падает при росте CRAP>5000,
+dup>=4 или TODO относительно baseline.
+
+```powershell
+# обычный CI: strict quality gate (по умолчанию)
+powershell -File scripts\ci.ps1
+
+# явно отключить strict (report-only, для диагностики)
+powershell -File scripts\ci.ps1 -NoStrictQuality
+$env:DSH_CI_STRICT_QUALITY = "0"; powershell -File scripts\ci.ps1
+```
+
+Baseline: `tools\quality_baseline.json` (текущий снимок: 45 файлов, 334
+функции, 4 функции CRAP>5000, 7 dup-групп count>=4, 0 TODO). Обновлять
+**осознанно после доказанной шлифовки** (build + CI + повторный scan):
+`python tools\quality_scan.py --json tools\quality_baseline.json --top 20`.
+CI-шаг не заменяет тесты: он ловит только регрессии метрик, а поведение
+проверяют C++/integration тесты ниже/выше.
 
 ## Важно
 

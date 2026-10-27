@@ -143,6 +143,21 @@ int main()
         Check(out[0] == 1, "mission vehicle first");
     }
     {
+        // Mission priority wins over distance; per-kind caps are applied after
+        // the global (mission, distance) ordering.
+        std::vector<BudgetCandidate> in(4);
+        in[0] = {BudgetKind::Ped, false, 1.f};
+        in[1] = {BudgetKind::Vehicle, true, 100.f};
+        in[2] = {BudgetKind::Ped, true, 50.f};
+        in[3] = {BudgetKind::Object, false, 2.f};
+        BudgetCaps caps{1, 1, 1};
+        auto out = coop::world_sync::SelectWorldCandidates(in, caps);
+        Check(out == std::vector<int>({2, 1, 3}),
+              "mission first, then bounded per-kind picks");
+        Check(coop::world_sync::SelectWorldCandidates(in, BudgetCaps{0, 0, 0}).empty(),
+              "zero caps select nothing");
+    }
+    {
         std::vector<BudgetCandidate> in(5);
         for (int i = 0; i < 5; ++i)
             in[i] = {BudgetKind::Ped, false, (float)i};

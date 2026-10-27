@@ -115,6 +115,35 @@ int main()
         truncated[0] = 3;
         Check(!coop::world_sync::ParseWorldSnapshot(truncated, p),
               "truncated payload rejected");
+
+        // Exact maximum count is accepted; one byte of tail after it is not.
+        std::vector<net::WorldEntity> maxEntities(net::kMaxWorldEntities);
+        for (size_t i = 0; i < maxEntities.size(); ++i)
+        {
+            maxEntities[i].netId = static_cast<uint32_t>(i + 1);
+            maxEntities[i].kind = static_cast<uint8_t>(i % 4);
+        }
+        auto maxSnapshot = MakeSnapshot(maxEntities);
+        Check(coop::world_sync::ParseWorldSnapshot(maxSnapshot, p) &&
+              p.count == net::kMaxWorldEntities &&
+              p.entities.size() == maxEntities.size() &&
+              std::memcmp(p.entities.data(), maxEntities.data(),
+                          maxEntities.size() * sizeof(net::WorldEntity)) == 0,
+              "max count round-trips");
+        auto maxWithTail = maxSnapshot;
+        maxWithTail.push_back(0);
+        Check(!coop::world_sync::ParseWorldSnapshot(maxWithTail, p),
+              "max count with tail rejected");
+
+        // Length is uint16 little-endian: 0x0100 (256) is > max, not 1.
+        std::vector<uint8_t> endian256{0x00, 0x01, 0, 0};
+        Check(!coop::world_sync::ParseWorldSnapshot(endian256, p),
+              "little-endian count 256 rejected");
+
+        // Header says one entity but body is empty.
+        std::vector<uint8_t> missingBody{1, 0, 0, 0};
+        Check(!coop::world_sync::ParseWorldSnapshot(missingBody, p),
+              "count without entity body rejected");
     }
 
     // Multithreaded stress: 4 x 20k valid+garbage.

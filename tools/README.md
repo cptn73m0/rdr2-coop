@@ -1,5 +1,38 @@
 # tools/ — вспомогательные однопК-инструменты
 
+## `quality_scan.py` — ub-mode quality gate (CI)
+
+Read-only аудит: функции/длина/CRAP-прокси, дублирование (6-строчные шинглы),
+магические числа, natives-дубли, TODO/FIXME. Baseline —
+`tools/quality_baseline.json`; отчёт `docs/UB_MODE_BASELINE.md`.
+
+```powershell
+# отчёт: пишет build/quality_latest.json, печатает md в stdout
+python tools\quality_scan.py --json build\quality_latest.json --top 20
+
+# обновить baseline только после доказанной шлифовки (build + CI):
+python tools\quality_scan.py --json tools\quality_baseline.json --top 20
+```
+
+`scripts\ci.ps1` запускает scan всегда (summary files/functions/dups/
+CRAP>5000/TODO + top-5, артефакт `build/quality_latest.json`).
+**Strict-гейт по умолчанию включён**; отключить можно явно:
+
+```powershell
+# обычный CI: strict quality gate
+powershell -File scripts\ci.ps1
+
+# отчётный режим без fail на регрессии
+powershell -File scripts\ci.ps1 -NoStrictQuality
+$env:DSH_CI_STRICT_QUALITY = "0"; powershell -File scripts\ci.ps1
+```
+
+Strict падает только при росте относительно baseline: функции с
+CRAP-прокси >5000, dup-группы `count>=4`, число TODO/FIXME. Delta в логе =
+latest − baseline; отрицательная — улучшение. Baseline обновляйте
+осознанно, а не для «позеленения» CI (baseline numbers: 45 files / 334
+functions / 4 CRAP>5000 / 7 dup>=4 / 0 TODO).
+
 ## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
 
 Заменяет второй ПК при тестировании E1–E13/E2c (actor-репликация NPC) на
