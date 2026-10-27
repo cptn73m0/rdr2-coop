@@ -4,9 +4,10 @@
 по TCP: JOIN (включая гонку одновременных JOIN), роли/лимиты, host-only
 сообщения, точные размеры, WorldSnapshot, мусорные кадры, ретрансляцию
 Leave/PlayerLeft/Died/Respawned/HorseOutfit, connection cap/per-IP rate limit,
-`players.txt` persistence/recovery, graceful shutdown, а также actor-сообщения
+`players.txt` persistence/recovery, graceful shutdown, actor-сообщения
 v19 (spawn/frames/despawn/event/outfit/resync/appearance/damage/presence/
-occupants/train-v2) — когда они есть в `net/protocol.h`.
+occupants/train-v2) и v20 P1 vehicle-сообщения (0x23/0x24/0x26) — когда они
+есть в `net/protocol.h`.
 
 ## Требования
 
@@ -41,6 +42,17 @@ wearable[96] u32). Если размер в `net/protocol.h` изменится,
 ID 0x18–0x22. Если header откатить на v14, actor-тесты скипаются с `[skip]`
 и не валят базовый suite.
 
+Для протокола **v20 P1** (при `kProtocolVersion >= 20`) дополнительно пинятся:
+`Msg::VehicleInteraction=0x23`, `VehicleInteractionResult=0x24`,
+`VehicleControlInput=0x25` (reserved), `VehicleState=0x26`,
+`VehicleControlState=0x27` (reserved); точные размеры
+`VehicleInteractionPayload=24 B`, `VehicleInteractionResultPayload=16 B`,
+`VehicleStatePayload=24 B`; серверные rate-лимиты
+**`kMaxVehicleInteractionPerSecond=8`**, `…ResultPerSecond=20`,
+`…StatePerSecond=10`; направления/роли (0x23 только guest→host, 0x24/0x26
+только host→guest) и game-thread liveness (0x24/0x26 — да, 0x23 — нет).
+Если header откатить на v19, v20-тесты скипаются с `[skip]` (suite = 42).
+
 ## Запуск
 
 ```powershell
@@ -55,7 +67,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_server_tests.ps1
 `--strict` считает known-fail тесты падениями (механизм сохранён, сейчас
 `KNOWN_FAIL_TESTS` пуст — известных-падающих 0).
 
-## Что покрыто (28 базовых сценариев + grace-тест host-migration + 13 actor/presence-тестов v19)
+## Что покрыто (28 базовых сценариев + grace-тест host-migration + 13 actor/presence-тестов v19 + 8 v20 P1 vehicle-тестов = 50)
 
 | Тест | Проверка |
 |---|---|
@@ -134,19 +146,42 @@ In-game проверка soft-семантики — `docs/NPC_E1_TESTING.md` S2
 | `test_player_presence_relay` | 0x20: client→server→другому клиенту без эха; epoch/flags; 8 B byte-identical; rate-limit 10/с |
 | `test_player_presence_validation` | 0x20: epoch=0/short/long/unknown flag bits (6..15) drop; сервер жив |
 
+### v20 P1 vehicle-тесты (0x23/0x24/0x26; активны при `kProtocolVersion >= 20`)
+
+| Тест | Проверка |
+|---|---|
+| `test_vehicle_interaction_guest_only_relay` | 0x23: guest→host byte-identical relay; гость не получает эхо; сервер не шлёт 0x23 хосту от хоста |
+| `test_vehicle_interaction_validation` | 0x23: short 23 B / long 25 B, epoch=0/netId=0/seq=0, action 0/13, seat 9, door part 12, param=0, unknown flags, TargetActor+Entity вместе, weaponHash на не-Damage → drop; 0x25/0x27 reserved не релеятся; сервер жив после мусора |
+| `test_vehicle_interaction_rate_limit` | 0x23: burst 16 → ровно 8/с; окно сбрасывается (после паузы снова проходит) |
+| `test_vehicle_result_host_only_relay` | 0x24: host→guest byte-identical; нет эха хосту; guest-отправитель drop + warn `… от не-хоста` |
+| `test_vehicle_result_validation_rate` | 0x24: short/long, epoch=0/netId=0/seq=0, action 0/13, result 10 → drop; rate-limit 20/с |
+| `test_vehicle_state_host_only_relay` | 0x26: host→guest byte-identical; guest-отправитель drop + warn; невалидные body 1001/engine -4001/hostSeat 9/epoch=0 → drop; rate-limit 10/с |
+| `test_vehicle_interaction_no_host_drop` | один клиент-«хост» шлёт 0x23 (role violation) → молча drop + warn; сервер жив, принимает второго игрока; его 0x23 релеится хосту (recovery) |
+| `test_vehicle_interaction_after_migration` | 0x23 до Leave хоста; после миграции интенты нового гостя идут повышенному хосту; 0x24 от старого/уже-гостя drop; сервер без крэша |
+
+Итого: integration **50/50** (42 прежних без изменений — version-derived
+значения читаются автоматически; при v19-header v20-тесты скипаются и suite
+снова 42). Wire-часть/relay — U1/U2; host apply/guest capture (U3/U4) в
+`src/` — тестами сервера не покрываются, проверяются fake-клиентом/игрой.
+
 ### NPC actor-репликация (E1–E9) — что проверено
 
 Wire/relay/валидация actor-сообщений покрыты actor/presence-тестами выше
-(**42/42** автоматических сценариев на `build-server-ci`, protocol v19:
+(**50/50** автоматических сценариев на `build-server-ci`, protocol v20:
 appearance + ActorDamage + PlayerPresence + VehicleOccupants +
 TrainSnapshotV2 + rate-limit 0x21/0x22 + host migration/game-timeout
-(soft e18: demote/no-socket-close/join-grace/presence); 16 компонентов / 460 B,
-damage 16 B, presence 8 B, occupants ≤72 B, train 48 B, 28 базовых + grace).
+(soft e18: demote/no-socket-close/join-grace/presence) + v20 P1 vehicle
+0x23/0x24/0x26 (rate 8/20/10, роли/направления); 16 компонентов / 460 B,
+damage 16 B, presence 8 B, occupants ≤72 B, train 48 B, vehicle 24/16/24 B,
+28 базовых + grace + 8 vehicle).
 Клиентская логика NPC/E2c-b/E5/E6/E7/E3d/E9 проверена на **одном ПК** с fake
 host/guest и реальным хостом (`tools/fake_actor_client.py`, см.
 `tools/README.md`); E5/E5.1 подтверждены игровым гостем («выстрелы убивают,
-хэдшот ваншотит»); двух-ПК приёмка e19 pending. Локальная пара npc-e19/v19 —
-ASI `DD0EE210`/server `DD9BD9D8` (оба ПК задеплоены, snapshot `dist\npc-e19`).
+хэдшот ваншотит»); двух-ПК приёмка e19 pending. Задеплоенная пара —
+npc-e19/v19: ASI `DD0EE210`/server `DD9BD9D8` (оба ПК, snapshot `dist\npc-e19`).
+v20 P1 (wire U1/U2) — ветка `feature/v20-p1`, **не задеплоена**; host
+apply/guest capture U3/U4 в работе; fake-клиент v20 —
+`tools/fake_vehicle_client.py` (`--mode scenario`).
 
 - **E1 (human-only):** discovery/roster, spawn heartbeat/frames/despawn,
   guest-прокси, resync, gating `npc_actor=0` → 0 `actor:`/`probe:` строк.
@@ -238,6 +273,7 @@ cmake --build tests\build --config Release
 .\tests\build\Release\mission_catalog_test.exe
 .\tests\build\Release\world_entity_budget_test.exe
 .\tests\build\Release\mission_barrier_rules_fuzz.exe
+.\tests\build\Release\vehicle_interaction_protocol_test.exe
 powershell -File tests\restore_saves_test.ps1
 ```
 
@@ -266,7 +302,29 @@ powershell -File tests\restore_saves_test.ps1
 - `mission_barrier_rules_fuzz` — 4×100k случайных фаз/ролей/offer/epoch:
   host/guest события, disjoint role phases; **прямые `MatchesOffer`, guest
   Offer без offer, host Ready/Aborted с нулевым/чужим offer**.
+- `vehicle_interaction_protocol_test` — v20 P1 wire: `static_assert`/offset'ы
+  24/16/24 B, enum'ы `VehicleAction`/`VehicleResult`, known-flags маски,
+  good/bad таблицы `net::IsValidVehicleInteraction/…Result/…State`
+  (epoch/netId/seq, action/seat/door/part/flags/param/health), reserved
+  0x25/0x27; 8-й C++-тест в curated-списке `scripts\ci.ps1`.
 - `restore_saves_test.ps1` — restore + pre-restore snapshot на temp-каталогах.
+
+## v20 P1 fake-клиент (без игры, один ПК)
+
+```powershell
+# полный wire-scenario против запущенного сервера (оба fake-игрока):
+python tools\fake_vehicle_client.py --mode scenario --port 7777
+
+# вручную: fake HOST (запустить ДО игры-гостя) / fake GUEST (после игры-хоста)
+python tools\fake_vehicle_client.py --mode host --host-name V20Host --duration 120
+python tools\fake_vehicle_client.py --mode guest --guest-name V20Guest --duration 30
+```
+
+`--mode scenario` проверяет relay/роли/валидацию/rate 8/20/10/host migration
+(8 фаз, ~78 проверок; smoke на v20-сервере: **78 passed, 0 failed**, exit 0;
+если есть FAIL — exit 2). Подробности/опции — `tools/README.md`.
+U3/U4 вкоммичены (`8a34e7d`) — host apply/guest capture есть в клиенте; пара
+`npc-e20` ещё не задеплоена, поэтому game+tool сценарии — после деплоя.
 
 ## CI
 
@@ -298,7 +356,10 @@ Baseline: `tools\quality_baseline.json` (parser-fixed снимок: **45 фай�
 Скан **e19** (`ef49ac8`): **45/505/3/3/0** — CRAP>5000 4→3 (`HandleClient`
 782→25 строк через phase-хелперы), +16 функций (e18 +13 phase/helper;
 e19 +3 `MakeLiteralString`/`SetBlipName`/`UpdateBlipName`); baseline **не
-обновлялся** (ждём сигнал Lead). P3 parser self-check:
+обновлялся** (ждём сигнал Lead). Скан **v20 P1 (U1–U4, `8a34e7d`)**:
+**46 файлов / 573 функции / CRAP>5000=3 / dup≥4=2 / TODO=0** (+
+`vehicle_interaction_protocol_test.cpp` и U3/U4-функции; strict gate PASS,
+новых hotspot'ов нет). P3 parser self-check:
 `python tools\quality_scan.py --self-check` — проверяет
 многострочную функцию и отсутствие ложных `if`/call-функций. Baseline
 обновлять **осознанно после доказанной шлифовки** (build + CI + повторный

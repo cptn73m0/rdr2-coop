@@ -2,12 +2,22 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 19` (см. `net/protocol.h`). Версия передаётся в JOIN,
-  сервер сверяет её и при несовпадении отклоняет подключение
-  (`JoinRejected.VersionMismatch`); клиенты v14–v19 несовместимы.
-  v18-пара для отката — ASI `C9BFA565`/server `BEC3428B`; v17 —
-  `35163CC2`/`B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 —
+- `net::kProtocolVersion = 20` (см. `net/protocol.h`, ветка `feature/v20-p1`).
+  Версия передаётся в JOIN, сервер сверяет её и при несовпадении отклоняет
+  подключение (`JoinRejected.VersionMismatch`); клиенты v14–v20 несовместимы.
+  **v20 — жёсткий bump:** v19-клиенты и v20-клиенты несовместимы, deploy только
+  парой ASI+server из одного снапшота (`dist\npc-e20`); задеплоенная сейчас
+  пара — **npc-e19/v19** (ASI `DD0EE210`/server `DD9BD9D8`) — откат на неё
+  полной парой. Предыдущие пары: v18 — ASI `C9BFA565`/server `BEC3428B`;
+  v17 — `35163CC2`/`B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 —
   `dist\npc-e2c-v15\`.
+- v20 (P1, guest influence): **`VehicleInteraction` (0x23)** — интент гостя
+  (урон/двери/посадка/hijack/loot/hitch), guest → сервер → хост;
+  **`VehicleInteractionResult` (0x24)** — ответ хоста host → сервер → гость;
+  **`VehicleState` (0x26)** — authoritative состояние транспорта host → сервер
+  → гость; **0x25/0x27 зарезервированы** под P3 (управление) и в P1 не шлются.
+  Wire-часть/релей реализованы (U1/U2); host apply/guest capture — U3/U4.
+  Спецификация — раздел «VEHICLE-СООБЩЕНИЯ (v20 P1)».
 - v19 (E3d-b/E3d-c): **`VehicleOccupants` (0x21)** — водители/пассажиры/
   draft-лошади, host → сервер → гость; **`TrainSnapshotV2` (0x22)** —
   mission-train/состав, host → сервер → гость. Спецификация — раздел
@@ -16,17 +26,16 @@
   (демоция без закрытия сокета, join grace 15 с, presence-liveness),
   visitor vendor dedupe, имя игрока на карте/blip (`_SET_BLIP_NAME`),
   occupant-first roster (кучер/draft-лошади повозки) и opt-in wheel A/B
-  (`npc_vehicle_wheels`, default 0). Провод v19 не менялся; актуальная пара —
-  npc-e19: ASI `DD0EE210`, server `DD9BD9D8`.
-- v18 (E6): **`PlayerPresence` (0x20)** — UI-статус игрока (карта/пауза/
-  сатчель/магазин), клиент → сервер → другому клиенту без эха; суффикс имени
-  `Name - in map` и т.п. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
+  (`npc_vehicle_wheels`, default 0). Провод v19 не менялся.
 - v18 (E7.3, без bump): **E3d-a vehicles-only WorldSnapshot** (0x10),
   host migration hardening (game-timeout 4 с, Ping не считается), client
   role-change reset и mission-aware visitor (`npc_visitor_pause_scenes`).
 - v17 (E5): **`ActorDamage` (0x1F)** — host-authoritative урон по NPC,
   гость → сервер → хост. E5.1: хедшот → `damage=250` (ваншот). Подтверждено
   в игре. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
+- v18 (E6): **`PlayerPresence` (0x20)** — UI-статус игрока (карта/пауза/
+  сатчель/магазин), клиент → сервер → другому клиенту без эха; суффикс имени
+  `Name - in map` и т.п. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
 - v16 (E2c-b): к actor-сообщениям добавлен **`ActorAppearance` (0x1E)** —
   asset/tint внешность NPC, хост → сервер → гость. Реализованы host capture
   (компоненты/asset guids/tints) и guest apply; проверено на одном ПК
@@ -501,6 +510,122 @@ payload: TrainSnapshotV2Payload (48 B)
   Гость: `SET_RANDOM_TRAINS(false)` + `_CREATE_MISSION_TRAIN`, sync speed
   (Δ>0.5)/coords (>5 м soft ≤1/0.5 с)/warp (>25 м/|dz|>15)/halt/leave/
   reverse, cleanup timeout 2 с и restore random trains (`world_trains=1`).
+
+## VEHICLE-СООБЩЕНИЯ (v20 P1 — guest influence, wire U1/U2)
+
+> **Статус:** wire-структуры/валидаторы (U1) и серверный релей/rate/роли (U2)
+> реализованы (ветка `feature/v20-p1`); host apply (U3) и guest capture (U4)
+> ещё в работе — поэтому **v20-пара не деплоится** до их завершения. Полная
+> спека: `docs/INTERACTIVITY_P1.md`.
+
+### Направления и роли
+
+| ID | сообщение | размер | направление | роль отправителя |
+|---|---|---:|---|---|
+| 0x23 | `VehicleInteraction` | 24 B | guest → сервер → **host** | только guest (host-sender → warn+drop) |
+| 0x24 | `VehicleInteractionResult` | 16 B | host → сервер → guest | только host |
+| 0x26 | `VehicleState` | 24 B | host → сервер → guest | только host |
+| 0x25 | `VehicleControlInput` | — | RESERVED (P3) | в P1 не шлётся/не релеится |
+| 0x27 | `VehicleControlState` | — | RESERVED (P3) | в P1 не шлётся/не релеится |
+
+Сервер **не знает мир**: он проверяет точный размер, inline-валидаторы
+(`net::IsValidVehicleInteraction/…Result/…State`), роль/направление и
+per-client rate; семантику (netId/distance/mission/seat/health) проверяет
+хост при применении. Нет хоста online → 0x23 молча drop; сервер никогда не
+эмулирует ответ от себя. При 2 игроках 0x24/0x26 = unicast оставшемуся
+гостю; broadcast-направление выбрано осознанно (P1 = `kMaxPlayers=2`).
+
+### 0x23 VEHICLE_INTERACTION (гость → сервер → хост; 24 B)
+
+```
+epoch:u32          — host epoch (actor_sync); 0 невалиден
+vehicleNetId:u32   — netId транспорта из WorldSnapshot; 0 невалиден
+targetId:u32       — actorId/netId по flags; 0 = нет
+seq:u16            — idempotency key; 0 невалиден, монотонный на сессию
+action:u8          — 1 Damage, 2 DoorOpen, 3 DoorClose, 4 DoorLock,
+                     5 DoorUnlock, 6 DoorBreak, 7 Enter, 8 Exit, 9 Hijack,
+                     10 Loot, 11 Hitch, 12 Unhitch (0 None и >12 reject)
+seat:i8            — -1 driver / 0..8 passenger / 127 none
+door:u8            — doorId 0..7 (doors), part (Damage: 0..11, 254/255
+                     body, 255 — все двери для lock), harness 0..5 (draft)
+flags:u8           — 1 TargetActor, 2 TargetEntity, 4 Urgent,
+                     8 LootContainer, 16 GuestHorse, 32 Force
+param:u16          — Damage: 1..1000; иначе 0
+weaponHash:u32     — контекст Damage (0 = неизвестно; для не-Damage обязан 0)
+```
+
+Валидаторы (inline, единый источник для server/client/tests): epoch/netId/seq
+≠ 0, action 1..12, известные flags, TargetActor и TargetEntity не вместе,
+seat -1/0..8/127; per-action: Damage part 0..11/254/255 + param 1..1000;
+DoorOpen/Close/Break door 0..7 + param 0; DoorLock/Unlock door 0..7/255 +
+param 0; Enter seat -1/0..8/127, door 255, target 0; Exit seat 127, door 255;
+Hijack seat -1/127, door 255, target 0 или TargetActor; Loot
+TargetEntity↔targetId↔seat 127; Hitch/Unhitch harness 0..5.
+Окна (part 12..15) в P1 reject. Rate-limit сервера — **8/с** на клиента.
+
+### 0x24 VEHICLE_INTERACTION_RESULT (хост → сервер → гость; 16 B)
+
+```
+epoch:u32        — echo epoch
+vehicleNetId:u32 — echo netId
+seq:u16          — echo запроса (idempotency)
+action:u8        — echo action (1..12)
+result:u8        — 0 Applied, 1 NotAllowed, 2 StaleEpoch, 3 NotFound,
+                   4 OutOfRange, 5 SeatOccupied, 6 Locked, 7 RateLimited,
+                   8 Timeout, 9 Correction
+detail:u32       — action-specific: для NotAllowed reason = (detail>>8)&0xFF
+                   (1 config_off, 2 mission_protected, 3 host_vehicle,
+                   4 bad_param, 5 dead_guest, 6 bad_role, 7 policy);
+                   Damage: part/resultFlags/appliedDamage; doors: doorId/
+                   doorState/lock; seats: guestSeat/hostSeat; harness: readback
+```
+
+Сервер валидирует точный размер, epoch/netId/seq ≠ 0, action 1..12,
+`result 0..9`; **20/с**.
+
+### 0x26 VEHICLE_STATE (хост → сервер → гость; 24 B)
+
+```
+epoch:u32         — host epoch
+vehicleNetId:u32  — id транспорта
+bodyHealth:u16    — 0..1000; 0xFFFF = unknown (DamageValid не ставится)
+engineHealth:i16  — -4000..1000; -32768 = unknown
+doorBits:u16      — 2 бита на дверь 0..7: 0 closed, 1 open, 2 broken, 3 unknown
+seq:u16           — монотонный per vehicle (диагностика/recovery)
+flags:u8          — 1 DoorValid, 2 DamageValid, 4 Locked, 8 MissionProtected,
+                    16 HostSeatValid, 32 GuestSeatValid, 64 Hijacked, 128 Dead
+wheelsBits:u8     — 2 бита на колесо FL/FR/RL/RR: 0 intact, 2 destroyed,
+                    3 unknown (damaged(1) readback отсутствует)
+hostSeat:i8       — место игрока-хоста (-1/0..8/127)
+guestSeat:i8      — место игрока-гостя (-1/0..8/127)
+reserved:u32      — 0 (в P3: leaseId)
+```
+
+Хост шлёт change-driven + heartbeat **1/с** для отслеживаемых vehicle
+(≤8); суммарно ≤10/с, при переполнении — round-robin (heartbeat чинит).
+Гость отбрасывает state с чужим epoch или более старым `seq` для vehicle.
+Сервер валидирует размер, epoch/netId ≠ 0, известные flags, health-диапазоны
+и seats; rate **10/с**. `bodyHealth/engineHealth = unknown` до подтверждённых
+readback-нативов (R&D: `docs/NATIVE_RESEARCH_V20_HEALTH.md`).
+
+### Game-thread semantics, migration, bump/deploy
+
+- **Host liveness** (`IsGameThreadMessage`): 0x24/0x26 — game-thread сообщения
+  (продлевают жизнь хоста), **0x23 — нет** (это guest-интент; хост их не шлёт).
+  Поэтому host-клиент обязан слать state heartbeat/результаты, иначе
+  сработает host game-timeout.
+- **Host migration:** 0x23 маршрутизируется по текущему `isHost` на момент
+  отправки; старые epoch/seq у нового хоста дают `StaleEpoch`/drop. Очередей
+  сервер не хранит; 0x24/0x26 от старого хоста после миграции дропаются как
+  role violation.
+- **v20 — жёсткий bump:** `kProtocolVersion 19→20`; v19 JOIN отклоняется
+  (`VersionMismatch`), смешанная пара невозможна. Deploy только парой
+  ASI+server из одного снапшота `dist\npc-e20` (оба ПК, одинаковые хеши);
+  откат — `dist\npc-e19` (v19, ASI `DD0EE210`/server `DD9BD9D8`) полной парой.
+  Промежуточные U1–U4 **не деплоить**.
+- Серверный трафик-бакет: heartbeat `net: … occupants=… vehicle=… other=…`;
+  `tools/perf_report.py` показывает `vehicle` per-type (сумма/проценты), старые
+  v19-логи (без `vehicle=`) остаются без новой категории.
 
 ### E1–E3b (actor_sync, v15) — реализовано и проверено на одном ПК
 - База: **0x18** (`ActorSpawnBatch`: спавн + heartbeat 2.5 с), **0x19**

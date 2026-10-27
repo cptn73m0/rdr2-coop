@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NPC replication performance report (npc-e12).
+"""NPC replication performance report (npc-e12; v20 P1 traffic buckets).
 
 Parses the game log (rdr2-coop.log) and/or server_console.log looking for
 `perf: npc host ...`, `perf: npc guest ...`, `perf: frame host/guest ...`,
@@ -7,6 +7,10 @@ client `perf: net ...`, server `net: bytes_in/out ...`, legacy `perf: actor ...`
 lines, counters and failure/warn/timeout markers. Produces p50/p95/max tables
 for full frame/actor metrics, client/server traffic KB/s and per-type shares,
 optional baseline deltas and PASS/FAIL verdict.
+
+Server heartbeat per-type includes the v20 P1 `vehicle=` bucket (0x23/0x24/0x26)
+when the server build reports it; older v19 logs keep their original per-type
+list (the new category is not fabricated for them).
 
 Only the Python standard library is used.
 
@@ -54,7 +58,11 @@ SERVER_NET_RE = re.compile(
     r"^\s*net:\s*bytes_in=(\d+)\s+bytes_out=(\d+)\s*\|(.*)$", re.IGNORECASE)
 SERVER_TYPES = (
     "frame", "actor", "world", "outfit", "presence", "damage",
-    "trains", "occupants", "other",
+    "trains", "occupants",
+    # v20 P1 (npc-e20): 0x23 VehicleInteraction / 0x24 Result / 0x26 State.
+    # Old v19 heartbeats have no `vehicle=` token: the category is omitted from
+    # the report (not reported as a bogus 0) to keep old logs unchanged.
+    "vehicle", "other",
 )
 
 
@@ -205,6 +213,9 @@ class PerfReport:
         self.lines = 0
         self.perf_lines = 0
         self.server_net_lines = 0
+        # v20 P1: which per-type tokens actually appeared in heartbeats. Lets
+        # old v19 logs omit `vehicle` from per-type instead of showing 0.
+        self.server_types_seen = set()
 
     # -- parsing ---------------------------------------------------------
     def parse(self):
@@ -296,6 +307,7 @@ class PerfReport:
         for key, value in tokens_of(match.group(3)).items():
             if key in SERVER_TYPES:
                 types[key] = int(float(value))
+                self.server_types_seen.add(key)
         self.server_net.append({
             "bytes_in": bytes_in,
             "bytes_out": bytes_out,
@@ -467,6 +479,10 @@ class PerfReport:
         total_messages = sum(type_totals.values())
         per_type = []
         for name in SERVER_TYPES:
+            # Backward compatibility: a v19 log has no `vehicle=` heartbeat
+            # token at all, so the new v20 category is not invented there.
+            if name == "vehicle" and name not in self.server_types_seen:
+                continue
             count = type_totals[name]
             per_type.append({
                 "name": name,

@@ -1,11 +1,32 @@
 # v20 P1 — guest→host vehicle interactions: implementation-ready spec
 
-**Status:** implementation-ready spec (pre-code). Код мода НЕ менялся; это документ.
+**Status:** **U1–U4 DONE, U5 (docs/tools) in progress, deploy `npc-e20` pending.**
+Wire-контракт + серверный релей — `9703943`; host apply/guest capture/mirror +
+client transport + 4 INI-ключа — `8a34e7d`. Proof ветки `feature/v20-p1`:
+`scripts\ci.ps1` — build client+server, C++ **8/8**, integration **50/50**,
+quality strict PASS (0 warnings). **v20-пару ещё не деплоить**: снапшот
+`dist\npc-e20`/2-ПК блок I — после U5. Этот документ описывает контракт.
 **Target protocol:** v20 (`kProtocolVersion = 20`), пара ASI+server, paired deploy.
 **Author:** architect-verify2 (task: v20 P1 spec), 2026-10-27.
-**Base:** HEAD `1e336e9` (npc-e19, protocol v19), code line refs — `E:\rdr2-coop`.
+**Base:** HEAD `1e336e9` (npc-e19, protocol v19); актуальная ветка —
+`feature/v20-p1` (U3/U4 `8a34e7d`), code line refs — `E:\rdr2-coop-v20`.
 **Related:** `docs/INTERACTIVITY.md` (design P0–P4), `docs/NATIVE_RESEARCH_INTERACT.md`
 (native R&D, 1491.50), `docs/PROTOCOL.md`, `docs/PERF.md`, `docs/ACCEPTANCE_2PC.md`.
+
+> **Статус реализации (27.10.2026, ветка `feature/v20-p1`):**
+>
+> | unit | содержимое | статус / proof |
+> |---|---|---|
+> | **U1** | protocol v20: `kProtocolVersion=20`, IDs 0x23/0x24/0x26 (0x25/0x27 reserved), structs 24/16/24 B, inline-валидаторы, `tests/vehicle_interaction_protocol_test.cpp` | **DONE** (`9703943`): C++ 8/8, build 0 warnings |
+> | **U2** | server relay: роли/направления, rate 8/20/10, game-thread (0x24/0x26), `TrafficBucket::Vehicle` + `vehicle=` heartbeat, 8 integration-тестов | **DONE** (`9703943`): integration **50/50**, quality strict PASS |
+> | **U3** | host apply path (`world_sync`), fake host | **DONE** (`8a34e7d`) |
+> | **U4** | guest capture + mirror + config (4 INI-ключа) + role reset | **DONE** (`8a34e7d`); config tests PASS |
+> | **U5** | docs/acceptance/fake-клиент/perf-report/ci C++ 8 | in progress (этот unit): `tools/fake_vehicle_client.py`, `tools/perf_report.py` vehicle-бакет, `scripts\ci.ps1` C++ 8, PROTOCOL/ACCEPTANCE/tests README |
+>
+> Proof ветки (полный `scripts\ci.ps1` на `8a34e7d`): **CI OK** — build
+> client(ASI)+server, C++ **8/8**, integration **50/50**, quality strict PASS,
+> 0 warnings. Deploy `npc-e20` и 2-ПК блок I — **после** U5; промежуточные
+> коммиты не деплоить (v20 bump уже ломает v19 JOIN).
 
 > **Решение по объёму:** P1 = событийные интенты гостя к хосту **без передачи
 > управления**. В P1 нет вождения (0x25/0x27 остаются зарезервированными под P3),
@@ -732,6 +753,8 @@ bool vehicleInteractionDebug = false;    // vehicle_interaction_debug
 - `VehicleResult`/`VehicleAction` значения; known-flags masks; result-detail
   helpers (если появятся inline-функции);
 - C++ тесты **7/7 → 8/8** (`tests/CMakeLists.txt:52-57` + новый exe).
+  **Реализовано (U1):** `vehicle_interaction_protocol_test` PASS, `scripts\ci.ps1`
+  запускает его 8-м (curated list 7→8).
 
 ### 5.2. Integration (`tests/integration_server.py`, константы auto-read из protocol.h)
 
@@ -760,27 +783,44 @@ pins для rate-констант (`_server_const` + pinned: 8/20/10). Новы�
 - Итог: integration **42/42 → 50/50**; существующие 42 не меняются (кроме
   version-derived значений — они auto).
 - `tests/README.md` — описание новых тестов.
+- **Реализовано (U2):** 8 тестов в `tests/integration_server.py`, прогон
+  **50/50** (strict). Имена: `test_vehicle_interaction_guest_only_relay`,
+  `…_validation`, `…_rate_limit`, `test_vehicle_result_host_only_relay`,
+  `test_vehicle_result_validation_rate`, `test_vehicle_state_host_only_relay`,
+  `test_vehicle_interaction_no_host_drop`, `…_after_migration`.
 
 ### 5.3. Fake client (`tools/fake_vehicle_client.py`, новый)
 
 Отдельный маленький инструмент (не трогать 108 KB `fake_actor_client.py`), читает
-`kProtocolVersion`/ID/размеры из `net/protocol.h`, framing `[len:u32 LE][type:u8]`.
-CLI:
-- `--mode guest --vehicle-net-id N --action damage --part wheel_fl --damage 60
-  --count 5 --rate 2 --seq-start 1 --expect-result applied` — шлёт 0x23, ждёт 0x24/0x26,
-  печатает/ассертит `result`, `seq`, `detail`, state поля; exit code 0/1;
-- `--mode host --accept 0x23 --reply applied --state` — принимает 0x23 от реального
-  game-guest, печатает payload, отвечает 0x24 Applied и 0x26; ассертит поля;
-- `--burst`, `--invalid` — для rate/validation A/B.
+`kProtocolVersion`/ID/размеры из `net/protocol.h` (rate-константы — из
+`server/server.cpp`), framing `[len:u32 LE][type:u8]`. **Реализовано (U5).**
+CLI (стиль `fake_actor_client.py`, лог stdout+`tools/fake_vehicle_client.log`,
+exit 0 PASS / 1 usage-env / 2 protocol-fail):
+
+- `--mode scenario` (по умолчанию) — два fake-игрока в одном процессе против
+  relay-сервера: valid/invalid 0x23, матрица actions (damage door/wheel/engine/
+  body, doors, enter/exit/hijack/loot/hitch), 0x24/0x26 relay + host-only
+  дропы, role violations, rate 8/20/10 (burst + reset окна), host migration
+  (guest promoted → новые интенты/результаты идут новому хосту);
+- `--mode host` — fake HOST (первый JOIN): принимает 0x23, валидирует payload,
+  отвечает 0x24 Applied + 0x26 (state heartbeat 1/с, чтобы не сработал host
+  game-timeout), считает rate;
+- `--mode guest` — fake GUEST (второй JOIN): шлёт матрицу 0x23, ждёт/валидирует
+  0x24/0x26, exit 2 если ответов нет;
+- общие: `--host/--port/--host-name/--guest-name/--duration/--epoch/
+  --vehicle-net-id/--json/--log-file`.
+
 Сценарии (single-PC, game+tool):
-1. game-host + fake guest: fake получает 0x10 WorldSnapshot/0x21, берёт
-   vehicleNetId, шлёт Damage/Door на real host vehicles → real host применяет
-   (`result=applied`), host-игрок видит в мире; fake проверяет 0x24/0x26.
-2. game-guest + fake host: fake host шлёт WorldSnapshot+0x21 (real guest видит
-   proxies), real guest стреляет по прокси → ASI шлёт 0x23; fake host ассертит
-   полученный intent, отвечает Applied и State → real guest mirror/лог.
-3. негативные: mission-protected (real host reject) в 2-PC; rate burst; stale epoch
-   (fake host меняет epoch → guest drop); host migration.
+1. game-host + fake guest: fake шлёт Damage/Door на real host vehicles →
+   real host применяет (`result=applied`), fake проверяет 0x24/0x26; после
+   деплоя `npc-e20` доступен и game-capture (гость сам шлёт интенты) — тогда
+   fake host принимает/отвечает, fake guest валидирует.
+2. game-guest + fake host: real guest стреляет по прокси → ASI шлёт 0x23;
+   fake host ассертит полученный intent, отвечает Applied и State → real guest
+   mirror/лог (U4, `8a34e7d`).
+3. негативные: mission-protected (real host reject) в 2-ПК; rate burst; stale
+   epoch; host migration — покрыты `--mode scenario` (**78 checks PASS** на
+   текущей ветке).
 `tools/README.md` — раздел про fake_vehicle_client.
 
 ### 5.4. 2-ПК приёмка — новый блок I в `docs/ACCEPTANCE_2PC.md`
@@ -865,7 +905,7 @@ non-local SET_PED_INTO, keepPhysics, TASK flags). Открытые A/B — §10.
 worktree clean, commit с why/what/proof. Промежуточные коммиты не деплоить
 (после U2 версия v20, но поведение не полное).
 
-### U1 — protocol v20 P1: константы/structs/validators + C++ тест
+### U1 — protocol v20 P1: константы/structs/validators + C++ тест — **DONE**
 
 - `net/protocol.h:22` (version 20), `:36-78` (Msg 0x23–0x27), после `:659` — блок
   enum'ов/consts/structs/validators (§2), `static_assert`/offset'ы;
@@ -874,8 +914,9 @@ worktree clean, commit с why/what/proof. Промежуточные комми�
 - proof: build client+server+tests, C++ **8/8**, quality strict PASS, `git show --check`.
 - NB: сервер пока не relays (ID'ов не знает никто, кроме enum) — integration 42/42
   не меняется; `kProtocolVersion=20` уже ломает v19 JOIN (ожидаемо).
+- **Статус:** реализовано в `9703943` (wire, C++ тест).
 
-### U2 — server relay/rate/role/validation + metrics + integration tests
+### U2 — server relay/rate/role/validation + metrics + integration tests — **DONE**
 
 - `server/server.cpp:53-74` (RateWindow поля), `:193-202` (константы),
   `:287-316` (IsGameThreadMessage: 0x24/0x26 true), `:104-148`/`:1038-1048`
@@ -887,8 +928,9 @@ worktree clean, commit с why/what/proof. Промежуточные комми�
   список `:3020-3060`; `tests/README.md`;
 - proof: build + CI: integration **50/50**, C++ 8/8, quality strict; 3 последовательных
   прогона (lock).
+- **Статус:** реализовано в `9703943` (relay/rate/roles/metrics + 8 тестов).
 
-### U3 — host apply path (world_sync) + fake host
+### U3 — host apply path (world_sync) + fake host — **DONE (`8a34e7d`)**
 
 - `src/world_sync.h:28-33` (Tick param `partnerGhost` или coop accessor —
   рекомендуется `coop::PartnerGhostHandle()` в `src/coop.h`),
@@ -903,8 +945,9 @@ worktree clean, commit с why/what/proof. Промежуточные комми�
 - proof: build + CI + fake guest→real-host сценарий; `perf: frame` без регрессии;
 - в этом unit'е host apply ещё не вызывается из-за отсутствия guest capture —
   проверяется fake-клиентом/интеграцией.
+- **Статус:** реализовано в `8a34e7d`; full `scripts\ci.ps1` — CI OK.
 
-### U4 — guest capture + mirror + config + role reset
+### U4 — guest capture + mirror + config + role reset — **DONE (`8a34e7d`)**
 
 - `src/coop.cpp`: `UpdateLocalVehicleInteraction` (рядом `UpdateLocalShotEvents`
   `:5006`, вызов в Tick после `:6954-6957`), `TrySendVehicleDamage`

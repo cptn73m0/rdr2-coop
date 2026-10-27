@@ -58,6 +58,21 @@ quality strict PASS; визуальная 2-ПК приёмка e19 ещё ну�
 e19 НЕ обновлялся** (45/505/3/3/0 — в отчёте, а в
 `tools/quality_baseline.json` остаётся 45/489/4/3/0 до сигнала Lead).
 
+**v20 P1 (ветка `feature/v20-p1`, U1–U4: `9703943` + `8a34e7d`):** скан
+**46 файлов / 573 функции / CRAP>5000=3 / dup≥4=2 / TODO=0** (новые
+`tests/vehicle_interaction_protocol_test.cpp` и U3/U4-функции; strict gate
+PASS, новых hotspot'ов нет). Proof ветки (полный `scripts\ci.ps1`):
+build client(ASI)+server, C++ **8/8**, integration **50/50**, quality strict
+PASS, 0 warnings → **CI OK**. Baseline по-прежнему 45/489/4/3/0 (не меняем без
+сигнала Lead); deploy/snapshot `npc-e20` — после U5.
+
+**Проверено на synth/реальных логах:** старый v19-лог (без `vehicle=`) и новый
+v20-лог (`vehicle=120`) парсятся; в v19 `vehicle` вообще не появляется в
+per-type, в v20 — строка `vehicle=N (P%)` в сумме сообщений; остальные
+категории/проценты не изменились. Реальный серверный лог v20 (heartbeat с
+`vehicle=`) даёт ту же картину; пример human-вывода:
+`per-type (messages): frame=12.6% actor=25.1% … vehicle=50.2% other=1.3%`.
+
 Скан «чистого» коммита без WIP-изменений worktree (как в e19-отчёте):
 
 ```powershell
@@ -70,16 +85,17 @@ git worktree remove --force "$env:TEMP\qa-e19"
 реализованы opt-in в e19, guest→host interactivity — v20):
 `docs/NATIVE_RESEARCH_INTERACT.md`, дизайн v20 — `docs/INTERACTIVITY.md`.
 
-## `fake_actor_client.py` — headless-«игрок» протокола v19 для проверки NPC-репликации
+## `fake_actor_client.py` — headless-«игрок» протокола v19/v20 для проверки NPC-репликации
 
 Заменяет второй ПК при тестировании E1–E19/E2c (actor-репликация NPC) на
-одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v19;
+одной машине. Требуется только Python 3 (stdlib) и запущенный сервер v19/v20;
 игра запускается только на одном ПК.
 
 Оба режима используют TCP-релей (`--host 127.0.0.1 --port 7777`), framing
 `[len:u32][type:u8][payload]`, JOIN с protocol_version, **автоматически
 прочитанным из `net/protocol.h` (`kProtocolVersion`, fallback 16)**; сейчас
-это v19. Лог пишется в stdout и в `tools/fake_actor_client.log` (append; файл
+это v20 (на v20-сервере v19-JOIN отклоняется — tool читает актуальную версию
+сам). Лог пишется в stdout и в `tools/fake_actor_client.log` (append; файл
 `*.log` уже игнорируется корневым `.gitignore` и не коммитится).
 
 **Позиция fake guest:** в guest-режиме инструмент принимает player FRAME
@@ -876,6 +892,13 @@ Exit: **0 PASS, 1 FAIL, 2 нет данных**. Пороги:
 server `net:` — это **счётчики сообщений** (не байты), поэтому в отчёте
 показывается их доля в %; KB/s считается по `bytes_in/out`.
 
+**v20 P1 (npc-e20+):** server heartbeat получил бакет **`vehicle=`**
+(0x23/0x24/0x26); `perf_report.py` парсит его как отдельную per-type
+категорию (сумма/проценты). Обратная совместимость: старые v19-логи без
+`vehicle=` не получают фиктивную нулевую категорию — их per-type не меняется
+(в v20-логе `vehicle` показывается, даже если 0 сообщений). Структура
+`perf: frame`/`perf: net` не менялась.
+
 Пример вывода (фрагмент, synthetic/серверный лог):
 
 ```text
@@ -991,6 +1014,65 @@ VERDICT: PASS
 - Реальный прогон выполняется вместе с пользователем/Lead: этот инструмент
   не заменяет игровую проверку, а позволяет проверить wire-часть и клиентский
   apply E1 без второго ПК.
+
+## `fake_vehicle_client.py` — headless v20 P1 fake host/guest (0x23/0x24/0x26)
+
+Новый tool для v20 P1 (**guest influence**) — тот же стиль, что
+`fake_actor_client.py`: stdlib Python, читает `kProtocolVersion`/ID/размеры из
+`net/protocol.h`, rate-константы 8/20/10 — из `server/server.cpp`, framing
+`[len:u32 LE][type:u8]`. Лог — stdout + append в
+`tools/fake_vehicle_client.log`; exit codes: **0 PASS, 1 usage/environment
+(server недоступен, JOIN rejected), 2 protocol/assertion fail**. Не требует
+игры; против того же сервера можно запускать два экземпляра (host и guest).
+
+### Режим `scenario` (по умолчанию, оба fake-игрока в одном процессе)
+
+```powershell
+# сервер уже запущен (v20, например build-server-ci\Release\rdr2_coop_server.exe 7777)
+python tools\fake_vehicle_client.py --mode scenario --port 7777
+```
+
+Проверки (каждая — PASS/FAIL в логе, итог `N passed, M failed`):
+
+- valid **0x23** guest→host byte-identical relay + нет эха гостю;
+- матрица actions: damage door/wheel/engine/body, door open/close/lock/unlock/
+  break, enter (seat 0, driver), exit, hijack, loot, hitch/unhitch — с учётом
+  серверного лимита 8/с (батчи ≤6 + окно);
+- invalid **0x23** (short/long, epoch/netId/seq=0, action/seat/door part/flags/
+  param/weaponHash) → drop; сервер жив после мусора;
+- **0x24/0x26** host→guest byte-identical, host-only (guest-отправитель drop),
+  invalid results/states drop;
+- rate limits: 0x23 burst 16 → **8/с**, 0x24 burst 40 → **20/с**,
+  0x26 burst 20 → **10/с**, окно 0x23 сбрасывается;
+- role violation: lone host шлёт 0x23 → drop (Pong жив), затем recovery;
+- host migration: host Leave → guest promoted → интент нового гостя релеится
+  повышенному хосту, его 0x24/0x26 доходят новому гостю.
+
+### Режимы `host` / `guest` (вручную, game + tool на одном ПК)
+
+```powershell
+# fake HOST: запустить ДО игры-гостя; принимает 0x23, отвечает 0x24 Applied +
+# 0x26 (state heartbeat 1/с, чтобы сервер не применил host game-timeout)
+python tools\fake_vehicle_client.py --mode host --host-name V20Host --duration 120
+
+# fake GUEST: запустить ПОСЛЕ игры-хоста; шлёт матрицу 0x23, валидирует 0x24/0x26
+python tools\fake_vehicle_client.py --mode guest --guest-name V20Guest --duration 30 `
+  --vehicle-net-id 42 --epoch 7
+```
+
+Опции: `--host/--port/--host-name/--guest-name/--new-guest-name/--duration/
+--epoch/--vehicle-net-id/--json/--log-file`. `--json` печатает итоговую
+JSON-строку (`mode`, `exit_code`, `protocol`, `rate_limits`).
+
+**Важно:** U3/U4 (host apply / guest capture + client transport) вкоммичены
+(`8a34e7d`), поэтому game-клиент на v20 уже умеет слать/принимать; но пара
+`npc-e20` **ещё не задеплоена** — in-game single-PC A/B (game+tool) делать
+после снапшота/деплоя. На текущем сервере прогнаны: `--mode scenario` —
+**78 passed, 0 failed** (exit 0); `--mode host` + `--mode guest` (два
+процесса) — оба **PASS** (host: 6 intents/6 replies; guest: 6 results/17
+states). Полная спека — `docs/INTERACTIVITY_P1.md` §5.3; приёмка —
+`docs/ACCEPTANCE_2PC.md` блок I. Если `scenario` FAIL — приложить лог tool'а
+и `server_console.log`.
 
 ## Снапшоты сборок/откат
 

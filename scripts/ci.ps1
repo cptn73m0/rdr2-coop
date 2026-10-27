@@ -195,6 +195,10 @@ if (-not $NoTests) {
     & (Join-Path $testBuild "Release\mission_barrier_rules_fuzz.exe")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    Write-Host "=== v20 vehicle interaction protocol (0x23/0x24/0x26) ==="
+    & (Join-Path $testBuild "Release\vehicle_interaction_protocol_test.exe")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     Write-Host "=== Restore saves ==="
     powershell -ExecutionPolicy Bypass -File (Join-Path $repo "tests\restore_saves_test.ps1")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
