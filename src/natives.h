@@ -351,6 +351,9 @@ constexpr unsigned long long SET_VEHICLE_FORWARD_SPEED         = 0xF9F92AF49F12F
 constexpr unsigned long long SET_ENTITY_DYNAMIC              = 0xFBFC4473F66CE344ull;
 constexpr unsigned long long SET_ENTITY_HAS_GRAVITY          = 0x0CEDB728A1083FA7ull;
 constexpr unsigned long long SET_VEHICLE_ENGINE_ON           = 0xB64CFA14CB9A2E78ull;
+// e20.3 T4 (A/B candidate C): velocity по forward-вектору для спина колёс
+// guest vehicle-прокси — (entity, x, y, z), 3 арг (CONFIRMED NativeDecl 1491.50).
+constexpr unsigned long long SET_ENTITY_VELOCITY             = 0x1C99BB7B6E96D16Full;
 // E3d-c (v19): occupants транспорта + draft-лошади.
 constexpr unsigned long long GET_DRIVER_OF_VEHICLE            = 0x2963B5C1637E8A27ull;
 constexpr unsigned long long GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS = 0xA9C55F1C15E62E06ull;

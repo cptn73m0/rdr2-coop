@@ -23,7 +23,10 @@ namespace net {
 //           TrainSnapshotV2 — поезд/состав (хост -> сервер -> гость).
 // v20 (P1): VehicleInteraction/Result/State — guest->host интенты по
 //           транспорту (двери/урон/посадка/…), ответы и state хоста.
-constexpr uint16_t kProtocolVersion = 20;
+// v21: расширен actor-cap (kMaxActors 12 → 50) — лошади/тягловые больше не
+//      вытесняются людьми из батча; wire-структуры те же, меняются только
+//      максимумы ActorSpawnBatch (3208 B) / ActorFrames (1608 B).
+constexpr uint16_t kProtocolVersion = 21;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -383,7 +386,7 @@ static_assert(sizeof(MissionBarrierPayload) == 12,
 // кроме собственно игроков): батч спавна, батч кадров движения, despawn,
 // события и outfit. Сервер принимает 0x18-0x1C только от хоста и релеит
 // байт-в-байт; 0x1D (resync) — только от гостя и только хосту.
-constexpr int kMaxActors = 12;
+constexpr int kMaxActors = 50;
 
 // Флаги ActorSpawn::flags.
 constexpr uint8_t kActorFlagMounted   = 1u << 0; // сидит на лошади
@@ -433,11 +436,11 @@ struct ActorSpawnBatchHeader {
 };
 static_assert(sizeof(ActorSpawnBatchHeader) == 8,
               "ActorSpawnBatchHeader must be 8 bytes");
-// payload = header + count * ActorSpawn; максимум 8 + 12*64 = 776.
+// payload = header + count * ActorSpawn; максимум 8 + 50*64 = 3208.
 constexpr std::size_t kActorSpawnBatchMaxSize =
     sizeof(ActorSpawnBatchHeader) + kMaxActors * sizeof(ActorSpawn);
-static_assert(kActorSpawnBatchMaxSize == 776,
-              "ActorSpawnBatch max payload must be 776 bytes");
+static_assert(kActorSpawnBatchMaxSize == 3208,
+              "ActorSpawnBatch max payload must be 3208 bytes");
 
 // Один кадр движения актёра (32 байта).
 struct ActorFrame {
@@ -462,11 +465,11 @@ struct ActorFramesHeader {
 };
 static_assert(sizeof(ActorFramesHeader) == 8,
               "ActorFramesHeader must be 8 bytes");
-// payload = header + count * ActorFrame; максимум 8 + 12*32 = 392.
+// payload = header + count * ActorFrame; максимум 8 + 50*32 = 1608.
 constexpr std::size_t kActorFramesMaxSize =
     sizeof(ActorFramesHeader) + kMaxActors * sizeof(ActorFrame);
-static_assert(kActorFramesMaxSize == 392,
-              "ActorFrames max payload must be 392 bytes");
+static_assert(kActorFramesMaxSize == 1608,
+              "ActorFrames max payload must be 1608 bytes");
 
 // Удаление актёра (12 байт).
 struct ActorDespawnPayload {

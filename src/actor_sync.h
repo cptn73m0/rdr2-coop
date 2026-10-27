@@ -47,6 +47,13 @@ void Tick(const TickContext& ctx);
 uint32_t HostEpoch();
 uint32_t GuestEpoch();
 
+// e20.3 T3: диагностика discovery для world_sync occupant-dbg — сколько людей/
+// животных реально взято в selected на последнем HostDiscovery и находится ли
+// handle в host roster (доказать, что driverH доходит до allowlist/selected).
+unsigned int LastSelectedHumans();
+unsigned int LastSelectedAnimals();
+bool IsHandleInHostRoster(unsigned int handle);
+
 // Полный сброс: прокси гостя удаляются, roster/очереди/epoch хоста чистятся.
 // Вызывается при leave/reconnect/смене роли/disable.
 void Reset();

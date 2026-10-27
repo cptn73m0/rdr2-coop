@@ -428,6 +428,10 @@ bool OccupantsEqual(const std::vector<net::VehicleOccupantEntry>& a,
     return true;
 }
 
+// e20.3 T3: был ли handle в allowlist 0x21 предыдущего тика (g_hostOccHandles).
+// Defined после g_hostOccHandles; forward-decl для occupant-dbg.
+bool IsHandleInHostOccAllowlist(unsigned int handle);
+
 // Собрать occupant-entries для vehicle: driver seat=-1, passengers 0..max-1,
 // draft-лошади harness 0..5. Возвращает handles (для actor discovery).
 std::vector<unsigned int> CollectVehicleOccupants(
@@ -538,13 +542,24 @@ std::vector<unsigned int> CollectVehicleOccupants(
                     }
                 }
             }
+            // e20.3 T3: allow=driverH в allowlist предыдущего тика;
+            // humansSlot/animalsSlot — сколько реально взято в selected на
+            // последнем HostDiscovery; driverSel — handle уже в host roster
+            // (т.е. actorId появился/появится).
+            const int allow =
+                IsHandleInHostOccAllowlist(driver) ? 1 : 0;
+            const int driverSel =
+                driver && actor_sync::IsHandleInHostRoster(driver) ? 1 : 0;
             sh_log::Write("world: occ dbg veh=%u model=0x%X driverH=%u "
                           "driverAid=%u attempted=%u entries=%u draft=%d "
-                          "harness=%d\n",
+                          "harness=%d allow=%d humansSlot=%u animalsSlot=%u "
+                          "driverSel=%d\n",
                           netId, GetModel(vehicle), driver, driverAid,
                           static_cast<unsigned int>(attempted),
                           static_cast<unsigned int>(out.size()), draft,
-                          harnessCount);
+                          harnessCount, allow,
+                          actor_sync::LastSelectedHumans(),
+                          actor_sync::LastSelectedAnimals(), driverSel);
             if (lastOccDbgMs.size() > 64)
                 lastOccDbgMs.erase(lastOccDbgMs.begin());
         }
@@ -704,6 +719,15 @@ std::map<uint32_t, net::TrainSnapshotV2Payload> g_lastTrainSnapshot;
 std::map<uint32_t, unsigned long long> g_lastTrainSendMs; // task-160
 // E11 (task-149): occupant handles для actor discovery (vehicle + train).
 std::vector<unsigned int> g_hostOccHandles;
+
+// e20.3 T3: диагностика allowlist для occupant-dbg (forward-decl выше).
+bool IsHandleInHostOccAllowlist(unsigned int handle)
+{
+    if (!handle)
+        return false;
+    return std::find(g_hostOccHandles.begin(), g_hostOccHandles.end(),
+                     handle) != g_hostOccHandles.end();
+}
 // E11: последние отправленные train-occupants по trainId и heartbeat.
 std::map<uint32_t, std::vector<net::VehicleOccupantEntry>> g_lastTrainOccupants;
 std::map<uint32_t, unsigned long long> g_lastTrainOccupantsMs; // task-160
@@ -4839,6 +4863,23 @@ void ApplyGuestVehicleWheelSpeed(const Proxy& p)
     Push(p.handle);
     Push(speed);
     Call();
+    // e20.3 T4 (A/B candidate C): SET_VEHICLE_FORWARD_SPEED на
+    // mission/invincible/no-collision прокси spin не даёт — задаём ещё и
+    // velocity по forward-вектору heading (vx=sin(h)*speed, vy=cos(h)*speed,
+    // z=0). Вызов тоже ДО жёсткой установки coords/heading (см.
+    // InterpolateVehicleProxies) — физика не уводит прокси больше тика.
+    // Риск: дёрганье/дрейф прокси при collision у near-proxy; opt-in
+    // npc_vehicle_wheels=1, A/B (при дёрганье — выключить флаг).
+    if (speed > 0.1f)
+    {
+        const float headingRad = p.vehCurH * 3.14159265f / 180.f;
+        Init(natives::SET_ENTITY_VELOCITY);
+        Push(p.handle);
+        Push(std::sin(headingRad) * speed);
+        Push(std::cos(headingRad) * speed);
+        Push(0.f);
+        Call();
+    }
     static unsigned long long lastLogMs = 0;
     const unsigned long long now = GetTickCount64();
     if (coopcfg::Get().npcDebug &&

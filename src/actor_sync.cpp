@@ -1987,6 +1987,11 @@ bool IsPedInVehicleForDiscovery(unsigned int ped)
     return Call() != 0;
 }
 
+// e20.3 T3: последние счётчики выбора (пишет HostDiscovery) — для world_sync
+// occupant-диагностики (доказать, что allowlist/selected доходят до actorId).
+unsigned int g_lastSelectedHumans = 0;
+unsigned int g_lastSelectedAnimals = 0;
+
 void HostDiscovery(const TickContext& ctx)
 {
     const unsigned int tick = ctx.tickCount;
@@ -2312,7 +2317,7 @@ void HostDiscovery(const TickContext& ctx)
     std::sort(animalCandidates.begin(), animalCandidates.end(), animalOrder);
 
     // E3c: люди занимают слоты первыми, животные — свободные ПОСЛЕ них
-    // (общий roster <= kMaxActors 12; npc_animal_cap=0 выключает животных).
+    // (общий roster <= net::kMaxActors; npc_animal_cap=0 выключает животных).
     int animalCap = coopcfg::Get().npcAnimalCap;
     if (animalCap < 0) animalCap = 0;
     if (animalCap > net::kMaxActors) animalCap = net::kMaxActors;
@@ -2326,23 +2331,34 @@ void HostDiscovery(const TickContext& ctx)
         selected.push_back(h);
         selectedSet.insert(h);
     }
-    // e20.2 T1/T2 порядок выбора слотов (после трупов):
+    // e20.2 T1/T2 + e20.3 T1 порядок выбора слотов (после трупов):
     //   1) occupants (люди и животные) — приоритет 0x21/allowlist;
     //   2) ВСЕ люди строго по distance (известные/новые вместе; known — только
     //      tie-break): раньше проход «известные люди» заполнял cap старым
-    //      roster'ом, и ближайшие новые всадники/NPC не попадали (наблюдали
-    //      in-vehicle skip 17 и mounted-фикс без эффекта);
+    //      roster'ом, и ближайшие новые всадники/NPC не попадали;
     //   3) животные: rider-mount (T2: всадник+лошадь парой) -> остальные по
     //      distance, пока animalCap/общий cap позволяют.
     // actorId hysteresis: сохраняется, если handle всё ещё выбран; при смене
     // ближайших actorId переезжает — ожидаемо (T1).
     int animalsSelected = 0;
+    int riderMountsSelected = 0; // e20.3 T5: всадник+лошадь (T2) в selected
     auto totalRoom = [&]() {
         return static_cast<int>(selected.size()) < net::kMaxActors;
     };
+    // e20.3 T1: резерв слотов животным. Наблюдали humans=22/animals=7 при
+    // cap=12 → humanRoom заполнял все 12 слотов и animalsSelected=0 (у гостя
+    // animals=0/horses=0, у дилижанса нет тягловых). animalReserve =
+    // min(animalCap, #animalCandidates) (0 если животных нет); human-лимит =
+    // min(cap, kMaxActors - animalReserve) — работает и при 12, и при v21 50.
+    // animalRoom не меняется.
+    const int animalReserve =
+        animalCandidates.empty()
+            ? 0
+            : std::min(animalCap, static_cast<int>(animalCandidates.size()));
+    const int humanLimit = std::min(cap, net::kMaxActors - animalReserve);
     auto humanRoom = [&]() {
         const int humans = static_cast<int>(selected.size()) - animalsSelected;
-        return humans < cap && totalRoom();
+        return humans < humanLimit && totalRoom();
     };
     auto animalRoom = [&]() {
         return animalsSelected < animalCap && totalRoom();
@@ -2356,6 +2372,34 @@ void HostDiscovery(const TickContext& ctx)
     auto isOccupant = [&](unsigned int handle) {
         return g_occupantHandles.count(handle) != 0;
     };
+    // e20.3 T2: страховочный проход по allowlist 0x21-occupants ПОВЕРХ
+    // candidates. Discovery-фильтры (in-vehicle skip/mission/radius/budget)
+    // могут не пустить кучера, пассажира или draft-лошадь в candidates, хотя
+    // их handles уже собраны в g_occupantHandles. Гарантируем им actorId:
+    // DoesExist, не local/partner (ghost/mount), ещё не выбран; люди идут в
+    // humanRoom, животные — в animalRoom (с учётом animalReserve из T1).
+    for (unsigned int handle : g_occupantHandles)
+    {
+        if (!handle || !DoesExist(handle))
+            continue;
+        if (handle == ctx.localPed || handle == localMount ||
+            handle == ctx.partnerGhost || handle == ctx.partnerMount)
+            continue;
+        if (coop::IsWorldSyncExcluded(handle))
+            continue;
+        if (selectedSet.count(handle) != 0)
+            continue;
+        if (IsHumanPed(handle))
+        {
+            if (humanRoom())
+                takeHandle(handle);
+        }
+        else
+        {
+            if (animalRoom() && takeHandle(handle))
+                ++animalsSelected;
+        }
+    }
     // 1) occupants: люди, затем животные (driver/пассажиры/draft-лошади).
     for (const Cand& c : candidates)
     {
@@ -2380,7 +2424,11 @@ void HostDiscovery(const TickContext& ctx)
     {
         if (!animalRoom()) break;
         if (!c.riderMount) continue;
-        if (takeHandle(c.handle)) ++animalsSelected;
+        if (takeHandle(c.handle))
+        {
+            ++animalsSelected;
+            ++riderMountsSelected; // e20.3 T5
+        }
     }
     for (const Cand& c : animalCandidates)
     {
@@ -2388,8 +2436,14 @@ void HostDiscovery(const TickContext& ctx)
         if (takeHandle(c.handle)) ++animalsSelected;
     }
 
-    // e20.2 T5: диагностика discovery (npcDebug, 1/2 c) — почему у гостя
-    // animals=0: сколько кандидатов/животных, сколько взято, roster/cap'ы.
+    // e20.3 T3: счётчики выбора для world_sync occupant-диагностики.
+    g_lastSelectedHumans = static_cast<unsigned int>(
+        static_cast<int>(selected.size()) - animalsSelected);
+    g_lastSelectedAnimals = static_cast<unsigned int>(animalsSelected);
+
+    // e20.2 T5 + e20.3 T3: диагностика discovery (npcDebug, 1/2 c) — почему у
+    // гостя animals=0: кандидаты/животные, сколько взято, roster/cap'ы +
+    // размер allowlist 0x21 (occHandles) для сверки с world: occ dbg.
     if (coopcfg::Get().npcDebug)
     {
         static unsigned long long lastDiscoveryLogMs = 0;
@@ -2397,12 +2451,15 @@ void HostDiscovery(const TickContext& ctx)
         {
             lastDiscoveryLogMs = nowMs;
             sh_log::Write("actor: discovery humans=%u animals=%u roster=%u "
-                          "animalsSelected=%u cap=%d animalCap=%d\n",
+                          "animalsSelected=%u cap=%d animalCap=%d "
+                          "occHandles=%u riderMounts=%u\n",
                           static_cast<unsigned int>(candidates.size()),
                           static_cast<unsigned int>(animalCandidates.size()),
                           static_cast<unsigned int>(g_roster.size()),
                           static_cast<unsigned int>(animalsSelected), cap,
-                          animalCap);
+                          animalCap,
+                          static_cast<unsigned int>(g_occupantHandles.size()),
+                          static_cast<unsigned int>(riderMountsSelected));
         }
     }
 
@@ -3734,7 +3791,7 @@ void DeleteAllProxies()
 
 bool CreateProxy(const net::ActorSpawn& s, const TickContext& ctx)
 {
-    // P3-фикс (task-45): не создавать сверх cap (12) — pending не теряем,
+    // P3-фикс (task-45): не создавать сверх cap (kMaxActors) — pending не теряем,
     // он подождёт освобождения слота либо словит таймаут 5 с.
     if (static_cast<int>(g_proxies.size()) >= net::kMaxActors)
     {
@@ -6367,7 +6424,7 @@ void GuestTick(const TickContext& ctx)
     }
 
     // 3) pending spawns: REQUEST_MODEL -> CREATE_PED (<=2 за тик).
-    // P3-фиксы (task-45): cap 12 в CreateProxy (pending не теряем) и таймаут
+    // P3-фиксы (task-45): cap kMaxActors в CreateProxy (pending не теряем) и таймаут
     // 5 с, если модель так и не загрузилась.
     int spawned = 0;
     const unsigned long long perfSpawnStart = perfOn ? QpcNow() : 0;
@@ -6969,6 +7026,22 @@ uint32_t HostEpoch()
 uint32_t GuestEpoch()
 {
     return g_guestEpoch;
+}
+
+// e20.3 T3: диагностика discovery/allowlist для world_sync occupant-dbg.
+unsigned int LastSelectedHumans()
+{
+    return g_lastSelectedHumans;
+}
+
+unsigned int LastSelectedAnimals()
+{
+    return g_lastSelectedAnimals;
+}
+
+bool IsHandleInHostRoster(unsigned int handle)
+{
+    return handle != 0 && g_roster.count(handle) != 0;
 }
 
 bool GetHandleForActorId(uint32_t actorId, unsigned int& handle)

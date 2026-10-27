@@ -1,84 +1,61 @@
-# Финальная приёмка 2-ПК — RDR2 CO-OP v19 / npc-e19
+# Финальная приёмка 2-ПК — RDR2 CO-OP v21 / npc-e20.3
 
 **Назначение:** пошаговый приёмочный сценарий для пользователя + ARINA (второй
-ПК) после деплоя v19. Проверяем не отдельные unit-тесты, а связку
+ПК) после деплоя v21. Проверяем не отдельные unit-тесты, а связку
 «игра-хост + игра-гость» в реальном мире: NPC, visitor, транспорт, поезда,
 внешность, миграцию хоста и 30–40 минут стабильной игры.
 
-**Версия:** protocol **v19**, **финальная сборка npc-e19** (HEAD `ef49ac8`,
-тег `npc-e19`): ASI
-`DD0EE210A06B0F4F61FF01EB1032D3E0C8DB8221702219FE4258D93C2233C5B9` (779 264 B),
-server `DD9BD9D818CB5ADF9063A35CE8CDF7C0D54468D9711212A782411BD0D54781FC`
-(410 112 B); оба ПК — **одна и та же** сборка/снапшот `dist\npc-e19`.
-**28 INI-ключей приёмки** (было 27; e19 добавляет 28-й —
-`npc_vehicle_wheels = 0`, A/B, default 0) — всего **38 строк** в INI
-= 28 приёмочных + 6 служебных P2/P3 + 4 подключения (сверено с
-`dist\npc-e19\rdr2-coop.ini.local/.arina`, живым INI ARINA и
-`src/config.cpp` на `ef49ac8`).
-E11 (точные пассажиры поездов через 0x21 carIndex) входит в базу и
-проверяется в D3. E13 делает интервалы wall-clock (ms) **FPS-independent**;
-E14–E17 — ub-mode refactor-only (протокол/поведение не менялись); пороги
-G2/G3 не меняются.
+**Версия:** protocol **v21**, **сборка npc-e20.3** (actor-cap 50; canonical
+сборка/деплой — Lead). Кандидат-пара v21 (`build-wip-v21`, собрана net-review):
+ASI `D95A0F2FF3C7D91C59D968DCBAB2D1416BD57704F9DBA86A79FD737E70667613`
+(828 928 B), server
+`B225BE7CF24298303C5605C531D19956405BBA9A3255889BF9647A458E65E9F9`
+(413 696 B) — при деплое сверить `Get-FileHash` с canonical; оба ПК — **одна и
+та же** сборка/снапшот `dist\npc-e20.3`. **Текущая задеплоенная пара —
+npc-e20.2/v20** (ASI `26BB6FDD…`, server `0710D2F7…`) — откат на неё полной
+парой; v20↔v21 несовместимы (`VersionMismatch`).
+**32 INI-ключа приёмки** (было 28; v20 P1 добавляет 4 —
+`vehicle_interaction = 0` (**default-off!**), `vehicle_interaction_mission = 0`,
+`vehicle_interaction_host_vehicle = 0`, `vehicle_interaction_debug = 1`) —
+всего **42 строки** в INI = 32 приёмочных + 6 служебных P2/P3 + 4 подключения.
+**v21 не меняет INI-ключи** (только clamp `npc_cap` **1..50**, default 8).
+E11 (точные пассажиры поездов через 0x21 carIndex) проверяется в D3. E13 —
+wall-clock (ms) **FPS-independent**; E14–E17 — refactor-only; пороги G2/G3
+не меняются.
 
-**Что изменилось в npc-e18 (проверяется в блоке F/S31):**
+**Что изменилось в e20.3/v21 (проверяется в A13/S33):**
 
-- host game-timeout — теперь **мягкая миграция**: хост демотируется, второй
-  повышается, **сокет старого хоста НЕ закрывается** (нет reconnect-шторма и
-  флапа ролей); `PlayerLeft` не рассылается; Ping/Pong демотированного хоста
-  продолжает работать;
-- **join grace 15 с** до первого game-thread сообщения от хоста: загрузка/
-  меню не дёргают роли; после первого game-сообщения действует обычный
-  game-timeout 4 с;
-- `PlayerPresence` считается game-thread liveness — presence-only хост не
-  демотируется (интеграционный тест);
-- клиент на загрузке/респавне, пока playerPed отсутствует, шлёт presence
-  heartbeat ~2 с (с появлением педа обычная presence-логика берёт верх,
-  дублей нет);
-- гость в visitor mode **не спавнит host-прокси продавца** — продавцы больше
-  не дублируются (throttled-лог `actor: visitor vendor skip`).
+- **`kMaxActors` 12→50** (protocol v21): `ActorSpawnBatch` max 3208 B,
+  `ActorFrames` max 1608 B; серверные валидаторы/клиент используют
+  `net::kMaxActors` (хардкодов 12 нет). **Причина:** при cap 12 люди
+  заполняли roster, животные/лошади/тягловые дилижанса не выбирались
+  (`animalsSelected=0`, у гостя animals=0/horses=0). `npc_cap` clamp 1..50.
+- **e20.1/e20.2 hotfix-диагностика:** nearest-first roster (новые всадники/
+  NPC не вытесняются старым roster), всадник+лошадь реплицируются парой,
+  vendor dedupe (42 модели), config dump/host-world diagnostics, animal
+  discovery counters, колёса A/B candidate B (`npc_vehicle_wheels=1`).
+- **v20 P1 (guest influence)** — задеплоен в e20.2 (0x23/0x24/0x26), но
+  **P1 default-off** (`vehicle_interaction=0`); включение — только после
+  F1–F4 re-proof (блок I, раздел 9).
+- **v21 — жёсткий bump:** v20-клиенты отклоняются; deploy только парой
+  ASI+server из `dist\npc-e20.3`; откат — `dist\npc-e20.2` (v20) полной парой.
 
-**Что изменилось в npc-e19 (проверяется в A12/B5/C6/G5):**
+**Историческая часть (e18/e19, проверяется в F/S31/A12/B5/C6):** soft host
+migration (демоция без закрытия сокета, join grace 15 с, presence-liveness),
+loading presence heartbeat, vendor dedupe, имя игрока на карте/blip,
+occupant-first roster (кучер/draft-лошади повозки), opt-in wheel A/B.
 
-- **имя игрока на карте/blip:** подпись метки — `player_name`, а не дефолтная
-  «Спутник»/«Companion» (`MakeLiteralString` + `_SET_BLIP_NAME` 0x9CB1A1623062F402
-  + VAR_STRING, `SetBlipName`/`UpdateBlipName`, лог `coop: blip name '%s'`);
-  если подпись осталась «Спутник» — FAIL (резерв `BLIP_REMOVE_MODIFIER`);
-- **occupant-first roster + полный allowlist** occupants всех vehicle в
-  occ-радиусе: у гостя видны **кучер и тягловые лошади повозки** (seated /
-  в упряжке, без T-pose/дублей); low/info — на плотном трафике возможен
-  «driver без машины» (проверить, что водитель не висит без транспорта);
-- **opt-in wheel A/B:** `npc_vehicle_wheels = 0` по умолчанию (исходное
-  поведение); отдельный прогон `npc_vehicle_wheels = 1` на **обоих** ПК —
-  колёса guest vehicle-прокси крутятся (`SET_VEHICLE_FORWARD_SPEED`
-  SIGNATURE-ONLY, лог `world: vehicle wheels speed=`; возможен дрейф/рывки —
-  это A/B, не fail) → вернуть `0`;
-- `SET_ENTITY_COORDS` арность 8 подтверждена (clearArea=0, поведение не
-  менялось);
-- серверный `HandleClient` фазы, `IntegrationRunLock` и grace-тест (e18)
-  остаются; новый тест host-timeout — soft-семантика.
-- **v20 P1 (guest influence) в npc-e19 не входит** и в прогоне A–H не
-  проверяется. Wire v20 реализован в ветке `feature/v20-p1` (0x23/0x24/0x26,
-  protocol bump v19→v20), серверный релей — U2; host apply/guest capture (U3/U4)
-  ещё в работе. Отдельный **блок I1–I10** (раздел 9) выполняется **только
-  после** U3/U4 и деплоя пары `dist\npc-e20`.
+**Текущий статус:** задеплоена **npc-e20.2/v20** на обоих ПК (ASI
+`26BB6FDD…`, server `0710D2F7…`); **v21 (npc-e20.3) — сборка/деплой Lead
+pending**. Проверки v21 на headless: `tests/integration_server.py` с v21-exe
+→ **50/50** (protocol v21, actors=on(50)), C++ **8/8** (config_test обновлён
+на clamp 1..50), `git diff --check` чистый. Полный двух-ПК игровой прогон
+A–G/I ещё не пройден. Без одинаковой пары на обоих ПК приёмка не начинается.
 
-**Текущий статус:** **оба ПК задеплоены npc-e19** — локальный ПК и ARINA
-(`\\ARINA\Red Dead Redemption 2\...`) имеют одинаковые хеши ASI/server,
-сверено `Get-FileHash`. Canonical CI на момент снапшота: **42/42**
-integration + C++ 7/7 + restore + quality strict PASS (`build-server-ci`);
-независимая проверка `architect-verify2`: fresh build 0 warnings, хеши
-canonical/`dist\npc-e19` совпали, вердикт «можно тестировать/деплоить».
-Полный двух-ПК игровой прогон A–G ещё **не пройден** — пользователь запускает
-его сейчас. Замечания low/info: подпись blip, плотный трафик, wheel A/B.
-Без одинаковой пары на обоих ПК приёмка не начинается.
-
-**v20 P1 (guest influence) — НЕ задеплоено:** ветка `feature/v20-p1`
-(protocol **v20**, wire 0x23/0x24/0x26 + релизный релей; integration 50/50,
-C++ 8/8). После U3/U4 будет собран `dist\npc-e20`; до этого деплой **не
-делать** (v20 bump ломает v19 JOIN). INI v20 P1 станет **32 приёмочных
-ключа / 42 строки** (+`vehicle_interaction`, `vehicle_interaction_mission`,
-`vehicle_interaction_host_vehicle`, `vehicle_interaction_debug`). Чек-лист
-этой пары — **блок I (раздел 9)**; откат — `dist\npc-e19` полной парой.
+**P1 default-off:** `vehicle_interaction = 0` в снапшоте; для блока I ключ
+временно ставится `1` на обоих ПК **только после F1–F4 re-proof**, в конце —
+обратно `0`. Чек-лист v20 P1 — блок I (раздел 9); откат e20.3→e20.2 — полной
+парой v20 (INI 32/42 совместим по ключам).
 
 ---
 
@@ -97,24 +74,25 @@ Get-FileHash "E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe" -Algorithm
 
 | Компонент | Версия/хеш | Где |
 |---|---|---|
-| ASI | npc-e19, `DD0EE210…` (SHA256 как в `dist\npc-e19\README.md`) | оба ПК: `...\scripts\rdr2_coop.asi` |
-| Server | v19, `DD9BD9D8…` (без изменений с e18: soft host migration, HandleClient phases) | ПК-хост: `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` (ARINA: `coop-server\`) |
-| Protocol | **v19** (`kProtocolVersion=19`) | `net/protocol.h` / JOIN в логе |
-| INI | `dist\npc-e19\rdr2-coop.ini.local` как эталон; **28 ключей** приёмки (38 строк) | оба ПК |
+| ASI | npc-e20.3 (v21), `D95A0F2F…` — **кандидат** `build-wip-v21`/net-review; сверить с canonical-сборкой Lead при деплое | оба ПК: `...\scripts\rdr2_coop.asi` |
+| Server | v21, `B225BE7C…` — кандидат (413 696 B); canonical — `build-server-ci`/Lead | ПК-хост: `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe` (ARINA: `coop-server\`) |
+| Protocol | **v21** (`kProtocolVersion=21`, `kMaxActors=50`) | `net/protocol.h` / JOIN в логе |
+| INI | `dist\npc-e20.3\rdr2-coop.ini.local` как эталон; **32 ключа** приёмки (42 строки); `npc_cap` 1..50 | оба ПК |
 
-Если хеш/протокол не совпал — **стоп**, откатиться на `dist\npc-e19`
-(см. блок H, §8) и не начинать прогон.
+Если хеш/протокол не совпал — **стоп**, откатиться на `dist\npc-e20.2`
+(v20) полной парой (см. блок H, §8) и не начинать прогон. **Текущая
+задеплоенная пара — npc-e20.2/v20** (ASI `26BB6FDD…`/server `0710D2F7…`);
+пара v21 (e20.3) — deploy pending Lead.
 
-**Для блока I (v20 P1)** — другая пара: `dist\npc-e20` (protocol **v20**,
-ASI+server, оба ПК), INI **32/42** (28 ключей + 4 `vehicle_interaction*`).
-**P1 default-off:** `vehicle_interaction = 0` в снапшоте; для блока I ключ
-временно ставится `1` на обоих ПК **только после F1–F4 re-proof**, в конце —
-обратно `0`. До деплоя `npc-e20` блок I не выполняется; сейчас задеплоена
-пара npc-e19/v19 и прогон A–H идёт на ней.
+**Для блока I (v20 P1, задеплоен в e20.2/e20.3)** — INI **32/42** (28 ключей
++ 4 `vehicle_interaction*`). **P1 default-off:** `vehicle_interaction = 0` в
+снапшоте; для блока I ключ временно ставится `1` на обоих ПК **только после
+F1–F4 re-proof**, в конце — обратно `0`. v21 INI-ключи **не меняет** (только
+`npc_cap` clamp 1..50).
 
-### 0.2. INI: 28 ключей приёмки
+### 0.2. INI: 32 ключа приёмки
 
-Ключи подключения/идентичности (задаются отдельно, **не входят** в 28
+Ключи подключения/идентичности (задаются отдельно, **не входят** в 32
 игровых):
 
 ```ini
@@ -124,7 +102,7 @@ player_name = Player1         ; на втором ПК — Player2 (ники р�
 ped_model   = 0xCF7E73BE
 ```
 
-**28 ключей игровых настроек — выставить на обоих ПК одинаково:**
+**32 ключа игровых настроек — выставить на обоих ПК одинаково:**
 
 | # | Ключ | Значение | Зачем |
 |---|---|---|---|
@@ -135,7 +113,7 @@ ped_model   = 0xCF7E73BE
 | 5 | `train_debug` | `0` | только диагностика поездов |
 | 6 | `npc_actor` | `1` | включить NPC-репликацию |
 | 7 | `npc_debug` | `1` | `actor:`/`probe:`/`perf:`/`world:` логи |
-| 8 | `npc_cap` | `12` | 8–12 NPC в городе |
+| 8 | `npc_cap` | `50` (v21; можно 12 для базового G-прогона) | S33: 50 акторов; clamp 1..50, default 8 |
 | 9 | `npc_radius` | `60` | радиус discovery |
 | 10 | `npc_animal_cap` | `4` | животные/лошади |
 | 11 | `npc_corpse_max_sec` | `300` | трупы E5.2 |
@@ -156,21 +134,21 @@ ped_model   = 0xCF7E73BE
 | 26 | `player_frame_hz` | `20` | P0: Player Frame 10..60 Гц |
 | 27 | `player_frame_change_only` | `1` | P0: покой heartbeat 5 Гц |
 | 28 | `npc_vehicle_wheels` | `0` | **e19:** A/B спин колёс guest vehicle-прокси (SIGNATURE-ONLY); `1` — только отдельный прогон, потом вернуть `0` |
+| 29 | `vehicle_interaction` | `0` | **v20 P1 default-off;** для блока I — `1` только после F1–F4 re-proof, в конце `0` |
+| 30 | `vehicle_interaction_mission` | `0` | P1: damage/hijack mission-vehicle запрещён |
+| 31 | `vehicle_interaction_host_vehicle` | `0` | P1: damage/hijack транспорта, на котором едет хост, запрещён |
+| 32 | `vehicle_interaction_debug` | `1` | P1: подробный лог интентов/apply/mirror (throttled) |
 
-Дополнительно (не входят в 28): `action_sync=0`, `vehicle_sync=0`,
+Дополнительно (не входят в 32): `action_sync=0`, `vehicle_sync=0`,
 `mission_sync=0`, `mission_credit=0`, `save_backup=1`,
 `mission_reward_log=1` — как в снапшоте.
 
-**Проверка e19:** живые INI на **обоих** ПК — **38 строк** = 28 приёмочных +
-6 служебных + 4 ключа подключения; новый ключ — `npc_vehicle_wheels = 0`
-(default; `1` — только для A/B в G5/отдельном прогоне), проверено на local и
-ARINA. **Оба эталона снапшота** — `dist\npc-e19\rdr2-coop.ini.local` и
-`.ini.arina` — по 38 строк, включая `npc_vehicle_wheels` (снапшот переснят
-после правки INI). При откате/передеплое **сверить 28-й ключ** (если
-откатываетесь на e18 — убрать `npc_vehicle_wheels`, там 37 строк). Остальные
-ключи не менялись; `npc_motion_status_p2` в файле не выписан, но поддержан
-`src/config.cpp` (default 1) — это не новый ключ. Сверено с `src/config.cpp`
-на `ef49ac8`: новых ключей, кроме wheel, нет.
+**Проверка e20.3/v21:** INI — **42 строки** = 32 приёмочных (28 e19 + 4
+`vehicle_interaction*`) + 6 служебных + 4 подключения; v21 новых ключей
+**не добавляет** (только clamp `npc_cap` **1..50**, default 8 — `npc_cap=51`
+→ keep default). `npc_motion_status_p2` в файле не выписан, но поддержан
+`src/config.cpp` (default 1). При откате e20.3→e20.2 ключи те же (32/42);
+при откате на e19 — убрать 4 `vehicle_interaction*` (38 строк).
 
 После правки INI **перезапустить игру** на обоих ПК (конфиг читается при
 старте). Если меняли `world_trains`/`npc_animal_appearance`/
@@ -204,7 +182,7 @@ ARINA. **Оба эталона снапшота** — `dist\npc-e19\rdr2-coop.in
 
 ---
 
-## 1. Блок A — базовый мир/NPC (S1–S21 + e19 blip A12)
+## 1. Блок A — базовый мир/NPC (S1–S21 + e19 blip A12 + v21 S33 A13)
 
 Общее: оба игрока в городе/у поселения, `npc_debug=1`. На каждую строку —
 действие, ожидаемый результат, что смотреть, что прислать при fail.
@@ -223,6 +201,7 @@ ARINA. **Оба эталона снапшота** — `dist\npc-e19\rdr2-coop.in
 | A10 (S0/S9) | Baseline gating: `npc_actor=0` на обоих, рестарт; затем 1 | При 0 — **0** строк `actor:`/`probe:` и прежний FPS; при 1 — NPC снова есть | `npc_actor=0` логи/сервер | оба лога, `scan: fps` |
 | A11 (S21) | 1–2 мин наблюдать движение NPC/прокси у хоста и гостя | Нет snap/телепортов (кроме respawn), движение плавное, стоп/старт без рывков | `actor: motion`, `actor: teleport` (только respawn) | видео 20–30 с, `actor:`-строки |
 | A12 (e19) | Открыть карту/легенду: у второго игрока подпись метки | Подпись — **имя игрока** (`player_name`), а не «Спутник»/«Companion»; метка/цвет остаются friendly; после rejoin/respawn подпись не пропадает | guest/host `coop: blip name '<имя>'`; скрин карты/легенды; визуально | скрин host+guest карты, `coop: blip name` строки |
+| A13 (S33/v21) | **Плотный мир при `npc_cap=50`:** город/улица с 30–50 NPC, животные и свободные лошади, дилижанс с кучером и draft-лошадьми, NPC-всадник; 3–5 мин; сравнить host/guest | **У гостя:** animals>0 и horses>0 (животные/лошади больше не вытесняются людьми из roster), у дилижанса видны **кучер и тягловые лошади** (draft в упряжке), NPC-**всадник+конь** реплицируются парой (без T-pose/дублей), нет пропаж/«попов»; host: cap=50 достижим, при наличии животных `animalsSelected>0` | host `actor: discovery humans=… animals=… selected=…`/`world: occ dbg`; guest `actor: proxies=`, `animal appearance`, `mounted`; `npc_cap=50`; при FAIL — `animalsSelected=0`/`horses=0` при животных на хосте | оба лога (3–5 мин), скрины/видео животных/дилижанса/всадника, `actor: discovery` строки |
 
 ---
 
@@ -381,54 +360,56 @@ Select-String -Path server_console.log -Pattern "net: bytes_in=" | Select-Object
 Если блок A–G даёт FAIL, не «лечить» на ходу:
 
 1. Закрыть игры на обоих ПК и остановить сервер.
-2. Открыть `dist\npc-e19\README.md` (или `dist\npc-e18\README.md`, если
-   откат на предыдущую) — там SHA256, INI и порядок восстановления.
-3. ASI: `dist\npc-e19\rdr2_coop.asi` → `E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi`.
-4. Server: `dist\npc-e19\rdr2_coop_server.exe` → `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe`
+2. Открыть `dist\npc-e20.2\README.md` (или `dist\npc-e19\README.md`, если
+   откат глубже) — там SHA256, INI и порядок восстановления.
+3. ASI: `dist\npc-e20.2\rdr2_coop.asi` → `E:\Games\Red Dead Redemption 2\scripts\rdr2_coop.asi`.
+4. Server: `dist\npc-e20.2\rdr2_coop_server.exe` → `E:\rdr2-coop\build-server\Release\rdr2_coop_server.exe`
    (и на ARINA в `coop-server\`, если сервер поднимается там).
-5. INI: привести к разделу INI снапшота (e19 — **28 ключей, включая
-   `npc_vehicle_wheels`**); протокол должен быть v19 на обоих
-   ПК; v18↔v19 несовместимы (`VersionMismatch`).
+5. INI: привести к разделу INI снапшота (v20/v21 — **32 ключа**, 42 строки;
+   e19 — 28/38); протокол должен быть **v20** на обоих ПК после отката
+   (v19↔v20↔v21 несовместимы, `VersionMismatch`).
 6. Запустить сервер в видимом окне, проверить `Host game-timeout: 4 s`, затем
    зайти хостом/гость и убедиться, что JOIN/FRAME идут.
 7. Зафиксировать в отчёте: label снапшота, оба хеша, причину отката.
 
-**Откат e19 → e18/e17/e16** (если e19-фиксы дали регрессию): сервер и ASI —
-**только из одного снапшота**. У e19 server **тот же** (`DD9BD9D8`), менялся
-только ASI (blip/occupants/wheels) и INI (28-й ключ) — поэтому откат e19→e18
-безопасен по серверу, но INI нужно привести к 37 строкам e18 (убрать
-`npc_vehicle_wheels`); ASI — из `dist\npc-e18` (`E3FAB30F`). `dist\npc-e17` —
-refactor-only без серверных изменений; `dist\npc-e16` — пара
-`C4E4CF70`/`1BE28084`. Смешивать пары нельзя.
+**Откат e20.3/v21 → e20.2/v20 → e19/v19:** сервер и ASI — **только из одного
+снапшота**. e20.2/v20: ASI `26BB6FDD…`/server `0710D2F7…`, INI 32/42 (P1
+default-off). e19/v19: ASI `DD0EE210`/server `DD9BD9D8`, INI 28/38 (убрать 4
+`vehicle_interaction*`). Смешивать пары нельзя: v19↔v20↔v21 отклоняются по
+версии. `dist\npc-e20.1`/`dist\npc-e20` — промежуточные hotfix-пары v20;
+`dist\npc-e17` — refactor-only без серверных изменений; `dist\npc-e16` — пара
+`C4E4CF70`/`1BE28084`.
 
 ---
 
-## 9. Блок I — v20 P1 guest influence (I1–I10; только после F1–F4 re-proof + deploy `npc-e20`)
+## 9. Блок I — v20 P1 guest influence (I1–I10; только после F1–F4 re-proof + deploy `npc-e20.3`/v21)
 
-> **P1 — default-off.** В сборке `npc-e20` ключ `vehicle_interaction = 0`
-> **по умолчанию на обоих ПК** (Lead decision; `src/config.h:96`). Сервер/wire
-> включены всегда, но при 0 host отвечает `NotAllowed` (reason=config_off), а
-> guest не отправляет интенты. **Включать `vehicle_interaction = 1` можно
-> только после F1–F4 re-proof** (independent proof low-fixes: F1 server
-> socket-lifetime, F2 seq-reset tolerance, F3 wheel-detach A/B gate, F4 host
-> DoorBreak gate, L3 tracked states 8 — см. `docs/INTERACTIVITY_P1.md` §5.7) —
-> до этого блок I не начинать. Шаг включения: выставить `1` на **обоих** ПК →
-> перезапустить игру на обоих → убедиться, что `config: warn` нет, а в логе
-> host apply есть `vehicle: interaction`; в конце прогона вернуть `0` + рестарт
+> **P1 — default-off.** В сборке `npc-e20.3` (v21; P1 задеплоен ещё в e20.2)
+> ключ `vehicle_interaction = 0` **по умолчанию на обоих ПК** (Lead decision;
+> `src/config.h:96`). Сервер/wire включены всегда, но при 0 host отвечает
+> `NotAllowed` (reason=config_off), а guest не отправляет интенты.
+> **Включать `vehicle_interaction = 1` можно только после F1–F4 re-proof**
+> (independent proof low-fixes: F1 server socket-lifetime, F2 seq-reset
+> tolerance, F3 wheel-detach A/B gate, F4 host DoorBreak gate, L3 tracked
+> states 8 — см. `docs/INTERACTIVITY_P1.md` §5.7) — до этого блок I не
+> начинать. Шаг включения: выставить `1` на **обоих** ПК → перезапустить игру
+> на обоих → убедиться, что `config: warn` нет, а в логе host apply есть
+> `vehicle: interaction`; в конце прогона вернуть `0` + рестарт
 > (default-off — рабочее состояние).
 
 **Предусловия (не начинать раньше):** F1–F4 re-proof закрыт (см. warning
-выше); собран и задеплоен **снапшот `dist\npc-e20`** (protocol **v20**,
-wire 0x23/0x24/0x26) **парой ASI+server** на **оба** ПК (одинаковые хеши);
-INI — **32 приёмочных ключа / 42 строки**: к 28 ключам e19 добавлены
-`vehicle_interaction = 0` (**default-off**; для блока I — временно `1` после
-F1–F4 re-proof), `vehicle_interaction_mission = 0`,
-`vehicle_interaction_host_vehicle = 0`, `vehicle_interaction_debug = 1`
-(host+guest одинаково); `npc_actor = 1`; смешанная v19/v20-пара невозможна
-(`VersionMismatch`). Server-лог содержит `net: … vehicle=` heartbeat
-(новый трафик-бакет). Со стороны U2 доступен fake-клиент:
-`python tools\fake_vehicle_client.py --mode scenario` → все wire-проверки
-должны быть PASS до 2-ПК прогона (это precheck, а не замена I1–I10).
+выше); собран и задеплоен **снапшот `dist\npc-e20.3`** (protocol **v21**,
+kMaxActors=50; P1 wire 0x23/0x24/0x26 — с e20.2) **парой ASI+server** на
+**оба** ПК (одинаковые хеши); INI — **32 приёмочных ключа / 42 строки**:
+к 28 ключам e19 добавлены `vehicle_interaction = 0` (**default-off**; для
+блока I — временно `1` после F1–F4 re-proof),
+`vehicle_interaction_mission = 0`, `vehicle_interaction_host_vehicle = 0`,
+`vehicle_interaction_debug = 1` (host+guest одинаково); `npc_actor = 1`;
+смешанная v20/v21-пара невозможна (`VersionMismatch`). Server-лог содержит
+`net: … vehicle=` heartbeat (новый трафик-бакет). Со стороны U2 доступен
+fake-клиент: `python tools\fake_vehicle_client.py --mode scenario` → все
+wire-проверки должны быть PASS до 2-ПК прогона (это precheck, а не замена
+I1–I10).
 
 | # | Сценарий | Pass criteria | Логи/проверка |
 |---|---|---|---|
@@ -443,24 +424,24 @@ F1–F4 re-proof), `vehicle_interaction_mission = 0`,
 | I9 | Rate/anti-grief: fake guest 30 интентов/с | сервер дропает >8/с; host не спайкает; `perf: frame host` p95/max в бюджете G2; при host-бюджете — `rate_limited` | `net: … vehicle=`, `perf: frame host`, fake-клиент счётчики |
 | I10 | Collision/tangibility: гость упирается в wagon | локальный proxy solid, host state wins; при уходе/варпе collision off; игрок не застревает внутри | визуально/видео, `world: vehicle spawn/despawn`, guest log |
 
-**Bump/deploy/rollback v20 (обязательно прочитать):**
+**Bump/deploy/rollback v21 (обязательно прочитать):**
 
-- v20 — **жёсткий bump**: `kProtocolVersion 19→20`; v19-клиент на v20-сервере
-  получает `VersionMismatch`. Deploy — **только парой** ASI+server из одного
-  снапшота `dist\npc-e20`, оба ПК с одинаковыми хешами; промежуточные коммиты
-  U1–U5 не деплоить. **P1 default-off:** `vehicle_interaction=0` — деплой
-  безопасен, пока ключ не включён; включение — только после F1–F4 re-proof
-  (см. warning в начале блока I).
-- Задеплоенная сейчас рабочая пара — **npc-e19/v19** (ASI `DD0EE210`, server
-  `DD9BD9D8`, INI 28/38). **Откат:** закрыть игры/сервер → ASI и server из
-  `dist\npc-e19` → INI из `dist\npc-e19\README.md` (28 ключей; убрать 4
-  `vehicle_interaction_*`) → протокол v19 на обоих ПК.
-- В v20 INI **32/42**; при откате на e19 лишние ключи `vehicle_interaction_*`
-  игнорируются старым клиентом, но лучше привести INI к снапшоту.
-- Диагностика v20 (grep, оба лога + server): `vehicle: interaction`,
+- **v21 — текущий жёсткий bump:** `kProtocolVersion 20→21`,
+  `kMaxActors 12→50`; v20-клиент на v21-сервере получает `VersionMismatch`.
+  Deploy — **только парой** ASI+server из одного снапшота `dist\npc-e20.3`,
+  оба ПК с одинаковыми хешами; промежуточные сборки не деплоить.
+  **P1 default-off:** `vehicle_interaction=0` — деплой безопасен, пока ключ не
+  включён; включение — только после F1–F4 re-proof (см. warning блока I).
+- **v20 P1 (history):** bump v19→v20; пара `dist\npc-e20.2` (v20, P1
+  default-off) — задеплоена сейчас; откат e20.3→e20.2 — полной парой v20
+  (ASI `26BB6FDD…`/server `0710D2F7…`, INI 32/42 совместим по ключам).
+  Глубже — e19/v19 (ASI `DD0EE210`, server `DD9BD9D8`, INI 28/38, убрать 4
+  `vehicle_interaction*`).
+- Диагностика P1 (grep, оба лога + server): `vehicle: interaction`,
   `vehicle: intent`, `vehicle: state`, `rate_limited`, `config: warn vehicle`,
   server `net: … vehicle=`; отсутствие `ERROR`/`warn`, кроме ожидаемых
-  policy-reject.
+  policy-reject. Для S33/v21: host `actor: discovery humans=… animals=…`,
+  `world: occ dbg`; guest `actor: proxies=`/`animal appearance`/`mounted`.
 
 ---
 
@@ -479,8 +460,10 @@ F1–F4 re-proof), `vehicle_interaction_mission = 0`,
   `perf: npc`, `coop:`, `host game-timeout`, `visitor vendor skip`,
   `coop: blip name`, `world: occupants`, `world: vehicle wheels`; для v20
   P1 — `vehicle: interaction|intent|state`, `rate_limited`, `config: warn
-  vehicle`; для server — строки `net: bytes_in=` (в v20 — с `vehicle=`);
-  при проверке конфига — `config: warn` (в нормальном прогоне быть не должно);
+  vehicle`; для S33/v21 — `actor: discovery humans=`, `world: occ dbg`,
+  `actor: proxies=`; для server — строки `net: bytes_in=` (в v20+ — с
+  `vehicle=`); при проверке конфига — `config: warn` (в нормальном прогоне
+  быть не должно);
 - если откатывались — `dist\<label>` и хеши восстановленной пары.
 
 ---
@@ -489,7 +472,7 @@ F1–F4 re-proof), `vehicle_interaction_mission = 0`,
 
 | Блок | Пункты | PASS/FAIL | Комментарий/время |
 |---|---|---|---|
-| A — базовый NPC (+blip e19) | A1–A12 |  |  |
+| A — базовый NPC (+blip e19, +S33/v21) | A1–A13 |  |  |
 | B — visitor (+vendors e18) | B1–B5 |  |  |
 | C — транспорт/occupants (+wagon e19) | C1–C6 |  |  |
 | D — поезда | D1–D4 |  |  |
@@ -497,23 +480,25 @@ F1–F4 re-proof), `vehicle_interaction_mission = 0`,
 | F — host migration (soft e18/e19) | F1–F4 |  |  |
 | G — производительность + e19 sweep | G1–G5 |  |  |
 | H — откат (если был) | — |  |  |
-| I — v20 P1 guest influence (после npc-e20) | I1–I10 |  |  |
+| I — v20 P1 guest influence (после npc-e20.3/v21) | I1–I10 |  |  |
 
 **Критерий общего PASS:** все блоки PASS, нет FAIL по G2/G3 и F; E11
 точные пассажиры поездов проверяются в D3 (входит в базу). Обязательное
 условие PASS: F2/F3 подтверждают мягкую миграцию без reconnect-шторма и без
 демоции хоста во время загрузки; G5 — blip label корректный, кучер/draft
 повозки без дублей/T-pose, vendors без дублей, wheel A/B выполнен
-(`npc_vehicle_wheels=1`→`0`, после — статичные колёса). **Блок I** —
-только для пары v20 P1 (`dist\npc-e20`), после U3/U4; до её деплоя блок I
-не заполняется. Пара уже задеплоена на оба ПК; если хеши на ARINA/local не
-совпали — приёмка не начата, таблица не заполняется.
+(`npc_vehicle_wheels=1`→`0`, после — статичные колёса); **A13/S33** —
+при `npc_cap=50` у гостя видны животные/лошади/кучер+тягловые дилижанса/
+всадник+конь (нет cap-starvation, `animalsSelected>0`). **Блок I** — только
+для пары v20 P1 (`dist\npc-e20.3`/v21), после F1–F4 re-proof; до деплоя и
+re-proof блок I не заполняется. Пара v21 задеплоена Lead на оба ПК; если
+хеши на ARINA/local не совпали — приёмка не начата, таблица не заполняется.
 
 ---
 
 ## 12. Связанные документы
 
-- [NPC_E1_TESTING.md](NPC_E1_TESTING.md) — детальные S0–S32 и методики.
+- [NPC_E1_TESTING.md](NPC_E1_TESTING.md) — детальные S0–S33 и методики.
 - [PERF.md](PERF.md) — пороги/разбор `perf: npc` (v20: серверный бакет
   `vehicle=`).
 - [TRAINS.md](TRAINS.md) — mission-train S26.

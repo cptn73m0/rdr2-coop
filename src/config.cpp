@@ -95,7 +95,7 @@ void WriteDefaultIni()
     fputs("npc_actor = 0\n", f);
     fputs("# R&D E-1: probe-лог 20 ближайших human NPC (только при npc_actor=1).\n", f);
     fputs("npc_debug = 0\n", f);
-    fputs("# E1: максимум NPC-акторов (1..12) и радиус обнаружения вокруг игроков (м).\n", f);
+    fputs("# E1: максимум NPC-акторов (1..50) и радиус обнаружения вокруг игроков (м).\n", f);
     fputs("npc_cap = 8\n", f);
     fputs("npc_radius = 60\n", f);
     fputs("# E3c: максимум животных и бесхозных лошадей (0..12; 0 = выключено).\n", f);
@@ -180,7 +180,7 @@ bool ApplyIntKey(const std::string& key, const std::string& val, Config& out)
     static const IntKey keys[] = {
         {"server_port", &Config::serverPort, 1, 65535, false},
         {"npc_vehicle_radius", &Config::npcVehicleRadius, 20, 200, false},
-        {"npc_cap", &Config::npcCap, 1, 12, false},
+        {"npc_cap", &Config::npcCap, 1, 50, false},
         {"npc_radius", &Config::npcRadius, 20, 100, false},
         {"npc_animal_cap", &Config::npcAnimalCap, 0, 12, false},
         {"npc_frame_hz", &Config::npcFrameHz, 10, 20, false},

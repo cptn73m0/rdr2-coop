@@ -280,8 +280,8 @@ KNOWN_FAIL_TESTS = set()
 # extensions are signed off in the E2c-b / E5 / E6 / E3d tasks. These tests are
 # skipped while net/protocol.h is still v14 (E0 not merged) and become strict
 # automatically once the header carries the messages. Expected values below are
-# pinned to the spec: spawn 64 B, frame 32 B, max 12 actors, batch sizes
-# 776/392 B, despawn/resync 12 B, event 32 B, outfit 792 B, appearance header
+# pinned to the spec: spawn 64 B, frame 32 B, max 50 actors (v21), batch sizes
+# 3208/1608 B, despawn/resync 12 B, event 32 B, outfit 792 B, appearance header
 # 12 B + entry 28 B (max 12 + 16*28 = 460 B, 16 компонентов), damage 16 B,
 # player presence 8 B, vehicle occupants header 8 B + entry 8 B (max 72 B),
 # train snapshot v2 48 B.
@@ -351,11 +351,11 @@ if PROTO >= 15:
         _actual = _struct_size(_name)
         require(_actual == _expected_size,
                 f"{_name} expected {_expected_size} B (v15 E0), got {_actual}")
-    require(MAX_ACTORS == 12, f"kMaxActors expected 12, got {MAX_ACTORS}")
-    require(ACTOR_SPAWN_BATCH_MAX == 776,
-            f"ActorSpawnBatch max expected 776 B, got {ACTOR_SPAWN_BATCH_MAX}")
-    require(ACTOR_FRAMES_MAX == 392,
-            f"ActorFrames max expected 392 B, got {ACTOR_FRAMES_MAX}")
+    require(MAX_ACTORS == 50, f"kMaxActors expected 50 (v21), got {MAX_ACTORS}")
+    require(ACTOR_SPAWN_BATCH_MAX == 3208,
+            f"ActorSpawnBatch max expected 3208 B, got {ACTOR_SPAWN_BATCH_MAX}")
+    require(ACTOR_FRAMES_MAX == 1608,
+            f"ActorFrames max expected 1608 B, got {ACTOR_FRAMES_MAX}")
     require(ACTOR_DESPAWN_SIZE == 12, "ActorDespawn expected 12 B")
     require(ACTOR_EVENT_SIZE == 32, "ActorEvent expected 32 B")
     require(ACTOR_OUTFIT_SIZE == 8 + EXPECTED_OUTFIT_SIZE,
@@ -3475,7 +3475,7 @@ def main():
         log(f"{passed} passed, {failures} failed, {known_fails} known-fail"
             f"{skipped_part} "
             f"(protocol v{PROTO}, outfit={OUTFIT_SIZE}B, "
-            f"actors={'on' if ACTOR_AVAILABLE else 'pending'}, "
+            f"actors={'on(%d)' % MAX_ACTORS if ACTOR_AVAILABLE else 'pending'}, "
             f"appearance={appearance_status}, "
             f"damage={damage_status}, "
             f"presence={presence_status}, "

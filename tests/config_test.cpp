@@ -232,7 +232,7 @@ int main()
     {
         coopcfg::Config cfg;
         Write(path,
-            "npc_cap = 12\n"
+            "npc_cap = 50\n"
             "npc_radius = 100\n"
             "npc_vehicle_radius = 20\n"
             "npc_animal_cap = 0\n"
@@ -240,7 +240,8 @@ int main()
             "npc_corpse_max_sec = 600\n"
             "player_frame_hz = 61\n");
         Check(coopcfg::LoadFromFile(path.string(), cfg), "boundary file loads");
-        Check(cfg.npcCap == 12, "npc_cap max accepted");
+        Check(cfg.npcCap == 50,
+              "npc_cap max accepted (v21 kMaxActors=50)");
         Check(cfg.npcRadius == 100, "npc_radius max accepted");
         Check(cfg.npcVehicleRadius == 20, "npc_vehicle_radius min accepted");
         Check(cfg.npcAnimalCap == 0, "npc_animal_cap zero accepted");
@@ -248,6 +249,21 @@ int main()
         Check(cfg.npcCorpseMaxSec == 600, "npc_corpse_max_sec max accepted");
         Check(cfg.playerFrameHz == 60,
               "player_frame_hz above max clamps to 60");
+    }
+    // v21 (kMaxActors=50): npc_cap 13..50 больше не out-of-range; 51 и 0 —
+    // ignore (keep default), как и раньше (clamp-флаг false).
+    {
+        coopcfg::Config cfg;
+        const int defaultCap = cfg.npcCap;
+        Write(path, "npc_cap = 21\n");
+        Check(coopcfg::LoadFromFile(path.string(), cfg), "npc_cap=21 loads");
+        Check(cfg.npcCap == 21, "npc_cap 21 accepted (v21 range 13..50)");
+        coopcfg::Config cfgAbove;
+        Write(path, "npc_cap = 51\n");
+        Check(coopcfg::LoadFromFile(path.string(), cfgAbove),
+              "npc_cap=51 loads");
+        Check(cfgAbove.npcCap == defaultCap,
+              "npc_cap above max 51 keeps default");
     }
 
     // 5) Unknown keys are ignored; duplicate keys: last value wins.

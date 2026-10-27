@@ -2,23 +2,36 @@
 
 ## Версия протокола (Spike 1 + P1 + P2, модель A)
 
-- `net::kProtocolVersion = 20` (см. `net/protocol.h`, ветка `feature/v20-p1`).
-  Версия передаётся в JOIN, сервер сверяет её и при несовпадении отклоняет
-  подключение (`JoinRejected.VersionMismatch`); клиенты v14–v20 несовместимы.
-  **v20 — жёсткий bump:** v19-клиенты и v20-клиенты несовместимы, deploy только
-  парой ASI+server из одного снапшота (`dist\npc-e20`); задеплоенная сейчас
-  пара — **npc-e19/v19** (ASI `DD0EE210`/server `DD9BD9D8`) — откат на неё
-  полной парой. Предыдущие пары: v18 — ASI `C9BFA565`/server `BEC3428B`;
+- `net::kProtocolVersion = 21` (см. `net/protocol.h`). Версия передаётся в JOIN,
+  сервер сверяет её и при несовпадении отклоняет подключение
+  (`JoinRejected.VersionMismatch`); клиенты v14–v21 несовместимы.
+  **v21 — жёсткий bump:** `kMaxActors` **12→50** (wire-структуры те же, меняются
+  только максимумы `ActorSpawnBatch`/`ActorFrames`); v20↔v21 несовместимы,
+  deploy только парой ASI+server из одного снапшота **`dist\npc-e20.3`**.
+  Задеплоенная сейчас пара — **npc-e20.2/v20** (ASI `26BB6FDD`/server
+  `0710D2F7`) — откат на неё полной парой. Предыдущие пары: v19 —
+  ASI `DD0EE210`/server `DD9BD9D8`; v18 — `C9BFA565`/`BEC3428B`;
   v17 — `35163CC2`/`B7AAABAE`; v16 — `63388AD3`/`4EDAE4B6`; v15 —
   `dist\npc-e2c-v15\`.
+- v21 (e20.3, actor-cap 50): **`kMaxActors = 50`** (`net/protocol.h:389`),
+  `kActorSpawnBatchMaxSize` = 8+50*64 = **3208 B**,
+  `kActorFramesMaxSize` = 8+50*32 = **1608 B** (было 776/392 при cap 12).
+  **Причина:** при cap 12 люди заполняли весь roster и животные/лошади/тягловые
+  дилижанса не выбирались (`animalsSelected=0`, у гостя animals=0/horses=0,
+  у дилижанса нет draft); e20.2 nearest-first не устранял starvation полностью.
+  ID/структуры сообщений не менялись — бампается только версия/максимумы;
+  `npc_cap` clamp 1..50 (default 8), `npc_animal_cap` 0..12. Серверные
+  валидаторы и клиент используют `net::kMaxActors` (хардкодов 12 нет).
+  Трафик-риск: 50 акторов × 15 Гц × 32 B ≈ 24 КБ/с только `ActorFrames` —
+  выше G3 (≤15 КБ/с) для 2-ПК теста допустимо (зафиксировано).
 - v20 (P1, guest influence): **`VehicleInteraction` (0x23)** — интент гостя
   (урон/двери/посадка/hijack/loot/hitch), guest → сервер → хост;
   **`VehicleInteractionResult` (0x24)** — ответ хоста host → сервер → гость;
   **`VehicleState` (0x26)** — authoritative состояние транспорта host → сервер
   → гость; **0x25/0x27 зарезервированы** под P3 (управление) и в P1 не шлются.
   Wire-часть/релей/хосты/клиент + tools/docs реализованы (**U1–U5 DONE**,
-  ветка `feature/v20-p1`; commits `9703943`/`8a34e7d`/`77055fc`); deploy пары
-  `npc-e20` pending. **P1 default-off:** `vehicle_interaction = 0` (host apply
+  commits `9703943`/`8a34e7d`/`77055fc`); задеплоенная пара **npc-e20.2/v20**
+  (P1 default-off). **P1 default-off:** `vehicle_interaction = 0` (host apply
   при 0 → `NotAllowed` reason=config_off), включается ключом на host+guest
   после F1–F4 re-proof. Спецификация — раздел «VEHICLE-СООБЩЕНИЯ (v20 P1)».
 - v19 (E3d-b/E3d-c): **`VehicleOccupants` (0x21)** — водители/пассажиры/
@@ -306,14 +319,14 @@ E7.1/E7.2/E7.3 — visitor/motion/vehicles+host-migration reset;
 Всё проверено на одном ПК (fake host/guest + реальный хост) и включается
 флагом `npc_actor=1` (default 0; при выключенном флаге не должно быть
 `actor:`-логов). Все структуры little-endian, фиксированы `static_assert` в
-`net/protocol.h`. `kMaxActors = 12`; `npc_cap` 1..12 (default 8),
-`npc_radius` 20..100 м (default 60), `npc_animal_cap` 0..12 (default 4),
-despawn-гистерезис +10 м.
+`net/protocol.h`. `kMaxActors = 50` (v21; было 12); `npc_cap` 1..50
+(default 8), `npc_radius` 20..100 м (default 60), `npc_animal_cap` 0..12
+(default 4), despawn-гистерезис +10 м.
 
 Правила сервера:
 - **0x18–0x1C и 0x1E принимаются только от хоста** (как WorldSnapshot): от
-  гостя — лог и игнор; payload валидируется (точный размер, count ≤12,
-  epoch != 0, actorId != 0, конечные координаты `|v| < 100000`) и
+  гостя — лог и игнор; payload валидируется (точный размер, count ≤ kMaxActors
+  (50), epoch != 0, actorId != 0, конечные координаты `|v| < 100000`) и
   ретранслируется остальным **byte-identical**; невалидный payload дропается.
 - **0x1E дополнительно:** count 1..16, точный размер `12 + count*28`, максимум
   460 B, `reserved=0` каждой записи; иначе дроп.
@@ -333,7 +346,7 @@ despawn-гистерезис +10 м.
 ### 0x18 ACTOR_SPAWN_BATCH (хост → сервер → гость)
 ```
 payload: ActorSpawnBatchHeader (8 B) + count * ActorSpawn (64 B)
-         max = 8 + 12*64 = 776 B
+         max = 8 + 50*64 = 3208 B (v21; было 776 при cap 12)
 header: epoch:u32  count:u16  pad:u16
 ActorSpawn (64 B):
   actorId:u32        — стабильный id в рамках epoch (не 0)
@@ -360,7 +373,7 @@ ActorSpawn (64 B):
 ### 0x19 ACTOR_FRAMES (хост → сервер → гость)
 ```
 payload: ActorFramesHeader (8 B) + count * ActorFrame (32 B)
-         max = 8 + 12*32 = 392 B
+         max = 8 + 50*32 = 1608 B (v21; было 392 при cap 12)
 header: epoch:u32  seq:u16  count:u16
 ActorFrame (32 B):
   actorId:u32  flags:u16  animState:u8  speed:u8
@@ -516,13 +529,13 @@ payload: TrainSnapshotV2Payload (48 B)
 
 ## VEHICLE-СООБЩЕНИЯ (v20 P1 — guest influence; U1–U5 DONE, deploy pending)
 
-> **Статус:** U1–U5 реализованы в ветке `feature/v20-p1` (`9703943` wire/релей,
-> `8a34e7d` host apply/guest capture/client transport, `77055fc` U5
-> tools/docs): wire-структуры/валидаторы, серверный релей/rate/роли, host apply +
-> 0x24/0x26, guest capture/mirror, 4 INI-ключа, fake-клиент, C++8/integration
-> 50/50. **Пара `npc-e20` не задеплоена**; **P1 default-off** (ключ
-> `vehicle_interaction = 0`, включение после F1–F4 re-proof). Полная спека:
-> `docs/INTERACTIVITY_P1.md`.
+> **Статус:** U1–U5 реализованы (`9703943` wire/релей, `8a34e7d` host
+> apply/guest capture/client transport, `77055fc` tools/docs): wire-структуры/
+> валидаторы, серверный релей/rate/роли, host apply + 0x24/0x26, guest
+> capture/mirror, 4 INI-ключа, fake-клиент, C++8/integration 50/50. Пара
+> **npc-e20.2/v20 задеплоена** (e20.1/e20.2 — hotfix поверх), **P1 default-off**
+> (ключ `vehicle_interaction = 0`, включение после F1–F4 re-proof). Полная
+> спека: `docs/INTERACTIVITY_P1.md`.
 
 ### Направления и роли
 
@@ -624,11 +637,15 @@ readback-нативов (R&D: `docs/NATIVE_RESEARCH_V20_HEALTH.md`).
   отправки; старые epoch/seq у нового хоста дают `StaleEpoch`/drop. Очередей
   сервер не хранит; 0x24/0x26 от старого хоста после миграции дропаются как
   role violation.
-- **v20 — жёсткий bump:** `kProtocolVersion 19→20`; v19 JOIN отклоняется
-  (`VersionMismatch`), смешанная пара невозможна. Deploy только парой
-  ASI+server из одного снапшота `dist\npc-e20` (оба ПК, одинаковые хеши);
-  откат — `dist\npc-e19` (v19, ASI `DD0EE210`/server `DD9BD9D8`) полной парой.
-  Промежуточные U1–U5 **не деплоить** до снапшота `npc-e20`.
+- **v21 — текущий жёсткий bump (e20.3):** `kProtocolVersion 20→21`,
+  `kMaxActors 12→50`; v20 JOIN на v21-сервере отклоняется (`VersionMismatch`),
+  смешанная пара невозможна. Deploy только парой ASI+server из одного снапшота
+  **`dist\npc-e20.3`** (оба ПК, одинаковые хеши); откат — `dist\npc-e20.2`
+  (v20: ASI `26BB6FDD…`/server `0710D2F7…`) полной парой. Структуры 0x18/0x19
+  не менялись — только максимумы payload (3208/1608 B).
+- **v20 — жёсткий bump (история):** `kProtocolVersion 19→20`; v19 JOIN
+  отклоняется. Deploy только парой из `dist\npc-e20`; откат — `dist\npc-e19`
+  (v19, ASI `DD0EE210`/server `DD9BD9D8`). Промежуточные U1–U5 не деплоить.
 - Серверный трафик-бакет: heartbeat `net: … occupants=… vehicle=… other=…`;
   `tools/perf_report.py` показывает `vehicle` per-type (сумма/проценты), старые
   v19-логи (без `vehicle=`) остаются без новой категории.
@@ -663,18 +680,23 @@ readback-нативов (R&D: `docs/NATIVE_RESEARCH_V20_HEALTH.md`).
   свободные животные/лошади получают урон тем же путём; headshot=250.
 - При `npc_actor=0`: `actor_sync::Tick`/callbacks ничего не делают и не пишут
   `actor:`/`probe:`; сервер не получает actor-сообщений.
-- Статус: E1–E19 реализованы и проверены на одном ПК (fake host/guest +
-  реальный хост; E5/E5.1 подтверждены в игре). Локальная пара npc-e19/v19 —
-  ASI `DD0EE210`, server `DD9BD9D8`; **оба ПК задеплоены** (local + ARINA,
-  хеши сверены, 28 INI-ключей). Двух-ПК приёмка e19 pending (ждём полный
-  тест), host migration/resync — backlog. Флаги:
-  `npc_actor`, `npc_cap`, `npc_radius`, `npc_animal_cap`, `npc_appearance`,
-  `npc_damage`, `npc_corpse_max_sec`, `npc_presence`, `npc_visitor`,
-  `npc_visitor_vehicles` (default 1), `npc_visitor_preserve_events`,
-  `npc_visitor_pause_scenes`, `npc_motion_update`, `npc_motion_marker`,
-  `npc_motion_status_p2`, `world_vehicles`, `npc_vehicle_radius`,
-  `npc_occupants`, `npc_vehicle_wheels` (e19, default 0),
-  `npc_animal_appearance`, `world_trains`, `npc_debug`.
+- Статус: E1–E20.3 реализованы и проверены на одном ПК (fake host/guest +
+  реальный хост; E5/E5.1 подтверждены в игре); **v21** — actor-cap 50 (S33:
+  животные/лошади/кучер дилижанса не вытесняются людьми). Задеплоенная пара —
+  **npc-e20.2/v20** (ASI `26BB6FDD`, server `0710D2F7`); **v21/npc-e20.3 —
+  сборка/деплой Lead pending** (ASI `D95A0F2F`/server `B225BE7C`), 32
+  INI-ключа. Двух-ПК приёмка pending (ждём полный тест), host
+  migration/resync — backlog. Флаги:
+  `npc_actor`, `npc_cap` (v21: 1..50, default 8), `npc_radius`, `npc_animal_cap`,
+  `npc_appearance`, `npc_damage`, `npc_corpse_max_sec`, `npc_presence`,
+  `npc_visitor`, `npc_visitor_vehicles` (default 1),
+  `npc_visitor_preserve_events`, `npc_visitor_pause_scenes`,
+  `npc_motion_update`, `npc_motion_marker`, `npc_motion_status_p2`,
+  `world_vehicles`, `npc_vehicle_radius`, `npc_occupants`,
+  `npc_vehicle_wheels` (e19, default 0), `vehicle_interaction` (v20 P1,
+  default-off), `vehicle_interaction_mission`, `vehicle_interaction_host_vehicle`,
+  `vehicle_interaction_debug`, `npc_animal_appearance`, `world_trains`,
+  `npc_debug`.
 - Ограничения: mission NPC исключены; E3d-a/c транспорт и occupants;
   E3d-b mission-train opt-in (`world_trains=0`), ambient-поезда не чистим v1,
   точные пассажиры поездов P1, seat=-1/driver и direction/reversing требуют
