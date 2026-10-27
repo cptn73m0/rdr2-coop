@@ -2813,23 +2813,10 @@ void SetGhostShootRate(int rate)
 // Вызывается из ApplyRemoteFrame (игровой поток).
 // Прицеливание/стрельба/перезарядка — реальные задачи оружия: пед стоит,
 // целится и стреляет (со звуком и вспышкой).
-void ApplyActionToGhost(const net::FramePayload& f)
+// ub-mode unit C2-2a: combat-exit latch/stand-still paso (порядок сохранён).
+void UpdateGhostCombatExit(bool wasCombat, bool isCombat)
 {
-    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     using namespace natives_api;
-    const uint8_t ac = static_cast<uint8_t>(f.action);
-    s_remoteActionRaw = ac; // для запрета CLEAR при сценарии/сидении
-    const bool wasCombat = (s_lastAction == static_cast<uint8_t>(net::Action::Shooting) ||
-                            s_lastAction == static_cast<uint8_t>(net::Action::Reloading) ||
-                            s_lastAction == static_cast<uint8_t>(net::Action::Aiming));
-    const bool isCombat = (ac == static_cast<uint8_t>(net::Action::Shooting) ||
-                           ac == static_cast<uint8_t>(net::Action::Reloading) ||
-                           ac == static_cast<uint8_t>(net::Action::Aiming));
-    s_combatActive = isCombat;
-
-    // Выход из боя: снимаем боевую задачу и заставляем движение
-    // перепоставить задачу на следующем кадре. Если только что был выстрел —
-    // откладываем, чтобы не оборвать его до фактического срабатывания.
     if (wasCombat && !isCombat)
     {
         s_pendingCombatExit = true;
@@ -2853,6 +2840,27 @@ void ApplyActionToGhost(const net::FramePayload& f)
     // идёт прицеливание, обновляем задачу при сдвиге точки >0.5 м.
     // ВАЖНО: одновременно с реплеем выстрелов aim НЕ выдаём — TASK_AIM
     // отменяет идущую TASK_SHOOT (в пачке завершался только первый выстрел).
+}
+
+void ApplyActionToGhost(const net::FramePayload& f)
+{
+    if (!s_ghost || !DoesEntityExist(s_ghost)) return;
+    using namespace natives_api;
+    const uint8_t ac = static_cast<uint8_t>(f.action);
+    s_remoteActionRaw = ac; // для запрета CLEAR при сценарии/сидении
+    const bool wasCombat = (s_lastAction == static_cast<uint8_t>(net::Action::Shooting) ||
+                            s_lastAction == static_cast<uint8_t>(net::Action::Reloading) ||
+                            s_lastAction == static_cast<uint8_t>(net::Action::Aiming));
+    const bool isCombat = (ac == static_cast<uint8_t>(net::Action::Shooting) ||
+                           ac == static_cast<uint8_t>(net::Action::Reloading) ||
+                           ac == static_cast<uint8_t>(net::Action::Aiming));
+    s_combatActive = isCombat;
+
+    // Выход из боя: снимаем боевую задачу и заставляем движение
+    // перепоставить задачу на следующем кадре. Если только что был выстрел —
+    // откладываем, чтобы не оборвать его до фактического срабатывания.
+    UpdateGhostCombatExit(wasCombat, isCombat);
+
     if (isCombat && ac == static_cast<uint8_t>(net::Action::Aiming) &&
         !GhostAimBlocked())
     {
@@ -6477,26 +6485,8 @@ void TickPerfWindow(unsigned long long perfFrameStart,
     }
 }
 
-void Tick()
+void DrainLocalInbox()
 {
-    ++s_tickCount;
-    // P0-1 (task-156): полный кадр coop::Tick (world+actor+coop) с p95/max.
-    const unsigned long long perfFrameStart = QpcNow();
-    unsigned long long perfWorldUs = 0;
-    unsigned long long perfActorUs = 0;
-    // P1.1: hold выстрела уменьшаем каждый тик, а не только при приходе кадра
-    // (иначе при паузе/лаге сети очередь выстрелов «замерзает»).
-    if (s_shootHoldTicks > 0)
-        --s_shootHoldTicks;
-    if (s_deadGuardTicks > 0)
-        --s_deadGuardTicks;
-
-    unsigned int playerPed = GetPlayerPedFor(0);
-    if (!playerPed)
-        return;
-
-    // Забрать из сетевого inbox последние кадр/наряд/состояние мира. Дальше
-    // работаем только с игровыми копиями — гонок с сетевым потоком нет.
     {
         net::FramePayload frame{};
         if (TakeInboxFrame(frame))
@@ -6526,6 +6516,29 @@ void Tick()
             s_haveWorldState = true;
         }
     }
+}
+
+void Tick()
+{
+    ++s_tickCount;
+    // P0-1 (task-156): полный кадр coop::Tick (world+actor+coop) с p95/max.
+    const unsigned long long perfFrameStart = QpcNow();
+    unsigned long long perfWorldUs = 0;
+    unsigned long long perfActorUs = 0;
+    // P1.1: hold выстрела уменьшаем каждый тик, а не только при приходе кадра
+    // (иначе при паузе/лаге сети очередь выстрелов «замерзает»).
+    if (s_shootHoldTicks > 0)
+        --s_shootHoldTicks;
+    if (s_deadGuardTicks > 0)
+        --s_deadGuardTicks;
+
+    unsigned int playerPed = GetPlayerPedFor(0);
+    if (!playerPed)
+        return;
+
+    // Забрать из сетевого inbox последние кадр/наряд/состояние мира. Дальше
+    // работаем только с игровыми копиями — гонок с сетевым потоком нет.
+    DrainLocalInbox();
 
     // Spike 1 (модель A): диагностика мира — пулы сущностей, NPC/транспорт
     // рядом, mission-entity, FPS. Только чтение, геймплей не меняет.
