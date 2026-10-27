@@ -6791,6 +6791,40 @@ void SyncLocalOutfit(unsigned int playerPed)
     }
 }
 
+// ub-mode A5-c1: Action v2 — наблюдение/отправка действий локального игрока.
+void UpdateLocalActionSync(unsigned int playerPed)
+{
+    if (coopcfg::Get().actionSync)
+        {
+            if ((s_tickCount % 3) == 0)
+            {
+                net::ActionStatePayload a = DetectLocalActionV2(playerPed);
+                const bool changed = !s_lastSentActionValid ||
+                    std::memcmp(&a, &s_lastSentAction, sizeof(a)) != 0;
+                if (changed || s_tickCount - s_lastActionSendTick >= 15)
+                {
+                    s_lastSentAction = a;
+                    s_lastSentActionValid = true;
+                    s_lastActionSendTick = s_tickCount;
+                    g_netClient.SendActionState(a);
+                }
+            }
+            net::ActionStatePayload in{};
+            bool have = false;
+            {
+                std::lock_guard<std::mutex> lk(s_actionMtx);
+                if (s_haveActionIn)
+                {
+                    in = s_actionIn;
+                    s_haveActionIn = false;
+                    have = true;
+                }
+            }
+            if (have)
+                ApplyRemoteActionV2(in);
+        }
+}
+
 void Tick()
 {
     ++s_tickCount;
@@ -6876,37 +6910,9 @@ void Tick()
         }
 
         // P2: Action v2 — сценарии/сидение/курение/укрытие.
-        if (coopcfg::Get().actionSync)
-        {
-            if ((s_tickCount % 3) == 0)
-            {
-                net::ActionStatePayload a = DetectLocalActionV2(playerPed);
-                const bool changed = !s_lastSentActionValid ||
-                    std::memcmp(&a, &s_lastSentAction, sizeof(a)) != 0;
-                if (changed || s_tickCount - s_lastActionSendTick >= 15)
-                {
-                    s_lastSentAction = a;
-                    s_lastSentActionValid = true;
-                    s_lastActionSendTick = s_tickCount;
-                    g_netClient.SendActionState(a);
-                }
-            }
-            net::ActionStatePayload in{};
-            bool have = false;
-            {
-                std::lock_guard<std::mutex> lk(s_actionMtx);
-                if (s_haveActionIn)
-                {
-                    in = s_actionIn;
-                    s_haveActionIn = false;
-                    have = true;
-                }
-            }
-            if (have)
-                ApplyRemoteActionV2(in);
-        }
+        UpdateLocalActionSync(playerPed);
 
-        // P2: посадка в транспорт удалённого игрока.
+    // P2: посадка в транспорт удалённого игрока.
         if (coopcfg::Get().vehicleSync)
         {
             if ((s_tickCount % 3) == 0)
