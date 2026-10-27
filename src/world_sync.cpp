@@ -5443,6 +5443,11 @@ void Reset()
                       static_cast<unsigned int>(removed));
 }
 
+const std::vector<unsigned int>& HostOccHandles()
+{
+    return g_hostOccHandles;
+}
+
 void Tick(unsigned int localPlayerPed, unsigned int tickCount,
           bool amHost, bool enabled, bool includeTrains, bool vehiclesOnly,
           int vehicleRadius, float partnerX, float partnerY,

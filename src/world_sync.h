@@ -61,6 +61,11 @@ bool GetNearestVehicleProxy(unsigned int localPed, float radius,
 // control-poll: не дёргать IS_CONTROL_* вне зоны).
 bool HasInteractiveVehicleProxy();
 
+// v21/e20.4: allowlist handles occupants (водители/пассажиры/draft-лошади),
+// собранный host-веткой в этом тике. actor discovery читает напрямую, чтобы не
+// зависеть от порядка вызовов world_sync::Tick -> actor_sync::Tick.
+const std::vector<unsigned int>& HostOccHandles();
+
 // Убрать прокси/сбросить состояние (выход из сессии, смена роли, disable).
 void Reset();
 

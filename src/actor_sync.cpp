@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "coop.h"
+#include "world_sync.h"
 #include "gen_metaped_outfits.h" // E2c: база model->outfit-кандидатов
 #include "log.h"
 #include "native_call.h"
@@ -2001,6 +2002,15 @@ void HostDiscovery(const TickContext& ctx)
     if (g_lastDiscoveryMs != 0 && nowMs - g_lastDiscoveryMs < 100ull)
         return; // ~10 Гц wall-clock (было 6 тиков)
     g_lastDiscoveryMs = nowMs;
+    // e20.4: синхронизировать occupant-allowlist напрямую из world_sync (host
+    // ветка уже собрала handles в этом тике). Если пусто (guest/init) — не
+    // затираем ранее полученный SetOccupantHandles.
+    {
+        const std::vector<unsigned int>& occ =
+            coop::world_sync::HostOccHandles();
+        if (!occ.empty())
+            SetOccupantHandles(occ);
+    }
     const bool perfOn = coopcfg::Get().npcDebug;
     const unsigned long long perfDiscoverStart = perfOn ? QpcNow() : 0;
     unsigned long long perfBuildStart = 0;
