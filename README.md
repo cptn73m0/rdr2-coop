@@ -5,6 +5,7 @@
 <h1 align="center">RDR2 Story Mode Co-op</h1>
 
 <p align="center">
+  <a href="https://github.com/cptn73m0/rdr2-coop/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cptn73m0/rdr2-coop/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <img alt="Build" src="https://img.shields.io/github/v/tag/cptn73m0/rdr2-coop?style=flat-square&label=build&color=ff6a3d">
   <img alt="Protocol" src="https://img.shields.io/badge/protocol-v19%20wire-ff6a3d?style=flat-square">
   <img alt="Integration" src="https://img.shields.io/badge/integration-42%2F42-2ea44f?style=flat-square">
