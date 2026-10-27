@@ -13,8 +13,8 @@ server `DD9BD9D818CB5ADF9063A35CE8CDF7C0D54468D9711212A782411BD0D54781FC`
 **28 INI-ключей приёмки** (было 27; e19 добавляет 28-й —
 `npc_vehicle_wheels = 0`, A/B, default 0) — всего **38 строк** в INI
 = 28 приёмочных + 6 служебных P2/P3 + 4 подключения (сверено с
-`dist\npc-e19\rdr2-coop.ini.local`, живым INI ARINA и `src/config.cpp` на
-`ef49ac8`; нюанс `.ini.arina` в снапшоте — §0.2).
+`dist\npc-e19\rdr2-coop.ini.local/.arina`, живым INI ARINA и
+`src/config.cpp` на `ef49ac8`).
 E11 (точные пассажиры поездов через 0x21 carIndex) входит в базу и
 проверяется в D3. E13 делает интервалы wall-clock (ms) **FPS-independent**;
 E14–E17 — ub-mode refactor-only (протокол/поведение не менялись); пороги
@@ -146,10 +146,10 @@ ped_model   = 0xCF7E73BE
 **Проверка e19:** живые INI на **обоих** ПК — **38 строк** = 28 приёмочных +
 6 служебных + 4 ключа подключения; новый ключ — `npc_vehicle_wheels = 0`
 (default; `1` — только для A/B в G5/отдельном прогоне), проверено на local и
-ARINA. `dist\npc-e19\rdr2-coop.ini.local` — эталон (38 строк);
-⚠️ `dist\npc-e19\rdr2-coop.ini.arina` в снапшоте **37 строк** (снят до
-wheel-правки) — как эталон для ARINA не использовать: там живой INI уже с
-`npc_vehicle_wheels = 0`, при откате/передеплое дописать ключ. Остальные
+ARINA. **Оба эталона снапшота** — `dist\npc-e19\rdr2-coop.ini.local` и
+`.ini.arina` — по 38 строк, включая `npc_vehicle_wheels` (снапшот переснят
+после правки INI). При откате/передеплое **сверить 28-й ключ** (если
+откатываетесь на e18 — убрать `npc_vehicle_wheels`, там 37 строк). Остальные
 ключи не менялись; `npc_motion_status_p2` в файле не выписан, но поддержан
 `src/config.cpp` (default 1) — это не новый ключ. Сверено с `src/config.cpp`
 на `ef49ac8`: новых ключей, кроме wheel, нет.
@@ -378,7 +378,7 @@ Select-String -Path server_console.log -Pattern "net: bytes_in=" | Select-Object
 **Откат e19 → e18/e17/e16** (если e19-фиксы дали регрессию): сервер и ASI —
 **только из одного снапшота**. У e19 server **тот же** (`DD9BD9D8`), менялся
 только ASI (blip/occupants/wheels) и INI (28-й ключ) — поэтому откат e19→e18
-безопасен по серверу, но INI нужно привести к 37 строкам (убрать
+безопасен по серверу, но INI нужно привести к 37 строкам e18 (убрать
 `npc_vehicle_wheels`); ASI — из `dist\npc-e18` (`E3FAB30F`). `dist\npc-e17` —
 refactor-only без серверных изменений; `dist\npc-e16` — пара
 `C4E4CF70`/`1BE28084`. Смешивать пары нельзя.

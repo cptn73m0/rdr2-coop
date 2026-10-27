@@ -236,8 +236,8 @@ wheel A/B. Чек-лист: [docs/ACCEPTANCE_2PC.md](docs/ACCEPTANCE_2PC.md);
 **e18 новых ключей не добавлял; e19 добавляет 28-й приёмочный ключ
 `npc_vehicle_wheels`** — теперь **28 ключей / 38 строк** в INI (28 + 6
 служебных P2/P3 + 4 подключения); сверять по живому `rdr2-coop.ini` и
-`dist\npc-e19\rdr2-coop.ini.local` (⚠️ `dist\npc-e19\rdr2-coop.ini.arina`
-в снапшоте — 37 строк, снят до wheel-правки; на самом ARINA INI уже верный).
+`dist\npc-e19\rdr2-coop.ini.local/.arina` (оба эталона — 38 строк, включая
+`npc_vehicle_wheels`).
 
 ### Отключено / не работает (экспериментальные флаги = 0)
 

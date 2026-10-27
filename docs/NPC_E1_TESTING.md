@@ -86,10 +86,11 @@ ActorDamage + PlayerPresence + VehicleOccupants + TrainSnapshotV2 + rate-limit
 - E13–E18 **не добавляют новых INI-ключей** (27 приёмочных, 37 строк);
   **e19 добавляет 28-й приёмочный ключ `npc_vehicle_wheels = 0`** (A/B,
   default 0) → **38 строк** = 28 + 6 служебных P2/P3 + 4 подключения.
-  Живые INI на обоих ПК — 38 строк (проверено local+ARINA);
-  `dist\npc-e19\rdr2-coop.ini.local` — эталон, а `...ini.arina` в снапшоте
-  снят до wheel-правки (37 строк) — не эталон. `npc_motion_status_p2`
-  (default 1) в INI не выписан, но поддержан config.
+  Живые INI на обоих ПК и **оба эталона снапшота**
+  (`dist\npc-e19\rdr2-coop.ini.local/.arina`) — по 38 строк, включая
+  `npc_vehicle_wheels = 0` (снапшот переснят). При откате/передеплое
+  сверить 28-й ключ. `npc_motion_status_p2` (default 1) в INI не выписан,
+  но поддержан config.
 - Хост — первый подключившийся; гость — второй. Оба игрока стоят/ходят рядом
   с одной и той же толпой NPC (discovery учитывает позиции обоих игроков).
 - Бэкап INI/ASI и сейвов (см. `docs/TESTING.md` §7); лог-файл

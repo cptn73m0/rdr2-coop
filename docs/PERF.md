@@ -9,9 +9,10 @@ wall-clock интервалы (FPS-independent).
 
 ## 1. Что нужно
 
-- Сервер v19 (`build-server-ci\Release\rdr2_coop_server.exe`; локальная пара
-  npc-e13 — ASI `B43B7EE0`, server `F3EBD6D1`; ARINA offline).
-- v19-клиент npc-e13 (ASI `B43B7EE0`, локальная пара npc-e13).
+- Сервер v19 (`build-server-ci\Release\rdr2_coop_server.exe`; актуальная
+  пара npc-e19 — ASI `DD0EE210`, server `DD9BD9D8`; оба ПК задеплоены,
+  local + ARINA, 28 INI-ключей).
+- v19-клиент npc-e19 (ASI `DD0EE210`, локальная пара npc-e19).
 - `npc_debug = 1` — включает `perf: npc`/`perf: frame`/`perf: net` строки (при
   `npc_debug=0` или `npc_actor=0` — **ноль** `perf:` строк, overhead ≈ 0).
 - Для городского прогона: `npc_actor = 1`, `npc_cap = 8..12`,
@@ -316,9 +317,9 @@ E13 (ASI `B43B7EE0`, server без изменений `F3EBD6D1`) перевод
 
 - **1 ПК:** игра может быть хостом **или** гостем, но не обоими; host и guest
   метрики снимаются отдельными прогонами (host — с fake guest; guest — со
-  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10/E11
-  pending; локальная пара npc-e13 — ASI `B43B7EE0`/server `F3EBD6D1`, ARINA
-  offline (деплой pending).
+  вторым ПК). Двух-ПК приёмка E2c-b/E4/E6/E7/E3d-a/E3d-b/E3d-c/E9/E10/E11/E18/
+  E19 pending; актуальная пара npc-e19 — ASI `DD0EE210`/server `DD9BD9D8`,
+  оба ПК задеплоены (local + ARINA, хеши сверены); полный прогон e19 — ждём.
 - Fake guest не даёт guest-`perf:` строк: это Python-инструмент, не игровой
   клиент; guest-метрики есть только у игры-гостя.
 - Baseline `npc_actor=0` не содержит `perf: npc` (нулевой overhead); для

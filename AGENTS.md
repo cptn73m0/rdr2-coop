@@ -18,8 +18,9 @@
 ## Правила проекта
 
 - Proof gate для любой единицы: `cmake --build build` + `powershell -ExecutionPolicy
-  Bypass -File scripts\ci.ps1` (интеграция 41/41 + C++ тесты). Для поведения в игре —
-  запись в `dist\<tag>` snapshot.
+  Bypass -File scripts\ci.ps1` (интеграция 42/42 + C++ тесты; актуальный протокол
+  v19, сборка npc-e19 — ASI `DD0EE210`/server `DD9BD9D8`, 28 INI-ключей). Для
+  поведения в игре — запись в `dist\<tag>` snapshot.
 - Протокол не меняется без отдельной задачи и парного деплоя ASI+server.
 - Канонические `build/` и `build-server/` — только Lead; WIP собирать в своих каталогах.
 - Сервер запускать только в видимом окне.

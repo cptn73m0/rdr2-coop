@@ -4,8 +4,10 @@
 protocol v19); старый R&D proxy-attach `world_trains=1` **устарел**
 (deprecated) и не развивается. Mission-train по умолчанию **выключен**
 (`world_trains = 0`, тестовый opt-in; активен при `npc_actor=1 &&
-world_vehicles=1 && world_trains=1`, не при `world_sync=1`). ARINA offline —
-2-ПК приёмка pending.
+world_vehicles=1 && world_trains=1`, не при `world_sync=1`). Актуальная
+сборка — **npc-e19** (ASI `DD0EE210`, server `DD9BD9D8`, 28 INI-ключей);
+**оба ПК задеплоены** (local + ARINA, хеши сверены) — 2-ПК приёмка e19
+pending (ждём полный тест).
 
 ## Как работает v19
 

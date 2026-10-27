@@ -12,6 +12,12 @@
   draft-лошади, host → сервер → гость; **`TrainSnapshotV2` (0x22)** —
   mission-train/состав, host → сервер → гость. Спецификация — раздел
   «ACTOR-СООБЩЕНИЯ».
+- **e18/e19 (без изменения версии/провода):** soft host migration
+  (демоция без закрытия сокета, join grace 15 с, presence-liveness),
+  visitor vendor dedupe, имя игрока на карте/blip (`_SET_BLIP_NAME`),
+  occupant-first roster (кучер/draft-лошади повозки) и opt-in wheel A/B
+  (`npc_vehicle_wheels`, default 0). Провод v19 не менялся; актуальная пара —
+  npc-e19: ASI `DD0EE210`, server `DD9BD9D8`.
 - v18 (E6): **`PlayerPresence` (0x20)** — UI-статус игрока (карта/пауза/
   сатчель/магазин), клиент → сервер → другому клиенту без эха; суффикс имени
   `Name - in map` и т.п. Спецификация — раздел «ACTOR-СООБЩЕНИЯ».
@@ -526,16 +532,18 @@ payload: TrainSnapshotV2Payload (48 B)
   свободные животные/лошади получают урон тем же путём; headshot=250.
 - При `npc_actor=0`: `actor_sync::Tick`/callbacks ничего не делают и не пишут
   `actor:`/`probe:`; сервер не получает actor-сообщений.
-- Статус: реализовано и проверено на одном ПК (fake host/guest + реальный
-  хост; E5/E5.1 подтверждены в игре). Локальная пара npc-e9/v19 — ASI
-  `DC0C4AB7`, server `E26C715A` (PID 10276); ARINA offline — pending.
-  Двух-ПК приёмка pending, host migration/resync — backlog. Флаги:
+- Статус: E1–E19 реализованы и проверены на одном ПК (fake host/guest +
+  реальный хост; E5/E5.1 подтверждены в игре). Локальная пара npc-e19/v19 —
+  ASI `DD0EE210`, server `DD9BD9D8`; **оба ПК задеплоены** (local + ARINA,
+  хеши сверены, 28 INI-ключей). Двух-ПК приёмка e19 pending (ждём полный
+  тест), host migration/resync — backlog. Флаги:
   `npc_actor`, `npc_cap`, `npc_radius`, `npc_animal_cap`, `npc_appearance`,
   `npc_damage`, `npc_corpse_max_sec`, `npc_presence`, `npc_visitor`,
   `npc_visitor_vehicles` (default 1), `npc_visitor_preserve_events`,
   `npc_visitor_pause_scenes`, `npc_motion_update`, `npc_motion_marker`,
   `npc_motion_status_p2`, `world_vehicles`, `npc_vehicle_radius`,
-  `npc_occupants`, `npc_animal_appearance`, `world_trains`, `npc_debug`.
+  `npc_occupants`, `npc_vehicle_wheels` (e19, default 0),
+  `npc_animal_appearance`, `world_trains`, `npc_debug`.
 - Ограничения: mission NPC исключены; E3d-a/c транспорт и occupants;
   E3d-b mission-train opt-in (`world_trains=0`), ambient-поезда не чистим v1,
   точные пассажиры поездов P1, seat=-1/driver и direction/reversing требуют
@@ -554,7 +562,7 @@ payload: TrainSnapshotV2Payload (48 B)
 - Валидация на реальном хосте: `asset capture count=8-10 valid=8-10`
   (единичные valid=0); fake guest v16: `appearance_msgs=504
   appearance_actors=8 entry_max=10 errors=0`. Визуальная двух-ПК приёмка —
-  pending (ARINA offline, деплой npc-e9/v19 pending).
+  pending (пара npc-e19 задеплоена на оба ПК, ждём полный тест).
 - v15↔v16↔v17↔v18 несовместимы; откат v17 — ASI `35163CC2`/server
   `B7AAABAE`, v16 — `63388AD3`/`4EDAE4B6`, v15 — `dist\npc-e2c-v15\`.
 
@@ -570,7 +578,7 @@ payload: TrainSnapshotV2Payload (48 B)
   flag/труп как E1–E3c.
 - Проверено: host `damage id=… dmg=… hp_left=…` → `killed id=… by damage`;
   fake tool smoke (human 200/animal 100, guest `--damage-after`), игровая
-  проверка «выстрелы убивают, хэдшот ваншотит», CI 41/41.
+  проверка «выстрелы убивают, хэдшот ваншотит», CI 42/42.
 
 ### E5.2/E5.3 (v18 client behavior): corpse retention + mounted smoothing
 - E5.2: гость держит corpse-прокси, пока host-труп существует;
