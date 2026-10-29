@@ -1,4 +1,4 @@
-﻿#include "coop.h"
+#include "coop.h"
 #include "config.h"
 #include "ghost_frame.h"
 #include "log.h"
@@ -419,6 +419,32 @@ float  s_pendingX = 0, s_pendingY = 0, s_pendingZ = 0;
 // Последний кадр от удалённого игрока (для применения в Tick()).
 net::FramePayload s_lastFrame{};
 bool s_haveFrame = false;
+
+// --- Интерполяция позиции (entity interpolation) -------------------------
+// Снэпшот позиции/поворота удалённого игрока по seq (счётчик отправителя,
+// монотонный при 60 Гц). Получатель рендерит «в прошлом»: цель кадра =
+// lerp между двумя последними снэпами, чтобы пед двигался плавно, а не
+// шагал рывками по факту прихода каждого кадра. Позицию/heading берём из
+// буфера, остальные поля кадра (move/state/action/health/наряд) — из
+// последнего кадра, они не интерполируются.
+struct PositionSnapshot
+{
+    uint64_t seq = 0;
+    float    x = 0.f;
+    float    y = 0.f;
+    float    z = 0.f;
+    float    heading = 0.f;
+};
+constexpr int   kSnapCapacity = 3;        // хватает для lerp + хвост
+PositionSnapshot s_snaps[3];
+int    s_snapCount = 0;                   // сколько снэпов в буфере
+int    s_snapHead = 0;                    // индекс самого свежего снэпа
+bool   s_snapNeedReset = true;            // сброс при телепорте/спавне/смерти
+// Экстраполяция: сколько игровых тиков прошло с последнего принятого кадра.
+// Когда свежего кадра нет, а пед движется, продлеваем позицию по последнему
+// вектору скорости (лимит ~0.25 c), чтобы он не «замирал» при опоздании.
+unsigned int s_ticksSinceFrame = 0;       // возраст последнего кадра, тики
+constexpr unsigned int kMaxExtrapTicks = 15; // ~0.25 c при 60 Гц
 // Точка прицела удалённого игрока (из последнего кадра): пед целится и
 // стреляет именно туда, а не «вперёд по heading».
 Vec3 s_remoteAim{0.f, 0.f, 0.f};
@@ -583,6 +609,8 @@ void RefreshGhostComponents();
 void StartMounting();
 void StartDismounting();
 bool IsGhostMounted();
+// Интерполяция позиции удалённого педа (сброс буфера снэпов). Определение ниже.
+void ResetSnapBuffer();
 
 // Запросить и загрузить модель лошади (вызывается в Tick, игровой поток).
 void RequestMountModel()
@@ -1487,6 +1515,7 @@ void RespawnGhostPed(const net::FramePayload* f)
     s_mountPhase = MountPhase::None;
     s_mountPhaseTicks = 0;
     s_rideLossTicks = 0;
+    ResetSnapBuffer(); // возрождение = скачок позиции — не интерполируем через него
 
     if (s_ghost && DoesEntityExist(s_ghost))
     {
@@ -1556,6 +1585,117 @@ void RespawnGhostPed(const net::FramePayload* f)
     s_playerJoinedNotified = true;
     s_subtitleTicksLeft = 8 * 60;
     s_remoteRespawnName[0] = '\0';
+}
+
+// --- Интерполяция позиции: примитивы буфера ------------------------------
+
+// Индекс снэпа по смещению от самого свежего (0 = head, 1 = предыдущий…).
+int SnapIndex(int back)
+{
+    // back: 0..kSnapCapacity-1; головной индекс — s_snapHead, предыдущий — назад.
+    int idx = s_snapHead - back;
+    while (idx < 0) idx += kSnapCapacity;
+    return idx;
+}
+
+// Положить снэп в кольцевой буфер (сетевой поток — вызывается из SetFrame).
+void PushSnapshot(const net::FramePayload& f)
+{
+    if (s_snapNeedReset)
+    {
+        // Спавн/телепорт/смерть: очищаем и начинаем заново одним снэпом.
+        s_snapCount = 0;
+        s_snapNeedReset = false;
+    }
+    s_snapHead = (s_snapHead + 1) % kSnapCapacity;
+    PositionSnapshot& s = s_snaps[s_snapHead];
+    s.seq = f.seq;
+    s.x = f.x; s.y = f.y; s.z = f.z;
+    s.heading = f.heading;
+    if (s_snapCount < kSnapCapacity) ++s_snapCount;
+}
+
+// Кратчайшая дуга двух поворотов в градусах.
+float ShortestAngleDelta(float to, float from)
+{
+    float d = to - from;
+    while (d > 180.f) d -= 360.f;
+    while (d < -180.f) d += 360.f;
+    return d;
+}
+
+// Вычислить интерполированную позицию/heading для текущего кадра.
+// Возвращает false, если в буфере меньше двух снэпов (интерполировать нечем) —
+// тогда используется последний снэп как есть.
+bool InterpolatedPosition(Vec3& outPos, float& outHeading)
+{
+    if (s_snapCount < 2)
+        return false;
+    const PositionSnapshot& prev = s_snaps[SnapIndex(1)]; // предыдущий
+    const PositionSnapshot& last = s_snaps[SnapIndex(0)]; // самый свежий
+    // Рендерим с отставанием: цель = предыдущий снэп, чуть подтянутый к
+    // свежему (t = 0.5 — середина между двумя достоверными кадрами). Это
+    // гасит рывки TCP-джиттера, не добавляя полный кадр задержки.
+    constexpr float kLerpT = 0.5f;
+    outPos.x = prev.x + (last.x - prev.x) * kLerpT;
+    outPos.y = prev.y + (last.y - prev.y) * kLerpT;
+    outPos.z = prev.z + (last.z - prev.z) * kLerpT;
+    outHeading = prev.heading + ShortestAngleDelta(last.heading, prev.heading) * kLerpT;
+    while (outHeading < 0.f) outHeading += 360.f;
+    while (outHeading >= 360.f) outHeading -= 360.f;
+    // Большой разрыв между снэпами (> teleport) — интерполяция бессмысленна
+    // (судя по всему, телепорт): интерполяция дала бы «проезд» через полкарты.
+    float dx = last.x - prev.x, dy = last.y - prev.y, dz = last.z - prev.z;
+    if (dx * dx + dy * dy + dz * dz > 10.f * 10.f)
+        return false;
+    return true;
+}
+
+// Пометить буфер на сброс (спавн/телепорт/смерть) — следующий PushSnapshot
+// начнёт заново, чтобы не интерполировать через разрыв.
+void ResetSnapBuffer() { s_snapNeedReset = true; s_snapCount = 0; }
+
+// --- Экстраполяция движения ----------------------------------------------
+// Когда свежего кадра нет (опоздание/потеря), продлеваем позицию от самого
+// свежего снэпа по вектору скорости, выведенному из двух последних снэпов.
+// Возвращает false, если экстраполировать нечем или это не движение.
+// ageTicks — сколько игровых тиков прошло без нового кадра (0..15).
+bool ExtrapolatedPosition(Vec3& outPos, float& outHeading, unsigned int ageTicks)
+{
+    if (ageTicks == 0 || s_snapCount < 2)
+        return false;
+    const PositionSnapshot& prev = s_snaps[SnapIndex(1)];
+    const PositionSnapshot& last = s_snaps[SnapIndex(0)];
+    // Скорость из разности двух снэпов. dt считаем по разности seq (тики
+    // отправителя ~60 Гц); при seq-обрыве (реконнект) Δseq=0 → не экстраполируем.
+    uint64_t dseq = (last.seq > prev.seq) ? (last.seq - prev.seq) : 0;
+    if (dseq == 0)
+        return false;
+    // Пропуск по seq > 10 (серьёзный разрыв) — скорость ненадёжна, не тянем.
+    if (dseq > 10)
+        return false;
+    float dt = static_cast<float>(dseq); // в тиках (~1/60 c)
+    float vx = (last.x - prev.x) / dt;
+    float vy = (last.y - prev.y) / dt;
+    float vz = (last.z - prev.z) / dt;
+    // Порог «это движение»: скорость заметна (иначе стоять, не экстраполируем).
+    float speed2 = vx * vx + vy * vy + vz * vz;
+    constexpr float kMinSpeed = 0.001f; // ~ (0.03 м/тик)^2 — заметное движение
+    if (speed2 < kMinSpeed)
+        return false;
+    // Лимит экстраполяции: не дальше kMaxExtrapTicks (~0.25 c), иначе пед
+    // «убежит» не туда при долгом обрыве.
+    unsigned int n = ageTicks < kMaxExtrapTicks ? ageTicks : kMaxExtrapTicks;
+    float t = static_cast<float>(n);
+    outPos.x = last.x + vx * t;
+    outPos.y = last.y + vy * t;
+    outPos.z = last.z + vz * t;
+    // Поворот экстраполируем слабо: продлеваем тренд вращения за те же тики.
+    float dh = ShortestAngleDelta(last.heading, prev.heading) / dt;
+    outHeading = last.heading + dh * t;
+    while (outHeading < 0.f) outHeading += 360.f;
+    while (outHeading >= 360.f) outHeading -= 360.f;
+    return true;
 }
 
 void ApplyRemoteFrame(const net::FramePayload& f)
@@ -1702,6 +1842,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         if (dist > TELEPORT_DIST)
         {
             SetEntityCoords(s_ghost, p); // резкий перенос (спавн/загрузка)
+            ResetSnapBuffer();           // разрыв — не интерполируем через телепорт
         }
         else if (dist > 0.05f)
         {
@@ -1746,6 +1887,7 @@ void ApplyRemoteFrame(const net::FramePayload& f)
         if (dist > TELEPORT_DIST)
         {
             SetEntityCoords(s_ghost, Vec3{p.x, p.y, cur.z});
+            ResetSnapBuffer(); // разрыв — не интерполируем через телепорт
         }
         if (dist > CLOSE)
         {
@@ -1855,6 +1997,8 @@ void CleanupGhost()
     s_requestedModel = 0;
     s_modelLoadedLogged = false;
     s_haveFrame = false;
+    ResetSnapBuffer(); // разрыв позиции (педа больше нет) — буфер интерполяции
+                       // очищаем, чтобы новый пед не интерполировал через удаление
     s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
     s_lastPedState = 0xFF;
     s_lastWeapon = 0;
@@ -2451,6 +2595,8 @@ void InitNetworkClient()
         // Только копируем кадр; нативы применит Tick().
         s_lastFrame = f;
         s_haveFrame = true;
+        // Интерполяция: кладём позицию/поворот в кольцевой буфер снэпов.
+        PushSnapshot(f);
     });
 
     g_netClient.SetWorldState([](const net::WorldState& ws) {
@@ -2654,6 +2800,9 @@ void Tick()
             sh_log::Write("coop: friendly blip -> %u\n", s_blip);
             std::snprintf(s_pedName, sizeof(s_pedName), "%s", name);
         }
+        // После создания педа буфер интерполяции начинаем заново (спавн =
+        // разрыв позиции, интерполировать через него нельзя).
+        ResetSnapBuffer();
         // Применить самый свежий кадр, если уже пришёл (иначе пед «догонит»
         // позицию на следующем кадре).
         if (s_haveFrame)
@@ -2671,8 +2820,36 @@ void Tick()
         s_remoteAimValid = (s_lastFrame.aimDist > 1.0f);
         if (s_remoteAimValid)
             s_remoteAim = Vec3{s_lastFrame.aimX, s_lastFrame.aimY, s_lastFrame.aimZ};
-        ApplyRemoteFrame(s_lastFrame);
+        // Интерполяция позиции: подменяем x/y/z/heading сглаженными значениями
+        // из буфера снэпов; остальные поля кадра остаются из последнего кадра.
+        net::FramePayload applyFrame = s_lastFrame;
+        Vec3 ip; float ih;
+        if (InterpolatedPosition(ip, ih))
+        {
+            applyFrame.x = ip.x; applyFrame.y = ip.y; applyFrame.z = ip.z;
+            applyFrame.heading = ih;
+        }
+        ApplyRemoteFrame(applyFrame);
         s_haveFrame = false;
+        s_ticksSinceFrame = 0; // свежий кадр применён — возраст сброшен
+    }
+    else if (s_ghost && DoesEntityExist(s_ghost) && !s_ghostDead)
+    {
+        // Кадра нет — экстраполяция: пед движется по последнему вектору
+        // скорости, чтобы не «замирать» при опоздании/потере кадра.
+        // Лимит kMaxExtrapTicks гасит избыточный «разгон» при долгом обрыве.
+        ++s_ticksSinceFrame;
+        if (s_ticksSinceFrame <= kMaxExtrapTicks)
+        {
+            Vec3 ep; float eh;
+            if (ExtrapolatedPosition(ep, eh, s_ticksSinceFrame))
+            {
+                net::FramePayload applyFrame = s_lastFrame;
+                applyFrame.x = ep.x; applyFrame.y = ep.y; applyFrame.z = ep.z;
+                applyFrame.heading = eh;
+                ApplyRemoteFrame(applyFrame);
+            }
+        }
     }
 
     // Событие выстрела: разбираем очередь по одному. Пока предыдущий выстрел
