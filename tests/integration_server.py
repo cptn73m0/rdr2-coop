@@ -631,13 +631,16 @@ def log(msg):
 # --------------------------------------------------------------------------
 
 def make_frame_payload(x=1.0, y=2.0, z=3.0, heading=90.0):
-    # 4f + 4B + 5f + 6Q = 88 bytes (checked against sizeof(FramePayload)).
+    # v22: 4f + 4B + 5f + 6Q + 2H (gait+pad0) + 4-байтовый tail-pad = 96 bytes
+    # (checked against sizeof(FramePayload); gait/pad0 введены в v22).
     payload = struct.pack(
-        "<ffffBBBBfffffQQQQQQ",
+        "<ffffBBBBfffffQQQQQQHHI",
         x, y, z, heading,
         0, 0, 0, 0,                    # move/state/flags/action
         1.0, 0.0, 0.0, 0.0, 0.0,       # health + aim
         0, 0, 0, 0, 0, 0,              # weapon, seq, 3 reserved, horseOutfit
+        0, 0,                          # gait, pad0
+        0,                             # tail-pad (выравнивание до 96)
     )
     require(len(payload) == FRAME_SIZE,
             f"FramePayload builder mismatch: {len(payload)} != {FRAME_SIZE}")

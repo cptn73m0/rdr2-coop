@@ -75,7 +75,7 @@ RATE_STATE = 10
 DEFAULT_MODEL = 0x54D8BE8E  # a_m_m_rancher_01
 JOIN_REJECT_NAMES = {1: "VersionMismatch", 2: "ServerFull", 3: "NameTaken",
                      4: "BadName"}
-FRAME_PAYLOAD = bytes(88)  # FramePayload size; used as host-liveness keepalive
+FRAME_PAYLOAD = bytes(96)  # FramePayload size (v22: +gait/pad0 + tail-pad); host-liveness keepalive
 
 ACTIONS = {
     "damage": 1, "door_open": 2, "door_close": 3, "door_lock": 4,
@@ -594,8 +594,8 @@ class Scenario:
 
     # -- host liveness ---------------------------------------------------
     # 0x24/0x26 are game-thread messages, but the scenario also has seconds
-    # with no host traffic. A zeroed 88 B Frame is a valid game-thread message:
-    # without it the server would apply the 4 s host game-timeout mid-scenario.
+    # with no host traffic. A zeroed 96 B Frame (v22) is a valid game-thread
+    # message: without it the server would apply the 4 s host game-timeout.
     @staticmethod
     def _host_frame(host):
         send_frame(host, MSG_FRAME, FRAME_PAYLOAD)

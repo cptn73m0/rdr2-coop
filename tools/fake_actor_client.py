@@ -1876,11 +1876,12 @@ class FakeGuest:
                     gheading = self.host_heading if self.host_pos else 0.0
                     try:
                         send_frame(self.sock, MSG_FRAME,
-                                   struct.pack("<ffffBBBBfffffQQQQQQ",
+                                   struct.pack("<ffffBBBBfffffQQQQQQHHI",
                                                gx, gy, gz, gheading,
                                                0, 0, 0, 0,
                                                0.0, 0.0, 0.0, 0.0, 0.0,
-                                               0, 0, 0, 0, 0, 0))
+                                               0, 0, 0, 0, 0, 0,
+                                               0, 0, 0))
                     except OSError:
                         pass
                     self.next_guest_frame_at = now + 0.1

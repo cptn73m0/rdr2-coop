@@ -272,7 +272,7 @@ horse tack (kind=2) — `ActorOutfit` 0x1C **792 B** on change (бюджет
 Что изменилось (сборка npc-e12, ASI `D47B91A5`, server `F3EBD6D1`):
 
 - **Player Frame throttle:** `player_frame_hz=20` (clamp 10..60),
-  `player_frame_change_only=1` — Frame 88 B не каждый тик: покой heartbeat
+  `player_frame_change_only=1` — Frame 96 B (v22) не каждый тик: покой heartbeat
   ~5 Гц (~0.44 КБ/с), движение до 20 Гц (~1.76 КБ/с) вместо 5.3/12.7 КБ/с
   при 60/144 FPS. `perf: frame ... frames_hz` показывает фактическую частоту.
 - **P0/P1:** `CollectLocalOutfit` игрока/лошади ≤10 Гц (было каждый тик

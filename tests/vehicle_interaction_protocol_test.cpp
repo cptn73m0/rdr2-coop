@@ -96,8 +96,8 @@ void TestLayoutAndEnums()
     Expect(static_cast<uint8_t>(net::Msg::VehicleControlInput) == 0x25, "0x25 reserved");
     Expect(static_cast<uint8_t>(net::Msg::VehicleState) == 0x26, "0x26 id");
     Expect(static_cast<uint8_t>(net::Msg::VehicleControlState) == 0x27, "0x27 reserved");
-    Expect(net::kProtocolVersion == 21,
-           "protocol version 21 (v21 actor-cap bump)");
+    Expect(net::kProtocolVersion == 22,
+           "protocol version 22 (v22 player gait in FramePayload)");
 
     Expect(static_cast<uint8_t>(net::VehicleAction::Damage) == 1, "action Damage=1");
     Expect(static_cast<uint8_t>(net::VehicleAction::DoorOpen) == 2, "DoorOpen=2");

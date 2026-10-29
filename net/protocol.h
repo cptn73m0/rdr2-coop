@@ -26,7 +26,11 @@ namespace net {
 // v21: расширен actor-cap (kMaxActors 12 → 50) — лошади/тягловые больше не
 //      вытесняются людьми из батча; wire-структуры те же, меняются только
 //      максимумы ActorSpawnBatch (3208 B) / ActorFrames (1608 B).
-constexpr uint16_t kProtocolVersion = 21;
+// v22: FramePayload.gait (uint16, 0..6500 = 0..6.5) — желаемый аллюр игрока
+//      (GET_PED_DESIRED_MOVE_BLEND_RATIO), чтобы пед-призрак повторял реальный
+//      шаг/рысь/спринт хозяина, а не hard-coded 1.0/2.0. Жёсткий bump:
+//      v21-клиент/сервер несовместимы (размер FramePayload 88→96).
+constexpr uint16_t kProtocolVersion = 22;
 
 // Максимум игроков в сессии (Spike 1: хост + один гость).
 constexpr int kMaxPlayers = 2;
@@ -169,7 +173,7 @@ enum class Action : uint8_t {
     Drunk     = 6,   // пьян (_IS_PED_DRUNK)
 };
 
-// Размер полезной нагрузки (без len/type). 88 байт.
+// Размер полезной нагрузки (без len/type). 96 байт (v22: +gait+pad).
 struct FramePayload {
     float    x = 0.f;          // world X
     float    y = 0.f;          // world Y
@@ -196,8 +200,14 @@ struct FramePayload {
     // Мета-наряд (снаряжение: седло/одеяло/поклажа) лошади — применяется к
     // лошади педа-призрака тем же механизмом, что и наряд игрока.
     uint64_t horseOutfitHash = 0;
+    // v22: желаемый аллюр игрока (GET_PED_DESIRED_MOVE_BLEND_RATIO), 0..6500 =
+    // 0..6.5, как ActorFrame.pad у NPC. Получатель применяет через
+    // SET_PED_DESIRED_MOVE_BLEND_RATIO — пед-призрак шагает/бежит/крадётся
+    // ровно как хозяин, а не hard-coded 1.0(шаг)/2.0(бег). 0 = idle/неизвестно.
+    uint16_t gait = 0;
+    uint16_t pad0 = 0;          // выравнивание до 96 байт (нет данных)
 };
-static_assert(sizeof(FramePayload) == 88, "FramePayload must be 88 bytes");
+static_assert(sizeof(FramePayload) == 96, "FramePayload must be 96 bytes");
 
 // Событие выстрела: точка попадания/прицеливания. Шлётся отдельным пакетом,
 // чтобы НИ ОДИН выстрел не терялся (опрос состояния в кадре — ненадёжен).

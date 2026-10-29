@@ -971,6 +971,10 @@ constexpr unsigned long long kShotFiringPatternFullAuto = 0xC6EE6B4Cull;
 // Последнее «сырое» действие удалённого игрока (для запрета CLEAR при
 // сценарии/сидении). Пишется в ApplyActionToGhost (игровой поток).
 uint8_t s_remoteActionRaw = 0;
+// v22: желаемый аллюр удалённого игрока (0..6500 = 0..6.5), из кадра. Пишется
+// в Tick() при применении кадра; ApplyMoveToGhost применяет его к педу через
+// SET_PED_DESIRED_MOVE_BLEND_RATIO. 0xFFFF = ещё не получено (fallback 1.0/2.0).
+uint16_t s_remoteGait = 0xFFFF;
 // Состояние мира от хоста (время+погода). Игровой поток: забрано из inbox в
 // начале Tick().
 net::WorldState s_worldState{};
@@ -5565,14 +5569,25 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
                 s_moveTargetValid = false;
             s_lastMoveState = move;
         }
-        // Ограничить скорость АНИМАЦИИ. Шкала RDR2: 0 = стоим, 1.0 = шаг,
-        // 2.0 = бег, 3.0 = спринт. Раньше стояло 2.0 для шага — это уровень
-        // БЕГА, поэтому пед при шаге оригинала срывался в бег (прерывисто).
+        // v22: применить желаемый аллюр ХОЗЯИНА (0..6.5) из кадра, а не
+        // hard-coded 1.0/2.0. SET_PED_DESIRED_MOVE_BLEND_RATIO задаёт точный
+        // gait (красться/полушаг/шаг/рысь/спринт); SET_PED_MAX_MOVE_BLEND_RATIO
+        // остаётся как ПОТОЛОК (запас), чтобы пед не «срывался» быстрее аллюра.
         {
-            const float maxBlend = (move == runState) ? 2.0f : 1.0f;
+            float desired = (s_remoteGait != 0xFFFF)
+                ? static_cast<float>(s_remoteGait) / 1000.0f
+                : (move == runState) ? 2.0f : 1.0f; // fallback до первого кадра
+            if (desired < 0.f) desired = 0.f;
+            if (desired > 6.5f) desired = 6.5f;
+            Init(natives::SET_PED_DESIRED_MOVE_BLEND_RATIO);
+            Push(ped);
+            Push(desired);
+            Call();
+            // Потолок чуть выше желаемого — без «зажатия» переходов аллюра.
+            const float cap = desired < 1.0f ? 1.0f : desired;
             Init(natives::SET_PED_MAX_MOVE_BLEND_RATIO);
             Push(ped);
-            Push(maxBlend);
+            Push(cap);
             Call();
         }
         // Считаем, нужно ли ПЕРЕдавать задачу. При движении перезадаём, если
@@ -7097,6 +7112,18 @@ void SendLocalPlayerFrame(unsigned int playerPed)
             fp.weaponHash = weapon;
             fp.reserved[1] = metaOutfit;
             fp.reserved[2] = pedModel;
+            // v22: желаемый аллюр игрока (0..6.5) — чтобы пед-призрак повторял
+            // реальный gait хозяина, а не hard-coded 1.0/2.0. Квантование в
+            // uint16 0..6500 (как ActorFrame.pad у NPC в actor_sync.cpp).
+            {
+                using namespace natives_api;
+                Init(natives::GET_PED_DESIRED_MOVE_BLEND_RATIO);
+                Push(playerPed);
+                float gait = CallFloat();
+                if (!(gait >= 0.f)) gait = 0.f;      // NaN/Inf -> 0
+                if (gait > 6.5f) gait = 6.5f;         // защита от мусора
+                fp.gait = static_cast<uint16_t>(gait * 1000.0f + 0.5f);
+            }
             if (s_tickCount % (5 * 60) == 1)
                 sh_log::Write("coop: send pedLook, outfit=0x%llX model=0x%llX "
                               "move=%u state=%u\n",
@@ -7734,6 +7761,7 @@ void Tick()
         s_remoteActionRaw = 0;
         s_remoteAim = Vec3{0.f, 0.f, 0.f};
         s_remoteAimValid = false;
+        s_remoteGait = 0xFFFF; // v22: сброс аллюра — новый пед возьмёт из кадра
         {
             std::lock_guard<std::mutex> lk(s_shotMtx);
             s_shotQCount = 0;
@@ -8024,6 +8052,7 @@ void Tick()
         // позицию на следующем кадре).
         if (s_haveFrame)
         {
+            s_remoteGait = s_lastFrame.gait; // v22: аллюр для ApplyMoveToGhost
             ApplyRemoteFrame(s_lastFrame);
             s_haveFrame = false;
         }
@@ -8037,6 +8066,8 @@ void Tick()
         s_remoteAimValid = (s_lastFrame.aimDist > 1.0f);
         if (s_remoteAimValid)
             s_remoteAim = Vec3{s_lastFrame.aimX, s_lastFrame.aimY, s_lastFrame.aimZ};
+        // v22: желаемый аллюр — для ApplyMoveToGhost.
+        s_remoteGait = s_lastFrame.gait;
         ApplyRemoteFrame(s_lastFrame);
         s_haveFrame = false;
     }
