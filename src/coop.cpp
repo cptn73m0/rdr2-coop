@@ -1803,6 +1803,17 @@ unsigned int s_lastGhostTpLogTick = 0;
 // цель/пед «прыгают» вокруг порога (10 м).
 unsigned int s_lastGhostTeleportTick = 0;
 constexpr unsigned int kIdleTeleportCooldownTicks = 60;
+// --- Диагностика реалистичности педа-призрака (счётчики за perf-окно) ------
+// Измеряют «дёрганье» и рассинхрон количественно; сбрасываются вместе с
+// perf-окном (строка 6853). Read-only: на логику не влияют, только сумма в
+// логе `perf:` при npc_debug=1.
+unsigned int s_diagRetarget = 0;     // сколько раз перепоставили TASK_FOLLOW
+unsigned int s_diagGroundFix = 0;    // сколько раз прижали к земле в Idle
+unsigned int s_diagTeleport = 0;     // сколько раз телепортнули педа
+unsigned int s_diagMoveFlap = 0;     // сколько раз сменился move (Walk/Idle/Run)
+double s_diagMountDesyncAcc = 0.0;   // суммарный рассинхрон всадник↔лошадь (м)
+float  s_diagMountDesyncMax = 0.f;   // максимум рассинхрона за окно
+unsigned int s_diagMountDesyncN = 0; // сколько замеров
 // Тик последнего реплея наряда (heartbeat) — для редкого лога.
 unsigned int s_lastOutfitReapplyLogTick = 0;
 constexpr unsigned int kOutfitReapplyLogTicks = 5 * 60 * 60; // heartbeat: 5 мин
@@ -2513,6 +2524,7 @@ void IssueGhostFollowTask(unsigned int ped, const Vec3& target, float speedMulti
     s_moveTarget = target;
     s_moveTargetValid = true;
     s_lastSprintTaskTick = s_tickCount;
+    ++s_diagRetarget; // принудительный догон — тоже retarget (метрика «подхвата»)
 }
 
 // Перевыдавать задачу догона каждый кадр нельзя — TASK_FOLLOW «дёргается»
@@ -4112,6 +4124,20 @@ bool ApplyRemoteFrameMountPhase(const net::FramePayload& f, Vec3 p,
                 PromoteMountToGhost();
         }
         MoveMountTo(p, f.heading);
+        // Диагностика: рассинхрон всадник↔лошадь (дистанция пед↔седало), когда
+        // пед в седле. Большой/растущий рассинхрон — источник «сползания» педа
+        // с лошади или рывков верховой реплики.
+        if (s_mount && DoesEntityExist(s_mount) && IsGhostMounted())
+        {
+            Vec3 pedPos = GetEntityCoords(s_ghost);
+            Vec3 mountPos = GetEntityCoords(s_mount);
+            float dx = pedPos.x - mountPos.x;
+            float dy = pedPos.y - mountPos.y;
+            float d = std::sqrt(dx * dx + dy * dy);
+            s_diagMountDesyncAcc += d;
+            if (d > s_diagMountDesyncMax) s_diagMountDesyncMax = d;
+            ++s_diagMountDesyncN;
+        }
         // Пока лошадь ведёт задача, НЕ перебиваем heading каждый кадр:
         // TASK_FOLLOW сам разворачивает корпус, а ручной SetEntityHeading
         // дёргает лошадь на галопе. Heading правим только когда лошадь
@@ -4211,6 +4237,7 @@ bool ApplyRemoteFramePositionPhase(const net::FramePayload& f, Vec3 cur,
             s_moveTargetValid = false;
             s_ghostFarTicks = 0;
             s_lastGhostTeleportTick = s_tickCount;
+            ++s_diagTeleport; // метрика частоты телепортов (бег)
             if (s_tickCount - s_lastGhostTpLogTick > 5 * 60)
             {
                 s_lastGhostTpLogTick = s_tickCount;
@@ -4266,6 +4293,7 @@ bool ApplyRemoteFramePositionPhase(const net::FramePayload& f, Vec3 cur,
             s_ghostFarTicks = 0;
             s_idleChase = false;
             s_lastGhostTeleportTick = s_tickCount;
+            ++s_diagTeleport; // метрика частоты телепортов (idle)
             if (s_tickCount - s_lastGhostTpLogTick > 5 * 60)
             {
                 s_lastGhostTpLogTick = s_tickCount;
@@ -4330,6 +4358,7 @@ bool ApplyRemoteFramePositionPhase(const net::FramePayload& f, Vec3 cur,
                     // «подтягивался» каждый кадр и дрожал.
                     s_lastIdleGroundFixTick = s_tickCount;
                     SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
+                    ++s_diagGroundFix; // метрика «провисание» педа над землёй
                 }
                 // Единый вызов для Idle: ставит/обновляет stand-still при смене
                 // состояния (сам защищён s_lastMoveState — не дёргает).
@@ -5513,7 +5542,10 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
     // Диагностика: смена состояния движения (если пед дёргается — тут будет
     // видно мерцание Walk<->Idle).
     if (move != s_lastMoveState)
+    {
         sh_log::Write("coop: move change %u -> %u\n", (unsigned)s_lastMoveState, (unsigned)move);
+        ++s_diagMoveFlap; // мерцание move за perf-окно — метрика «пританцовывания»
+    }
     if (move == walkState || move == runState)
     {
         // Движение задачей (топает ножками). Физику педа НЕ замораживаем,
@@ -5573,6 +5605,7 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
             Call();
             s_moveTarget = target;
             s_moveTargetValid = true;
+            ++s_diagRetarget; // частота перепостановки задачи — метрика «подхвата»
         }
         s_lastMoveState = move;
     }
@@ -6874,6 +6907,20 @@ void TickPerfWindow(unsigned long long perfFrameStart,
                     g_actorPerf.Avg() / 1000.0, g_actorPerf.P95() / 1000.0,
                     g_coopPerf.Avg() / 1000.0, g_coopPerf.P95() / 1000.0,
                     g_frameSentWindow / (elapsedMs / 1000.0), tickHz);
+                // Диагностика реалистичности педа-призрака: частоты «дёрганья»
+                // и рассинхрона за окно. Отдельная строка `ghost:` — не ломает
+                // парсер `perf:` в tools/perf_report.py.
+                const double secs = elapsedMs / 1000.0;
+                const double mountAvg =
+                    s_diagMountDesyncN ? s_diagMountDesyncAcc / s_diagMountDesyncN : 0.0;
+                sh_log::Write(
+                    "ghost: retarget/s=%.1f moveFlap/s=%.1f groundFix/s=%.2f "
+                    "teleport/s=%.2f mountDesync(avg=%.2f max=%.2f n=%u)\n",
+                    s_diagRetarget / secs,
+                    s_diagMoveFlap / secs,
+                    s_diagGroundFix / secs,
+                    s_diagTeleport / secs,
+                    mountAvg, s_diagMountDesyncMax, s_diagMountDesyncN);
             }
             g_framePerf.Reset();
             g_worldPerf.Reset();
@@ -6881,6 +6928,14 @@ void TickPerfWindow(unsigned long long perfFrameStart,
             g_coopPerf.Reset();
             g_perfWindowTicks = 0;
             g_frameSentWindow = 0;
+            // Сброс диагностических счётчиков вместе с perf-окном.
+            s_diagRetarget = 0;
+            s_diagMoveFlap = 0;
+            s_diagGroundFix = 0;
+            s_diagTeleport = 0;
+            s_diagMountDesyncAcc = 0.0;
+            s_diagMountDesyncMax = 0.f;
+            s_diagMountDesyncN = 0;
             s_perfWindowStartMs = GetTickCount64();
         }
     }
