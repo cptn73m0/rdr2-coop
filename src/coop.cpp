@@ -5573,12 +5573,12 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
         // hard-coded 1.0/2.0. SET_PED_DESIRED_MOVE_BLEND_RATIO задаёт точный
         // gait (красться/полушаг/шаг/рысь/спринт); SET_PED_MAX_MOVE_BLEND_RATIO
         // остаётся как ПОТОЛОК (запас), чтобы пед не «срывался» быстрее аллюра.
+        float desired = (s_remoteGait != 0xFFFF)
+            ? static_cast<float>(s_remoteGait) / 1000.0f
+            : (move == runState) ? 2.0f : 1.0f; // fallback до первого кадра
+        if (desired < 0.f) desired = 0.f;
+        if (desired > 6.5f) desired = 6.5f;
         {
-            float desired = (s_remoteGait != 0xFFFF)
-                ? static_cast<float>(s_remoteGait) / 1000.0f
-                : (move == runState) ? 2.0f : 1.0f; // fallback до первого кадра
-            if (desired < 0.f) desired = 0.f;
-            if (desired > 6.5f) desired = 6.5f;
             Init(natives::SET_PED_DESIRED_MOVE_BLEND_RATIO);
             Push(ped);
             Push(desired);
@@ -5607,12 +5607,17 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
         {
             // TASK_FOLLOW_NAV_MESH_TO_COORD — 5-й параметр это
             // speedMultiplier (множитель, НЕ м/с): 1.0 = обычный шаг,
-            // 2.0 = бег. Раньше стояло 2.5 для шага — пед бежал.
-            const float speed = (move == runState) ? 2.0f : 1.0f;
+            // 2.0 = бег. P3: согласуем множитель с gait хозяина, а не
+            // hard-coded 1.0/2.0 — иначе задача ведёт педа с фиксированной
+            // скоростью и «замывает» нюанс аллюра (красться/полушаг/спринт).
+            // Кладём в диапазон [0.6..3.0]: 0.6 — медленнее шага, 3.0 — спринт.
+            float speed = desired;
+            if (speed < 0.6f) speed = 0.6f;
+            if (speed > 3.0f) speed = 3.0f;
             Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
             Push(ped);
             Push(target.x); Push(target.y); Push(target.z);
-            Push(speed);                    // speedMultiplier (шаг 1.0 / бег 2.0)
+            Push(speed);                    // speedMultiplier = gait (0.6..3.0)
             Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
             Push(0.1f);                     // stoppingRange — задача гасится у цели
             Push(static_cast<unsigned long long>(4)); // flags
