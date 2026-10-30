@@ -1789,6 +1789,13 @@ bool s_pendingLeave = false;
 char s_leaveName[64] = ""; // имя ушедшего игрока (для надписи «left»)
 // Последнее применённое к педу состояние движения (сброс при выходе).
 uint8_t s_lastMoveState = 0xFF;
+// Получательский дебаунс перехода В Idle: НЕ ставим stand-still сразу при
+// первом кадре Idle — иначе при кратких микро-паузах оригинала (между шагами)
+// пед «гаснет» и тут же «заводится», перезапуская анимацию ходьбы (то самое
+// «прерывает/начинает анимации ходьбы»). Встаём только после стольких подряд
+// кадров Idle.
+unsigned int s_idlePendingTicks = 0;
+constexpr unsigned int kIdleDebounceTicks = 12; // ~0.2 с при 60 Гц
 // «Догоняем» ли стоящего игрока: гистерезис для Idle. Без него призрак,
 // стоящий в 0.5–1 м, из-за покачивания корпуса постоянно переходит
 // Idle↔Walk и «пританцовывает» (шаффлит ногами).
@@ -4476,6 +4483,7 @@ void CleanupGhost()
     s_modelLoadedLogged = false;
     s_haveFrame = false;
     s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
+    s_idlePendingTicks = 0; // сброс дебаунса Idle для нового педа
     s_idleChase = false;
     ResetGhostCombatState();
     s_deadGuardTicks = 0;
@@ -5559,8 +5567,10 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
     }
     if (move == walkState || move == runState)
     {
-        // Движение задачей (топает ножками). Физику педа НЕ замораживаем,
-        // иначе TASK_GO_* не сможет его вести.
+        // Движение задачей (топает ножками). Сброс pending-дебаунса Idle:
+        // при любом кадре движения стояние больше не «назревает».
+        s_idlePendingTicks = 0;
+        // Физику педа НЕ замораживаем, иначе TASK_GO_* не сможет его вести.
         // ВАЖНО: размораживаем на КАЖДОМ кадре движения, а не только при
         // смене состояния. Иначе после Idle (заморожен) с продолжением Walk
         // пед остаётся замороженным — задача ведёт, но физика стоит, и он
@@ -5645,16 +5655,28 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
 
         if (s_lastMoveState != move)
         {
+            // Дебаунс перехода В Idle: не ставим stand-still на первом кадре
+            // Idle — иначе краткие микро-паузы оригинала между шагами дёргают
+            // педа «встал-пошёл-встал» и перезапускают анимацию ходьбы.
+            // Встаём после kIdleDebounceTicks подряд кадров Idle.
+            ++s_idlePendingTicks;
+            if (s_idlePendingTicks < kIdleDebounceTicks)
+                return; // ещё не подтвердилось — продолжаем держать движение
             // Стоящий пед: ставим stand-still, НО НЕ замораживаем физику.
             // Заморозка (FREEZE_ENTITY_POSITION) конфликтует с задачей и
             // ручным позиционированием — пед «дёргается» (задача ведёт,
             // физика стоит). Свободная физика + TASK_STAND_STILL = стоит ровно.
+            s_idlePendingTicks = 0;
             s_lastMoveState = move;
             Init(natives::TASK_STAND_STILL);
             Push(ped); Push(static_cast<unsigned long long>(0xFFFFFFFF));
             Call();
             // Восстановить выносливость — чтобы пед не отдувался после бега.
             SetGhostStaminaFull();
+        }
+        else
+        {
+            s_idlePendingTicks = 0;
         }
     }
 }
