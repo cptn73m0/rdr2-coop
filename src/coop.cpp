@@ -5591,25 +5591,39 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
 
         if (retarget)
         {
-            // TASK_FOLLOW_NAV_MESH_TO_COORD — 5-й параметр это
-            // speedMultiplier (множитель, НЕ м/с): 1.0 = обычный шаг,
-            // 2.0 = бег. Базовую скорость задачи НЕ дёргаем от gait: темп
-            // уже задаётся SET_PED_DESIRED_MOVE_BLEND_RATIO выше (единый
-            // источник). Второй источник темпа здесь дёргал бы педа «срывом
-            // в спринт» при флаппинге move на границе шаг/бег.
+            // Базовую скорость задачи НЕ дёргаем от gait: темп задаётся
+            // SET_PED_DESIRED_MOVE_BLEND_RATIO выше (единый источник).
             const float speed = (move == runState) ? 2.0f : 1.0f;
-            Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
-            Push(ped);
-            Push(target.x); Push(target.y); Push(target.z);
-            Push(speed);                    // speedMultiplier (шаг 1.0 / бег 2.0)
-            Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
-            Push(0.1f);                     // stoppingRange — задача гасится у цели
-            Push(static_cast<unsigned long long>(4)); // flags
-            Push(40000.f);                  // как в rdr2-runtime
-            Call();
+            if (!s_moveTargetValid)
+            {
+                // Первый запуск / переход из Idle: создаём go-to задачу заново.
+                Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
+                Push(ped);
+                Push(target.x); Push(target.y); Push(target.z);
+                Push(speed);                    // speedMultiplier (шаг 1.0 / бег 2.0)
+                Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
+                Push(0.1f);                     // stoppingRange — задача гасится у цели
+                Push(static_cast<unsigned long long>(4)); // flags
+                Push(40000.f);                  // как в rdr2-runtime
+                Call();
+            }
+            else
+            {
+                // Задача уже идёт: обновляем ЦЕЛЬ на месте (in-place), а НЕ
+                // пересоздаём задачу. Пересоздание TASK_FOLLOW каждый кадр
+                // сбрасывало анимацию ходьбы — отсюда «анимация с каждым
+                // шагом начинается заново» (retarget до 8/с в логе).
+                Init(natives::_UPDATE_TASK_GO_TO_COORD_WITH_OFFSET);
+                Push(ped);
+                Push(target.x); Push(target.y); Push(target.z);
+                Push(0.f); Push(0.f); Push(0.f); // offset XYZ — без смещения
+                Push(speed);
+                Push(0.1f);                     // tolerance
+                Call();
+            }
             s_moveTarget = target;
             s_moveTargetValid = true;
-            ++s_diagRetarget; // частота перепостановки задачи — метрика «подхвата»
+            ++s_diagRetarget; // частота обновления цели — метрика «подхвата»
         }
         s_lastMoveState = move;
     }
