@@ -3338,11 +3338,14 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
     if (crouching != s_remoteCrouching)
     {
         s_remoteCrouching = crouching;
+        // _SET_PED_CROUCH_MOVEMENT: 4-й параметр `immediately`. Раньше ставили 1 —
+        // пед МГНОВЕННО «телепортировался» в позу приседа без анимации. 0
+        // проигрывает анимацию приседания/вставания.
         Init(natives::_SET_PED_CROUCH_MOVEMENT);
         Push(s_ghost);
         Push(crouching ? 1 : 0);            // state: 1 = присесть
         Push(static_cast<unsigned long long>(0)); // p2
-        Push(static_cast<unsigned long long>(1)); // immediately
+        Push(static_cast<unsigned long long>(0)); // immediately = 0 (анимировать)
         Call();
         sh_log::Write("coop: crouch %s\n", crouching ? "on" : "off");
     }
