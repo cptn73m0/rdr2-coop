@@ -257,6 +257,16 @@ constexpr unsigned long long SET_PED_DESIRED_MOVE_BLEND_RATIO = 0x1E982AC8716912
 constexpr unsigned long long GET_PED_DESIRED_MOVE_BLEND_RATIO = 0x8517D4A6CA8513EDull;
 // E2a.2: in-place update уже запущенной go-to задачи (ped,x,y,z,offX,Y,Z,speed,tolerance).
 constexpr unsigned long long _UPDATE_TASK_GO_TO_COORD_WITH_OFFSET = 0x3FFCD7BBA074CC80ull;
+// v22-pose: приседание/скрытность (источник — rdr3-nativedb, build 1207).
+// GET — читать состояние педа (is crouching / is stealth), _SET/SET — применить
+// к педу-призраку. SET_PED_STEALTH_MOVEMENT в базе помечен «Not implemented» —
+// запасной путь TASK_DUCK(ped, p1).
+constexpr unsigned long long GET_PED_CROUCH_MOVEMENT   = 0xD5FE956C70FF370Bull;
+constexpr unsigned long long _SET_PED_CROUCH_MOVEMENT  = 0x7DE9692C6F64CFE8ull;
+constexpr unsigned long long GET_PED_STEALTH_MOVEMENT  = 0x7C2AC9CA66575FBFull;
+constexpr unsigned long long SET_PED_STEALTH_MOVEMENT  = 0x88CBB5CEB96B7BD2ull;
+constexpr unsigned long long TASK_DUCK                 = 0xA14B5FBF986BAC23ull;
+constexpr unsigned long long RESET_PED_WEAPON_MOVEMENT_CLIPSET = 0x97B0DB5B4AA74E77ull;
 // E2a.2: статус script-задачи педа (7 not_found / 8 finished — нужен ре-issue).
 constexpr unsigned long long GET_SCRIPT_TASK_STATUS          = 0x77F1BEB8863288D5ull;
 // E2a.2 (резерв, если понадобится FORCE_PED_MOTION_STATE): сигнатура

@@ -159,6 +159,12 @@ constexpr uint8_t kFlagWeaponReady = 1u << 1;
 // анимация доставания/убирания. Нужны приёмнику для draw/holster анимаций.
 constexpr uint8_t kFlagWeaponDrawn    = 1u << 2;
 constexpr uint8_t kFlagWeaponChanging = 1u << 3;
+// v22-pose: поза игрока. Crouching = пригнулся/присел (GET_PED_CROUCH_MOVEMENT),
+// Stealth = крадётся (GET_PED_STEALTH_MOVEMENT). Приёмник применяет к педу-
+// призраку через _SET_PED_CROUCH_MOVEMENT / SET_PED_STEALTH_MOVEMENT. Биты 4/5
+// раньше не использовались, размер кадра не меняется.
+constexpr uint8_t kFlagCrouching = 1u << 4;
+constexpr uint8_t kFlagStealth   = 1u << 5;
 
 // Действие (action в кадре): кратковременное/контекстное поведение поверх
 // движения. Идёт в отдельном байте кадра (pad0). Приоритет ниже state

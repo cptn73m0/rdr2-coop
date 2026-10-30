@@ -1900,6 +1900,10 @@ constexpr unsigned int kWeaponChangingFallbackTicks = 20;
 // kFlagWeaponChanging, v14 без поднятия версии).
 bool s_remoteWeaponDrawn = false;
 bool s_remoteWeaponChanging = false;
+// v22-pose: поза удалённого игрока (crouch/stealth), применяется к педу-призраку
+// при смене. Пишется из ApplyPedStateToGhost по флагам кадра.
+bool s_remoteCrouching = false;
+bool s_remoteStealth = false;
 // Локально идёт смена holster-состояния (кэш на тик для гейтов).
 bool s_weaponChangingNow = false;
 // Защита от залипшего changing: гейтим aim/shoot/move только первые
@@ -2000,6 +2004,8 @@ void ResetGhostCombatState()
     s_weaponCandidateTicks = 0;
     s_remoteWeaponDrawn = false;
     s_remoteWeaponChanging = false;
+    s_remoteCrouching = false;
+    s_remoteStealth = false;
     s_weaponChangingNow = false;
     s_weaponChangingPrevRaw = false;
     s_weaponChangingSinceTick = 0;
@@ -3323,6 +3329,37 @@ void ApplyPedStateToGhost(const net::FramePayload& f)
     if (!weaponChanging)
         s_remoteWeaponDrawn = weaponDrawn;
 
+    // ===== Поза: приседание/скрытность (флаги кадра v22-pose) =====
+    // Хост шлёт kFlagCrouching (GET_PED_CROUCH_MOVEMENT) и kFlagStealth
+    // (GET_PED_STEALTH_MOVEMENT). Применяем к педу-призраку при смене —
+    // не каждый кадр, чтобы не дёргать позу.
+    const bool crouching = (f.flags & net::kFlagCrouching) != 0;
+    const bool stealth = (f.flags & net::kFlagStealth) != 0;
+    if (crouching != s_remoteCrouching)
+    {
+        s_remoteCrouching = crouching;
+        Init(natives::_SET_PED_CROUCH_MOVEMENT);
+        Push(s_ghost);
+        Push(crouching ? 1 : 0);            // state: 1 = присесть
+        Push(static_cast<unsigned long long>(0)); // p2
+        Push(static_cast<unsigned long long>(1)); // immediately
+        Call();
+        sh_log::Write("coop: crouch %s\n", crouching ? "on" : "off");
+    }
+    if (stealth != s_remoteStealth)
+    {
+        s_remoteStealth = stealth;
+        // SET_PED_STEALTH_MOVEMENT в базе помечен «Not implemented» — пробуем,
+        // при нулевом эффекте fallback TASK_DUCK уже покрывает приседание.
+        Init(natives::SET_PED_STEALTH_MOVEMENT);
+        Push(s_ghost);
+        Push(static_cast<unsigned long long>(stealth ? 1 : 0)); // toggle
+        Push(static_cast<unsigned long long>(0));               // p2
+        Push(static_cast<unsigned long long>(0));               // p3
+        Call();
+        sh_log::Write("coop: stealth %s\n", stealth ? "on" : "off");
+    }
+
     // Действие (стрельба/сидение/сценарий…) — при смене.
     ApplyActionToGhost(f);
 }
@@ -4640,6 +4677,12 @@ uint8_t DetectLocalFlags(unsigned int ped)
     if (!Call()) f |= net::kFlagWeaponDrawn;
     Init(natives::_IS_WEAPON_HOLSTER_STATE_CHANGING); Push(ped);
     if (Call()) f |= net::kFlagWeaponChanging;
+    // Поза: приседание и скрытность (крадётся). Приёмник применяет к педу-
+    // призраку _SET_PED_CROUCH_MOVEMENT / SET_PED_STEALTH_MOVEMENT.
+    Init(natives::GET_PED_CROUCH_MOVEMENT); Push(ped);
+    if (Call()) f |= net::kFlagCrouching;
+    Init(natives::GET_PED_STEALTH_MOVEMENT); Push(ped);
+    if (Call()) f |= net::kFlagStealth;
     return f;
 }
 
