@@ -1796,10 +1796,6 @@ uint8_t s_lastMoveState = 0xFF;
 // кадров Idle.
 unsigned int s_idlePendingTicks = 0;
 constexpr unsigned int kIdleDebounceTicks = 12; // ~0.2 с при 60 Гц
-// «Догоняем» ли стоящего игрока: гистерезис для Idle. Без него призрак,
-// стоящий в 0.5–1 м, из-за покачивания корпуса постоянно переходит
-// Idle↔Walk и «пританцовывает» (шаффлит ногами).
-bool s_idleChase = false;
 // Сколько тиков подряд призрак далеко от цели (>3 м). Если навмеш-задача
 // застряла/не дошла, через ~30 тиков включаем принудительный спринт-догон,
 // а при большом разрыве — телепорт (призрак; точность важнее реализма).
@@ -3914,7 +3910,6 @@ void RespawnGhostPed(const net::FramePayload* f)
     s_deadGuardTicks = 0;
     s_reviveGraceTicks = 90; // ~1.5 с: не считаем педа мёртвым сразу
     s_lastMoveState = 0xFF;
-    s_idleChase = false;
     s_appliedActionMode = 0;
     s_appliedScenario = 0;
     s_appliedTargetNetId = 0;
@@ -4278,31 +4273,23 @@ bool ApplyRemoteFramePositionPhase(const net::FramePayload& f, Vec3 cur,
     }
     else
     {
-        // Idle: пед стоит задачей TASK_STAND_STILL. НЕ двигаем его руками
-        // (шаг за тик) и НЕ дёргаем заморозкой — это и было причиной
-        // «дёрганья в покое». Догон — только при реальном отставании:
-        //   > 4 м  — бегом (2.0);
-        //   > 10 м — телепорт по XY/Z к точке кадра (раньше сохраняли cur.z,
-        //            из-за чего призрак оставался на высоте старой позиции);
-        //   ошибка >30 тиков — принудительный спринт-догон (3.0).
-        const float CLOSE = 1.5f;
-        const float RESUME = 2.5f;
-        float dx = p.x - cur.x, dy = p.y - cur.y, dz = p.z - cur.z;
-        float dist = std::sqrt(dx * dx + dy * dy);
-        const float dist3 = std::sqrt(dx * dx + dy * dy + dz * dz);
-        // В бою не телепортируем + кулдаун от телепорт-петли вокруг порога.
-        // Пока идёт реплей выстрелов — не телепортируем и не дёргаем движение:
-        // новая задача отменяет идущую shoot-анимацию.
+        // Idle (кадр move=Idle): пед НЕ догоняет самостоятельно. Раньше здесь
+        // был idle-chase (гистерезис CLOSE/RESUME), который флапал педа
+        // Walk↔Idle при близкой дистанции — это давало «подёргивание» и
+        // перезапуск анимации ходьбы на каждом шаге. Теперь единственный
+        // источник движения — кадровый move: Idle = стоим, Walk/Run = идём.
+        // Догон остаётся только при РЕАЛЬНОМ большом отставании (>4 м или
+        // застрял), а мягкий «подгон» к точке убран.
+        float dx3 = p.x - cur.x, dy3 = p.y - cur.y, dz3 = p.z - cur.z;
+        float dist3 = std::sqrt(dx3 * dx3 + dy3 * dy3 + dz3 * dz3);
         const bool canTeleport = !s_combatActive && !GhostShotReplayActive();
         if (dist3 > 10.0f && canTeleport &&
             (s_tickCount - s_lastGhostTeleportTick) >= kIdleTeleportCooldownTicks)
         {
             SetEntityCoords(s_ghost, p);
             cur = p;
-            dist = 0.f;
             s_moveTargetValid = false;
             s_ghostFarTicks = 0;
-            s_idleChase = false;
             s_lastGhostTeleportTick = s_tickCount;
             ++s_diagTeleport; // метрика частоты телепортов (idle)
             if (s_tickCount - s_lastGhostTpLogTick > 5 * 60)
@@ -4311,70 +4298,49 @@ bool ApplyRemoteFramePositionPhase(const net::FramePayload& f, Vec3 cur,
                 sh_log::Write("coop: ghost teleport (idle dist>10)\n");
             }
         }
-        if (dist > 3.0f)
+        float dx2 = p.x - cur.x, dy2 = p.y - cur.y;
+        float dist2 = std::sqrt(dx2 * dx2 + dy2 * dy2);
+        if (dist2 > 3.0f)
             ++s_ghostFarTicks;
         else
             s_ghostFarTicks = 0;
 
-        const bool canMove = canTeleport;
-        if (canMove && s_ghostFarTicks >= kGhostFarTicksForSprint && dist > 2.5f)
+        if (canTeleport && s_ghostFarTicks >= kGhostFarTicksForSprint && dist2 > 2.5f)
         {
+            // Застрял/сильно отстал — принудительный спринт-догон.
             if (NeedGhostCatchupTask(p))
                 IssueGhostFollowTask(s_ghost, p, 3.0f);
-            s_idleChase = true;
             s_ghostFarTicks = 0;
         }
-        else if (canMove && dist > 4.0f)
+        else if (canTeleport && dist2 > 4.0f)
         {
-            // Отстал на 4+ м — догоняем БЕГОМ, а не шагом (как раньше).
+            // Отстал на 4+ м — догоняем бегом.
             if (NeedGhostCatchupTask(p))
                 IssueGhostFollowTask(s_ghost, p, 2.0f);
-            s_idleChase = true;
             s_ghostFarTicks = 0;
         }
         else
         {
-            if (dist > RESUME)
-                s_idleChase = true;
-            else if (dist < CLOSE)
-                s_idleChase = false;
-
-            if (s_idleChase)
+            // Стоит: не трогаем XY, только прижим при подвесе над землёй.
+            float groundZ = 0.f;
+            const bool hasGround = GetGroundZForCoord(cur, groundZ);
+            const bool fixAllowed =
+                !IsGhostMounted() && !s_remoteInVehicle &&
+                !s_combatActive && !GhostShotReplayActive() &&
+                s_remoteActionRaw != static_cast<uint8_t>(net::Action::InScenario) &&
+                s_remoteActionRaw != static_cast<uint8_t>(net::Action::Sitting) &&
+                s_remoteActionRaw != static_cast<uint8_t>(net::Action::Drunk);
+            if (hasGround && fixAllowed &&
+                (cur.z - groundZ) > 2.5f && groundZ > -100.f &&
+                (s_tickCount - s_lastIdleGroundFixTick) > 60)
             {
-                // Мягкий догон шагом с гистерезисом — чтобы не «танцевать»
-                // на месте при покачивании корпуса рядом с целью.
-                ApplyMoveToGhost(s_ghost,
-                                 static_cast<uint8_t>(coop::MoveState::Walk), p);
+                s_lastIdleGroundFixTick = s_tickCount;
+                SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
+                ++s_diagGroundFix; // метрика «провисание» педа над землёй
             }
-            else
-            {
-                // Стоит рядом с целью: не трогаем XY, только прижим при подвесе.
-                // Порог поднят 1.0 -> 2.5 м: раз в секунду SetEntityCoords на
-                // неровностях давал «дёрганье» стоящего призрака. В движении/
-                // бою/верхом/в транспорте/сценарии не двигаем вообще.
-                float groundZ = 0.f;
-                const bool hasGround = GetGroundZForCoord(cur, groundZ);
-                const bool fixAllowed =
-                    !IsGhostMounted() && !s_remoteInVehicle &&
-                    !s_combatActive && !GhostShotReplayActive() &&
-                    s_remoteActionRaw != static_cast<uint8_t>(net::Action::InScenario) &&
-                    s_remoteActionRaw != static_cast<uint8_t>(net::Action::Sitting) &&
-                    s_remoteActionRaw != static_cast<uint8_t>(net::Action::Drunk);
-                if (hasGround && fixAllowed &&
-                    (cur.z - groundZ) > 2.5f && groundZ > -100.f &&
-                    (s_tickCount - s_lastIdleGroundFixTick) > 60)
-                {
-                    // Опускаем на землю, если реально висим НАД ней >2.5 м.
-                    // Троттлинг (раз в сек): без него на неровной земле пед
-                    // «подтягивался» каждый кадр и дрожал.
-                    s_lastIdleGroundFixTick = s_tickCount;
-                    SetEntityCoords(s_ghost, Vec3{cur.x, cur.y, groundZ + 0.2f});
-                    ++s_diagGroundFix; // метрика «провисание» педа над землёй
-                }
-                // Единый вызов для Idle: ставит/обновляет stand-still при смене
-                // состояния (сам защищён s_lastMoveState — не дёргает).
-                ApplyMoveToGhost(s_ghost, move, p);
-            }
+            // Единый вызов для Idle: ставит stand-still по кадровому move
+            // (сам защищён s_lastMoveState — не дёргает).
+            ApplyMoveToGhost(s_ghost, move, p);
         }
     }
 
@@ -4484,7 +4450,6 @@ void CleanupGhost()
     s_haveFrame = false;
     s_lastMoveState = 0xFF; // чтобы следующий пед не унаследовал задачу
     s_idlePendingTicks = 0; // сброс дебаунса Idle для нового педа
-    s_idleChase = false;
     ResetGhostCombatState();
     s_deadGuardTicks = 0;
     s_lastKnownPosValid = false;
@@ -5840,7 +5805,6 @@ void CheckRemoteModelChange(const net::FramePayload& f)
         s_blip = RemoveBlip(s_blip);
     s_ghostDead = false;
     s_lastMoveState = 0xFF;
-    s_idleChase = false;
     ResetGhostCombatState(); // новому педу оружие выдадим заново
     s_deadGuardTicks = 0;
     // Педа пересоздали — применённое действие больше не актуально.
