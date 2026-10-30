@@ -4591,11 +4591,15 @@ uint8_t DetectLocalMoveState(unsigned int ped)
             Init(natives::IS_PED_WALKING); Push(ped);
             bool walking = Call() != 0;
             // Гистерезис Walk<->Idle: из стояния в шаг — при явном движении
-            // (>1.0 м/с), из шага в стояние — только когда точно встали
-            // (<0.3 м/с). Покачивание корпуса не должно мерцать Walk<->Idle.
+            // (>1.0 м/с), из шага в стояние — только когда скорость устойчиво
+            // упала. ПОРОГ «вниз» поднят 0.3→0.8 м/с: при медленной ходьбе
+            // скорость импульсно проваливается на каждом шаге (фаза переноса
+            // ноги), из-за чего старый порог 0.3 ронял педа в Idle каждый шаг
+            // (анимация ходьбы «перезапускалась» с каждым шагом). Реальная
+            // остановка — устойчиво <0.8 м/с, и её ловит дебаунс kMoveDebounce.
             const bool wasWalking =
                 (s_moveStable == static_cast<uint8_t>(coop::MoveState::Walk));
-            const float walkThresh = wasWalking ? 0.3f : 1.0f;
+            const float walkThresh = wasWalking ? 0.8f : 1.0f;
             const bool realWalking = walking && speedMs > 0.35f;
             raw = (realWalking || speedMs > walkThresh)
                     ? static_cast<uint8_t>(coop::MoveState::Walk)
