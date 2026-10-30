@@ -2853,6 +2853,24 @@ void ShootGhostAt(const Vec3& t, int durationMs = 250,
     if (!s_ghost || !DoesEntityExist(s_ghost)) return;
     EnsureGhostWeaponInHands();
     using namespace natives_api;
+    // ФОРСИРУЕМ оружие в руках мгновенно (equipNow=true): если оружие ещё
+    // «в пути» (draw-анимация не завершилась), TASK_SHOOT_AT_COORD молча не
+    // исполняется — IS_PED_SHOOTING не загорается, выстрел теряется (repair
+    // «shot replay no confirm»). equipNow избавляет от гонки выстрел↔draw.
+    if (s_givenWeapon && !s_weaponEquippedInHands)
+    {
+        Init(natives::SET_CURRENT_PED_WEAPON);
+        Push(s_ghost);
+        Push(s_givenWeapon);
+        Push(static_cast<unsigned long long>(1)); // equipNow=true — мгновенно
+        Push(static_cast<unsigned long long>(0));
+        Push(static_cast<unsigned long long>(0));
+        Push(static_cast<unsigned long long>(0));
+        Call();
+        s_weaponEquippedInHands = true;
+        s_weaponEquippedHash = s_givenWeapon;
+        s_weaponDrawPending = false;
+    }
     Init(natives::TASK_SHOOT_AT_COORD);
     Push(s_ghost);
     Push(t.x); Push(t.y); Push(t.z);
