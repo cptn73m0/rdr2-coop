@@ -239,6 +239,7 @@ bool ApplyBoolKey(const std::string& key, const std::string& val, Config& out)
         {"vehicle_interaction_host_vehicle",
          &Config::vehicleInteractionHostVehicle},
         {"vehicle_interaction_debug", &Config::vehicleInteractionDebug},
+        {"npc_vehicle_native_drive", &Config::npcVehicleNativeDrive},
         {"npc_animal_appearance", &Config::npcAnimalAppearance},
         {"npc_mount_appearance", &Config::npcMountAppearance},
         {"npc_frame_adaptive", &Config::npcFrameAdaptive},

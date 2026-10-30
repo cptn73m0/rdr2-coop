@@ -374,6 +374,12 @@ constexpr unsigned long long _DETACH_DRAFT_VEHICLE_HARNESS_PED = 0xB36D3EC70963B
 constexpr unsigned long long _SET_DRAFT_VEHICLE_ALLOW_DRAFT_ANIMAL_AUTO_CREATION = 0x87344305778E5415ull;
 constexpr unsigned long long _SET_DRAFT_VEHICLE_ANIMALS_CAN_DETACH = 0x6090A031C69F384Eull;
 constexpr unsigned long long _SET_DRAFT_VEHICLE_YOKE_CAN_BREAK = 0x226C6A4E3346D288ull;
+// v22-vehicle: нативная тяга/вождение повозки (вместо ручной интерполяции).
+constexpr unsigned long long _CREATE_DRAFT_VEHICLE           = 0x214651FB1DFEBA89ull;
+constexpr unsigned long long _SET_DRAFT_VEHICLE_DESIRED_SPEED = 0x0C3F0F7F92CA847Cull;
+constexpr unsigned long long _GET_DRAFT_VEHICLE_DESIRED_SPEED = 0xC6D7DDC843176701ull;
+constexpr unsigned long long TASK_VEHICLE_DRIVE_TO_COORD     = 0xE2A2AA2F659D77A7ull;
+constexpr unsigned long long TASK_VEHICLE_GOTO_NAVMESH       = 0x195AEEB13CEFE2EEull;
 // E3d-b (v19): mission-train у гостя.
 constexpr unsigned long long SET_RANDOM_TRAINS               = 0x1156C6EE7E82A98Aull;
 constexpr unsigned long long _IS_POSITION_VALID_FOR_TRAIN     = 0xF05DFAF1ADFEF2CDull;

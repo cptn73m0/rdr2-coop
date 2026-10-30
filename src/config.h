@@ -103,6 +103,10 @@ struct Config {
     bool vehicleInteractionHostVehicle = false; // vehicle_interaction_host_vehicle
     // Подробный лог интентов/apply/mirror (throttled). default 0.
     bool vehicleInteractionDebug = false;      // vehicle_interaction_debug
+    // v22-vehicle: нативное движение повозок-прокси (желаемая скорость через
+    // _SET_DRAFT_VEHICLE_DESIRED_SPEED вместо жёсткой интерполяции SetCoords).
+    // default 0 (off) — включать после 2-ПК проверки; колёса/качание нативны.
+    bool npcVehicleNativeDrive = false;        // npc_vehicle_native_drive
     // E9 (task-142): внешность животных/лошадей (asset/tint 0x1E + horse tack
     // 0x1C). default 0 — текущий random variation (host+guest должны совпадать).
     bool npcAnimalAppearance = false;
