@@ -88,3 +88,15 @@ gait совпадает по eyeball/видео). Без измерения не
 - P4: дебаг idle-jitter (по счётчикам D1).
 - P5: верх как единый акт.
 - P6: «человечность» прицела.
+
+## Статус (обновляется)
+
+- **D1 (счётчики) — DONE.** `4cdac38`, `ghost:` строка в `rdr2-coop.log` при
+  `npc_debug=1`: retarget/s, moveFlap/s, groundFix/s, teleport/s, mountDesync.
+- **P1 (gait) — DONE, подтверждено в игре (2-ПК).** Протокол v22 (`ca48c04`):
+  `FramePayload.gait:u16` (96 Б), `GET_PED_DESIRED_MOVE_BLEND_RATIO` хост →
+  `SET_PED_DESIRED_MOVE_BLEND_RATIO` гость. Приёмка 30.10.2026 (v22 на обоих ПК,
+  без `VersionMismatch`): пед движется «заметно лучше» (оценка пользователя);
+  замеры `ghost:` — retarget=0, moveFlap=0, groundFix=0, teleport=0,
+  mountDesync avg 0.01–0.05 м / max 0.17 м. Снапшот `dist\v22-gait`.
+
