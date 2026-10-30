@@ -4561,7 +4561,20 @@ uint8_t DetectLocalMoveState(unsigned int ped)
     else
     {
         Init(natives::IS_PED_RUNNING); Push(ped);
-        if (Call())
+        const bool isRunning = Call() != 0;
+        // Скорость нужна и для fallback, и для гистерезиса Walk<->Run ниже.
+        Init(natives::GET_ENTITY_SPEED); Push(ped);
+        const float speedMs = CallFloat();
+        // Гистерезис Walk<->Run (ключ к отсутствию «срыва в спринт» при быстром
+        // шаге): у движка IS_PED_RUNNING мигает на границе шаг/бег, и без
+        // порога скорости пед-призрак каждые несколько шагов «стартует как на
+        // забеге». Переход В Run — только при явной скорости бега (>4.0 м/с);
+        // обратно В Walk — только когда реально замедлился (<3.0 м/с).
+        const bool wasRunning =
+            (s_moveStable == static_cast<uint8_t>(coop::MoveState::Run));
+        const float runThreshUp = wasRunning ? 3.0f : 4.0f;
+        const bool reallyRunning = isRunning && speedMs > runThreshUp;
+        if (reallyRunning)
         {
             raw = static_cast<uint8_t>(coop::MoveState::Run);
         }
@@ -4569,20 +4582,14 @@ uint8_t DetectLocalMoveState(unsigned int ped)
         {
             Init(natives::IS_PED_WALKING); Push(ped);
             bool walking = Call() != 0;
-            // Фактическая скорость нужна и для fallback, и для гистерезиса.
-            Init(natives::GET_ENTITY_SPEED); Push(ped);
-            float speed = CallFloat();
-            // Гистерезис (ключ к отсутствию дёрганья): из стояния (Idle) в
-            // шаг переходим только при ЯВНОМ движении (>1.0 м/с), а из шага
-            // в стояние — только когда точно встали (<0.3 м/с). Без этого
-            // покачивание корпуса мерцало Walk<->Idle и пед дёргался.
-            // Дополнительно: IS_PED_WALKING бывает истинным от дыхания/
-            // микро-анимации покоя — требуем реальную скорость >0.35 м/с.
+            // Гистерезис Walk<->Idle: из стояния в шаг — при явном движении
+            // (>1.0 м/с), из шага в стояние — только когда точно встали
+            // (<0.3 м/с). Покачивание корпуса не должно мерцать Walk<->Idle.
             const bool wasWalking =
                 (s_moveStable == static_cast<uint8_t>(coop::MoveState::Walk));
             const float walkThresh = wasWalking ? 0.3f : 1.0f;
-            const bool realWalking = walking && speed > 0.35f;
-            raw = (realWalking || speed > walkThresh)
+            const bool realWalking = walking && speedMs > 0.35f;
+            raw = (realWalking || speedMs > walkThresh)
                     ? static_cast<uint8_t>(coop::MoveState::Walk)
                     : static_cast<uint8_t>(coop::MoveState::Idle);
         }
@@ -5607,17 +5614,15 @@ void ApplyMoveToGhost(unsigned int ped, uint8_t move, const Vec3& target)
         {
             // TASK_FOLLOW_NAV_MESH_TO_COORD — 5-й параметр это
             // speedMultiplier (множитель, НЕ м/с): 1.0 = обычный шаг,
-            // 2.0 = бег. P3: согласуем множитель с gait хозяина, а не
-            // hard-coded 1.0/2.0 — иначе задача ведёт педа с фиксированной
-            // скоростью и «замывает» нюанс аллюра (красться/полушаг/спринт).
-            // Кладём в диапазон [0.6..3.0]: 0.6 — медленнее шага, 3.0 — спринт.
-            float speed = desired;
-            if (speed < 0.6f) speed = 0.6f;
-            if (speed > 3.0f) speed = 3.0f;
+            // 2.0 = бег. Базовую скорость задачи НЕ дёргаем от gait: темп
+            // уже задаётся SET_PED_DESIRED_MOVE_BLEND_RATIO выше (единый
+            // источник). Второй источник темпа здесь дёргал бы педа «срывом
+            // в спринт» при флаппинге move на границе шаг/бег.
+            const float speed = (move == runState) ? 2.0f : 1.0f;
             Init(natives::TASK_FOLLOW_NAV_MESH_TO_COORD);
             Push(ped);
             Push(target.x); Push(target.y); Push(target.z);
-            Push(speed);                    // speedMultiplier = gait (0.6..3.0)
+            Push(speed);                    // speedMultiplier (шаг 1.0 / бег 2.0)
             Push(static_cast<unsigned long long>(0xFFFFFFFF)); // timeout = -1
             Push(0.1f);                     // stoppingRange — задача гасится у цели
             Push(static_cast<unsigned long long>(4)); // flags
